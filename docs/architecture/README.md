@@ -260,7 +260,7 @@ retried with backoff on 429/5xx only.
 ### 4.4 Resolving "which play session?" from a date
 
 1. The organizer picks a **date** (defaults to today in the league timezone, e.g. `America/Chicago`).
-2. The server lists play sessions whose start falls in `[date 00:00, date+1 00:00)` in the league TZ. It queries `active`, then `completed`, then `scheduled`, short-circuiting on the first match. Results are cached for 5 minutes.
+2. The server lists play sessions whose start falls in `[date 00:00, date+1 00:00)` in the league TZ, using the server-side filters `start_date:greater_than_or_equal_to` and `start_date:less_than_or_equal_to` (UTC instants). It queries the statuses `active`, then `complete`, then `pending` (the upstream names, see [spikes.md](spikes.md) S3), short-circuiting on the first match. Results are cached for 5 minutes.
 3. 0 matches: "No play session exists on 2026-10-14 in play-tools — create it there first" (with a deep link).
    1 match: auto-select and show it for confirmation.
    More than 1 (e.g. an afternoon and an evening session): the user chooses.
@@ -540,11 +540,13 @@ flowchart LR
 | S4 | `_bulk` semantics: response shape, partial failures, posting an already-present player (error or no-op?)          | Bulk-add to a throwaway session, then undo                                                     |
 | S5 | `userId` for `users/{id}/activity_groups/`: JWT `sub` or a separate profile ID?                                    | Decode the JWT and compare it with play-tools network calls                                    |
 
+Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions they trigger are in [spikes.md](spikes.md).
+
 ## 13. Delivery plan
 
 | Milestone                     | Scope                                                                                                         |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures                                                              |
+| M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures ([status](spikes.md))                                        |
 | M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login, CI, Docker     |
 | M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players                                        |
 | M3 TDF                        | `shared/tdf` parser, preview → commit, sightings                                                              |

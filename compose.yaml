@@ -1,0 +1,21 @@
+# Fixed project name: without it Compose derives names from the checkout's
+# directory, and a different checkout would get a different, empty volume.
+name: play-pokemon-attendance
+
+services:
+  # M0 spike runner. Runs the hourly S2 refresh; other spikes run on demand:
+  #   docker compose exec spikes pnpm spike:s3
+  spikes:
+    build:
+      context: .
+      target: spikes
+    image: play-pokemon-attendance:spikes
+    restart: unless-stopped
+    volumes:
+      # The ONLY live copy of the Pokémon tokens. Never keep a second copy
+      # around: refreshing from a stale one replays a rotated token.
+      - spike-secrets:/data/spike-secrets
+
+volumes:
+  spike-secrets:
+    name: play-pokemon-attendance_spike-secrets

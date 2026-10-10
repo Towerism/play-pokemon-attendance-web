@@ -1,0 +1,26 @@
+{
+  "status": 200,
+  "body": {
+    "count": 1,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000042",
+        "role": "organizer",
+        "player": false,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000043",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000003"
+          },
+          "player_id": "9999991"
+        },
+        "origin": "unknown",
+        "updated": "2026-10-10T23:15:36.881971Z"
+      }
+    ]
+  }
+}

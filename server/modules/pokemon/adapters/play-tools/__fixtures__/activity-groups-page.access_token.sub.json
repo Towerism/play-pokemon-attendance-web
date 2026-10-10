@@ -1,0 +1,128 @@
+{
+  "status": 200,
+  "body": {
+    "count": 2,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000001",
+        "display_id": null,
+        "group_type": "personal",
+        "name": null,
+        "display_name": null,
+        "organization_id": "00000000-0000-4000-8000-000000000002",
+        "owner": {
+          "guid": "00000000-0000-4000-8000-000000000003",
+          "player_id": "9999991"
+        },
+        "address": null,
+        "criteria": {
+          "tournaments": {
+            "delete_attendance": true,
+            "edit": true,
+            "get_attendance": true,
+            "patch_attendance": true,
+            "replace_player": true,
+            "report_staff": true,
+            "view_attendance": true,
+            "view": true,
+            "create": true,
+            "sanction_custom": true,
+            "sanction_series": true,
+            "validate_group": true
+          },
+          "activity_groups": {
+            "accept_invite": false,
+            "create_invite": false,
+            "delete_staff": true,
+            "edit_manager": true,
+            "view_staff": true
+          },
+          "participants": {
+            "view_details": true
+          },
+          "schedules": {
+            "delete": false,
+            "create": false
+          },
+          "play_sessions": {
+            "create_attendance": true,
+            "create": false,
+            "delete_attendance": true,
+            "delete": true,
+            "modify_attendance": true,
+            "modify": true,
+            "report": true,
+            "view_attendance": true,
+            "view": true
+          }
+        },
+        "store_owner_terms_accepted": null,
+        "level": []
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000004",
+        "display_id": "L5012",
+        "group_type": "league",
+        "name": null,
+        "display_name": "<redacted>",
+        "organization_id": "00000000-0000-4000-8000-000000000005",
+        "owner": {
+          "guid": "00000000-0000-4000-8000-000000000006",
+          "player_id": "9999992"
+        },
+        "address": "<redacted>",
+        "criteria": {
+          "tournaments": {
+            "delete_attendance": true,
+            "edit": true,
+            "get_attendance": true,
+            "patch_attendance": true,
+            "replace_player": true,
+            "report_staff": true,
+            "view_attendance": true,
+            "view": true,
+            "create": true,
+            "sanction_custom": true,
+            "sanction_series": true,
+            "validate_group": true
+          },
+          "activity_groups": {
+            "accept_invite": true,
+            "create_invite": false,
+            "delete_staff": true,
+            "edit_manager": false,
+            "view_staff": true
+          },
+          "participants": {
+            "view_details": true
+          },
+          "schedules": {
+            "delete": true,
+            "create": true
+          },
+          "play_sessions": {
+            "create_attendance": true,
+            "create": true,
+            "delete_attendance": true,
+            "delete": true,
+            "modify_attendance": true,
+            "modify": true,
+            "report": true,
+            "view_attendance": true,
+            "view": true
+          }
+        },
+        "store_owner_terms_accepted": {
+          "accepted_terms": true,
+          "has_deadline_passed": true,
+          "override_deadline": "2026-07-15T15:00:00.000+0000"
+        },
+        "level": [
+          "specialist"
+        ]
+      }
+    ]
+  }
+}

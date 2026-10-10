@@ -1,6 +1,6 @@
 # ADR-0003: Pokémon auth via one-time PKCE connect + stored refresh token
 
-- Status: Proposed (pending spikes S1, S2, S5)
+- Status: Proposed. S1 (paste-back works, even with the play-tools page loaded) and S5 confirmed on 2026-10-10. Refresh rotation is confirmed; the S2 idle-lifetime check is pending.
 - Date: 2026-10-10
 
 ## Context
@@ -30,6 +30,7 @@ Facts recovered from the production play-tools bundle:
    - it is the most clearly "automated access" under the play-tools Terms.
 3. **One-time interactive PKCE connect, then refresh-token rotation on the server.** The organizer logs in on Pokémon's own page. The server keeps only a refresh token and mints access tokens on demand.
 4. **Our own OAuth client registration with TPCi.** This is the correct long-term answer, but it is not available today.
+5. **Device authorization grant** (`/oauth2/device/auth`, advertised by Hydra). It would avoid the fixed redirect URI entirely, but it was rejected for `op-tools-app` on 2026-10-10 (the client lacks the device_code grant; see [spikes.md](../spikes.md) F3).
 
 ## Decision
 
