@@ -96,6 +96,19 @@ export function bulkRequestBody(playerIds: readonly string[]): BulkRecordRequest
  */
 export const BulkResponse = z.unknown();
 
+/**
+ * OP gateway error envelope. Verified 2026-10-10 from an unauthenticated
+ * request (401): `{ code: "op.generic.unauthorized", message, errors: { header:
+ * { Authorization: [{ code: "op.value.required", … }] } } }`. Field-level
+ * errors are grouped by location (header/query/body?) then by field name.
+ */
+export const OpErrorResponse = z.looseObject({
+  code: z.string(),
+  message: z.string().optional(),
+  errors: z.record(z.string(), z.record(z.string(), z.array(z.looseObject({ code: z.string() })))).optional(),
+});
+export type OpErrorResponse = z.infer<typeof OpErrorResponse>;
+
 export const ActivityGroupsPage = Page(ActivityGroup);
 export const PlaySessionsPage = Page(PlaySession);
 export const AttendancePage = Page(AttendanceRecord);

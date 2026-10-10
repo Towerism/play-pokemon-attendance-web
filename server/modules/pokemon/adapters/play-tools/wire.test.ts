@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AttendancePage, BulkRecordRequestItem, PlaySessionsPage, bulkRequestBody } from './wire';
+import { AttendancePage, BulkRecordRequestItem, OpErrorResponse, PlaySessionsPage, bulkRequestBody } from './wire';
 import { opPaths } from './constants';
 
 describe('bulkRequestBody', () => {
@@ -32,6 +32,17 @@ describe('PlaySessionsPage', () => {
   it('requires some start field', () => {
     expect(PlaySessionsPage.safeParse({ results: [{ id: 's', start_datetime: '2026-10-14T23:00:00Z' }] }).success).toBe(true);
     expect(PlaySessionsPage.safeParse({ results: [{ id: 's' }] }).success).toBe(false);
+  });
+});
+
+describe('OpErrorResponse', () => {
+  it('parses the verified unauthenticated 401 body', () => {
+    const body = {
+      code: 'op.generic.unauthorized',
+      message: 'Request is not authenticated for the request.',
+      errors: { header: { Authorization: [{ code: 'op.value.required', message: 'required' }] } },
+    };
+    expect(OpErrorResponse.parse(body).errors?.header?.Authorization?.[0]?.code).toBe('op.value.required');
   });
 });
 

@@ -40,12 +40,19 @@ Either use `npx pnpm@…` as above or run `npm i -g corepack@latest`.
 | 9 | `pnpm spike:s2`, then `pnpm spike:s2 report`. Optionally `pnpm spike:s2 probe-reuse` (last, because it may revoke the chain) |
 | any | `pnpm spike:fixtures`, then fill in `spikes.md` and pin the `TODO(Sx)`s in `wire.ts` |
 
-### S1: does paste-back work? `pnpm spike:s1`
+### S1: does paste-back work? `pnpm spike:s1 --mode loaded|blocked`
 
 The script prints an authorize URL built with *our* PKCE verifier. Open it in
 your normal browser and log in. Pokémon redirects to
 `https://play-tools.pokemon.com/loggedIn?code=…&state=…`. Paste that whole
-URL back into the script, which redeems the code.
+URL back, either at the prompt or later with
+`pnpm spike:s1 resume '<url>'`. The script matches it to its attempt by
+`state` and redeems the code. Use `--no-wait` to print several attempts up front,
+one per mode.
+
+This step can't be automated: the login page sits behind bot protection
+(spikes.md F5). The pasted URL is safe to hand to whoever runs `resume`,
+because the code is useless without the PKCE verifier kept in `.secrets/`.
 
 Try the two capture modes **in this order** and record both:
 
@@ -58,8 +65,8 @@ Try the two capture modes **in this order** and record both:
    and add `play-tools.pokemon.com`. Then log in. The redirect is blocked,
    and the address bar keeps the untouched `?code=` URL. Remove the block afterwards.
 
-Each attempt is valid for 10 minutes. `pnpm spike:s1 resume` re-prompts for
-the paste without starting over. The result is saved to
+An attempt stays pending for 24 h and can be used once. Hydra's own code
+lifetime starts at the redirect, so paste promptly. The result is saved to
 `.secrets/s1-result.<mode>.json` (no secrets).
 
 ### S5 + S3: identity and play-session shapes (read-only). `pnpm spike:s3`

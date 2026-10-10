@@ -5,7 +5,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 
 | ID | Question | Status | Answer | Decision |
 | -- | -------- | ------ | ------ | -------- |
-| S1 | Does a PKCE code for our verifier survive landing on `play-tools/loggedIn` long enough to paste? | 🟡 half verified | Hydra accepts our authorize request (F2). Redemption is not yet tested. | — |
+| S1 | Does a PKCE code for our verifier survive landing on `play-tools/loggedIn` long enough to paste? | 🟡 half verified | Hydra accepts our authorize request (F2). Redemption is not yet tested. Login can't be automated (F5). | — |
 | S2 | Refresh-token lifetime and rotation | ⚪ not run | | |
 | S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ⚪ not run | | |
 | S4 | `_bulk` semantics: response, partial failure, already-present player | ⚪ not run | | |
@@ -45,6 +45,20 @@ in §4.2 remain the only routes.
 - The record-id field was guessed as `id || record_id || guid || id_record`, and list items as `results || data`. The wire schema accepts every candidate until S3/S4 pin them.
 - `delete.js` always re-reads `page=1` while deleting, because deletions shift the pages. The adapter's undo must do the same, or collect all record ids first and then delete.
 - The CLI sent a full spoofed Chrome header set (`sec-ch-ua`, …). The adapter sends a minimal, honest set instead (`accept`, `origin`/`referer` = play-tools). S3 shows whether that is accepted.
+
+**F5. The interactive login page is behind Imperva Incapsula bot protection.** Headless Chromium (Playwright 1.55) loading
+`/login?login_challenge=…` got an Incapsula "Request unsuccessful" incident page with no
+login form, and a plain `fetch` of `/login` returns the Incapsula page too. No attempt was made to get around it.
+This is hard evidence for ADR-0003's rejection of storing the password and logging in headlessly: such a login
+would not just be fragile, it is actively blocked. **S1 must be done in a real browser by a person.**
+
+**F6. The token endpoint and the OP API are *not* behind that challenge for plain server-side clients.** These went through from Node `fetch` with no browser headers:
+- `POST /oauth2/token` (a bogus refresh) → a normal `400 invalid_grant` JSON response.
+- `GET api.play.pokemon.com/services/core/…/play_sessions/` with no token → `401 application/json`:
+  `{"code":"op.generic.unauthorized","message":"Request is not authenticated for the request.","errors":{"header":{"Authorization":[{"code":"op.value.required",…}]}}}`
+
+So server-side refresh, the keep-alive task and adapter calls are feasible from the container. The error envelope
+is now `OpErrorResponse` in `wire.ts`. (Whether *authenticated* calls with minimal headers pass is still for S3 to show.)
 
 ## Decision rules (apply when the results are in)
 
