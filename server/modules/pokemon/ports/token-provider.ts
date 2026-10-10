@@ -18,7 +18,7 @@ export interface AccessToken {
   /** Raw bearer value, without the `Bearer ` prefix. */
   readonly value: string;
   readonly expiresAt: Date;
-  /** PTC subject (`sub` claim). Spike S5 decides whether this is also the OP user id. */
+  /** PTC subject (`sub` claim); also the OP user id for `core/users/{id}/activity_groups/` (S5). */
   readonly subject: string;
 }
 

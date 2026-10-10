@@ -26,6 +26,8 @@ export class Sanitizer {
   }
 
   sanitize(value: unknown, key = ''): unknown {
+    // Whole subtree, whatever its shape (e.g. an `address` object).
+    if (PERSON_KEY.test(key) && value !== null) return '<redacted>';
     if (Array.isArray(value)) return value.map((v) => this.sanitize(v, key));
     if (value && typeof value === 'object') {
       return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, this.sanitize(v, k)]));
@@ -35,7 +37,6 @@ export class Sanitizer {
       return typeof value === 'number' ? Number(fake) : fake;
     }
     if (typeof value !== 'string') return value;
-    if (PERSON_KEY.test(key)) return '<redacted>';
     if (JWT.test(value)) return '<jwt>';
     return value.replace(EMAIL, 'user@example.invalid').replace(GUID, (g) => this.fakeGuid(g));
   }

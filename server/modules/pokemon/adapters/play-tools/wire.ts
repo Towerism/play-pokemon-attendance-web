@@ -14,67 +14,85 @@ const Guid = z.string().min(1);
 const WirePlayerId = z.union([z.string().min(1), z.number().int().nonnegative()]).transform(String);
 
 /**
- * Paged list envelope. The CLI read `data.results || data.data`, so either key
- * may carry the items. TODO(S3): pin the key and the pagination fields
- * (count / next / total_pages?).
+ * DRF-style paged list envelope (S3, verified on every list endpoint).
+ * `next` is an absolute URL with `page` incremented; `page_size` is honoured.
  */
 export function Page<T extends z.ZodType>(item: T) {
   return z
     .looseObject({
-      results: z.array(item).optional(),
-      data: z.array(item).optional(),
-      count: z.number().int().optional(),
-      next: z.string().nullable().optional(),
-      previous: z.string().nullable().optional(),
+      count: z.number().int().nonnegative(),
+      next: z.string().nullable(),
+      previous: z.string().nullable(),
+      results: z.array(item),
     })
-    .refine((p) => p.results !== undefined || p.data !== undefined, {
-      message: 'page has neither `results` nor `data`',
-    })
-    .transform((p) => ({ ...p, items: (p.results ?? p.data)! as z.output<T>[] }));
+    .transform((p) => ({ ...p, items: p.results as z.output<T>[] }));
 }
 
-/** TODO(S5): confirm field names (`id` vs `guid`, `name` vs `title`). */
+/**
+ * Item of `core/users/{sub}/activity_groups/` (S5, verified 2026-10-10).
+ * A user has a `personal` group plus one per league; `criteria` holds the
+ * caller's permissions on that group.
+ */
 export const ActivityGroup = z.looseObject({
-  id: Guid,
-  name: z.string().optional(),
+  guid: Guid,
+  display_id: z.string().nullable(),
+  group_type: z.string(),
+  name: z.string().nullable(),
+  display_name: z.string().nullable(),
+  owner: z.looseObject({ guid: z.string(), player_id: WirePlayerId.nullable() }).nullable().optional(),
+  criteria: z
+    .looseObject({
+      play_sessions: z
+        .looseObject({ view: z.boolean(), view_attendance: z.boolean(), create_attendance: z.boolean(), delete_attendance: z.boolean() })
+        .partial()
+        .optional(),
+    })
+    .optional(),
+});
+
+/** Status filter values the play-tools UI sends (bundle, 2026-10-10). `scheduled`/`completed` are rejected with 400. */
+export const PLAY_SESSION_STATUSES = ['active', 'pending', 'complete'] as const;
+
+/** Server-side date filters (UTC ISO instants), as used by the play-tools league page. */
+export const PLAY_SESSION_START_GTE = 'start_date:greater_than_or_equal_to';
+export const PLAY_SESSION_START_LTE = 'start_date:less_than_or_equal_to';
+
+/**
+ * Item of `activity_groups/{id}/play_sessions/` (S3, verified 2026-10-10).
+ * Instants are UTC (`…Z`); map to a session date in the league timezone.
+ * There is no title: label from `type` + `products` + local start time.
+ * `final_modifiable_datetime` is start + 7 days: attendance edits close then.
+ */
+export const PlaySession = z.looseObject({
+  guid: Guid,
+  type: z.string(),
+  status: z.enum(PLAY_SESSION_STATUSES),
+  start_date: z.iso.datetime(),
+  end_date: z.iso.datetime().nullable(),
+  final_modifiable_datetime: z.iso.datetime().nullable(),
+  products: z.array(z.string()),
 });
 
 /**
- * TODO(S3): which field carries the start instant and in which timezone; the
- * candidates below are guesses so the first fixture reveals the real one.
- */
-export const PlaySession = z
-  .looseObject({
-    id: Guid,
-    status: z.string().optional(),
-    name: z.string().optional(),
-    title: z.string().optional(),
-    start_datetime: z.string().optional(),
-    start_date: z.string().optional(),
-    starts_at: z.string().optional(),
-    end_datetime: z.string().optional(),
-    end_date: z.string().optional(),
-  })
-  .refine((s) => s.start_datetime ?? s.start_date ?? s.starts_at, {
-    message: 'play session has no recognised start field',
-  });
-
-/**
- * The CLI probed `id || record_id || guid || id_record` for the record id.
- * TODO(S3/S4): pin the one field.
+ * Item of `play_sessions/{id}/records/?player=true` (S3, verified 2026-10-10).
+ * `guid` is the record id used by DELETE. Participant names are present, so
+ * upstream-only players can be named locally (§6.2 upstream_existing).
  */
 export const AttendanceRecord = z
   .looseObject({
-    id: Guid.optional(),
-    record_id: Guid.optional(),
-    guid: Guid.optional(),
-    id_record: Guid.optional(),
-    participant: z.looseObject({ player_id: WirePlayerId }),
-    player: z.boolean().optional(),
-    role: z.unknown().optional(),
+    guid: Guid,
+    role: z.string().nullable(),
+    player: z.boolean(),
+    origin: z.string(),
+    updated: z.string(),
+    participant: z.looseObject({
+      guid: z.string(),
+      player_id: WirePlayerId,
+      display_first_name: z.string().nullable(),
+      display_last_name: z.string().nullable(),
+    }),
   })
-  .refine((r) => r.id ?? r.record_id ?? r.guid ?? r.id_record, { message: 'record has no id field' })
-  .transform((r) => ({ ...r, recordId: (r.id ?? r.record_id ?? r.guid ?? r.id_record)! }));
+  .transform((r) => ({ ...r, recordId: r.guid }));
 
 /** Request body item for `records/_bulk/`, exactly as the CLI and play-tools send it. */
 export const BulkRecordRequestItem = z.strictObject({

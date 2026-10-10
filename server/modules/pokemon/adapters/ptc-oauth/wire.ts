@@ -20,7 +20,7 @@ export const OAuthErrorResponse = z.looseObject({
   error_description: z.string().optional(),
 });
 
-/** Claims the adapter relies on in the access-token JWT. TODO(S5): add the OP user-id claim if it isn't `sub`. */
+/** Claims the adapter relies on in the access-token JWT. `sub` (32 hex chars) is the OP user id for `core/users/{id}/` (S5, verified). */
 export const AccessTokenClaims = z.looseObject({
   sub: z.string().min(1),
   exp: z.number().int(),

@@ -260,7 +260,7 @@ retried with backoff on 429/5xx only.
 ### 4.4 Resolving "which play session?" from a date
 
 1. The organizer picks a **date** (defaults to today in the league timezone, e.g. `America/Chicago`).
-2. The server lists play sessions whose start falls in `[date 00:00, date+1 00:00)` in the league TZ. It queries `active`, then `completed`, then `scheduled`, short-circuiting on the first match. Results are cached for 5 minutes.
+2. The server lists play sessions whose start falls in `[date 00:00, date+1 00:00)` in the league TZ, using the server-side filters `start_date:greater_than_or_equal_to` and `start_date:less_than_or_equal_to` (UTC instants). It queries the statuses `active`, then `complete`, then `pending` (the upstream names, see [spikes.md](spikes.md) S3), short-circuiting on the first match. Results are cached for 5 minutes.
 3. 0 matches: "No play session exists on 2026-10-14 in play-tools — create it there first" (with a deep link).
    1 match: auto-select and show it for confirmation.
    More than 1 (e.g. an afternoon and an evening session): the user chooses.

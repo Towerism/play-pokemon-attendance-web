@@ -1,6 +1,6 @@
 # ADR-0003: Pokémon auth via one-time PKCE connect + stored refresh token
 
-- Status: Proposed (pending spikes S1, S2, S5)
+- Status: Proposed. S1 (paste-back works, even with the play-tools page loaded) and S5 confirmed on 2026-10-10. Refresh rotation is confirmed; the S2 idle-lifetime check is pending.
 - Date: 2026-10-10
 
 ## Context

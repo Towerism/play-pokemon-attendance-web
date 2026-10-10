@@ -10,28 +10,54 @@ describe('bulkRequestBody', () => {
   });
 });
 
+const page = <T>(results: T[]) => ({ count: results.length, next: null, previous: null, results });
+
+const record = (overrides: Record<string, unknown> = {}) => ({
+  guid: 'rec-1',
+  role: null,
+  player: true,
+  origin: 'roster',
+  updated: '2026-10-07T01:02:03.194881Z',
+  participant: { guid: 'p-1', player_id: '0012345', display_first_name: 'A', display_last_name: 'B', user: { guid: 'u-1' } },
+  ...overrides,
+});
+
 describe('AttendancePage', () => {
-  it('reads items from `results` and normalises the record id and numeric player ids', () => {
-    const page = AttendancePage.parse({ results: [{ id: 'r-1', participant: { player_id: 123 } }], next: null });
-    expect(page.items).toEqual([expect.objectContaining({ recordId: 'r-1', participant: { player_id: '123' } })]);
+  it('maps the record guid to recordId and keeps leading zeros in player ids', () => {
+    const parsed = AttendancePage.parse(page([record()]));
+    expect(parsed.items[0]).toMatchObject({ recordId: 'rec-1', participant: { player_id: '0012345' } });
   });
 
-  it('falls back to `data` and the alternative id fields the CLI probed', () => {
-    const page = AttendancePage.parse({ data: [{ guid: 'g-1', participant: { player_id: '007' } }] });
-    expect(page.items[0]?.recordId).toBe('g-1');
-    expect(page.items[0]?.participant.player_id).toBe('007');
+  it('normalises numeric player ids to strings', () => {
+    const parsed = AttendancePage.parse(page([record({ participant: { guid: 'p', player_id: 42, display_first_name: null, display_last_name: null } })]));
+    expect(parsed.items[0]?.participant.player_id).toBe('42');
   });
 
-  it('rejects a page with no item list and a record with no id', () => {
-    expect(AttendancePage.safeParse({ count: 0 }).success).toBe(false);
-    expect(AttendancePage.safeParse({ results: [{ participant: { player_id: '1' } }] }).success).toBe(false);
+  it('rejects a non-DRF envelope and a record without guid', () => {
+    expect(AttendancePage.safeParse({ data: [record()] }).success).toBe(false);
+    expect(AttendancePage.safeParse(page([record({ guid: undefined })])).success).toBe(false);
   });
 });
 
 describe('PlaySessionsPage', () => {
-  it('requires some start field', () => {
-    expect(PlaySessionsPage.safeParse({ results: [{ id: 's', start_datetime: '2026-10-14T23:00:00Z' }] }).success).toBe(true);
-    expect(PlaySessionsPage.safeParse({ results: [{ id: 's' }] }).success).toBe(false);
+  const session = {
+    guid: 's-1',
+    type: 'open_play',
+    status: 'complete',
+    start_date: '2026-10-06T23:00:00Z',
+    end_date: '2026-10-07T02:00:00Z',
+    final_modifiable_datetime: '2026-10-13T23:00:00Z',
+    products: ['tcg'],
+    attributes: [],
+    schedule: null,
+  };
+
+  it('parses the verified session shape', () => {
+    expect(PlaySessionsPage.parse(page([session])).items[0]?.guid).toBe('s-1');
+  });
+
+  it.each(['scheduled', 'completed'])('rejects status %j, which the API itself rejects', (status) => {
+    expect(PlaySessionsPage.safeParse(page([{ ...session, status }])).success).toBe(false);
   });
 });
 

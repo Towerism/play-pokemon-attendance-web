@@ -47,6 +47,14 @@ describe('Sanitizer', () => {
     expect(json).not.toMatch(/Ash|Ketchum|2014-05-01/);
   });
 
+  it('redacts whole personal subtrees and keeps nulls (nullable schema fields stay valid)', () => {
+    const out = new Sanitizer().sanitize({
+      address: { street: '1 Main St', city: 'Town' },
+      participant: { display_first_name: 'Misty', display_last_name: null },
+    });
+    expect(out).toEqual({ address: '<redacted>', participant: { display_first_name: '<redacted>', display_last_name: null } });
+  });
+
   it('findLeaks reports surviving originals', () => {
     expect(findLeaks(`{"x":"${GROUP.toUpperCase()}"}`, [GROUP])).toEqual([GROUP]);
   });

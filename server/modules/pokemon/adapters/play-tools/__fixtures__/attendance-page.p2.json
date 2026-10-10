@@ -1,0 +1,88 @@
+{
+  "status": 200,
+  "body": {
+    "count": 37,
+    "next": "https://api.play.pokemon.com/services/core/activity_groups/00000000-0000-4000-8000-000000000004/play_sessions/00000000-0000-4000-8000-000000000007/records/?page=3&page_size=5&player=true",
+    "previous": "https://api.play.pokemon.com/services/core/activity_groups/00000000-0000-4000-8000-000000000004/play_sessions/00000000-0000-4000-8000-000000000007/records/?page_size=5&player=true",
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000023",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000024",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000025"
+          },
+          "player_id": "9999998"
+        },
+        "origin": "roster",
+        "updated": "2026-10-08T01:40:28.195578Z"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000026",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000027",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000028"
+          },
+          "player_id": "9999999"
+        },
+        "origin": "roster",
+        "updated": "2026-10-08T01:40:28.195092Z"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000029",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000030",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000031"
+          },
+          "player_id": "9999910"
+        },
+        "origin": "roster",
+        "updated": "2026-10-08T01:40:28.194981Z"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000032",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000033",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000006"
+          },
+          "player_id": "9999992"
+        },
+        "origin": "roster",
+        "updated": "2026-10-08T01:40:28.195047Z"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000034",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000035",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": null,
+          "player_id": "9999911"
+        },
+        "origin": "roster",
+        "updated": "2026-10-08T01:40:28.195002Z"
+      }
+    ]
+  }
+}

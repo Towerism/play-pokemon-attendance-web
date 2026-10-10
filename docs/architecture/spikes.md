@@ -1,15 +1,15 @@
 # M0 spike findings
 
-Status: **In progress.** Tooling and contracts are done; the live runs need the organizer's PTC login.
+Status: **In progress.** S1, S3 and S5 are done (2026-10-10). S2 is collecting data until about 2026-10-19. S4 is waiting on a throwaway session.
 How to run them: [`spikes/README.md`](../../spikes/README.md).
 
 | ID | Question | Status | Answer | Decision |
 | -- | -------- | ------ | ------ | -------- |
-| S1 | Does a PKCE code for our verifier survive landing on `play-tools/loggedIn` long enough to paste? | 🟡 half verified | Hydra accepts our authorize request (F2). Redemption is not yet tested. Login can't be automated (F5). | — |
-| S2 | Refresh-token lifetime and rotation | ⚪ not run | | |
-| S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ⚪ not run | | |
-| S4 | `_bulk` semantics: response, partial failure, already-present player | ⚪ not run | | |
-| S5 | Which id does `users/{id}/activity_groups/` take? | ⚪ not run | | |
+| S1 | Does a PKCE code for our verifier survive landing on `play-tools/loggedIn` long enough to paste? | ✅ done | **Yes, even in "loaded" mode.** The play-tools page loaded and the code still redeemed 99 s after the attempt started. Login can't be automated (F5). | Paste-back (§4.2 a) is the v1 connect UX. The extension is not needed. |
+| S2 | Refresh-token lifetime and rotation | 🟡 running | The refresh token **rotates on every refresh** (`ory_rt_…`). The access token is a 1 h JWT. Idle-TTL and reuse probes are still pending. | Persist-before-use stays mandatory. |
+| S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ✅ done | UTC `start_date`/`end_date`. Statuses are `active`/`pending`/`complete`. DRF pagination. Server-side date filters exist. No title field. Attendance locks at `final_modifiable_datetime` (= start + 7 d). | §4.4 and the submission flow change ([below](#design-changes-triggered-apply-in-m4m5)). |
+| S4 | `_bulk` semantics: response, partial failure, already-present player | ⏳ waiting | Needs a throwaway session and a player id from the organizer. | — |
+| S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
 
 ## Verified without a login (2026-10-10)
 
@@ -82,14 +82,61 @@ is now `OpErrorResponse` in `wire.ts`. (Whether *authenticated* calls with minim
 
 ## Results
 
-<!-- Paste the non-secret summaries from spikes/.secrets/s1-result.*.json and the S2 report here. Never paste tokens, names or player ids. -->
+<!-- Non-secret summaries only. Never paste tokens, names or player ids. -->
 
-### S1
+### S1: paste-back works (2026-10-10)
 
-### S2
+- **Mode tried:** "loaded". The organizer logged in normally, let `play-tools.pokemon.com/loggedIn` render, and then copied the URL.
+- **Result:** the code was redeemed with our verifier, 99 s after the attempt was created. The play-tools SPA does **not** consume a code whose `state` it didn't create.
+- **Token response:** `access_token`, `token_type: "bearer"`, `expires_in: 3599`, `scope: "openid organized_play offline"`, `refresh_token` (opaque `ory_rt_…`) and `id_token`.
+- **Access token:** an RS256 JWT with claims `aud` (array, `https://op-core.pokemon.com`), `client_id` (`op-tools-app`), `exp`, `ext` (empty object), `iat`, `iss` (`https://access.pokemon.com/`), `jti`, `nbf`, `scp` and `sub`.
+- **id_token claims:** `at_hash`, `aud`, `auth_time`, `exp`, `iat`, `iss`, `jti`, `rat`, `sid` and `sub`.
+- **Blocked mode:** not needed.
 
-### S3
+### S2: rotation confirmed; lifetime still being measured
+
+| When (UTC) | Result |
+| --- | --- |
+| 2026-10-10 23:10 | refresh OK, **rotated** (fp `4a69d625e3d2` → `9b733d24e433`), new access token valid for 1 h |
+
+To do: a refresh on 2026-10-11 and 2026-10-12, then nothing until ≥ 2026-10-19 (the 7-day idle gap). Then run `pnpm spike:s2 report` and `probe-reuse`.
+
+### S3: play sessions and attendance (2026-10-10, league L5012)
+
+- **Statuses** are `active`, `pending` and `complete`.
+  - `scheduled` and `completed` are rejected: `400 op.value.invalid_choice`.
+  - Counts at capture time: 0 active, 27 pending, 109 complete.
+  - Source: the play-tools league-details lazy chunk.
+- **Pagination** is DRF (`count`, `next`, `previous`, `results`), sorted by `start_date` ascending. `page_size` is honoured.
+- **Session item:** `guid`, `type` (`open_play`), `status`, `start_date`, `end_date`, `final_modifiable_datetime`, `products` (`tcg` | `vg` | `pgo`), `attributes` (`[{id}]` tags) and `schedule`. There is **no name or title**.
+- **Times are UTC ISO instants.** This league runs Sunday 17:00Z and Tuesday 23:00Z, i.e. noon and 6 PM Central. After DST ends, the Tuesday session starts at **00:00Z on Wednesday**, so UTC dates are wrong and the league timezone is required.
+- **Server-side date filters work.** `start_date:greater_than_or_equal_to=<ISO>` and `start_date:less_than_or_equal_to=<ISO>`, combined with `status`, returned exactly the 8 sessions in a 30-day window.
+- **`final_modifiable_datetime` = `start_date` + 7 days** on every session observed. This is presumably when attendance edits close.
+- **Attendance record:** `guid` (the record id), `role` (null), `player` (true), `origin` (`roster`), `updated` (ISO) and `participant`. The participant has `guid`, a 7-digit string `player_id`, `display_first_name`, `display_last_name` and `user.guid`. The 2026-10-06 session had 37 records.
+- **Headers:** the minimal, honest header set (`accept`, `origin`, `referer`, `authorization`) is accepted. No browser fingerprint headers are needed.
+- **Other endpoints** in the bundle that we don't use yet:
+  - `POST …/records/` (add a single record);
+  - `PATCH …/records/{id}/`;
+  - `GET …/play_sessions/{id}` (details);
+  - `GET …/play_sessions/attributes`.
 
 ### S4
 
-### S5
+Not run yet.
+
+### S5: identity (2026-10-10)
+
+- `GET core/users/{access_token.sub}/activity_groups/` → 200. The id is `sub`; no other lookup is needed.
+- It returns two groups: `group_type: "personal"` and `group_type: "league"` (`display_id` `L5012`, the same guid the CLI hardcoded).
+- Group fields:
+  - `guid`, `display_id`, `group_type`, `name` (null), `display_name` (the store name), `organization_id`, `owner {guid, player_id}`, `address`, `store_owner_terms_accepted` and `level`;
+  - `criteria`: the caller's **permissions** per resource, e.g. `play_sessions.create_attendance`.
+- `https://me.pokemon.com/me` → 200 with `guid`, `consent_age`, `mailing_address`, `meta` and `organized_play`. Not needed.
+
+## Design changes triggered (apply in M4/M5)
+
+1. **§4.4 date → session:** make one query with `start_date:greater_than_or_equal_to = localMidnight(date)` and `start_date:less_than_or_equal_to = localMidnight(date + 1)`, both converted to UTC, per status. Don't page through all sessions. `PlaySessionStatus` is now `active | pending | complete`.
+2. **Edit window:** show the session's `final_modifiable_datetime` in the submit dialog, and refuse or warn when it has passed. Attendance has to be submitted within a week. S4 should confirm what upstream returns after the deadline.
+3. **Session label:** build it from `type`, `products` and the local start time (e.g. "Open play · TCG · Tue 6:00 PM"), because there's no title.
+4. **League discovery:** list the user's groups, keep `group_type === "league"`, and show `display_name (display_id)`. Check `criteria.play_sessions.create_attendance` before allowing a submit.
+5. **Upstream sightings:** records carry participant names, so `PLAYER` rows created from `upstream_existing` sightings can get a `display_name` right away.

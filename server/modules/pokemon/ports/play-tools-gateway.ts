@@ -41,7 +41,8 @@ export interface League {
   readonly name: string;
 }
 
-export type PlaySessionStatus = 'active' | 'scheduled' | 'completed';
+/** Upstream status values (S3): `pending` = scheduled, `complete` = finished. */
+export type PlaySessionStatus = 'active' | 'pending' | 'complete';
 
 export interface PlaySession {
   /** Play session GUID. */
