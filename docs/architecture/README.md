@@ -51,17 +51,19 @@ Pain points that remain with the CLI:
 ## 3. Architecture at a glance
 
 **Pattern:** a modular monolith, with a hexagonal (ports and adapters) boundary
-around the Pokémon integration. One team, one deployable, tiny scale. See
-[ADR-0001](adr/0001-modular-monolith-typescript.md).
+around the Pokémon integration. One team, one deployable, tiny scale. It is
+built as **one Nuxt 4 application**: Vue pages in `app/`, and Nitro server
+routes, plugins and tasks in `server/`. See
+[ADR-0001](adr/0001-modular-monolith-nuxt.md).
 
 ```mermaid
 flowchart LR
   subgraph Browser
-    SPA["React SPA<br/>(Vite, TanStack Query)"]
+    SPA["Nuxt app (Vue 3)<br/>Nuxt UI, Pinia, useFetch"]
   end
 
-  subgraph Server["Node.js process (Fastify)"]
-    API["HTTP API<br/>/api/*"]
+  subgraph Server["Node.js process (Nitro, node-server preset)"]
+    API["Nitro server routes<br/>server/api/*"]
     subgraph Modules
       ROSTER["roster<br/>(players, regulars)"]
       SESSION["sessions<br/>(session drafts, TDF import)"]
@@ -69,7 +71,7 @@ flowchart LR
       METRICS["metrics<br/>(sightings, curation queries)"]
       PCONN["pokemon-connection<br/>(token vault, refresh)"]
     end
-    JOBS["In-process job runner<br/>(submission jobs, token keep-alive)"]
+    JOBS["Nitro plugin job runner + Nitro scheduled task<br/>(submission jobs, token keep-alive)"]
     subgraph Ports["Ports (interfaces)"]
       P1[[TokenProvider]]
       P2[[PlayToolsGateway]]
@@ -99,40 +101,59 @@ flowchart LR
 
 | Layer            | Choice                                                                    | Why                                                                                                  |
 | ---------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Language         | TypeScript everywhere                                                     | One language. Shared Zod schemas between client and server. The existing code is already JS.        |
-| Frontend         | React 19 + Vite + TanStack Query + React Router + Tailwind / shadcn/ui     | Plain SPA. No SSR needed behind a login. TanStack Query fits the server-state-heavy UI.              |
-| Backend          | Fastify 5 + Zod (`fastify-type-provider-zod`)                             | Small and fast, with first-class schema validation. It serves the built SPA too, so there is one origin and no CORS. |
-| Database         | SQLite (WAL) via Drizzle ORM + drizzle-kit migrations                      | Thousands of rows, not millions. Zero ops. See [ADR-0002](adr/0002-sqlite-drizzle.md).               |
+| Language         | TypeScript everywhere                                                     | One language. Shared Zod schemas between client and server through Nuxt's `shared/` directory. The existing code is already JS. |
+| Framework        | **Nuxt 4** (Vue 3, Vite, Nitro)                                           | One project, one build and one origin for UI and API. File-based routing on both sides. End-to-end typed `$fetch`/`useFetch` from server routes. |
+| Rendering        | SSR off for app pages (`routeRules: { '/**': { ssr: false } }`), or SSR with auth middleware | Everything sits behind a login, so SEO is irrelevant. SPA mode keeps hydration and auth simple. It is a one-line switch if SSR is ever wanted. |
+| UI               | **Nuxt UI** (Tailwind-based components: `UTable`, `UFileUpload`, `UModal`, toasts) + `@nuxt/icon` | Tables, file drop, forms and toasts cover nearly every screen out of the box, and it is mobile-friendly. |
+| Client state     | `useFetch` / `useAsyncData` for server state; **Pinia** only for UI state (the current session date, the progress drawer) | Nuxt's data fetching already handles caching, refresh and dedupe, so a separate query library isn't needed. |
+| Forms            | Nuxt UI `UForm` + Zod schemas from `shared/`                              | The same validation runs in the browser and in `readValidatedBody` on the server.                    |
+| Server           | **Nitro** (h3): `server/api/**` routes, `server/plugins` (job runner boot), `server/tasks` + `scheduledTasks` (keep-alive) | Built into Nuxt. The `node-server` preset gives a long-lived process for jobs, timers and SSE (`createEventStream`). |
+| App auth         | **`nuxt-auth-utils`** (sealed session cookies, `requireUserSession`, `hashPassword` / `verifyPassword`, WebAuthn-ready) | Official community module. Avoids hand-rolled session code.                                          |
+| Database         | SQLite (WAL) via Drizzle ORM + drizzle-kit migrations, with `better-sqlite3` | Thousands of rows, not millions. Zero ops. See [ADR-0002](adr/0002-sqlite-drizzle.md).            |
 | Backups          | Litestream → S3-compatible bucket (Backblaze B2 / R2)                     | Continuous, point-in-time restore of a single file.                                                  |
 | XML              | `fast-xml-parser` (entities disabled)                                     | Same parser the CLI uses, with the TDF shape already proven.                                         |
-| Crypto           | Node `crypto` AES-256-GCM (refresh-token vault), `@node-rs/argon2` (app passwords) | No extra service is needed.                                                                   |
-| Packaging        | Single Docker image, pnpm workspace                                       | Runs on Fly.io, a VPS, or a Raspberry Pi at the store.                                               |
-| Testing          | Vitest, MSW (HTTP fakes for the Pokémon APIs), Playwright for one happy-path E2E |                                                                                               |
+| Crypto           | Node `crypto` AES-256-GCM (refresh-token vault)                           | No extra service is needed.                                                                          |
+| Packaging        | Single Docker image running `node .output/server/index.mjs`, built by pnpm | Runs on Fly.io, a VPS, or a Raspberry Pi at the store.                                              |
+| Testing          | Vitest + `@nuxt/test-utils` (component and server-route tests), MSW for the Pokémon APIs, Playwright for one happy-path E2E |                                                     |
+| Quality          | `@nuxt/eslint`, `vue-tsc` typecheck in CI                                  |                                                                                                      |
 
-### Repository layout (pnpm workspace)
+### Repository layout (single Nuxt 4 project)
 
 ```
-apps/
-  web/                 React SPA
-  server/              Fastify app; composition root wires adapters → ports
-    src/modules/
-      roster/          players + regulars
-      sessions/        session drafts, TDF import
-      submission/      planner, executor, reconciler
-      metrics/         sightings + curation queries
-      pokemon/         connection (token vault), ports, adapters
-      auth/            app users & sessions
-    src/jobs/          job runner, keep-alive
-    src/db/            drizzle schema + migrations
-packages/
-  shared/              Zod DTOs, PlayerId type, date helpers
-  tdf/                 pure TDF parser (no I/O), heavily unit-tested
-docs/architecture/     this document + ADRs
+app/                         Vue side (Nuxt 4 `app/` dir)
+  pages/
+    index.vue                This week
+    regulars.vue
+    players.vue
+    history/index.vue, history/[id].vue
+    settings.vue
+    login.vue
+  components/                SessionPlayerTable, TdfDropzone, TdfPreview, SubmitDialog,
+                             SubmissionProgress, PlayerMetricsTable, PokemonConnectionCard, …
+  composables/               useSessionDraft(date), useSubmissionEvents(id), usePokemonConnection()
+  stores/                    ui.ts (Pinia: selected date, drawer state)
+  middleware/auth.global.ts  redirect to /login when there is no session
+server/                      Nitro side
+  api/                       file-based routes (see §7), e.g. sessions/[date]/tdf.post.ts
+  modules/                   domain modules (plain TS; no h3 imports)
+    roster/  sessions/  submission/  metrics/  pokemon/{ports,adapters,vault}/
+  plugins/jobs.ts            boot job runner; mark `running` submissions `interrupted`
+  tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (daily)
+  db/                        drizzle schema, migrations, client
+  utils/                     auto-imported helpers: useDb(), requireLeague(event), container
+shared/                      auto-imported in app/ and server/ (Nuxt 4)
+  schemas/                   Zod DTOs
+  types/                     PlayerId, SessionDate
+  tdf/                       pure TDF parser (no I/O), heavily unit-tested
+nuxt.config.ts
+docs/architecture/           this document + ADRs
 ```
 
-Module rule: modules talk to each other only through their exported service
-interfaces, never through each other's tables. Only `pokemon/adapters/*` may
-import an HTTP client that targets `*.pokemon.com`.
+Module rules:
+- `server/api/*` handlers stay thin: they validate input, call a module service, and map errors to HTTP responses.
+- Modules talk to each other only through their exported service interfaces, never through each other's tables.
+- Only `server/modules/pokemon/adapters/*` may make HTTP calls to `*.pokemon.com`. Enforce this with an ESLint `no-restricted-imports` / boundaries rule.
+- Modules don't import h3 or Nuxt APIs, so they unit-test as plain TS.
 
 ## 4. Pokémon integration (the risky part)
 
@@ -420,13 +441,19 @@ submission's `added` set. It is never "delete everyone", unless the organizer
 uses the separate danger-zone action **Clear session**, which requires typing
 the date to confirm.
 
-## 7. HTTP API (server ↔ SPA)
+## 7. HTTP API (Nitro server routes)
 
-All routes are under `/api`, require an app session cookie, and are validated with shared Zod schemas.
+All routes are under `/api` as Nitro file-based handlers in `server/api/`.
+For example, `POST /sessions/{date}/tdf` lives in
+`server/api/sessions/[date]/tdf.post.ts`. Every handler:
+- calls `requireUserSession(event)` (from `nuxt-auth-utils`);
+- validates its input with `getValidatedRouterParams`, `readValidatedBody` or `getValidatedQuery` and the shared Zod schemas.
+
+Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, so the client gets them with no codegen.
 
 | Method & path                                             | Purpose                                                     |
 | --------------------------------------------------------- | ----------------------------------------------------------- |
-| `POST /auth/login` · `POST /auth/logout` · `GET /auth/me` | App login (organizer accounts)                              |
+| `POST /auth/login` · `POST /auth/logout`                  | App login (organizer accounts). On the client, `useUserSession()` from `nuxt-auth-utils` replaces a `/me` endpoint. |
 | `GET /players?filter=promote\|stale\|all&q=`              | Players with metrics                                        |
 | `PATCH /players/{playerId}`                               | Rename, notes, `isRegular`                                  |
 | `GET /regulars` · `POST /regulars` · `DELETE /regulars/{playerId}` | Regular list CRUD                                   |
@@ -441,27 +468,32 @@ All routes are under `/api`, require an app session cookie, and are validated wi
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection |
 | `GET /leagues/upstream` · `PUT /settings`                 | Pick activity group, timezone, thresholds, batch delay      |
 
-## 8. Frontend
+## 8. Frontend (Nuxt pages)
 
-| Route           | Contents                                                                                                                      |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `/` This week   | Date picker; TDF dropzone with preview diff; session-player table (add by ID + name); regulars count with expander; big **Submit attendance** button; progress drawer |
-| `/regulars`     | Sortable list with each regular's last-seen and 8-week rate; add, remove, import JSON                                          |
-| `/players`      | Every known player with metrics; tabs **Promotion candidates**, **Stale regulars**, **All**; one-click toggle regular          |
-| `/history`      | Submissions by date with per-player outcomes, Retry and Undo                                                                   |
-| `/settings`     | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds; batch delay; app users    |
+| Page (`app/pages/`) | Contents                                                                                                                      |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `index.vue` This week | Date picker (`?date=` query, synced to the Pinia `ui` store); TDF dropzone (`UFileUpload`) with a preview diff modal; session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks; big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer |
+| `regulars.vue`      | Sortable list with each regular's last-seen and 8-week rate; add, remove, import JSON                                          |
+| `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**; one-click toggle regular        |
+| `history/`          | Submissions by date with per-player outcomes, Retry and Undo                                                                   |
+| `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds; batch delay; app users    |
+| `login.vue`         | App login (the only page outside `auth.global.ts` middleware)                                                                  |
 
-A global banner appears when the Pokémon connection is `needs_reconnect`. The
-layout is mobile-friendly, because attendance is often taken on a phone at the
-store.
+Client patterns:
+
+- **Server state:** `useFetch('/api/sessions/' + date)` with a `key` per date. Mutations call `$fetch`, then `refreshNuxtData(key)`. Optimistic updates are used only for toggling regulars.
+- **Submission progress:** the `useSubmissionEvents(id)` composable wraps `EventSource` on `/api/submissions/{id}/events`. It falls back to polling `GET /api/submissions/{id}` if SSE drops.
+- **Notifications:** Nuxt UI `useToast()` for results, and a global `UBanner` in `app.vue` when the Pokémon connection is `needs_reconnect`.
+- **Layout:** mobile-first, because attendance is often taken on a phone at the store.
 
 ## 9. Security
 
 | Threat                                                 | Control                                                                                                                                |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Theft of the refresh token (acts as the organizer in play-tools) | AES-256-GCM at rest with a key from env (`TOKEN_VAULT_KEY`), not in the DB. The token is never sent to the browser or logged. Disconnect revokes it at Hydra (`/oauth2/revoke`) and deletes the ciphertext. |
-| Unauthorized use of the app                            | App accounts: argon2id passwords (or passkeys later). httpOnly, Secure, SameSite=Lax session cookies. Login rate-limited. Optionally deployed behind Tailscale or Cloudflare Access. |
-| CSRF on state-changing routes                          | SameSite=Lax plus required `Content-Type: application/json` (or a CSRF token on the multipart TDF upload)                              |
+| Unauthorized use of the app                            | `nuxt-auth-utils`: scrypt-hashed passwords (`hashPassword`), with WebAuthn/passkeys available later. Sealed httpOnly, Secure, SameSite=Lax cookies (`NUXT_SESSION_PASSWORD`). `requireUserSession` in every handler. Login rate-limited (`nuxt-security` rate limiter). Optionally deployed behind Tailscale or Cloudflare Access. |
+| CSRF on state-changing routes                          | SameSite=Lax plus required `Content-Type: application/json`. `nuxt-csurf` token on the multipart TDF upload.                            |
+| Missing security headers                               | `nuxt-security` module (CSP, HSTS, X-Frame-Options, request size limits)                                                                |
 | Malicious TDF (XXE, billion-laughs, huge file)         | `fast-xml-parser` with `processEntities:false`, no DTD handling, 2 MB upload limit, a 2,000-player cap, Zod validation of every player |
 | OAuth `state` / code injection on connect              | `state` + PKCE verifier stored server-side and bound to the app user's session, with a 10-min TTL and single use                       |
 | Minors' PII                                            | Only name and player ID are stored. No birthdates. Raw TDFs are not retained.                                                          |
@@ -477,9 +509,15 @@ flowchart LR
   VOL -. Litestream .-> B2[("S3-compatible bucket")]
 ```
 
-- **One container.** Fastify serves `/api` and the static SPA. Migrations run on boot.
-- **Config (env):** `DATABASE_PATH`, `SESSION_SECRET`, `TOKEN_VAULT_KEY`, `PUBLIC_URL`, `LITESTREAM_*`.
-- **Observability:** pino JSON logs, with redaction of `authorization` and `*token*`. `/healthz` and `/readyz` endpoints. The submission history in the UI *is* the audit log.
+- **One container.** `nuxt build` with the Nitro `node-server` preset produces `.output/`, and `node .output/server/index.mjs` serves both the app and `/api`. Drizzle migrations run from a Nitro plugin on boot.
+- **Config:** Nuxt `runtimeConfig` overridden by env:
+  - `NUXT_DATABASE_PATH`
+  - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils)
+  - `NUXT_TOKEN_VAULT_KEY`
+  - `NUXT_PUBLIC_SITE_URL`
+  - `LITESTREAM_*`
+- **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 4 * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
+- **Observability:** pino JSON logs (via a Nitro plugin), with redaction of `authorization` and `*token*`. `server/routes/healthz.get.ts` and `server/routes/readyz.get.ts` endpoints. The submission history in the UI *is* the audit log.
 - **Expected cost:** about $0–5 per month.
 
 ## 11. Risks and mitigations
@@ -507,9 +545,9 @@ flowchart LR
 | Milestone                     | Scope                                                                                                         |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures                                                              |
-| M1 Skeleton                   | Workspace, Fastify + SPA, SQLite + migrations, app login, CI, Docker                                          |
+| M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login, CI, Docker     |
 | M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players                                        |
-| M3 TDF                        | `packages/tdf` parser, preview → commit, sightings                                                            |
+| M3 TDF                        | `shared/tdf` parser, preview → commit, sightings                                                              |
 | M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery                                                       |
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry                                        |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds                                                                          |
@@ -517,7 +555,7 @@ flowchart LR
 
 ## 14. Architecture Decision Records
 
-- [ADR-0001](adr/0001-modular-monolith-typescript.md) Modular monolith in TypeScript (Fastify + React SPA)
+- [ADR-0001](adr/0001-modular-monolith-nuxt.md) Modular monolith on Nuxt 4 (Vue + Nitro)
 - [ADR-0002](adr/0002-sqlite-drizzle.md) SQLite + Drizzle with Litestream backups
 - [ADR-0003](adr/0003-pokemon-auth-pkce-refresh-token.md) Pokémon auth via one-time PKCE connect + stored refresh token
 - [ADR-0004](adr/0004-idempotent-diff-based-submission.md) Idempotent diff-based submission (plan → execute → reconcile)
