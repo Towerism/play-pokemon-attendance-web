@@ -23,7 +23,7 @@ Either use `npx pnpm@…` as above or run `npm i -g corepack@latest`.
 The `spikes` service in `compose.yaml` builds the `spikes` stage of the
 `Dockerfile`, and runs [supercronic](https://github.com/aptible/supercronic)
 with `spikes/crontab`: an **S2 refresh every hour at :07**. The tokens live in
-the named volume `spike-secrets` (`SPIKE_SECRETS_DIR=/data/spike-secrets`).
+the named volume `play-pokemon-attendance_spike-secrets` (`SPIKE_SECRETS_DIR=/data/spike-secrets`). The Compose project name is pinned, so every checkout of the repo uses that same volume.
 Refreshes are serialised by a lock file in that volume, so cron and manual runs
 can't replay a rotated token against each other.
 

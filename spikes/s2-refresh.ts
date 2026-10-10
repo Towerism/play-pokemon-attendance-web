@@ -57,7 +57,7 @@ function report(): void {
     longest_gap_between_successes_h: gaps.length ? Math.max(...gaps) : 0,
     always_rotated: ok.length > 0 && ok.every((r) => r.rotated),
     access_token_expires_in_s: [...new Set(ok.map((r) => r.expires_in))],
-    chain_age_days_at_last_success: lastOk ? hoursBetween(first.at, lastOk.at) / 24 : 0,
+    chain_age_days_at_last_success: lastOk ? Math.round((hoursBetween(first.at, lastOk.at) / 24) * 100) / 100 : 0,
     first_failure: rows.find((r) => !r.ok) ?? null,
   });
 }
