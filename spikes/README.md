@@ -18,6 +18,35 @@ npx pnpm@10.18.2 install     # or `pnpm install` if pnpm works on your machine*
 \* The corepack bundled with older Node 22 fails with `Cannot find matching keyid`.
 Either use `npx pnpm@…` as above or run `npm i -g corepack@latest`.
 
+## Running in Docker (recommended for S2)
+
+The `spikes` service in `compose.yaml` builds the `spikes` stage of the
+`Dockerfile`, and runs [supercronic](https://github.com/aptible/supercronic)
+with `spikes/crontab`: an **S2 refresh every hour at :07**. The tokens live in
+the named volume `spike-secrets` (`SPIKE_SECRETS_DIR=/data/spike-secrets`).
+Refreshes are serialised by a lock file in that volume, so cron and manual runs
+can't replay a rotated token against each other.
+
+```sh
+docker compose up -d --build                       # start the hourly refresh
+docker compose logs -f spikes                      # cron output
+docker compose exec spikes pnpm spike:s2 report    # ledger summary
+docker compose exec spikes pnpm spike:s3           # any other spike, on demand
+docker compose run --rm -it spikes pnpm spike:s1   # (re)connect: interactive paste
+```
+
+**Moving existing tokens in (once).** There must only ever be one live copy of
+`tokens.json`, so *move* it, don't copy it:
+
+```sh
+docker compose run --rm --no-deps -v "$PWD/spikes/.secrets:/seed:ro" spikes \
+  sh -c 'cp -a /seed/. /data/spike-secrets/ && ls -la /data/spike-secrets'
+rm -rf spikes/.secrets                             # the volume is now the only copy
+```
+
+From then on, run spikes **only** through `docker compose exec spikes …`. A
+host-side `pnpm spike:*` would start a separate token chain in `spikes/.secrets/`.
+
 ## Safety rules
 
 - Everything sensitive goes to `spikes/.secrets/`, which is gitignored and
@@ -34,10 +63,11 @@ Either use `npx pnpm@…` as above or run `npm i -g corepack@latest`.
 
 | Day | Step |
 | --- | --- |
-| 0 | **S1**, then **S5 + S3** straight away while the access token is fresh. Then **S4**. Run `pnpm spike:s2` once (first rotation). |
-| 1, 2 | `pnpm spike:s2` (daily rotation) |
-| 3 → 9 | Leave it alone: a ≥ 7-day idle gap, i.e. a week off with no keep-alive |
-| 9 | `pnpm spike:s2`, then `pnpm spike:s2 report`. Optionally `pnpm spike:s2 probe-reuse` (last, because it may revoke the chain) |
+| 0 | **S1**, then **S5 + S3** straight away while the access token is fresh. Then **S4**. Then `docker compose up -d` (hourly S2). |
+| 1 → 7+ | Let the container refresh every hour. Check `docker compose exec spikes pnpm spike:s2 report` now and then. |
+| end | Optionally `pnpm spike:s2 probe-reuse` (last, because it may revoke the chain) |
+
+Hourly refresh proves the chain survives continuous rotation, which is how the app will keep it alive. It does *not* measure the idle TTL; a long idle gap remains a separate, optional experiment.
 | any | `pnpm spike:fixtures`, then fill in `spikes.md` and pin the `TODO(Sx)`s in `wire.ts` |
 
 ### S1: does paste-back work? `pnpm spike:s1 --mode loaded|blocked`

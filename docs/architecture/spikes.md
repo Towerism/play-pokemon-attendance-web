@@ -99,7 +99,7 @@ is now `OpErrorResponse` in `wire.ts`. (Whether *authenticated* calls with minim
 | --- | --- |
 | 2026-10-10 23:10 | refresh OK, **rotated** (fp `4a69d625e3d2` → `9b733d24e433`), new access token valid for 1 h |
 
-To do: a refresh on 2026-10-11 and 2026-10-12, then nothing until ≥ 2026-10-19 (the 7-day idle gap). Then run `pnpm spike:s2 report` and `probe-reuse`.
+Plan (changed 2026-10-10 at the organizer's request): refresh **hourly** from the `spikes` Docker container (`spikes/crontab`) for at least a week, then run `docker compose exec spikes pnpm spike:s2 report`. This proves the chain survives continuous rotation, which mirrors the app's keep-alive. It does not measure the idle TTL; a long idle gap remains an optional, separate experiment.
 
 ### S3: play sessions and attendance (2026-10-10, league L5012)
 

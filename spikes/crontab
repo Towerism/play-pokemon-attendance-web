@@ -1,0 +1,5 @@
+# supercronic crontab for the `spikes` container (see Dockerfile).
+# S2: refresh the Pokémon token every hour, at minute 7 (off the hour so it
+# never lines up with other jobs). The refresh is lock-protected, so manual
+# `docker compose exec spikes pnpm spike:…` runs at the same time are safe.
+7 * * * * cd /app && S2_TRIGGER=cron ./node_modules/.bin/tsx spikes/s2-refresh.ts

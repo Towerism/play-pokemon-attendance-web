@@ -46,10 +46,15 @@ function report(): void {
   const first = rows[0]!;
   const lastOk = ok.at(-1);
   heading('S2 · ledger report');
-  console.table(rows.map((r) => ({ at: r.at, trigger: r.trigger, ok: r.ok, rotated: r.rotated, expires_in: r.expires_in, error: r.error })));
+  console.log('last 24 attempts:');
+  console.table(rows.slice(-24).map((r) => ({ at: r.at, trigger: r.trigger, ok: r.ok, rotated: r.rotated, expires_in: r.expires_in, error: r.error })));
+  const gaps = ok.slice(1).map((r, i) => hoursBetween(ok[i]!.at, r.at));
   console.log({
     attempts: rows.length,
     successes: ok.length,
+    failures: rows.length - ok.length,
+    by_trigger: Object.fromEntries([...new Set(rows.map((r) => r.trigger))].map((t) => [t, rows.filter((r) => r.trigger === t).length])),
+    longest_gap_between_successes_h: gaps.length ? Math.max(...gaps) : 0,
     always_rotated: ok.length > 0 && ok.every((r) => r.rotated),
     access_token_expires_in_s: [...new Set(ok.map((r) => r.expires_in))],
     chain_age_days_at_last_success: lastOk ? hoursBetween(first.at, lastOk.at) / 24 : 0,

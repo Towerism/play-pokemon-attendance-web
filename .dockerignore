@@ -1,0 +1,11 @@
+**/node_modules
+**/.secrets
+.env
+.env.*
+.git
+.claude
+.nuxt
+.output
+.data
+*.db
+*.db-*
