@@ -540,11 +540,13 @@ flowchart LR
 | S4 | `_bulk` semantics: response shape, partial failures, posting an already-present player (error or no-op?)          | Bulk-add to a throwaway session, then undo                                                     |
 | S5 | `userId` for `users/{id}/activity_groups/`: JWT `sub` or a separate profile ID?                                    | Decode the JWT and compare it with play-tools network calls                                    |
 
+Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions they trigger are in [spikes.md](spikes.md).
+
 ## 13. Delivery plan
 
 | Milestone                     | Scope                                                                                                         |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures                                                              |
+| M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures ([status](spikes.md))                                        |
 | M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login, CI, Docker     |
 | M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players                                        |
 | M3 TDF                        | `shared/tdf` parser, preview → commit, sightings                                                              |

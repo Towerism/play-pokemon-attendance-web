@@ -1,0 +1,18 @@
+{
+  // Interim config for M0 (contracts + spikes). M1 replaces this with the
+  // Nuxt-generated project references.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["shared", "server", "spikes"]
+}

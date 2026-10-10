@@ -1,0 +1,12 @@
+node_modules/
+.output/
+.nuxt/
+.data/
+*.db
+*.db-*
+.env
+.env.*
+!.env.example
+
+# M0 spike secrets and raw (unsanitized) upstream responses. Never commit.
+spikes/.secrets/
