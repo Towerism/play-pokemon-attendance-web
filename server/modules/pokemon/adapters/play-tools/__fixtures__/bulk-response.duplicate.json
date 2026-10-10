@@ -1,0 +1,17 @@
+{
+  "status": 400,
+  "body": {
+    "code": "op.generic.bad_request",
+    "message": "Invalid request.",
+    "errors": {
+      "body": {
+        "0.participant.player_id": [
+          {
+            "code": "op.activity_record.cannot_duplicate_participant",
+            "message": "The provided participant already exists in the requested activity and cannot be added again."
+          }
+        ]
+      }
+    }
+  }
+}

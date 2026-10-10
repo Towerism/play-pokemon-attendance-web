@@ -3,10 +3,10 @@ import { z } from 'zod';
 /**
  * Wire schemas for api.play.pokemon.com/services/core.
  *
- * STATUS: provisional. Each `TODO(Sx)` is settled by recorded fixtures; the
- * contract is frozen when `wire.contract.test.ts` passes on real fixtures for
- * every FixtureKind and no TODO remains. Objects are `looseObject` so unknown
- * upstream fields pass through; only fields we read are declared.
+ * STATUS: frozen 2026-10-10 (M0). Every schema is pinned to sanitized real
+ * responses in `__fixtures__/`, enforced by `wire.contract.test.ts`. Change a
+ * schema only together with a new recorded fixture. Objects are `looseObject`
+ * so unknown upstream fields pass through; only fields we read are declared.
  */
 
 const Guid = z.string().min(1);
@@ -109,16 +109,17 @@ export function bulkRequestBody(playerIds: readonly string[]): BulkRecordRequest
 }
 
 /**
- * S4 (2026-10-10), partial:
- * - An already-present participant (any role, including the session's own
- *   organizer record) rejects the request with 400 `OpErrorResponse`, code
+ * `records/_bulk/` semantics (S4, verified 2026-10-10):
+ * - Success: 201 with one `{ guid }` (the new record id) per request item, in
+ *   request order.
+ * - ALL-OR-NOTHING: if any item is rejected, nothing in the batch is added.
+ * - An already-present participant (any role, including the session creator's
+ *   own organizer record) → 400 `OpErrorResponse`, code
  *   `op.activity_record.cannot_duplicate_participant`, keyed
  *   `errors.body["<index>.participant.player_id"]`.
- * - A non-numeric player id makes the whole request fail with an HTML 500.
- * TODO(S4): success (2xx) body, and whether one rejected item blocks the rest
- * of the batch. Accept anything until that fixture exists.
+ * - A non-numeric player id → HTML 500 for the whole request.
  */
-export const BulkResponse = z.unknown();
+export const BulkResponse = z.array(z.looseObject({ guid: Guid }));
 
 /** Error code for "participant already has a record in this session". */
 export const DUPLICATE_PARTICIPANT = 'op.activity_record.cannot_duplicate_participant';

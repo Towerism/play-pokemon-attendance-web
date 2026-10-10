@@ -1,6 +1,6 @@
 # M0 spike findings
 
-Status: **In progress.** S1, S3 and S5 are done (2026-10-10). S2 is collecting data until about 2026-10-19. S4 is waiting on a throwaway session.
+Status: **Contracts frozen.** S1, S3, S4 and S5 are done (2026-10-10). S2 runs as an hourly cron in Docker (see `spikes/README.md`).
 How to run them: [`spikes/README.md`](../../spikes/README.md).
 
 | ID | Question | Status | Answer | Decision |
@@ -8,7 +8,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 | S1 | Does a PKCE code for our verifier survive landing on `play-tools/loggedIn` long enough to paste? | ✅ done | **Yes, even in "loaded" mode.** The play-tools page loaded and the code still redeemed 99 s after the attempt started. Login can't be automated (F5). | Paste-back (§4.2 a) is the v1 connect UX. The extension is not needed. |
 | S2 | Refresh-token lifetime and rotation | 🟡 running | The refresh token **rotates on every refresh** (`ory_rt_…`). The access token is a 1 h JWT. Idle-TTL and reuse probes are still pending. | Persist-before-use stays mandatory. |
 | S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ✅ done | UTC `start_date`/`end_date`. Statuses are `active`/`pending`/`complete`. DRF pagination. Server-side date filters exist. No title field. Attendance locks at `final_modifiable_datetime` (= start + 7 d). | §4.4 and the submission flow change ([below](#design-changes-triggered-apply-in-m4m5)). |
-| S4 | `_bulk` semantics: response, partial failure, already-present player | 🟡 partial | Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record and can't be added as a player. Success shape and batch atomicity are still unknown. | Diff against **all** records. Validate ids locally. Map 400s per index. (See design changes 6–8.) |
+| S4 | `_bulk` semantics: response, partial failure, already-present player | ✅ done | 201 `[{guid}]` in request order. **All-or-nothing:** one rejected item adds nobody. Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record. DELETE → 204. | Diff against **all** records. Validate ids locally. Retry without the offending index. (See design changes 6–9.) |
 | S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
 
 ## Verified without a login (2026-10-10)
@@ -129,7 +129,13 @@ To do: a refresh on 2026-10-11 and 2026-10-12, then nothing until ≥ 2026-10-19
   This happened on both attempts, and no second record was created.
 - **A batch of `[organizer, "not-a-player-id"]` returned `500`** with an HTML "Server Error (500)" page. The record count didn't change.
 - **Cleanup:** the session was restored to its snapshot. Nothing was added, so nothing had to be deleted.
-- **Still unknown:** the success body, and whether one rejected item blocks the valid items in the same batch. Both need a second, consenting player id. With it, run `pnpm spike:s4 --player <organizer> --player <other>`. The first batch then tests atomicity, and the single add captures the success shape.
+**Second and third runs (2026-10-10, organizer + two consenting players):**
+
+- **The batch `[organizer, A, B]` → 400** with a duplicate error at index 0 only, and **neither A nor B was added**. So `_bulk` is atomic: one rejected item blocks the whole batch.
+- **Single add `[A]` → `201 [{"guid": "<recordId>"}]`**. The same for `[B]`.
+- **Adding A again → 400 `cannot_duplicate_participant`.** No second record was created.
+- **The batch `[A, B]` → `201`** with two guids **in request order** (checked against the listing).
+- **`DELETE …/records/{guid}/` → `204`.** The session was restored to its snapshot (just the organizer record) after every run.
 
 ### S5: identity (2026-10-10)
 
@@ -152,3 +158,4 @@ To do: a refresh on 2026-10-11 and 2026-10-12, then nothing until ≥ 2026-10-19
    - Don't count staff-role records as a `SIGHTING`.
 7. **Pre-flight validation:** a single malformed id makes the whole bulk call fail with an HTML 500. Validate every id with `toPlayerId` (digits only) before sending, and never send a batch containing an id that fails it.
 8. **Bulk error mapping:** parse 400 bodies as `OpErrorResponse`. Map `errors.body["<i>.participant.player_id"]` back to `playerIds[i]`, treating `cannot_duplicate_participant` as `alreadyPresent` and anything else as `failed`. Treat a non-JSON 5xx as a batch-level failure, then reconcile by re-reading.
+9. **Atomic batches (ADR-0004 execute step):** a rejected batch added *nobody*. After a 400, take the flagged indices out of the batch and resend the remainder once (respecting the ≥ 15 s spacing). The 201 body maps request index → record guid, so `SUBMISSION_ITEM` can store the upstream record id for undo without a re-read. Reconciliation still re-reads.

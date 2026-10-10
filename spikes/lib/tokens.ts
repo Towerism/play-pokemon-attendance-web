@@ -5,6 +5,7 @@ import {
   TokenResponse,
   decodeJwtPayload,
 } from '../../server/modules/pokemon/adapters/ptc-oauth/wire';
+import { withFileLock } from './lock';
 import { appendSecretJsonl, fingerprint, paths, readSecretJson, writeSecretJson } from './secrets';
 
 export interface StoredTokens {
@@ -89,11 +90,31 @@ export interface RefreshOutcome {
   error_description?: string;
 }
 
+export interface RefreshOptions {
+  /** Refresh only if the access token has < 2 min left once the lock is held (another process may have just refreshed). */
+  onlyIfExpiring?: boolean;
+  /** Use these tokens instead of the file. Only for S2 `probe-reuse`. */
+  override?: StoredTokens;
+}
+
+const MIN_VALIDITY_MS = 120_000;
+
 /**
- * Refresh grant. The rotated refresh token is written to disk *before* this
- * returns (ADR-0003). Every attempt is appended to the S2 ledger.
+ * Refresh grant, serialised across processes by a lock file. Tokens are
+ * re-read from disk inside the lock so a caller can never replay a refresh
+ * token another process already rotated. The rotated refresh token is written
+ * to disk *before* this returns (ADR-0003). Every attempt is appended to the
+ * S2 ledger.
  */
-export async function refreshTokens(trigger: string, current = loadTokens()): Promise<StoredTokens> {
+export async function refreshTokens(trigger: string, opts: RefreshOptions = {}): Promise<StoredTokens> {
+  return withFileLock(paths.refreshLock, async () => {
+    const current = opts.override ?? loadTokens();
+    if (opts.onlyIfExpiring && Date.parse(current.expires_at) - Date.now() > MIN_VALIDITY_MS) return current;
+    return refreshUnlocked(trigger, current);
+  });
+}
+
+async function refreshUnlocked(trigger: string, current: StoredTokens): Promise<StoredTokens> {
   const outcome: RefreshOutcome = { at: new Date().toISOString(), ok: false, trigger, old_fp: fingerprint(current.refresh_token) };
   try {
     const raw = await tokenRequest({
@@ -123,8 +144,8 @@ export async function refreshTokens(trigger: string, current = loadTokens()): Pr
 /** Access token with ≥ 2 min validity, refreshing if needed (the TokenProvider contract). */
 export async function getAccessToken(): Promise<StoredTokens> {
   const t = loadTokens();
-  if (Date.parse(t.expires_at) - Date.now() > 120_000) return t;
-  return refreshTokens('auto');
+  if (Date.parse(t.expires_at) - Date.now() > MIN_VALIDITY_MS) return t;
+  return refreshTokens('auto', { onlyIfExpiring: true });
 }
 
 /** Claims of a JWT access token, or `undefined` if Hydra issued an opaque (`ory_at_…`) token. */

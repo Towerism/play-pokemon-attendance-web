@@ -4,15 +4,20 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Local, gitignored store for spike credentials and raw upstream responses.
- * Directories are 0700 and files 0600. Nothing in here may be committed.
+ * Store for spike credentials and raw upstream responses. Directories are
+ * 0700 and files 0600. Nothing in here may be committed.
+ *
+ * Defaults to the gitignored `spikes/.secrets/`; the container points
+ * `SPIKE_SECRETS_DIR` at a volume. There must be exactly ONE live copy of
+ * tokens.json: refreshing from a stale copy replays a rotated token.
  */
-export const SECRETS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '.secrets');
+export const SECRETS_DIR = process.env.SPIKE_SECRETS_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', '.secrets');
 export const RAW_DIR = join(SECRETS_DIR, 'raw');
 
 export const paths = {
   pendingAuth: join(SECRETS_DIR, 'pending-auth.json'),
   tokens: join(SECRETS_DIR, 'tokens.json'),
+  refreshLock: join(SECRETS_DIR, 'refresh.lock'),
   refreshLedger: join(SECRETS_DIR, 's2-ledger.jsonl'),
 };
 

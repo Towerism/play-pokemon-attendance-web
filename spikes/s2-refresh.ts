@@ -25,7 +25,7 @@ async function refreshOnce(): Promise<void> {
   const before = loadTokens();
   heading('S2 · refresh');
   try {
-    const after = await refreshTokens('manual');
+    const after = await refreshTokens(process.env.S2_TRIGGER ?? 'manual');
     console.log({
       rotated: after.refresh_token !== before.refresh_token,
       old_fp: fingerprint(before.refresh_token),
@@ -68,14 +68,14 @@ must run \`pnpm spike:s1\` again before S3/S4. Run this only after the TTL obser
 
   let replay: string;
   try {
-    await refreshTokens('probe-reuse:old', { ...t, refresh_token: t.previous_refresh_token });
+    await refreshTokens('probe-reuse:old', { override: { ...t, refresh_token: t.previous_refresh_token } });
     replay = 'ACCEPTED (no rotation enforcement!)';
   } catch (err) {
     replay = err instanceof OAuthError ? `rejected: ${err.message}` : String(err);
   }
   let current: string;
   try {
-    await refreshTokens('probe-reuse:current', loadTokens());
+    await refreshTokens('probe-reuse:current');
     current = 'still valid → no chain revocation on reuse';
   } catch (err) {
     current = err instanceof OAuthError ? `rejected: ${err.message} → chain revoked on reuse` : String(err);
