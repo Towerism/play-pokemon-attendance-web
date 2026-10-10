@@ -29,4 +29,4 @@ S3-compatible bucket.
 
 - (+) Backup and restore is one command, and local dev is identical to prod.
 - (+) Drizzle also supports Postgres, so moving to it later is a dialect and migration swap, not a rewrite. Avoid SQLite-only SQL outside `metrics` views.
-- (−) It must run on a host with a persistent volume (Fly volume, VPS, Pi), not on serverless functions.
+- (−) It must run on a host with a persistent volume, not on serverless functions. In production that is the Unraid appdata folder mounted at `/data` ([ADR-0006](0006-docker-on-unraid.md)). Litestream is optional there, because *Appdata Backup* already covers the folder.

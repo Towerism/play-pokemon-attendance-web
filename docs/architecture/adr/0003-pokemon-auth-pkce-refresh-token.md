@@ -45,7 +45,7 @@ play-tools, is decided by spike S1:
 
 Token handling rules:
 
-- The refresh token is encrypted with AES-256-GCM using `TOKEN_VAULT_KEY` from the environment, and is never returned to the client or logged.
+- The refresh token is encrypted with AES-256-GCM, and is never returned to the client or logged. The key comes from `NUXT_TOKEN_VAULT_KEY` if that is set, otherwise from a key file generated on first boot in `/data/secrets/`. It is never stored in the DB ([ADR-0006](0006-docker-on-unraid.md)).
 - Refresh is serialized per connection. **The rotated refresh token is persisted before the access token is used**, because reuse of a rotated token revokes the chain in Hydra.
 - The access token is cached in memory until 2 minutes before `exp`.
 - A daily keep-alive refresh runs. On `invalid_grant`, the connection is set to `needs_reconnect` and the UI shows a banner.

@@ -28,7 +28,8 @@ The system needs:
 ## Decision
 
 Option 1: **one Nuxt 4 application**, built with the Nitro `node-server`
-preset and shipped as a single Docker container.
+preset and shipped as a single Docker container. Production runs it on
+Unraid ([ADR-0006](0006-docker-on-unraid.md)).
 
 | Concern          | Nuxt-ecosystem choice                                                      |
 | ---------------- | -------------------------------------------------------------------------- |

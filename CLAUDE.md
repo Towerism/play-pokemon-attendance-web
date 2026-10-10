@@ -33,6 +33,10 @@ Key points (details in the docs):
 - **Submission is plan → execute → reconcile**, diffed against upstream; never
   auto-delete upstream records (ADR-0004).
 - **Metrics come from sightings, not submissions** (ADR-0005).
+- **Production is a Docker container on Unraid** (ADR-0006). The install must stay
+  painless: no required template fields, everything persistent under `/data`,
+  PUID/PGID 99/100, honour `TZ`. Credentials (organizer login, Pokémon connect)
+  are set up in the browser, never in the template.
 
 Module rules (enforce, don't erode):
 
@@ -85,7 +89,8 @@ High-value areas:
 
 - Never log, return to the browser, or commit the refresh token or access token.
   Logs redact `authorization` and `*token*`.
-- Secrets come from env (`NUXT_TOKEN_VAULT_KEY`, `NUXT_SESSION_PASSWORD`, …), never the DB or repo.
+- Secrets come from env (`NUXT_TOKEN_VAULT_KEY`, `NUXT_SESSION_PASSWORD`, …) or, when
+  unset, from files generated once in `/data/secrets/` (mode 0600). Never the DB or repo.
 - Never persist TDF birthdates or raw TDF files.
 - Never store the organizer's PTC password; no headless-browser login.
 - Keep outbound play-tools traffic human-scale (≥ 15 s between bulk batches by default).

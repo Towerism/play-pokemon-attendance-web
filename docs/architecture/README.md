@@ -45,7 +45,7 @@ Pain points that remain with the CLI:
 1. **Correctness of submitted attendance.** Wrong or duplicate records are the worst outcome.
 2. **Low operator effort.** The weekly flow is ≤ 3 clicks once the TDF is uploaded.
 3. **Security of the Pokémon credential.** The refresh token can act as the organizer in play-tools.
-4. **Cheap and easy to run.** A hobby budget, with one container and one file of data.
+4. **Cheap and painless to run on Unraid.** A hobby budget, one container and one appdata folder. Install is a template form with no required fields, and credentials are set up in the browser (see [ADR-0006](adr/0006-docker-on-unraid.md)).
 5. **Resilience to upstream change.** The play-tools API is unofficial and undocumented, so changes must stay contained in one adapter.
 
 ## 3. Architecture at a glance
@@ -110,10 +110,10 @@ flowchart LR
 | Server           | **Nitro** (h3): `server/api/**` routes, `server/plugins` (job runner boot), `server/tasks` + `scheduledTasks` (keep-alive) | Built into Nuxt. The `node-server` preset gives a long-lived process for jobs, timers and SSE (`createEventStream`). |
 | App auth         | **`nuxt-auth-utils`** (sealed session cookies, `requireUserSession`, `hashPassword` / `verifyPassword`, WebAuthn-ready) | Official community module. Avoids hand-rolled session code.                                          |
 | Database         | SQLite (WAL) via Drizzle ORM + drizzle-kit migrations, with `better-sqlite3` | Thousands of rows, not millions. Zero ops. See [ADR-0002](adr/0002-sqlite-drizzle.md).            |
-| Backups          | Litestream → S3-compatible bucket (Backblaze B2 / R2)                     | Continuous, point-in-time restore of a single file.                                                  |
+| Backups          | Unraid *Appdata Backup* of `/data`, plus optional Litestream → S3-compatible bucket (Backblaze B2 / R2) | One folder to back up. Litestream adds continuous, point-in-time restore when it is configured. |
 | XML              | `fast-xml-parser` (entities disabled)                                     | Same parser the CLI uses, with the TDF shape already proven.                                         |
 | Crypto           | Node `crypto` AES-256-GCM (refresh-token vault)                           | No extra service is needed.                                                                          |
-| Packaging        | Single Docker image running `node .output/server/index.mjs`, built by pnpm | Runs on Fly.io, a VPS, or a Raspberry Pi at the store.                                              |
+| Packaging        | Single multi-arch Docker image on GHCR running `node .output/server/index.mjs`, built by pnpm, plus an Unraid template | **Production runs on Unraid** ([ADR-0006](adr/0006-docker-on-unraid.md)). The same image runs on any Docker host. |
 | Testing          | Vitest + `@nuxt/test-utils` (component and server-route tests), MSW for the Pokémon APIs, Playwright for one happy-path E2E |                                                     |
 | Quality          | `@nuxt/eslint`, `vue-tsc` typecheck in CI                                  |                                                                                                      |
 
@@ -146,7 +146,11 @@ shared/                      auto-imported in app/ and server/ (Nuxt 4)
   types/                     PlayerId, SessionDate
   tdf/                       pure TDF parser (no I/O), heavily unit-tested
 nuxt.config.ts
+Dockerfile                   multi-stage: pnpm build → node:22-slim runtime + litestream
+docker/entrypoint.sh         PUID/PGID drop, secret bootstrap, optional Litestream supervision
+deploy/unraid/               Unraid Docker template (XML) + icon
 docs/architecture/           this document + ADRs
+docs/deploy/unraid.md        install / first run / backup / restore guide
 ```
 
 Module rules:
@@ -490,8 +494,9 @@ Client patterns:
 
 | Threat                                                 | Control                                                                                                                                |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Theft of the refresh token (acts as the organizer in play-tools) | AES-256-GCM at rest with a key from env (`TOKEN_VAULT_KEY`), not in the DB. The token is never sent to the browser or logged. Disconnect revokes it at Hydra (`/oauth2/revoke`) and deletes the ciphertext. |
-| Unauthorized use of the app                            | `nuxt-auth-utils`: scrypt-hashed passwords (`hashPassword`), with WebAuthn/passkeys available later. Sealed httpOnly, Secure, SameSite=Lax cookies (`NUXT_SESSION_PASSWORD`). `requireUserSession` in every handler. Login rate-limited (`nuxt-security` rate limiter). Optionally deployed behind Tailscale or Cloudflare Access. |
+| Theft of the refresh token (acts as the organizer in play-tools) | AES-256-GCM at rest. The key is never stored in the DB: it comes from `NUXT_TOKEN_VAULT_KEY` if that is set, otherwise from `/data/secrets/token-vault.key`, generated on first boot with mode 0600. Litestream replicas and copies of `app.db` stay unreadable without the key. The token is never sent to the browser or logged. Disconnect revokes it at Hydra (`/oauth2/revoke`) and deletes the ciphertext. Trade-offs are in [ADR-0006](adr/0006-docker-on-unraid.md). |
+| Unauthorized use of the app                            | `nuxt-auth-utils`: scrypt-hashed passwords (`hashPassword`), with WebAuthn/passkeys available later. Sealed httpOnly, SameSite=Lax cookies (`NUXT_SESSION_PASSWORD`, or a generated `/data/secrets/session-password`). Cookies are `Secure` when served over HTTPS. `requireUserSession` in every handler. Login rate-limited (`nuxt-security` rate limiter). Plain HTTP is for the LAN only. Remote access goes through an HTTPS reverse proxy or Tailscale. |
+| Hijacking first-run setup on the LAN                   | The organizer account can only be created while no users exist, and only with a one-time setup code printed to the container log on boot |
 | CSRF on state-changing routes                          | SameSite=Lax plus required `Content-Type: application/json`. `nuxt-csurf` token on the multipart TDF upload.                            |
 | Missing security headers                               | `nuxt-security` module (CSP, HSTS, X-Frame-Options, request size limits)                                                                |
 | Malicious TDF (XXE, billion-laughs, huge file)         | `fast-xml-parser` with `processEntities:false`, no DTD handling, 2 MB upload limit, a 2,000-player cap, Zod validation of every player |
@@ -501,24 +506,43 @@ Client patterns:
 
 ## 10. Deployment and operations
 
+Production is a **Docker container on the organizer's Unraid server**,
+installed from an Unraid template. Deployment has to be painless there, and
+that includes the play-tools credential. See
+[ADR-0006](adr/0006-docker-on-unraid.md).
+
 ```mermaid
 flowchart LR
-  GH["GitHub Actions<br/>lint · typecheck · test · build image"] --> REG[(GHCR)]
-  REG --> HOST["Fly.io machine (shared-cpu-1x, 256 MB)<br/>or home server / Pi via Docker Compose"]
-  HOST --- VOL[("Volume: /data/app.db")]
-  VOL -. Litestream .-> B2[("S3-compatible bucket")]
+  GH["GitHub Actions<br/>lint · typecheck · test · build multi-arch image"] --> REG[(GHCR)]
+  REG -- "Docker tab: update ready" --> HOST["Unraid server<br/>container from deploy/unraid template<br/>:3000, PUID 99 / PGID 100"]
+  HOST --- VOL[("/mnt/user/appdata/play-pokemon-attendance → /data<br/>app.db · secrets/")]
+  VOL -. "Appdata Backup plugin" .-> AB[("Unraid backup share")]
+  VOL -. "Litestream (optional)" .-> B2[("S3-compatible bucket")]
+  LAN["Organizer browser<br/>LAN http://tower:3000"] --> HOST
+  RP["Optional: SWAG / NPM / Tailscale<br/>for HTTPS remote access"] --> HOST
 ```
 
 - **One container.** `nuxt build` with the Nitro `node-server` preset produces `.output/`, and `node .output/server/index.mjs` serves both the app and `/api`. Drizzle migrations run from a Nitro plugin on boot.
-- **Config:** Nuxt `runtimeConfig` overridden by env:
-  - `NUXT_DATABASE_PATH`
-  - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils)
-  - `NUXT_TOKEN_VAULT_KEY`
-  - `NUXT_PUBLIC_SITE_URL`
-  - `LITESTREAM_*`
+- **Unraid template** (`deploy/unraid/play-pokemon-attendance.xml`). It sets the WebUI link, port `3000`, and `/data` → `/mnt/user/appdata/play-pokemon-attendance`. **No field is required.** Secret overrides are masked and hidden under *Advanced*.
+- **Install, end to end:**
+  1. *Add Container* from the template and click *Apply*.
+  2. Open the WebUI and enter the setup code from the container log to create the organizer account.
+  3. Go to *Settings → Connect Pokémon account* and log in on Pokémon's page. The code comes back by paste or extension ([§4.2](#42-capturing-the-authorization-code)).
+
+  No shell, key generation, port forwarding or public URL is needed. The connect flow makes only outbound calls.
+- **Config:** Nuxt `runtimeConfig`, overridden by env. Everything has a default:
+  - `PUID` / `PGID` / `UMASK` (default `99` / `100` / `022`, Unraid's `nobody:users`). The entrypoint drops root with `gosu`.
+  - `TZ`, which Unraid sets. It drives session dates and the keep-alive schedule.
+  - `NUXT_DATABASE_PATH` (default `/data/app.db`)
+  - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils) and `NUXT_TOKEN_VAULT_KEY`. Both are optional. If either is unset, it is generated once into `/data/secrets/` (mode 0600). Env wins over the file. A malformed value fails startup and is never silently regenerated.
+  - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag and absolute links are right.
+  - `LITESTREAM_REPLICA_URL`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY`. Optional. When set, the entrypoint runs the app under `litestream replicate -exec`.
+- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect, and a lost session password logs everyone out. No attendance data is lost in either case.
+- **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (they resume on boot), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
+- **Updates:** CI publishes `latest`, `X.Y.Z` and `X.Y` tags. Unraid shows "update ready" and migrations run on boot.
 - **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 4 * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
-- **Observability:** pino JSON logs (via a Nitro plugin), with redaction of `authorization` and `*token*`. `server/routes/healthz.get.ts` and `server/routes/readyz.get.ts` endpoints. The submission history in the UI *is* the audit log.
-- **Expected cost:** about $0–5 per month.
+- **Observability:** pino JSON logs (via a Nitro plugin) to stdout, so they show up in Unraid's *Logs* view. `authorization` and `*token*` are redacted. `server/routes/healthz.get.ts` (used by the image `HEALTHCHECK`) and `server/routes/readyz.get.ts` endpoints. The submission history in the UI *is* the audit log.
+- **Expected cost:** $0 on existing Unraid hardware, plus cents per month if a Litestream bucket is used.
 
 ## 11. Risks and mitigations
 
@@ -547,13 +571,13 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | Milestone                     | Scope                                                                                                         |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures ([status](spikes.md))                                        |
-| M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login, CI, Docker     |
+| M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login with first-run setup, secret bootstrap, CI, Dockerfile + entrypoint, GHCR publish, Unraid template, with a test install on the Unraid box |
 | M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players                                        |
 | M3 TDF                        | `shared/tdf` parser, preview → commit, sightings                                                              |
 | M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery                                                       |
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry                                        |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds                                                                          |
-| M7 Hardening                  | Undo, Litestream, E2E test, docs                                                                              |
+| M7 Hardening                  | Undo, optional Litestream, E2E test, `docs/deploy/unraid.md` (install, backup, restore drill)                 |
 
 ## 14. Architecture Decision Records
 
@@ -562,3 +586,4 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 - [ADR-0003](adr/0003-pokemon-auth-pkce-refresh-token.md) Pokémon auth via one-time PKCE connect + stored refresh token
 - [ADR-0004](adr/0004-idempotent-diff-based-submission.md) Idempotent diff-based submission (plan → execute → reconcile)
 - [ADR-0005](adr/0005-sightings-based-metrics.md) Curation metrics from sightings, not submissions
+- [ADR-0006](adr/0006-docker-on-unraid.md) Production deployment as a Docker container on Unraid
