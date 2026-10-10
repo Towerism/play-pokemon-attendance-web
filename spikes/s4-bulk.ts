@@ -1,16 +1,18 @@
 /**
  * Spike S4: `_bulk` semantics. THIS WRITES TO PLAY-TOOLS. Use a throwaway
- * play session you created for the purpose, and a player id that belongs to
- * you (or someone who agreed).
+ * play session you created for the purpose, and player ids whose owners agreed.
  *
- *   pnpm spike:s4 --group <groupId> --session <throwawaySessionId> --player <playerId> [--with-invalid]
+ *   pnpm spike:s4 --group <groupId> --session <throwawaySessionId> --player <id> [--player <id> …] [--with-invalid]
  *
  * Steps (writes ≥ 15 s apart, as the CLI did):
- *   1. snapshot existing records            (abort if --player already present)
- *   2. bulk-add [player]                    → bulk-response.first
- *   3. bulk-add [player] again              → bulk-response.duplicate  (error? no-op? second record?)
- *   4. --with-invalid: bulk-add [player, "not-a-player-id"] → bulk-response.mixed (partial failure shape)
- *   5. delete every record not in the step-1 snapshot, then verify the session matches the snapshot
+ *   1. snapshot ALL records (any role)          The session creator already holds an organizer record.
+ *   2. bulk-add every --player in ONE batch      → bulk-response.batch      (atomic if any item is rejected?)
+ *   3. bulk-add each player not yet present      → bulk-response.single-<n> (success shape)
+ *   4. bulk-add the first added player again     → bulk-response.repeat     (duplicate shape)
+ *   5. --with-invalid: bulk-add ["not-a-player-id"] → bulk-response.invalid
+ *   6. delete every record not in the step-1 snapshot, then verify the session matches it
+ *
+ * Findings from the first run (2026-10-10) are in docs/architecture/spikes.md · S4.
  */
 import { parseArgs } from 'node:util';
 import { opPaths } from '../server/modules/pokemon/adapters/play-tools/constants';
@@ -24,6 +26,8 @@ const INVALID_ID = 'not-a-player-id';
 interface Rec {
   recordId: string;
   playerId: string;
+  player: boolean;
+  role: string | null;
 }
 
 run(async () => {
@@ -31,44 +35,62 @@ run(async () => {
     options: {
       group: { type: 'string' },
       session: { type: 'string' },
-      player: { type: 'string' },
+      player: { type: 'string', multiple: true },
       'with-invalid': { type: 'boolean', default: false },
     },
   });
-  if (!a.group || !a.session || !a.player) fail('--group, --session and --player are required.');
-  const { group, session, player } = { group: a.group, session: a.session, player: a.player };
+  if (!a.group || !a.session || !a.player?.length) fail('--group, --session and at least one --player are required.');
+  const { group, session } = { group: a.group, session: a.session };
+  const players = a.player;
 
-  heading('S4 · snapshot');
+  heading('S4 · snapshot (all roles)');
   const before = await listAll(group, session, 'before');
-  console.log(`  ${before.length} existing record(s)`);
-  if (before.some((r) => r.playerId === player)) fail(`Player ${player} is already in this session. Pick a session/player pair where they are absent.`);
+  for (const r of before) console.log(`  existing: player=${r.player} role=${r.role} target=${players.includes(r.playerId)}`);
 
-  console.log(`\nAbout to WRITE to play session ${session}: add player ${player} (twice${a['with-invalid'] ? ', then a mixed batch' : ''}), then remove what was added.`);
+  console.log(`\nAbout to WRITE to play session ${session} for ${players.length} player id(s), then remove what was added.`);
   const typed = await prompt(`Type the last 6 characters of the session id to proceed: `);
   if (typed !== session.slice(-6)) fail('Confirmation did not match. Nothing was written.');
 
   try {
-    heading('S4 · bulk add (first)');
-    await bulk(group, session, [player], 'first');
-    const afterFirst = await listAll(group, session, 'after-first');
-    console.log(`  records for player: ${afterFirst.filter((r) => r.playerId === player).length}`);
+    heading('S4 · one batch with every player');
+    await bulk(group, session, players, 'batch');
+    let current = await listAll(group, session, 'after-batch');
+    report(players, before, current);
 
-    await sleep(WRITE_SPACING_MS);
-    heading('S4 · bulk add (duplicate)');
-    await bulk(group, session, [player], 'duplicate');
-    const afterDup = await listAll(group, session, 'after-duplicate');
-    console.log(`  records for player after duplicate add: ${afterDup.filter((r) => r.playerId === player).length}`);
+    let n = 0;
+    for (const p of players.filter((p) => !current.some((r) => r.playerId === p))) {
+      await sleep(WRITE_SPACING_MS);
+      heading(`S4 · single add (${++n})`);
+      await bulk(group, session, [p], `single-${n}`);
+      current = await listAll(group, session, `after-single-${n}`);
+      report([p], before, current);
+    }
+
+    const added = current.find((r) => !before.some((b) => b.recordId === r.recordId));
+    if (added) {
+      await sleep(WRITE_SPACING_MS);
+      heading('S4 · repeat add of an added player');
+      await bulk(group, session, [added.playerId], 'repeat');
+      report([added.playerId], before, await listAll(group, session, 'after-repeat'));
+    }
 
     if (a['with-invalid']) {
       await sleep(WRITE_SPACING_MS);
-      heading('S4 · bulk add (mixed valid + invalid)');
-      await bulk(group, session, [player, INVALID_ID], 'mixed');
-      await listAll(group, session, 'after-mixed');
+      heading('S4 · invalid id alone');
+      await bulk(group, session, [INVALID_ID], 'invalid');
     }
   } finally {
     await cleanup(group, session, before);
   }
 });
+
+function report(players: string[], before: Rec[], current: Rec[]): void {
+  for (const p of players) {
+    const mine = current.filter((r) => r.playerId === p);
+    const isNew = mine.filter((r) => !before.some((b) => b.recordId === r.recordId)).length;
+    console.log(`  player …${p.slice(-3)}: ${mine.length} record(s), ${isNew} added by this probe`);
+  }
+}
 
 async function bulk(group: string, session: string, ids: string[], label: string): Promise<void> {
   const res = await op('POST', opPaths.recordsBulk(group, session), {
@@ -79,18 +101,19 @@ async function bulk(group: string, session: string, ids: string[], label: string
   console.log(`    body: ${JSON.stringify(res.body).slice(0, 600)}`);
 }
 
+/** Every record regardless of role: `?player=true` hides the organizer's own record. */
 async function listAll(group: string, session: string, label: string): Promise<Rec[]> {
   const out: Rec[] = [];
   for (let page = 1; page <= 40; page++) {
     const res = await op('GET', opPaths.records(group, session), {
-      query: { player: 'true', page, page_size: 50 },
+      query: { page, page_size: 50 },
       recordAs: { kind: 'attendance-page', label: `s4.${label}.p${page}` },
     });
     if (res.status !== 200) fail(`Listing records failed (${res.status}); stopping before any further writes.`);
     const parsed = AttendancePage.safeParse(res.body);
-    if (!parsed.success) fail('Attendance page did not match the provisional schema; fix wire.ts from the raw file before running S4.');
-    out.push(...parsed.data.items.map((r) => ({ recordId: r.recordId, playerId: r.participant.player_id })));
-    if (parsed.data.items.length < 50 && !parsed.data.next) break;
+    if (!parsed.success) fail('Attendance page did not match the wire schema; fix wire.ts from the raw file before running S4.');
+    out.push(...parsed.data.items.map((r) => ({ recordId: r.recordId, playerId: r.participant.player_id, player: r.player, role: r.role })));
+    if (!parsed.data.next) break;
   }
   return out;
 }
@@ -98,8 +121,7 @@ async function listAll(group: string, session: string, label: string): Promise<R
 async function cleanup(group: string, session: string, before: Rec[]): Promise<void> {
   heading('S4 · cleanup');
   const keep = new Set(before.map((r) => r.recordId));
-  const current = await listAll(group, session, 'before-cleanup');
-  const added = current.filter((r) => !keep.has(r.recordId));
+  const added = (await listAll(group, session, 'before-cleanup')).filter((r) => !keep.has(r.recordId));
   for (const r of added) {
     const res = await op('DELETE', opPaths.record(group, session, r.recordId), {
       recordAs: { kind: 'misc', label: `s4.delete.${r.recordId.slice(0, 8)}` },

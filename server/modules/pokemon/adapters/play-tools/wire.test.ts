@@ -70,6 +70,26 @@ describe('OpErrorResponse', () => {
     };
     expect(OpErrorResponse.parse(body).errors?.header?.Authorization?.[0]?.code).toBe('op.value.required');
   });
+
+  it('parses the verified _bulk duplicate 400, whose field key carries the batch index', () => {
+    const body = {
+      code: 'op.generic.bad_request',
+      message: 'Invalid request.',
+      errors: {
+        body: {
+          '0.participant.player_id': [
+            {
+              code: 'op.activity_record.cannot_duplicate_participant',
+              message: 'The provided participant already exists in the requested activity and cannot be added again.',
+            },
+          ],
+        },
+      },
+    };
+    expect(OpErrorResponse.parse(body).errors?.body?.['0.participant.player_id']?.[0]?.code).toBe(
+      'op.activity_record.cannot_duplicate_participant',
+    );
+  });
 });
 
 describe('opPaths', () => {

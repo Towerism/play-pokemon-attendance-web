@@ -92,9 +92,9 @@ Every response is validated live against the *provisional* schemas in
 
 1. In play-tools, create a **throwaway play session** for your league (e.g.
    a future date, titled "API test, delete me").
-2. Run it with a player id that is yours, or belongs to someone who agreed:
+2. Run it with your own player id **and** one other consenting player id. The session creator already holds an organizer record, so your own id alone can only exercise the duplicate path:
    ```sh
-   pnpm spike:s4 --group <groupId> --session <throwawaySessionId> --player <yourPlayerId> --with-invalid
+   pnpm spike:s4 --group <groupId> --session <throwawaySessionId> --player <organizerId> --player <consentingOtherId> [--with-invalid]
    ```
    You must type the last 6 characters of the session id to proceed.
 3. The script adds the player, adds them again (error, no-op, or a second

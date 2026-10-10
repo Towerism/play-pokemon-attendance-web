@@ -8,7 +8,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 | S1 | Does a PKCE code for our verifier survive landing on `play-tools/loggedIn` long enough to paste? | ✅ done | **Yes, even in "loaded" mode.** The play-tools page loaded and the code still redeemed 99 s after the attempt started. Login can't be automated (F5). | Paste-back (§4.2 a) is the v1 connect UX. The extension is not needed. |
 | S2 | Refresh-token lifetime and rotation | 🟡 running | The refresh token **rotates on every refresh** (`ory_rt_…`). The access token is a 1 h JWT. Idle-TTL and reuse probes are still pending. | Persist-before-use stays mandatory. |
 | S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ✅ done | UTC `start_date`/`end_date`. Statuses are `active`/`pending`/`complete`. DRF pagination. Server-side date filters exist. No title field. Attendance locks at `final_modifiable_datetime` (= start + 7 d). | §4.4 and the submission flow change ([below](#design-changes-triggered-apply-in-m4m5)). |
-| S4 | `_bulk` semantics: response, partial failure, already-present player | ⏳ waiting | Needs a throwaway session and a player id from the organizer. | — |
+| S4 | `_bulk` semantics: response, partial failure, already-present player | 🟡 partial | Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record and can't be added as a player. Success shape and batch atomicity are still unknown. | Diff against **all** records. Validate ids locally. Map 400s per index. (See design changes 6–8.) |
 | S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
 
 ## Verified without a login (2026-10-10)
@@ -120,9 +120,16 @@ To do: a refresh on 2026-10-11 and 2026-10-12, then nothing until ≥ 2026-10-19
   - `GET …/play_sessions/{id}` (details);
   - `GET …/play_sessions/attributes`.
 
-### S4
+### S4: first run (2026-10-10, throwaway session, organizer's own player id)
 
-Not run yet.
+- **The throwaway session** was created by the organizer in play-tools: `active`, 1 h long, products `pgo`/`tcg`/`vg`. The details endpoint `GET …/play_sessions/{id}/` also returns a `description` field.
+- **Every session has a hidden organizer record.** Creating a session gives its creator a record with `player: false`, `role: "organizer"` and `origin: "unknown"`. `?player=true` hides it. The unfiltered list and `?player=false` show it.
+- **Adding a participant who already holds a record (any role)** returns `400`:
+  `{"code":"op.generic.bad_request","message":"Invalid request.","errors":{"body":{"0.participant.player_id":[{"code":"op.activity_record.cannot_duplicate_participant",…}]}}}`.
+  This happened on both attempts, and no second record was created.
+- **A batch of `[organizer, "not-a-player-id"]` returned `500`** with an HTML "Server Error (500)" page. The record count didn't change.
+- **Cleanup:** the session was restored to its snapshot. Nothing was added, so nothing had to be deleted.
+- **Still unknown:** the success body, and whether one rejected item blocks the valid items in the same batch. Both need a second, consenting player id. With it, run `pnpm spike:s4 --player <organizer> --player <other>`. The first batch then tests atomicity, and the single add captures the success shape.
 
 ### S5: identity (2026-10-10)
 
@@ -140,3 +147,8 @@ Not run yet.
 3. **Session label:** build it from `type`, `products` and the local start time (e.g. "Open play · TCG · Tue 6:00 PM"), because there's no title.
 4. **League discovery:** list the user's groups, keep `group_type === "league"`, and show `display_name (display_id)`. Check `criteria.play_sessions.create_attendance` before allowing a submit.
 5. **Upstream sightings:** records carry participant names, so `PLAYER` rows created from `upstream_existing` sightings can get a `display_name` right away.
+6. **Plan step (ADR-0004):** `existing` must come from the **unfiltered** records list (all roles), not `?player=true`. Otherwise the organizer, or any staff member who is also on the regulars list, is "missing" on every run, gets re-sent, and fails.
+   - Report such players as `already_present`, with a note that they are present in a staff role.
+   - Don't count staff-role records as a `SIGHTING`.
+7. **Pre-flight validation:** a single malformed id makes the whole bulk call fail with an HTML 500. Validate every id with `toPlayerId` (digits only) before sending, and never send a batch containing an id that fails it.
+8. **Bulk error mapping:** parse 400 bodies as `OpErrorResponse`. Map `errors.body["<i>.participant.player_id"]` back to `playerIds[i]`, treating `cannot_duplicate_participant` as `alreadyPresent` and anything else as `failed`. Treat a non-JSON 5xx as a batch-level failure, then reconcile by re-reading.

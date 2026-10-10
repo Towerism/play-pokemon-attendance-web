@@ -109,10 +109,19 @@ export function bulkRequestBody(playerIds: readonly string[]): BulkRecordRequest
 }
 
 /**
- * TODO(S4): response shape, per-item errors, behaviour for an already-present
- * player. Accept anything until the fixture exists.
+ * S4 (2026-10-10), partial:
+ * - An already-present participant (any role, including the session's own
+ *   organizer record) rejects the request with 400 `OpErrorResponse`, code
+ *   `op.activity_record.cannot_duplicate_participant`, keyed
+ *   `errors.body["<index>.participant.player_id"]`.
+ * - A non-numeric player id makes the whole request fail with an HTML 500.
+ * TODO(S4): success (2xx) body, and whether one rejected item blocks the rest
+ * of the batch. Accept anything until that fixture exists.
  */
 export const BulkResponse = z.unknown();
+
+/** Error code for "participant already has a record in this session". */
+export const DUPLICATE_PARTICIPANT = 'op.activity_record.cannot_duplicate_participant';
 
 /**
  * OP gateway error envelope. Verified 2026-10-10 from an unauthenticated
