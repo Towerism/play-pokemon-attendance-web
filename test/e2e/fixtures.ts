@@ -136,3 +136,9 @@ export async function logIn(page: Page, who: { username: string; password: strin
   await page.getByLabel('Password').fill(who.password);
   await page.getByRole('button', { name: 'Log in' }).click();
 }
+
+/** A session player added by hand for `date`, over the API. */
+export async function addSessionPlayer(api: Api, date: string, playerId: string, name: string): Promise<void> {
+  const res = await api.request(`/api/sessions/${date}/players`, { method: 'POST', json: { playerId, name } });
+  expect(res.status, `add ${playerId}`).toBe(201);
+}
