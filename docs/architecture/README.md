@@ -138,7 +138,7 @@ server/                      Nitro side
   modules/                   domain modules (plain TS; no h3 imports)
     roster/  sessions/  submission/  metrics/  pokemon/{ports,adapters,vault}/ + pokemon/connection.ts
   plugins/jobs.ts            boot job runner; mark `running` submissions `interrupted`
-  tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (daily)
+  tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (hourly)
   db/                        drizzle schema, migrations, client
   utils/                     auto-imported helpers: useDb(), requireLeague(event), container
 shared/                      auto-imported in app/ and server/ (Nuxt 4)
@@ -213,7 +213,7 @@ After connecting, `TokenProvider.getAccessToken()`:
 3. **Persists the rotated refresh token in the same transaction** before anything else. Hydra rotates refresh tokens and reusing an old one revokes the whole chain.
 4. If the refresh returns `invalid_grant`, marks the connection `needs_reconnect`, surfaces a banner in the UI and fails the job with a clear message.
 
-A **keep-alive job** refreshes once a day so the chain never ages out during a
+A **keep-alive job** refreshes every hour so the chain never ages out during a
 week off. The real refresh-token TTL is spike S2.
 
 As built (M4), in `server/modules/pokemon/connection.ts`:
@@ -228,8 +228,9 @@ As built (M4), in `server/modules/pokemon/connection.ts`:
 - **League discovery** runs right after connecting. With exactly one `league` group it is bound automatically;
   otherwise Settings asks. A discovery failure doesn't fail the connect. Reconnecting the same account (`sub`)
   keeps the chosen league; a different account clears it.
-- **Keep-alive** is the Nitro task `pokemon:keepalive` at 04:00 in the container's `TZ`. It refreshes only when the
-  last refresh is ≥ 12 h old, and never calls Hydra for a connection already marked `needs_reconnect`.
+- **Keep-alive** is the Nitro task `pokemon:keepalive`, run at the top of every hour. It refreshes when the last refresh
+  is ≥ 45 min old (below the interval, so a late run still refreshes), and never calls Hydra for a connection already
+  marked `needs_reconnect`.
 - **Disconnect** revokes at `/oauth2/revoke` on a best-effort basis and always deletes the stored token.
 - The manual access-token fallback (`POST /pokemon/token`, §4.2 c) is **not built yet**, because S1 made paste-back work.
 
@@ -584,7 +585,7 @@ flowchart LR
 - **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect, and a lost session password logs everyone out. No attendance data is lost in either case.
 - **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (they resume on boot), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
 - **Updates:** CI publishes `latest`, `X.Y.Z` and `X.Y` tags. Unraid shows "update ready" and migrations run on boot.
-- **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 4 * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
+- **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
 - **Observability:** pino JSON logs (via a Nitro plugin) to stdout, so they show up in Unraid's *Logs* view. `authorization` and `*token*` are redacted. `server/routes/healthz.get.ts` (used by the image `HEALTHCHECK`) and `server/routes/readyz.get.ts` endpoints. The submission history in the UI *is* the audit log.
 - **Expected cost:** $0 on existing Unraid hardware, plus cents per month if a Litestream bucket is used.
 
@@ -595,7 +596,7 @@ flowchart LR
 | **Unofficial API / ToS.** play-tools Terms prohibit access "by use of automated means" and this reuses play-tools' public `client_id`. The CLI carries the same risk. | Med        | High   | Act only on the organizer's own league, at human-like volume. Make no calls the organizer wouldn't make by hand. Keep the manual-token fallback. Consider asking TPCi for sanctioned access. |
 | Upstream API / auth changes                                                                                                                                   | Med        | Med    | All knowledge sits in two adapters, with Zod-validated responses and contract tests on recorded fixtures. The connection banner reports auth failures fast.                                      |
 | Auth code capture (S1) doesn't work with paste-back                                                                                                           | Med        | Med    | Companion extension (option b), or the manual token as last resort                                                                                                                               |
-| Refresh token TTL is short                                                                                                                                    | Low        | Low    | Daily keep-alive. If the TTL is under a week, reconnect is one click at the start of the session.                                                                                                |
+| Refresh token TTL is short                                                                                                                                    | Low        | Low    | Hourly keep-alive. If the TTL is under a week, reconnect is one click at the start of the session.                                                                                                |
 | Rate limiting                                                                                                                                                 | Low        | Low    | Throttled batches, plus retry on 429 with `Retry-After`                                                                                                                                          |
 
 ## 12. Spikes before building (timeboxed, ≤ 1 day total)

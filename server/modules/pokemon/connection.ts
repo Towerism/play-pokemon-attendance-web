@@ -59,7 +59,7 @@ export interface PokemonConnectionService extends TokenProvider {
   listUpstreamLeagues(leagueId: string): Promise<{ leagues: League[]; selectedId: string | null }>;
   /** @throws LeagueNotFoundError, PokemonUpstreamError */
   selectLeague(leagueId: string, activityGroupId: string): Promise<ConnectionView>;
-  /** Rotates the refresh token if the last refresh is ≥ 12 h old, so the chain never ages out. Never throws. */
+  /** Rotates the refresh token if the last refresh is ≥ 45 min old, so the chain never ages out. Never throws. */
   keepAlive(leagueId: string): Promise<KeepAliveResult>;
   /** Revokes at Hydra (best effort) and forgets the stored token. */
   disconnect(leagueId: string): Promise<{ revoked: boolean }>;
@@ -79,7 +79,8 @@ const ATTEMPT_TTL_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 20;
 /** ADR-0003: a cached access token is used while it has at least this long left. */
 const MIN_VALIDITY_MS = 2 * 60_000;
-const KEEPALIVE_AFTER_MS = 12 * 60 * 60_000;
+// Under the hourly schedule, so a slightly late run still refreshes.
+const KEEPALIVE_AFTER_MS = 45 * 60_000;
 
 interface Attempt {
   leagueId: string;

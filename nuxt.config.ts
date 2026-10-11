@@ -29,9 +29,9 @@ export default defineNuxtConfig({
 
   nitro: {
     preset: 'node-server',
-    // Daily refresh-token keep-alive (ADR-0003). Cron runs in the container's TZ.
+    // Hourly refresh-token keep-alive (ADR-0003). Cron runs in the container's TZ.
     experimental: { tasks: true },
-    scheduledTasks: { '0 4 * * *': ['pokemon:keepalive'] },
+    scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] },
   },
 
   typescript: {

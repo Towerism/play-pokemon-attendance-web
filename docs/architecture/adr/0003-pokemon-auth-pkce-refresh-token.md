@@ -48,7 +48,10 @@ Token handling rules:
 - The refresh token is encrypted with AES-256-GCM, and is never returned to the client or logged. The key comes from `NUXT_TOKEN_VAULT_KEY` if that is set, otherwise from a key file generated on first boot in `/data/secrets/`. It is never stored in the DB ([ADR-0006](0006-docker-on-unraid.md)).
 - Refresh is serialized per connection. **The rotated refresh token is persisted before the access token is used**, because reuse of a rotated token revokes the chain in Hydra.
 - The access token is cached in memory until 2 minutes before `exp`.
-- A daily keep-alive refresh runs. On `invalid_grant`, the connection is set to `needs_reconnect` and the UI shows a banner.
+- An **hourly** keep-alive refresh runs. It skips when a refresh happened in the last 45 min. It was daily until 2026-10-10;
+  the organizer chose hourly, which keeps the chain continuously rotating as the S2 spike does. That is 24 refresh
+  calls a day, about what an open play-tools tab makes with a 1 h access token. On `invalid_grant`, the connection is set
+  to `needs_reconnect` and the UI shows a banner.
 
 ## Consequences
 

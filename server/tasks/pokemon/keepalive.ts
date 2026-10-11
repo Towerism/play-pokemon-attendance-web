@@ -1,8 +1,8 @@
 import { DEFAULT_LEAGUE_ID } from '../../modules/leagues';
 
 /**
- * Daily refresh-token keep-alive (ADR-0003), scheduled in nuxt.config.ts.
- * Rotates the token when the last refresh is ≥ 12 h old, so the chain never
+ * Hourly refresh-token keep-alive (ADR-0003), scheduled in nuxt.config.ts.
+ * Rotates the token when the last refresh is ≥ 45 min old, so the chain never
  * ages out during a week off. Logs outcomes only, never tokens.
  */
 export default defineTask({

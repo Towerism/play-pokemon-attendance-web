@@ -393,19 +393,19 @@ describe('getAccessToken (TokenProvider contract, ADR-0003)', () => {
   });
 });
 
-describe('keepAlive (daily task)', () => {
-  it('refreshes when the last refresh is ≥ 12 h old, even while the access token is still valid', async () => {
+describe('keepAlive (hourly task)', () => {
+  it('refreshes when the last refresh is ≥ 45 min old, even while the access token is still valid', async () => {
     oauth.accessTtlMs = 24 * HOUR;
     await connect();
-    advance(12 * HOUR);
+    advance(45 * MIN);
 
     expect(await service.keepAlive(L)).toEqual({ outcome: 'refreshed' });
     expect(storedRefreshToken()).toBe('ory_rt_2');
   });
 
-  it('skips a connection refreshed in the last 12 h', async () => {
+  it('skips a connection refreshed in the last 45 min', async () => {
     await connect();
-    advance(12 * HOUR - 1);
+    advance(45 * MIN - 1);
     expect(await service.keepAlive(L)).toEqual({ outcome: 'skipped_recent' });
     expect(oauth.refreshCalls).toEqual([]);
   });
@@ -419,7 +419,7 @@ describe('keepAlive (daily task)', () => {
     advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
     await rejection(service.getAccessToken(L));
-    advance(13 * HOUR);
+    advance(HOUR);
 
     expect(await service.keepAlive(L)).toEqual({ outcome: 'needs_reconnect' });
     expect(oauth.refreshCalls).toHaveLength(1);
@@ -427,7 +427,7 @@ describe('keepAlive (daily task)', () => {
 
   it('reports needs_reconnect when the refresh is refused', async () => {
     await connect();
-    advance(13 * HOUR);
+    advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
     expect(await service.keepAlive(L)).toEqual({ outcome: 'needs_reconnect' });
     expect(service.getStatus(L).status).toBe('needs_reconnect');
@@ -435,7 +435,7 @@ describe('keepAlive (daily task)', () => {
 
   it('reports a transient failure without throwing', async () => {
     await connect();
-    advance(13 * HOUR);
+    advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('unavailable', 'Pokémon answered 503');
     expect(await service.keepAlive(L)).toEqual({ outcome: 'failed', message: 'Pokémon answered 503' });
   });

@@ -12,7 +12,7 @@ third-party integration, and the predecessor tool is Node.js. The owner wants
 to build in the **Nuxt ecosystem**.
 
 The system needs:
-- a server that can run **long-lived background work**: a submission job that sleeps ≥ 15 s between batches, plus a daily token keep-alive;
+- a server that can run **long-lived background work**: a submission job that sleeps ≥ 15 s between batches, plus an hourly token keep-alive;
 - server-sent progress events;
 - a secret that must never reach the browser (the refresh token).
 
