@@ -75,6 +75,16 @@ describe('Unraid template', () => {
     expect(targets.filter((t) => /password|user|token/i.test(t))).toEqual(['NUXT_SESSION_PASSWORD', 'NUXT_TOKEN_VAULT_KEY']);
   });
 
+  it.each([
+    ['LITESTREAM_REPLICA_URL', 'false'],
+    ['LITESTREAM_ACCESS_KEY_ID', 'true'],
+    ['LITESTREAM_SECRET_ACCESS_KEY', 'true'],
+  ])('offers %s as an empty, optional, advanced field (mask=%s) for off-box backups', (name, mask) => {
+    expect(config(name)).toMatchObject({ Type: 'Variable', Display: 'advanced', Required: 'false', Default: '', Mask: mask });
+    expect(config(name).value ?? '').toBe('');
+    expect((config(name) as Config & { Description: string }).Description).toContain('docs/deploy/unraid.md');
+  });
+
   it('does not set TZ itself (Unraid injects it)', () => {
     expect(container.Config.map((c) => c.Target)).not.toContain('TZ');
   });
