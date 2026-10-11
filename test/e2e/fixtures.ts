@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { type Page, test as base, expect } from '@playwright/test';
+import { type BrowserContext, type Page, test as base, expect } from '@playwright/test';
 import { type FakePlaySession, type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from '../server/harness';
 
@@ -96,10 +96,7 @@ export const test = base.extend<Fixtures>({
 
   api: async ({ app, context }, use) => {
     const api = await createOrganizer(app);
-    for (const pair of api.cookie.split('; ')) {
-      const at = pair.indexOf('=');
-      await context.addCookies([{ name: pair.slice(0, at), value: pair.slice(at + 1), url: app.url }]);
-    }
+    await shareSession(context, app, api);
     await use(api);
   },
 
@@ -110,11 +107,19 @@ export const test = base.extend<Fixtures>({
 });
 
 /** First-run setup over the API, with the code the server printed. Returns a logged-in API client. */
-export async function createOrganizer(app: TestServer): Promise<Api> {
+export async function createOrganizer(app: TestServer, who: { username: string; password: string } = OWNER): Promise<Api> {
   const api = client(app.url);
-  const res = await api.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(app.logs()), ...OWNER } });
+  const res = await api.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(app.logs()), ...who } });
   expect(res.status, 'first-run setup').toBe(200);
   return api;
+}
+
+/** Logs the browser in as `api` by copying its session cookie. */
+export async function shareSession(context: BrowserContext, app: TestServer, api: Api): Promise<void> {
+  for (const pair of api.cookie.split('; ')) {
+    const at = pair.indexOf('=');
+    await context.addCookies([{ name: pair.slice(0, at), value: pair.slice(at + 1), url: app.url }]);
+  }
 }
 
 /** Paste-back connect over the API, the way the Settings card does it. */

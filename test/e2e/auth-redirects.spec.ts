@@ -12,8 +12,9 @@ test('the login wall sends people back where they were going, and never off-site
   await logIn(page, OWNER);
   await expect(page).toHaveURL(/\/history$/);
 
-  // Logging out ends on login, and the app is walled off again.
-  await page.getByRole('button', { name: 'Log out' }).click();
+  // Logging out (from the phone menu) ends on login, and the app is walled off again.
+  await page.getByRole('button', { name: 'Open menu' }).click();
+  await page.getByRole('dialog', { name: 'Menu' }).getByRole('button', { name: 'Log out' }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.goto('/');
   await expect(page).toHaveURL(/\/login$/);
