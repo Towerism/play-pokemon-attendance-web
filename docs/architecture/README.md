@@ -693,7 +693,7 @@ flowchart LR
     collector). Optional, not in the template. Both are read straight from env, so the launcher logs the same way.
   - `LITESTREAM_REPLICA_URL`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY`. Optional. When set, the entrypoint runs the app under `litestream replicate -exec` (config in the image at `/etc/litestream.yml`; only `app.db` is replicated, never `secrets/`).
     If `app.db` is missing, it is first restored from the replica (an empty replica means a normal first run). A broken Litestream config or a failed restore exits the container non-zero instead of running without backups.
-- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect, and a lost session password logs everyone out. No attendance data is lost in either case.
+- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect, and a lost session password logs everyone out. No attendance data is lost in either case. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
 - **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (they resume on boot), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
 - **Updates:** CI publishes `latest`, `X.Y.Z` and `X.Y` tags. Unraid shows "update ready" and migrations run on boot.
 - **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
@@ -753,7 +753,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery. Built (the manual-token fallback is deferred).        |
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
-| M7 Hardening                  | Undo, optional Litestream, E2E test, `docs/deploy/unraid.md` (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
+| M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 
 ## 14. Architecture Decision Records
 
