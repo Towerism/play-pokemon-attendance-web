@@ -1,4 +1,5 @@
 import type {
+  ClearPreview,
   SubmissionCounts,
   SubmissionItemView,
   SubmissionKind,
@@ -30,13 +31,15 @@ const STATUS: Record<SubmissionStatus, { label: string; color: BadgeColor }> = {
 };
 
 export function submissionStatus(status: SubmissionStatus, kind: SubmissionKind = 'submit'): { label: string; color: BadgeColor } {
-  if (kind === 'undo' && status === 'running') return { label: 'Removing…', color: 'info' };
+  if (kind !== 'submit' && status === 'running') return { label: 'Removing…', color: 'info' };
   return STATUS[status];
 }
 
-/** "Undo of #7" for an undo; null for a submission. */
-export function historyLabel(s: Pick<SubmissionSummary, 'kind' | 'undoOf'>): string | null {
-  return s.kind === 'undo' ? `Undo of #${s.undoOf}` : null;
+/** "Undo of #7" for an undo, "Cleared session …" for a clear; null for a submission. */
+export function historyLabel(s: Pick<SubmissionSummary, 'kind' | 'undoOf' | 'playSessionLabel'>): string | null {
+  if (s.kind === 'undo') return `Undo of #${s.undoOf}`;
+  if (s.kind === 'clear') return `Cleared session ${s.playSessionLabel}`;
+  return null;
 }
 
 /** Who an undo would remove: added players with a known record that no undo removed yet. */
@@ -60,11 +63,27 @@ export function undoBlockedText(
   s: Pick<SubmissionSummary, 'kind' | 'undoBlockedReason'> & { items: readonly SubmissionItemView[] },
 ): string | null {
   if (s.kind === 'undo') return "An undo can't be undone.";
+  if (s.kind === 'clear') return "A cleared session can't be undone.";
   if (s.undoBlockedReason === 'not_undoable') return 'Only a finished submission can be undone.';
   if (s.undoBlockedReason === 'nothing_to_undo') {
     return s.items.some((i) => i.removedBy !== null) ? 'Already undone' : 'Nothing to undo: this submission added nobody.';
   }
   return null;
+}
+
+/** Clear session runs only once the organizer has typed the date exactly. */
+export function clearConfirmed(typed: string, date: string): boolean {
+  return typed === date;
+}
+
+export function clearConfirmText(preview: Pick<ClearPreview, 'players' | 'staffKept' | 'otherSessionHasAppRecords'>): string {
+  const count = preview.players.length;
+  const parts = [`Delete ${count} ${count === 1 ? 'player' : 'players'} from this play session in play-tools, including anyone entered there directly.`];
+  if (preview.staffKept > 0) parts.push(`${preview.staffKept} staff ${preview.staffKept === 1 ? 'record stays' : 'records stay'}.`);
+  if (preview.otherSessionHasAppRecords) {
+    parts.push("Another play session that day also has players from this app; this date's player list and TDF imports are reset for the whole date.");
+  }
+  return parts.join(' ');
 }
 
 /** Still planning or sending. */
