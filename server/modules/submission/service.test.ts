@@ -299,19 +299,6 @@ describe('a submission (ADR-0004 plan → execute → reconcile)', () => {
   });
 
   describe('when play-tools is down or throttling', () => {
-    it('retries a batch after a 5xx, spaced like any batch', async () => {
-      sessionPlayers('1');
-      upstream.onBulk = (_ids, call) => {
-        if (call === 1) throw new PokemonUpstreamError('unavailable', 'Adding attendance: Pokémon answered 502.');
-      };
-
-      const view = await submit();
-
-      expect(upstream.bulkCalls).toHaveLength(2);
-      expect(sleeps).toEqual([DELAY]);
-      expect(view.status).toBe('succeeded');
-    });
-
     it('re-reads before retrying, so a 5xx that did record the players is not resent', async () => {
       sessionPlayers('1', '2');
       upstream.onBulk = (ids, call) => {
@@ -325,6 +312,63 @@ describe('a submission (ADR-0004 plan → execute → reconcile)', () => {
 
       expect(upstream.bulkCalls).toHaveLength(1);
       expect(outcomes(view)).toEqual({ '1': 'added', '2': 'added' });
+    });
+
+    describe('a 502 gateway timeout on a large batch (field report: the players appear about a minute later)', () => {
+      /** The batch lands upstream only after `afterLists` more attendance reads. */
+      function landsLate(afterLists: number) {
+        upstream.onBulk = (ids, call) => {
+          if (call !== 1) return undefined;
+          const landAt = upstream.listCalls + afterLists;
+          const previous = upstream.onList;
+          upstream.onList = (n) => {
+            previous?.(n);
+            if (n === landAt) ids.forEach((p) => upstream.has(p));
+          };
+          throw new PokemonUpstreamError('unavailable', 'Adding attendance: Pokémon answered 502.');
+        };
+      }
+
+      it('keeps re-reading until the players show up, and never resends them', async () => {
+        sessionPlayers('1', '2', '3');
+        landsLate(4); // about a minute at 15 s per read
+
+        const view = await submit();
+
+        expect(upstream.bulkCalls).toHaveLength(1);
+        expect(outcomes(view)).toEqual({ '1': 'added', '2': 'added', '3': 'added' });
+        expect(view.status).toBe('succeeded');
+        expect(sleeps.every((ms) => ms === DELAY)).toBe(true);
+      });
+
+      it('resends only who is still missing once the settle window has passed', async () => {
+        sessionPlayers('1', '2');
+        upstream.onBulk = (ids, call) => {
+          if (call === 1) throw new PokemonUpstreamError('unavailable', 'Adding attendance: Pokémon answered 502.');
+          return undefined;
+        };
+
+        const view = await submit();
+
+        expect(upstream.bulkCalls).toEqual([['1', '2'], ['1', '2']]);
+        expect(sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(3 * 60_000);
+        expect(view.status).toBe('succeeded');
+      });
+
+      it('counts players of its own timed-out batch as added when a resend is refused as duplicate', async () => {
+        sessionPlayers('1', '2');
+        landsLate(1_000); // never seen within the window…
+        const late = upstream.onBulk!;
+        upstream.onBulk = (ids, call) => {
+          if (call === 2) ids.forEach((p) => upstream.has(p)); // …but it lands just before the resend
+          return late(ids, call);
+        };
+
+        const view = await submit();
+
+        expect(outcomes(view)).toEqual({ '1': 'added', '2': 'added' });
+        expect(view.counts.added).toBe(2);
+      });
     });
 
     it('waits as long as play-tools asks after a 429', async () => {

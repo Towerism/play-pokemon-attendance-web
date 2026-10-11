@@ -25,7 +25,7 @@ export function useTdfImports(): TdfImportService {
   return tdfImports;
 }
 
-function useSightings(): SightingsService {
+export function useSightings(): SightingsService {
   sightings ??= createSightingsService({ db: useDb() });
   return sightings;
 }

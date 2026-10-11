@@ -30,6 +30,9 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useSessions()',
     'useTdfImports()',
     'usePokemon()',
+    'useSightings()',
+    'useSubmissions()',
+    'usePlaySessionResolver()',
     'requireLeague(e)',
   ])(
     'rejects the auto-imported call %s',

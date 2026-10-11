@@ -109,6 +109,14 @@ export interface SubmissionDeps {
   batchSize?: number;
   /** ≥ 15 s by default, the CLI's empirically safe spacing. */
   batchDelayMs?: number;
+  /**
+   * After a 5xx on a bulk call, how long to keep re-reading for the batch to
+   * show up before resending (default 3 min). Large batches can 502 at the
+   * gateway yet still be recorded about a minute later (field report, M5).
+   */
+  settleMs?: number;
+  /** How often to re-read while settling (default 15 s). */
+  settlePollMs?: number;
   log?: { warn(message: string): void };
 }
 
@@ -163,6 +171,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const sleep = deps.sleep ?? abortableSleep;
   const batchSize = deps.batchSize ?? 50;
   const batchDelayMs = deps.batchDelayMs ?? 15_000;
+  const settleMs = deps.settleMs ?? 3 * 60_000;
+  const settlePollMs = deps.settlePollMs ?? 15_000;
   const log = deps.log ?? { warn: (message: string) => console.warn(message) };
 
   const running = new Set<Promise<void>>();
@@ -327,8 +337,22 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     const errors = new Map<PlayerId, string>();
     /** Recorded upstream by someone else while we ran: not ours to call added. */
     const othersAdded = new Set<PlayerId>();
+    /** Sent in a batch that got a 5xx: upstream may still record them, late. */
+    const inFlight = new Set<PlayerId>();
     let done = 0;
     let lastBulkAt: number | undefined;
+
+    /** Re-reads every `settlePollMs` until all of `players` are recorded or `settleMs` has passed; returns who is. */
+    async function settle(players: readonly PlayerId[]): Promise<Set<PlayerId>> {
+      const deadline = now().getTime() + settleMs;
+      for (;;) {
+        if (stop.signal.aborted) throw stop.signal.reason;
+        renewLock(row, settlePollMs);
+        await sleep(settlePollMs, stop.signal);
+        const present = new Set((await listAttendance()).map((r) => r.playerId));
+        if (players.every((p) => present.has(p)) || now().getTime() >= deadline) return present;
+      }
+    }
 
     /** Keeps bulk calls at least `batchDelayMs` apart, or longer when play-tools asks; stops on shutdown. */
     async function pace(atLeastMs = 0): Promise<void> {
@@ -351,16 +375,25 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           result = await gateway.addAttendanceBulk(groupId, row.playSessionId, pending);
         } catch (err) {
           if (!(err instanceof PokemonUpstreamError) || !err.retryable) throw err;
+          const timedOut = err.code === 'unavailable';
+          if (timedOut) for (const p of pending) inFlight.add(p);
           if (retries >= MAX_RETRIES) {
             for (const p of pending) errors.set(p, err.message);
             done += pending.length;
             return;
           }
           retries += 1;
-          emit(row, 'retrying', `${err.message} Trying that batch again.`, done, total);
-          await pace(err.details.retryAfterMs);
-          // A 5xx may still have recorded the batch; never send anyone twice.
-          const present = new Set((await listAttendance()).map((r) => r.playerId));
+          let present: Set<PlayerId>;
+          if (timedOut) {
+            // A 502 on a large batch is often a gateway timeout: play-tools still records the
+            // players, and they show up about a minute later. Wait for them; never send anyone twice.
+            emit(row, 'retrying', `${err.message} Waiting to see whether play-tools recorded the batch anyway.`, done, total);
+            present = await settle(pending);
+          } else {
+            emit(row, 'retrying', `${err.message} Trying that batch again.`, done, total);
+            await pace(err.details.retryAfterMs);
+            present = new Set((await listAttendance()).map((r) => r.playerId));
+          }
           done += pending.filter((p) => present.has(p)).length;
           pending = pending.filter((p) => !present.has(p));
           continue;
@@ -375,7 +408,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         }
 
         // S4: a rejected batch added nobody. Drop who it named and resend the rest once.
-        for (const p of result.alreadyPresent) othersAdded.add(p);
+        // A duplicate from our own timed-out batch landing late is still ours.
+        for (const p of result.alreadyPresent) if (!inFlight.has(p)) othersAdded.add(p);
         for (const f of result.failed) errors.set(f.playerId, f.error);
         const named = new Set([...result.alreadyPresent, ...result.failed.map((f) => f.playerId)]);
         done += named.size;
