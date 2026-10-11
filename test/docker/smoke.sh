@@ -5,8 +5,8 @@
 #
 # Runs the image the way Unraid does (one /data bind mount, PUID/PGID, no other
 # settings) and checks: healthy, files owned by PUID:PGID, secrets mode 0600,
-# not running as root, setup code logged once, graceful stop within Docker's
-# 10 s timeout, and a restart that keeps state.
+# not running as root, setup code logged once, readable logs (JSON on request),
+# graceful stop within Docker's 10 s timeout, and a restart that keeps state.
 set -euo pipefail
 
 IMAGE="${1:-play-pokemon-attendance:test}"
@@ -29,7 +29,7 @@ fail() { echo "  FAIL $*"; FAILURES=$((FAILURES + 1)); }
 check() { local what="$1"; shift; if "$@"; then pass "$what"; else fail "$what"; fi; }
 
 start() {
-  docker run -d --name "$NAME" -e PUID=$PUID -e PGID=$PGID -e TZ=America/Chicago -v "$DATA:/data" "$IMAGE" >/dev/null
+  docker run -d --name "$NAME" -e PUID=$PUID -e PGID=$PGID -e TZ=America/Chicago -v "$DATA:/data" "$@" "$IMAGE" >/dev/null
   for _ in $(seq 1 60); do
     if docker exec "$NAME" node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))" 2>/dev/null; then
       return 0
@@ -57,6 +57,10 @@ server_owner() {
 check "node runs as PUID:PGID, not root" test "$(server_owner)" = "$PUID:$PGID"
 check "setup code printed to the log" \
   grep -Eq 'setup code: [A-Z2-9]{4}-[A-Z2-9]{4}' <(docker logs "$NAME" 2>&1)
+check "the setup code line is readable, in the exact form E2E and the organizer look for" \
+  grep -Eq '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}\] INFO: \[setup\] No organizer account yet\. Open the app and enter this setup code: [A-Z2-9]{4}-[A-Z2-9]{4}$' <(docker logs "$NAME" 2>&1)
+check "the log is human-readable: no JSON records" \
+  bash -c "! docker logs '$NAME' 2>&1 | grep -q '^{\"level\"'"
 check "TZ is honoured" test "$(in_container date +%Z)" != "UTC"
 check "no secret value in the log" \
   bash -c "! docker logs '$NAME' 2>&1 | grep -qF \"\$(docker exec '$NAME' cat /data/secrets/session-password)\""
@@ -87,6 +91,14 @@ check "image HEALTHCHECK reports healthy" bash -c "
   for _ in \$(seq 1 40); do
     [ \"\$(docker inspect -f '{{.State.Health.Status}}' '$NAME')\" = healthy ] && exit 0; sleep 1
   done; exit 1"
+
+docker rm -f "$NAME" >/dev/null
+docker run --rm -v "$DATA:/data" --entrypoint sh "$IMAGE" -c 'rm -rf /data/* /data/.[!.]*' >/dev/null
+
+echo "fresh boot with NUXT_LOG_FORMAT=json"
+start -e NUXT_LOG_FORMAT=json
+check "the setup code line is a JSON record" \
+  grep -Eq '^\{"level":30,.*"scope":"setup","msg":"No organizer account yet\. Open the app and enter this setup code: [A-Z2-9]{4}-[A-Z2-9]{4}"\}$' <(docker logs "$NAME" 2>&1)
 
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES check(s) failed"; docker logs "$NAME" 2>&1 | tail -40; exit 1

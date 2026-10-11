@@ -1,3 +1,4 @@
+import { type Logger, silentLogger } from '../../logging/types';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { pokemonConnection } from '../../db/schema';
@@ -72,7 +73,7 @@ export interface PokemonConnectionDeps {
   /** League discovery through the play-tools adapter, authorised by this service. */
   gateway: (tokens: TokenProvider, leagueId: string) => Pick<PlayToolsGateway, 'listLeagues'>;
   now?: () => Date;
-  log?: { warn(message: string): void };
+  log?: Pick<Logger, 'warn'>;
 }
 
 const ATTEMPT_TTL_MS = 10 * 60_000;
@@ -101,7 +102,7 @@ type Row = typeof pokemonConnection.$inferSelect;
 export function createPokemonConnectionService(deps: PokemonConnectionDeps): PokemonConnectionService {
   const { db, vault, oauth } = deps;
   const now = deps.now ?? (() => new Date());
-  const log = deps.log ?? { warn: (message: string) => console.warn(message) };
+  const log = deps.log ?? silentLogger;
 
   const attempts = new Map<string, Attempt>();
   const accessTokens = new Map<string, AccessToken>();
@@ -313,7 +314,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
           await oauth.revoke(vault.decrypt(r.refreshTokenCiphertext, leagueId));
           revoked = true;
         } catch (err) {
-          log.warn(`[pokemon] Could not revoke the refresh token at Pokémon; forgetting it locally anyway (${(err as Error).message}).`);
+          log.warn(`Could not revoke the refresh token at Pokémon; forgetting it locally anyway (${(err as Error).message}).`, { err });
         }
         db.delete(pokemonConnection).where(eq(pokemonConnection.leagueId, leagueId)).run();
         return { revoked };
@@ -339,7 +340,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       const leagues = await deps.gateway(service, leagueId).listLeagues();
       if (leagues.length === 1) bind(leagueId, leagues[0]!);
     } catch (err) {
-      log.warn(`[pokemon] League discovery after connecting failed; pick the league in Settings (${(err as Error).message}).`);
+      log.warn(`League discovery after connecting failed; pick the league in Settings (${(err as Error).message}).`, { err });
     }
   }
 

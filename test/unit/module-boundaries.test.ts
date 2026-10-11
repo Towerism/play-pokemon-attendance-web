@@ -35,6 +35,7 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useMetrics()',
     'usePlaySessionResolver()',
     'requireLeague(e)',
+    "useLogger('x')",
   ])(
     'rejects the auto-imported call %s',
     async (call) => {
@@ -43,6 +44,17 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
       ]);
     },
   );
+
+  it.each(["import { createLogger } from '../../logging/logger';", "import { acceptRequestId } from '../../logging/request-id';"])(
+    'rejects %s: modules take a Logger as a dependency',
+    async (code) => {
+      expect(await errors(file, `${code}\nexport { ${code.match(/{ (\w+) }/)![1]} };`)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+    },
+  );
+
+  it('allows the Logger port', async () => {
+    expect(await errors(file, "import { type Logger, silentLogger } from '../../logging/types';\nexport const l: Logger = silentLogger;")).toEqual([]);
+  });
 
   it('allows plain TS and other modules', async () => {
     expect(await errors(file, "import { z } from 'zod';\nimport type { Db } from '../../db/client';\nexport const s = z.string();\nexport type D = Db;")).toEqual([]);
@@ -88,5 +100,19 @@ describe('only pokemon adapters talk to *.pokemon.com', () => {
     expect(await errors('server/modules/pokemon/connection.test.ts', 'export const x = () => useDb();')).toEqual([
       expect.stringMatching(/no-restricted-syntax/),
     ]);
+  });
+});
+
+describe('server code logs through the logger, not the console', () => {
+  it.each(['server/utils/x.ts', 'server/plugins/x.ts', 'server/modules/roster/service.ts', 'server/bootstrap/launcher.ts', 'server/api/x.get.ts'])(
+    'rejects console in %s',
+    async (file) => {
+      expect(await errors(file, "console.log('hi');")).toEqual([expect.stringMatching(/no-console/)]);
+    },
+  );
+
+  it.each(['server/modules/roster/service.test.ts', 'test/server/harness.ts', 'app/pages/index.vue'])('does not apply to %s', async (file) => {
+    const code = file.endsWith('.vue') ? "<script setup lang=\"ts\">\nconsole.log('hi');\n</script>" : "console.log('hi');";
+    expect(await errors(file, code)).toEqual([]);
   });
 });

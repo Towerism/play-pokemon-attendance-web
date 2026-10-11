@@ -6,5 +6,7 @@
  */
 export default defineNitroPlugin(() => {
   const interrupted = useSubmissions().recoverInterrupted();
-  if (interrupted > 0) console.warn(`[submission] ${interrupted} submission(s) were interrupted by a restart; resume them from History.`);
+  if (interrupted > 0) {
+    useLogger('submission').warn(`${interrupted} submission(s) were interrupted by a restart; resume them from History.`, { interrupted });
+  }
 });

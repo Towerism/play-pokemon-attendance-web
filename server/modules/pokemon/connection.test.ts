@@ -26,6 +26,7 @@ let clock: Date;
 let oauth: FakeOAuth;
 let leagues: League[] | Error;
 let service: PokemonConnectionService;
+let log: { warn: ReturnType<typeof vi.fn> };
 
 /** Hydra as a fake: rotates the refresh token on every refresh and tracks which tokens are alive. */
 class FakeOAuth implements PtcOAuthClient {
@@ -90,7 +91,7 @@ function build(): PokemonConnectionService {
       },
     }),
     now: () => clock,
-    log: { warn: vi.fn() },
+    log,
   });
 }
 
@@ -124,6 +125,7 @@ beforeEach(() => {
   clock = new Date('2026-10-14T22:00:00Z');
   oauth = new FakeOAuth();
   leagues = [STORE];
+  log = { warn: vi.fn() };
   service = build();
 });
 afterEach(() => database.close());
@@ -182,6 +184,10 @@ describe('connect flow (§4.1, paste-back)', () => {
     const status = await connect();
     expect(status.status).toBe('connected');
     expect(status.league).toBeNull();
+    expect(log.warn).toHaveBeenCalledWith(
+      'League discovery after connecting failed; pick the league in Settings (down).',
+      { err: expect.any(PokemonUpstreamError) },
+    );
   });
 
   it.each([
@@ -487,6 +493,10 @@ describe('disconnect', () => {
     oauth.revokeError = new PokemonUpstreamError('unavailable', 'down');
     expect(await service.disconnect(L)).toEqual({ revoked: false });
     expect(row()).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      'Could not revoke the refresh token at Pokémon; forgetting it locally anyway (down).',
+      { err: expect.any(PokemonUpstreamError) },
+    );
   });
 
   it('is a no-op without a connection', async () => {

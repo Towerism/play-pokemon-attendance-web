@@ -13,6 +13,8 @@ export interface TestServer {
   logs(): string;
   /** SIGTERM and wait for exit; keeps the data dir. */
   stop(): Promise<void>;
+  /** SIGKILL (a crash): no graceful shutdown; keeps the data dir. */
+  kill(): Promise<void>;
   /** Stop and delete the data dir. */
   dispose(): Promise<void>;
 }
@@ -45,6 +47,7 @@ export async function startServer(opts: { env?: Record<string, string>; dataDir?
     dataDir,
     logs: () => output,
     stop: () => stopProcess(child),
+    kill: () => stopProcess(child, 'SIGKILL'),
     async dispose() {
       await stopProcess(child);
       rmSync(dataDir, { recursive: true, force: true });
@@ -91,7 +94,7 @@ async function waitForHealthy(url: string, child: ChildProcess, logs: () => stri
   throw new Error(`server did not become healthy:\n${logs()}`);
 }
 
-function stopProcess(child: ChildProcess): Promise<void> {
+function stopProcess(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((res) => {
     const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
@@ -99,7 +102,7 @@ function stopProcess(child: ChildProcess): Promise<void> {
       clearTimeout(timer);
       res();
     });
-    child.kill('SIGTERM');
+    child.kill(signal);
   });
 }
 
@@ -142,4 +145,12 @@ export function setupCodeFrom(logs: string): string {
   const match = logs.match(/setup code:?\s*([A-Z2-9]{4}-[A-Z2-9]{4})/i);
   if (!match) throw new Error(`no setup code in logs:\n${logs}`);
   return match[1]!;
+}
+
+/** The JSON log records (`NUXT_LOG_FORMAT=json`) in `logs`, skipping Nitro's plain banner. */
+export function logRecords(logs: string): Record<string, unknown>[] {
+  return logs
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }

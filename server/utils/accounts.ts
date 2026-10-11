@@ -18,7 +18,7 @@ export function useAccounts(): AccountsService {
  */
 export function announceSetupCode(): void {
   if (useAccounts().needsSetup()) {
-    console.log(`[setup] No organizer account yet. Open the app and enter this setup code: ${setupCode}`);
+    useLogger('setup').info(`No organizer account yet. Open the app and enter this setup code: ${setupCode}`);
   }
 }
 

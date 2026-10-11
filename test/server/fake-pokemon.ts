@@ -26,6 +26,8 @@ export interface FakePokemon {
   /** Refuse the next refresh with `invalid_grant`. */
   revokeChain(): void;
   liveRefreshToken(): string | undefined;
+  /** The access token issued last (to prove it never reaches the app's log). */
+  liveAccessToken(): string | undefined;
   close(): Promise<void>;
 }
 
@@ -80,6 +82,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     bulkDelayMs: 0,
     revokeChain: () => (live = undefined),
     liveRefreshToken: () => live,
+    liveAccessToken: () => liveAccess,
   };
 
   function issue(res: ServerResponse) {

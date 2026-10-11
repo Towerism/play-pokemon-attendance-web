@@ -99,10 +99,34 @@ describe('listLeagues (S5: core/users/{sub}/activity_groups/)', () => {
     expect((await upstreamError(gateway().listLeagues())).code).toBe(code);
   });
 
-  it('fails loudly on an unexpected shape and logs the raw body', async () => {
-    upstream.use(http.get(GROUPS_URL, () => HttpResponse.json({ data: [] })));
+  it('fails loudly on an unexpected shape, logging only its outline, never the values (player names)', async () => {
+    log.warn.mockClear();
+    upstream.use(http.get(GROUPS_URL, () => HttpResponse.json({ data: [{ display_first_name: 'Ash' }], extra: 1 })));
     expect((await upstreamError(gateway().listLeagues())).code).toBe('unexpected_shape');
-    expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/activity_groups/), { body: { data: [] } });
+
+    expect(log.warn).toHaveBeenCalledOnce();
+    const [message, fields] = log.warn.mock.calls[0]!;
+    expect(message).toMatch(/did not match the wire contract/);
+    expect(message).not.toMatch(/^\[pokemon\]/);
+    expect(fields).toEqual({
+      what: expect.any(String),
+      path: expect.stringMatching(/activity_groups\/$/),
+      keys: ['data', 'extra'],
+      issues: expect.arrayContaining([{ path: expect.any(Array), code: expect.any(String) }]),
+    });
+    for (const issue of fields.issues) expect(Object.keys(issue).sort()).toEqual(['code', 'path']);
+    expect(JSON.stringify(log.warn.mock.calls)).not.toContain('Ash');
+  });
+
+  it('names the JSON type of a body that is not an object, and "string" for one that is not JSON at all', async () => {
+    log.warn.mockClear();
+    upstream.use(http.get(GROUPS_URL, () => HttpResponse.json(['Ash'])));
+    await upstreamError(gateway().listLeagues());
+    upstream.use(http.get(GROUPS_URL, () => new HttpResponse('<h1>Ash</h1>', { headers: { 'content-type': 'text/html' } })));
+    await upstreamError(gateway().listLeagues());
+
+    expect(log.warn.mock.calls.map(([, fields]) => fields.keys)).toEqual(['array', 'string']);
+    expect(JSON.stringify(log.warn.mock.calls)).not.toContain('Ash');
   });
 
   it('passes a token-provider failure (e.g. needs_reconnect) through without calling play-tools', async () => {
@@ -359,8 +383,11 @@ describe('addAttendanceBulk (S4: records/_bulk/)', () => {
   });
 
   it('fails loudly when the 201 body does not have one record per player', async () => {
+    log.warn.mockClear();
     upstream.use(http.post(BULK_URL, () => HttpResponse.json([{ guid: 'only-one' }], { status: 201 })));
     expect((await upstreamError(gateway().addAttendanceBulk(GROUP, SESSION, ids('1', '2')))).code).toBe('unexpected_shape');
+    expect(log.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ keys: 'array', issues: [] }));
+    expect(JSON.stringify(log.warn.mock.calls)).not.toContain('only-one');
   });
 
   it('refuses a malformed player id before calling play-tools (one bad id fails the whole batch upstream)', async () => {
