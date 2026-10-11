@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiErrorMessage } from './api-error';
+import { apiErrorCode, apiErrorMessage } from './api-error';
 
 const zodIssues = (message: string) => JSON.stringify([{ code: 'invalid_format', path: ['playerId'], message }]);
 
@@ -20,4 +20,17 @@ describe('apiErrorMessage', () => {
   it.each([undefined, new Error('network'), { statusCode: 500 }])('uses the fallback for %j', (err) => {
     expect(apiErrorMessage(err, 'Could not save.')).toBe('Could not save.');
   });
+});
+
+describe('apiErrorCode', () => {
+  it("reads the server's data.code (e.g. needs_reconnect)", () => {
+    expect(apiErrorCode({ statusCode: 409, data: { message: 'Reconnect', data: { code: 'needs_reconnect' } } })).toBe('needs_reconnect');
+  });
+
+  it.each([undefined, new Error('network'), { statusCode: 500, data: { message: 'x' } }, { data: { data: { code: 7 } } }])(
+    'is undefined for %j',
+    (err) => {
+      expect(apiErrorCode(err)).toBeUndefined();
+    },
+  );
 });

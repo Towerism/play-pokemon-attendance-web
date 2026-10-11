@@ -20,8 +20,8 @@ export function createState(): string {
   return randomBytes(16).toString('base64url');
 }
 
-export function buildAuthorizeUrl(challenge: string, state: string): URL {
-  const url = new URL(PTC_OAUTH.authorizeEndpoint);
+export function buildAuthorizeUrl(challenge: string, state: string, endpoint: string = PTC_OAUTH.authorizeEndpoint): URL {
+  const url = new URL(endpoint);
   url.search = new URLSearchParams({
     client_id: PTC_OAUTH.clientId,
     response_type: 'code',

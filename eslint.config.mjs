@@ -16,7 +16,11 @@ const POKEMON_HOSTS = [
 
 // h3 / Nitro / nuxt-auth-utils / server/utils auto-imports: invisible to no-restricted-imports.
 const SERVER_AUTO_IMPORTS =
-  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts|useRoster|useSessions|useTdfImports|requireLeague)$/;
+  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts|useRoster|useSessions|useTdfImports|usePokemon|requireLeague)$/;
+
+// Tests use Pokémon URLs as data (the play-tools callback); MSW and test/server/fake-pokemon.ts
+// keep them off the network, so the host rule doesn't apply to them.
+const TEST_FILES = ['**/*.test.ts', '**/test-helpers.ts', 'test/**'];
 
 const NO_NUXT_IN_MODULES = {
   selector: `CallExpression[callee.name=${SERVER_AUTO_IMPORTS}]`,
@@ -32,6 +36,7 @@ export default withNuxt(
     ignores: [
       'server/modules/pokemon/adapters/**',
       'spikes/**',
+      ...TEST_FILES,
       'eslint.config.mjs',
       'test/unit/module-boundaries.test.ts',
     ],
@@ -65,6 +70,11 @@ export default withNuxt(
   },
   {
     files: ['server/modules/pokemon/adapters/**/*.ts'],
+    rules: { 'no-restricted-syntax': ['error', NO_NUXT_IN_MODULES] },
+  },
+  {
+    // Module tests may hold Pokémon URLs as data, but stay plain TS.
+    files: TEST_FILES.map((glob) => `server/modules/${glob}`),
     rules: { 'no-restricted-syntax': ['error', NO_NUXT_IN_MODULES] },
   },
 );

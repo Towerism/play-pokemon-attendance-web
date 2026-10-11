@@ -133,4 +133,7 @@ players, regulars CRUD, `regulars.json` import, manual session players with
 manual sightings, and the This week / Regulars / Players pages. M3 (TDF) is
 built: the `shared/tdf` parser, preview → commit routes (the file travels as
 JSON), `tdf` sightings for every player in the file, and the dropzone and
-preview modal on This week. Next is M4 (Pokémon connection); see architecture §13.
+preview modal on This week. M4 (Pokémon connection) is built: token vault, paste-back
+connect, `TokenProvider` with persist-before-use refresh, the hourly `pokemon:keepalive` task,
+league discovery, and the Settings page with the reconnect banner. Server tests run against
+`test/server/fake-pokemon.ts` through `NUXT_POKEMON_*_URL`. Next is M5 (submission); see architecture §13.

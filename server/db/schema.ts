@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
+import { blob, index, integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 
 /** Organizer accounts for the app itself (not Pokémon accounts). */
 export const appUser = sqliteTable('app_user', {
@@ -13,7 +13,7 @@ export const appUser = sqliteTable('app_user', {
 
 /**
  * A Play! Pokémon league. v1 runs one league, seeded as `default` by the
- * migration; M4 binds it to the upstream activity group.
+ * migration; its Pokémon connection binds it to an upstream activity group.
  */
 export const league = sqliteTable('league', {
   id: text('id').primaryKey(),
@@ -143,3 +143,29 @@ export const sighting = sqliteTable(
     index('sighting_league_date_idx').on(t.leagueId, t.sessionDate),
   ],
 );
+
+/**
+ * The league's link to play-tools (ADR-0003): whose Pokémon account, which
+ * activity group, and the refresh token sealed by the token vault. Owned by
+ * the pokemon module.
+ */
+export const pokemonConnection = sqliteTable('pokemon_connection', {
+  leagueId: text('league_id')
+    .primaryKey()
+    .references(() => league.id),
+  /** Access-token `sub`: the OP user id (S5). */
+  ptcUserId: text('ptc_user_id').notNull(),
+  /** AES-256-GCM blob from the token vault; never leaves the server. */
+  refreshTokenCiphertext: blob('refresh_token_ciphertext', { mode: 'buffer' }).notNull(),
+  status: text('status', { enum: ['connected', 'needs_reconnect'] }).notNull(),
+  /** Why the connection needs a reconnect; null while connected. */
+  statusReason: text('status_reason'),
+  connectedAt: integer('connected_at', { mode: 'timestamp' }).notNull(),
+  lastRefreshedAt: integer('last_refreshed_at', { mode: 'timestamp' }).notNull(),
+  /** The upstream activity group this league submits to; null until chosen. */
+  activityGroupId: text('activity_group_id'),
+  activityGroupName: text('activity_group_name'),
+  activityGroupDisplayId: text('activity_group_display_id'),
+  /** `criteria.play_sessions.create_attendance` when the group was chosen. */
+  activityGroupCanSubmit: integer('activity_group_can_submit', { mode: 'boolean' }),
+});

@@ -5,7 +5,19 @@ const links = [
   { to: '/', label: 'This week' },
   { to: '/regulars', label: 'Regulars' },
   { to: '/players', label: 'Players' },
+  { to: '/settings', label: 'Settings' },
 ];
+
+// Global reconnect banner (architecture §8): shown on every page once Pokémon refuses the saved login.
+const { data: connection, execute: loadConnection } = await usePokemonConnection({ immediate: false });
+watch(
+  user,
+  (u) => {
+    if (u) void loadConnection();
+  },
+  { immediate: true },
+);
+const needsReconnect = computed(() => !!user.value && connection.value?.status === 'needs_reconnect');
 
 async function logout() {
   await $fetch('/api/auth/logout', { method: 'POST' });
@@ -16,6 +28,13 @@ async function logout() {
 
 <template>
   <div class="min-h-dvh flex flex-col">
+    <UBanner
+      v-if="needsReconnect"
+      color="warning"
+      icon="i-lucide-plug-zap"
+      title="Pokémon no longer accepts the saved login. Reconnect before submitting attendance."
+      :actions="[{ label: 'Reconnect', to: '/settings', color: 'neutral', variant: 'outline' }]"
+    />
     <header class="border-b border-default">
       <div class="mx-auto max-w-5xl px-4 h-14 flex items-center justify-between gap-4">
         <div class="flex items-center gap-4 min-w-0">
