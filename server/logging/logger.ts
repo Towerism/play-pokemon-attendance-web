@@ -9,18 +9,12 @@
 import pino from 'pino';
 import { prettyFactory } from 'pino-pretty';
 import { redact, scrub } from './redact';
+import type { LogFields, Logger } from './types';
+
+export { type LogFields, type Logger, silentLogger } from './types';
 
 export type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' | 'silent';
 export type LogFormat = 'pretty' | 'json';
-export type LogFields = Record<string, unknown> & { err?: unknown };
-
-export interface Logger {
-  error(msg: string, fields?: LogFields): void;
-  warn(msg: string, fields?: LogFields): void;
-  info(msg: string, fields?: LogFields): void;
-  debug(msg: string, fields?: LogFields): void;
-  child(scope: string, bindings?: Record<string, unknown>): Logger;
-}
 
 export interface LogDestination {
   write(line: string): unknown;
@@ -74,15 +68,6 @@ export function createLogger(options: CreateLoggerOptions): Logger {
   for (const warning of warnings) log.warn(warning);
   return log;
 }
-
-/** For module services built without a logger (unit tests). */
-export const silentLogger: Logger = {
-  error() {},
-  warn() {},
-  info() {},
-  debug() {},
-  child: () => silentLogger,
-};
 
 function wrap(root: pino.Logger, bindings: Record<string, unknown>, context: CreateLoggerOptions['context']): Logger {
   const target = root.child(redact(bindings) as Record<string, unknown>);

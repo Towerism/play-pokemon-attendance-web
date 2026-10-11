@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import { type Logger, silentLogger } from '../../../../logging/types';
 import { PokemonUpstreamError } from '../../ports/errors';
 import { type PlayerId, toPlayerId } from '../../../../../shared/types/ids';
 import type { AttendanceRecord, BulkResult, League, PlaySession, PlaySessionStatus, PlayToolsGateway } from '../../ports/play-tools-gateway';
@@ -26,7 +27,7 @@ export interface PlayToolsHttpAdapterOptions {
   leagueId: string;
   /** Replaces `https://api.play.pokemon.com/services/` (test doubles only; `NUXT_POKEMON_API_URL`). */
   baseUrl?: string;
-  log?: { warn(message: string, data: { body: unknown }): void };
+  log?: Pick<Logger, 'warn'>;
 }
 
 /** The gateway as built so far. `removeAttendance` (undo) arrives with M7. */
@@ -35,11 +36,12 @@ export type PlayToolsHttpAdapter = Omit<PlayToolsGateway, 'removeAttendance'>;
 /**
  * PlayToolsHttpAdapter (architecture §4.3). The only code that knows the OP
  * API's paths, headers and JSON; responses are checked against the frozen
- * wire schemas, and an unexpected shape fails loudly with the body logged.
+ * wire schemas, and an unexpected shape fails loudly with its outline logged
+ * (keys and schema issues, never values: bodies carry minors' names).
  */
 export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): PlayToolsHttpAdapter {
   const base = new URL(opts.baseUrl || OP_API_BASE);
-  const log = opts.log ?? { warn: (message, data) => console.warn(message, data) };
+  const log = opts.log ?? silentLogger;
 
   async function get(url: URL, what: string): Promise<unknown> {
     const token = await opts.tokens.getAccessToken(opts.leagueId);
@@ -55,10 +57,7 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
     while (url) {
       const body = await get(url, what);
       const parsed = schema.safeParse(body);
-      if (!parsed.success) {
-        log.warn(`[pokemon] ${what}: response did not match the wire contract (${url.pathname})`, { body });
-        throw new PokemonUpstreamError('unexpected_shape', `${what}: Pokémon sent a response this version does not understand.`);
-      }
+      if (!parsed.success) throw unexpected(what, url, body, parsed.error);
       items.push(...parsed.data.items);
       url = parsed.data.next ? sameOrigin(parsed.data.next, what) : undefined;
     }
@@ -131,8 +130,9 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
 
       const what = 'Adding attendance';
       const token = await opts.tokens.getAccessToken(opts.leagueId);
+      const url = new URL(opPaths.recordsBulk(groupId, sessionId), base);
       const res = await fetchUpstream(
-        new URL(opPaths.recordsBulk(groupId, sessionId), base).toString(),
+        url.toString(),
         {
           method: 'POST',
           headers: { ...OP_API_HEADERS, authorization: `Bearer ${token.value}`, 'content-type': 'application/json' },
@@ -144,20 +144,25 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
 
       if (res.ok) {
         const parsed = BulkResponse.safeParse(body);
-        if (!parsed.success || parsed.data.length !== ids.length) throw unexpected(what, body);
+        if (!parsed.success || parsed.data.length !== ids.length) throw unexpected(what, url, body, parsed.error);
         return { status: 'added', records: ids.map((playerId, i) => ({ playerId, recordId: parsed.data[i]!.guid })) };
       }
       if (res.status === 400) {
         const parsed = OpErrorResponse.safeParse(body);
-        if (!parsed.success) throw unexpected(what, body);
+        if (!parsed.success) throw unexpected(what, url, body, parsed.error);
         return rejection(ids, parsed.data);
       }
       throw throttleOrServerError(res, what) ?? clientError(res.status, what);
     },
   };
 
-  function unexpected(what: string, body: unknown): PokemonUpstreamError {
-    log.warn(`[pokemon] ${what}: response did not match the wire contract`, { body });
+  function unexpected(what: string, url: URL, body: unknown, error: z.ZodError | undefined): PokemonUpstreamError {
+    log.warn(`${what}: response did not match the wire contract`, {
+      what,
+      path: url.pathname,
+      ...outline(body),
+      issues: (error?.issues ?? []).map((issue) => ({ path: issue.path, code: issue.code })),
+    });
     return new PokemonUpstreamError('unexpected_shape', `${what}: Pokémon sent a response this version does not understand.`);
   }
 }
@@ -187,4 +192,13 @@ function clientError(status: number, what: string): PokemonUpstreamError {
   }
   if (status === 404) return new PokemonUpstreamError('not_found', `${what}: not found in play-tools.`, { status });
   return new PokemonUpstreamError('unexpected_shape', `${what}: play-tools answered ${status}.`, { status });
+}
+
+/** A body's shape without its values: top-level keys, or its JSON type ("string" when it was not JSON). */
+function outline(body: unknown): { keys: string[] | string } {
+  if (body === undefined) return { keys: 'string' };
+  if (body === null) return { keys: 'null' };
+  if (Array.isArray(body)) return { keys: 'array' };
+  if (typeof body === 'object') return { keys: Object.keys(body) };
+  return { keys: typeof body };
 }
