@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
+import { silentLogger } from '../../logging/types';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
 import type { ConnectionView } from '../pokemon/connection';
@@ -11,7 +12,7 @@ import { type RosterService, createRosterService } from '../roster/service';
 import { type SessionsService, createSessionsService } from '../sessions/service';
 import { SubmissionError } from './errors';
 import { createPlaySessionResolver } from './resolve';
-import { type SubmissionService, type SubmissionView, createSubmissionService } from './service';
+import { type SubmissionDeps, type SubmissionService, type SubmissionView, createSubmissionService } from './service';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TUESDAY = '2026-10-13' as SessionDate;
@@ -92,7 +93,7 @@ let sleeps: number[];
 let onSleep: ((signal: AbortSignal) => Promise<void> | void) | undefined;
 let service: SubmissionService;
 
-function build(over: { batchSize?: number; defaults?: boolean } = {}): SubmissionService {
+function build(over: { batchSize?: number; defaults?: boolean; log?: SubmissionDeps['log'] | null } = {}): SubmissionService {
   const resolver = createPlaySessionResolver({
     connections: { getStatus: () => connection },
     gateway: () => upstream,
@@ -114,7 +115,7 @@ function build(over: { batchSize?: number; defaults?: boolean } = {}): Submissio
       clock = new Date(clock.getTime() + ms);
     },
     ...(over.defaults ? {} : { batchSize: over.batchSize ?? 50, batchDelayMs: DELAY }),
-    log: { warn: () => undefined },
+    ...(over.log === null ? {} : { log: over.log ?? silentLogger }),
   });
 }
 
@@ -436,6 +437,56 @@ describe('a submission (ADR-0004 plan → execute → reconcile)', () => {
     expect(view.error).toMatch(/no longer accepts/);
     expect(outcomes(view)).toEqual({ '1': 'added', '2': 'skipped' });
     expect(sessions.getSession(L, TUESDAY).status).toBe('failed');
+  });
+});
+
+describe('job logging', () => {
+  const spyLog = () => ({ info: vi.fn(), warn: vi.fn() });
+
+  it('logs when a job starts and how it ended, tagged with its id', async () => {
+    const log = spyLog();
+    service = build({ log });
+    sessionPlayers('1');
+
+    const view = await submit();
+
+    expect(log.info.mock.calls).toEqual([
+      [`Submission #${view.id} started for ${TUESDAY}`, { submissionId: view.id, date: TUESDAY }],
+      [`Submission #${view.id} succeeded`, { submissionId: view.id, status: 'succeeded' }],
+    ]);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('warns with the reason when a job fails, without a [submission] prefix', async () => {
+    const log = spyLog();
+    service = build({ batchSize: 1, log });
+    sessionPlayers('1', '2');
+    upstream.onBulk = (_ids, call) => {
+      if (call === 2) throw new PokemonUpstreamError('needs_reconnect', 'Pokémon no longer accepts the saved login.');
+    };
+
+    const view = await submit();
+
+    expect(log.warn).toHaveBeenCalledWith(`Submission #${view.id} failed: Pokémon no longer accepts the saved login.`, {
+      submissionId: view.id,
+    });
+    expect(log.info).toHaveBeenLastCalledWith(`Submission #${view.id} failed`, { submissionId: view.id, status: 'failed' });
+  });
+
+  it('stays silent without a logger, rather than writing to the console', async () => {
+    const consoleSpies = (['log', 'info', 'warn', 'error'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    service = build({ batchSize: 1, log: null });
+    sessionPlayers('1', '2');
+    upstream.onBulk = (_ids, call) => {
+      if (call === 2) throw new PokemonUpstreamError('needs_reconnect', 'gone');
+    };
+
+    await submit();
+
+    for (const spy of consoleSpies) {
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    }
   });
 });
 

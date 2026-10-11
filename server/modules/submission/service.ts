@@ -1,3 +1,4 @@
+import { type Logger, silentLogger } from '../../logging/types';
 import { and, countDistinct, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
@@ -119,7 +120,7 @@ export interface SubmissionDeps {
   settleMs?: number;
   /** How often to re-read while settling (default 15 s). */
   settlePollMs?: number;
-  log?: { warn(message: string): void };
+  log?: Pick<Logger, 'warn' | 'info'>;
 }
 
 type Row = typeof submission.$inferSelect;
@@ -175,7 +176,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const batchDelayMs = deps.batchDelayMs ?? 10_000;
   const settleMs = deps.settleMs ?? 3 * 60_000;
   const settlePollMs = deps.settlePollMs ?? 15_000;
-  const log = deps.log ?? { warn: (message: string) => console.warn(message) };
+  const log = deps.log ?? silentLogger;
 
   const running = new Set<Promise<void>>();
   const listeners = new Map<number, Set<(event: SubmissionEvent) => void>>();
@@ -227,7 +228,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       try {
         listener(view);
       } catch (err) {
-        log.warn(`[submission] a progress listener failed: ${(err as Error).message}`);
+        log.warn(`A progress listener failed: ${(err as Error).message}`, { submissionId: row.id });
       }
     }
   }
@@ -494,13 +495,19 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   function launch(row: Row): void {
+    const submissionId = row.id;
+    log.info(`Submission #${submissionId} started for ${row.sessionDate}`, { submissionId, date: row.sessionDate });
     const job = run(row)
       .catch((err: unknown) => {
         const interrupted = err instanceof Interrupted;
-        if (!interrupted) log.warn(`[submission] #${row.id} failed: ${(err as Error).message}`);
+        if (!interrupted) log.warn(`Submission #${submissionId} failed: ${(err as Error).message}`, { submissionId });
         stopEarly(row, interrupted ? 'interrupted' : 'failed', (err as Error).message);
       })
-      .catch((err: unknown) => log.warn(`[submission] #${row.id} could not record how it ended: ${(err as Error).message}`))
+      .then(() => {
+        const status = load(row.leagueId, submissionId)?.status;
+        log.info(`Submission #${submissionId} ${status}`, { submissionId, status });
+      })
+      .catch((err: unknown) => log.warn(`Submission #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
       .finally(() => {
         try {
           releaseLock(row);
