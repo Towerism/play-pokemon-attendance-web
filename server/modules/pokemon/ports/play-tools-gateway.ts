@@ -21,14 +21,19 @@ export interface PlayToolsGateway {
     statuses?: readonly PlaySessionStatus[],
   ): Promise<PlaySession[]>;
 
-  /** All player attendance records for a session, pages followed to exhaustion. */
+  /**
+   * Every attendance record for a session, any role, pages followed to
+   * exhaustion. Staff records (e.g. the session creator's hidden organizer
+   * record, S4) are included: upstream refuses to add a participant twice.
+   */
   listAttendance(groupId: string, sessionId: string): Promise<AttendanceRecord[]>;
 
   /**
    * Adds players in one `_bulk` call. Callers chunk (≤ 50) and space calls
-   * (≥ 15 s); the adapter does not. Players already present upstream are
-   * reported as `alreadyPresent` if the API says so (spike S4), otherwise as
-   * `accepted`; reconciliation via `listAttendance` is the source of truth.
+   * (≥ 15 s); the adapter does not. The call is all-or-nothing upstream
+   * (S4): a `rejected` batch added nobody. A 5xx throws `unavailable`; the
+   * caller then reconciles by re-reading.
+   * @throws TypeError for a player id that is not digits only, before calling upstream
    */
   addAttendanceBulk(groupId: string, sessionId: string, playerIds: readonly PlayerId[]): Promise<BulkResult>;
 
@@ -52,9 +57,14 @@ export type PlaySessionStatus = 'active' | 'pending' | 'complete';
 export interface PlaySession {
   /** Play session GUID. */
   readonly id: string;
-  readonly title: string;
+  /** e.g. `open_play`. Upstream has no title (S3): label it from type, products and local start time. */
+  readonly type: string;
+  /** `tcg` | `vg` | `pgo`. */
+  readonly products: readonly string[];
   readonly startsAt: Date;
   readonly endsAt: Date | null;
+  /** Attendance edits close then (`final_modifiable_datetime`, start + 7 days). */
+  readonly editableUntil: Date | null;
   readonly status: PlaySessionStatus;
 }
 
@@ -68,10 +78,21 @@ export interface DateRange {
 export interface AttendanceRecord {
   readonly recordId: string;
   readonly playerId: PlayerId;
+  /** False for staff records (organizer, judge…), which play-tools hides from its player list. */
+  readonly isPlayer: boolean;
+  /** `First Last` as upstream shows it; empty when unknown. */
+  readonly name: string;
 }
 
-export interface BulkResult {
-  readonly accepted: readonly PlayerId[];
-  readonly alreadyPresent: readonly PlayerId[];
-  readonly failed: readonly { playerId: PlayerId; error: string }[];
-}
+export type BulkResult =
+  /** Every player was added; record ids in request order. */
+  | { readonly status: 'added'; readonly records: readonly { playerId: PlayerId; recordId: string }[] }
+  /**
+   * Upstream refused the batch and added nobody. The listed players are the
+   * reason; everyone else was turned away only because the batch was.
+   */
+  | {
+      readonly status: 'rejected';
+      readonly alreadyPresent: readonly PlayerId[];
+      readonly failed: readonly { playerId: PlayerId; error: string }[];
+    };

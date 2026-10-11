@@ -28,3 +28,17 @@ per-league lease lock prevents concurrent submissions for the same session.
 - (+) Upstream players we didn't know about are discovered and tracked (G5).
 - (−) It needs extra GETs per submission (paged `records/`), which is negligible.
 - (−) It depends on `records/?player=true` returning `participant.player_id` (S4). The CLI's `delete.js` already relies on this.
+
+## Update (M5, 2026-10-10)
+
+- The plan diffs against the **unfiltered** records list (every role), per spike S4: a staff record blocks
+  a re-add just like a player record.
+- **A 5xx is not proof of failure.** The organizer has seen large `_bulk` calls answer 502 (gateway timeout),
+  with every player showing up in the records about a minute later. So after a 5xx the execute step re-reads
+  for a settle window (default 3 min) before it resends anyone, and a late duplicate of our own batch counts as
+  added. This keeps the "never send anyone twice" guarantee without depending on the gateway's answer.
+- **Smaller, quicker batches by default: 20 players, at least 10 s apart** (was ≤ 50 every 15 s; the organizer's
+  call). Small batches make the gateway timeout unlikely in the first place. At about 2 players/s, the
+  steady rate is below the CLI's roughly 3.3 players/s, so traffic stays human-scale. Batches still go one at
+  a time, both values remain configurable (`NUXT_SUBMISSION_BATCH_SIZE`, `NUXT_SUBMISSION_BATCH_DELAY_MS`),
+  and the batch size stays capped at 50.

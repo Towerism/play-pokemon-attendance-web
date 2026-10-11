@@ -145,6 +145,82 @@ export const sighting = sqliteTable(
 );
 
 /**
+ * One attempt to bring a play session's upstream attendance up to date
+ * (ADR-0004). Retry and resume start a new attempt; the history keeps each.
+ * Owned by the submission module, which keys it by league and date instead of
+ * reading the sessions module's drafts.
+ */
+export const submission = sqliteTable(
+  'submission',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    sessionDate: text('session_date').notNull(),
+    playSessionId: text('play_session_id').notNull(),
+    playSessionLabel: text('play_session_label').notNull(),
+    /** Organizer username. */
+    startedBy: text('started_by').notNull(),
+    startedAt: integer('started_at', { mode: 'timestamp' }).notNull(),
+    finishedAt: integer('finished_at', { mode: 'timestamp' }),
+    status: text('status', { enum: ['planned', 'running', 'succeeded', 'partial', 'failed', 'interrupted'] }).notNull(),
+    /** Why the job stopped, when it did not finish. */
+    error: text('error'),
+    /** The attempt this one retries or resumes. */
+    retryOf: integer('retry_of'),
+  },
+  (t) => [index('submission_league_date_idx').on(t.leagueId, t.sessionDate)],
+);
+
+/** Per player: what the submission found or did. `upstream` items are players play-tools had that nobody here asked for. */
+export const submissionItem = sqliteTable(
+  'submission_item',
+  {
+    submissionId: integer('submission_id')
+      .notNull()
+      .references(() => submission.id, { onDelete: 'cascade' }),
+    playerId: text('player_id')
+      .notNull()
+      .references(() => player.playerId),
+    origin: text('origin', { enum: ['session', 'regular', 'upstream'] }).notNull(),
+    outcome: text('outcome', { enum: ['pending', 'added', 'already_present', 'failed', 'skipped', 'unrequested'] }).notNull(),
+    error: text('error'),
+    /** The upstream attendance record, once known (for undo, M7). */
+    recordId: text('record_id'),
+    /** Present upstream in a staff role (e.g. the session's organizer), not as a player. */
+    asStaff: integer('as_staff', { mode: 'boolean' }).notNull().default(false),
+  },
+  (t) => [primaryKey({ columns: [t.submissionId, t.playerId] })],
+);
+
+/** Progress, persisted before it is pushed to the browser over SSE. */
+export const submissionEvent = sqliteTable(
+  'submission_event',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    submissionId: integer('submission_id')
+      .notNull()
+      .references(() => submission.id, { onDelete: 'cascade' }),
+    at: integer('at', { mode: 'timestamp_ms' }).notNull(),
+    type: text('type').notNull(),
+    message: text('message').notNull(),
+    done: integer('done').notNull(),
+    total: integer('total').notNull(),
+  },
+  (t) => [index('submission_event_submission_idx').on(t.submissionId, t.id)],
+);
+
+/** Per-league lease: one submission at a time (ADR-0004). Renewed while the job runs; an expired lease is free. */
+export const submissionLock = sqliteTable('submission_lock', {
+  leagueId: text('league_id')
+    .primaryKey()
+    .references(() => league.id),
+  submissionId: integer('submission_id').notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
+/**
  * The league's link to play-tools (ADR-0003): whose Pokémon account, which
  * activity group, and the refresh token sealed by the token vault. Owned by
  * the pokemon module.

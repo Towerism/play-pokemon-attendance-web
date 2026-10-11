@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { PlayerId } from '../../../../../shared/types/ids';
 import { PokemonUpstreamError } from '../../ports/errors';
 import type { TokenProvider } from '../../ports/token-provider';
 import { createPlayToolsHttpAdapter } from './gateway';
@@ -117,5 +118,256 @@ describe('listLeagues (S5: core/users/{sub}/activity_groups/)', () => {
   it('honours a base URL override (test doubles only)', async () => {
     upstream.use(http.get(`http://127.0.0.1:9/services/core/users/${SUB}/activity_groups/`, () => HttpResponse.json(page([]))));
     expect(await createPlayToolsHttpAdapter({ tokens, leagueId: 'default', baseUrl: 'http://127.0.0.1:9/services/' }).listLeagues()).toEqual([]);
+  });
+});
+
+const GROUP = 'group-1';
+const SESSIONS_URL = `https://api.play.pokemon.com/services/core/activity_groups/${GROUP}/play_sessions/`;
+const session = (guid: string, start: string, over: Record<string, unknown> = {}) => ({
+  guid,
+  type: 'open_play',
+  status: 'pending',
+  start_date: start,
+  end_date: null,
+  final_modifiable_datetime: null,
+  products: ['tcg'],
+  attributes: [],
+  schedule: null,
+  ...over,
+});
+// Tuesday 2026-10-13, 00:00 to 24:00 Central (UTC-5).
+const TUESDAY = { from: new Date('2026-10-13T05:00:00Z'), to: new Date('2026-10-14T05:00:00Z') };
+
+describe('listPlaySessions (S3: activity_groups/{id}/play_sessions/)', () => {
+  it('asks for one status at a time with the start-date filters as UTC instants', async () => {
+    const seen: URLSearchParams[] = [];
+    upstream.use(
+      http.get(SESSIONS_URL, ({ request }) => {
+        seen.push(new URL(request.url).searchParams);
+        return HttpResponse.json(page([]));
+      }),
+    );
+
+    expect(await gateway().listPlaySessions(GROUP, TUESDAY)).toEqual([]);
+    expect(seen.map((q) => q.get('status'))).toEqual(['active', 'complete', 'pending']);
+    expect(seen[0]!.get('start_date:greater_than_or_equal_to')).toBe('2026-10-13T05:00:00.000Z');
+    expect(seen[0]!.get('start_date:less_than_or_equal_to')).toBe('2026-10-14T05:00:00.000Z');
+  });
+
+  it('stops at the first status with a match and maps the recorded session shape', async () => {
+    const recorded = fixture('play-sessions-page.complete.last30d') as { results: Record<string, unknown>[] };
+    const first = recorded.results[0]!;
+    const statuses: string[] = [];
+    upstream.use(
+      http.get(SESSIONS_URL, ({ request }) => {
+        const status = new URL(request.url).searchParams.get('status')!;
+        statuses.push(status);
+        return HttpResponse.json(status === 'complete' ? page([first]) : page([]));
+      }),
+    );
+
+    const sessions = await gateway().listPlaySessions(GROUP, { from: new Date('2026-09-13T05:00:00Z'), to: new Date('2026-09-14T05:00:00Z') });
+
+    expect(statuses).toEqual(['active', 'complete']);
+    expect(sessions).toEqual([
+      {
+        id: first.guid,
+        type: 'open_play',
+        products: ['pgo', 'tcg', 'vg'],
+        status: 'complete',
+        startsAt: new Date('2026-09-13T17:00:00Z'),
+        endsAt: new Date('2026-09-13T21:00:00Z'),
+        editableUntil: new Date('2026-09-20T17:00:00Z'),
+      },
+    ]);
+  });
+
+  it('leaves out a session starting exactly at the end of the range (the upstream filter is inclusive)', async () => {
+    upstream.use(
+      http.get(SESSIONS_URL, () =>
+        HttpResponse.json(page([session('in', '2026-10-13T23:00:00Z'), session('next-day', '2026-10-14T05:00:00Z')])),
+      ),
+    );
+    expect((await gateway().listPlaySessions(GROUP, TUESDAY, ['pending'])).map((s) => s.id)).toEqual(['in']);
+  });
+
+  it('queries only the statuses asked for, in that order', async () => {
+    const statuses: string[] = [];
+    upstream.use(
+      http.get(SESSIONS_URL, ({ request }) => {
+        statuses.push(new URL(request.url).searchParams.get('status')!);
+        return HttpResponse.json(page([]));
+      }),
+    );
+    await gateway().listPlaySessions(GROUP, TUESDAY, ['pending', 'active']);
+    expect(statuses).toEqual(['pending', 'active']);
+  });
+
+  it('follows next pages', async () => {
+    upstream.use(
+      http.get(SESSIONS_URL, ({ request }) =>
+        new URL(request.url).searchParams.get('page') === '2'
+          ? HttpResponse.json(page([session('b', '2026-10-13T23:30:00Z')]))
+          : HttpResponse.json(page([session('a', '2026-10-13T17:00:00Z')], `${SESSIONS_URL}?status=pending&page=2`)),
+      ),
+    );
+    expect((await gateway().listPlaySessions(GROUP, TUESDAY, ['pending'])).map((s) => s.id)).toEqual(['a', 'b']);
+  });
+
+  it('fails loudly on an unknown status value', async () => {
+    upstream.use(http.get(SESSIONS_URL, () => HttpResponse.json(page([session('a', '2026-10-13T17:00:00Z', { status: 'scheduled' })]))));
+    expect((await upstreamError(gateway().listPlaySessions(GROUP, TUESDAY))).code).toBe('unexpected_shape');
+  });
+});
+
+const SESSION = 'session-1';
+const RECORDS_URL = `${SESSIONS_URL}${SESSION}/records/`;
+const BULK_URL = `${RECORDS_URL}_bulk/`;
+
+describe('listAttendance (S3/S4: play_sessions/{id}/records/)', () => {
+  it('lists every record, staff included, from the recorded response (design change 6)', async () => {
+    let query: URLSearchParams | undefined;
+    upstream.use(
+      http.get(RECORDS_URL, ({ request }) => {
+        query = new URL(request.url).searchParams;
+        return HttpResponse.json(fixture('attendance-page.s4.after-batch.p1'));
+      }),
+    );
+
+    const records = await gateway().listAttendance(GROUP, SESSION);
+
+    expect(query!.has('player')).toBe(false);
+    expect(records.map((r) => [r.playerId, r.isPlayer])).toEqual([
+      ['9999912', true],
+      ['9999913', true],
+      ['9999991', false],
+    ]);
+    expect(records[0]).toEqual({ recordId: expect.any(String), playerId: '9999912', isPlayer: true, name: '<redacted> <redacted>' });
+  });
+
+  it('follows pages and keeps leading zeros; a missing name is empty', async () => {
+    const rec = (guid: string, playerId: string | number) => ({
+      guid,
+      role: null,
+      player: true,
+      origin: 'roster',
+      updated: '',
+      participant: { guid: `p-${guid}`, player_id: playerId, display_first_name: null, display_last_name: null },
+    });
+    upstream.use(
+      http.get(RECORDS_URL, ({ request }) =>
+        new URL(request.url).searchParams.get('page') === '2'
+          ? HttpResponse.json(page([rec('r2', 42)]))
+          : HttpResponse.json(page([rec('r1', '0012345')], `${RECORDS_URL}?page=2`)),
+      ),
+    );
+    expect(await gateway().listAttendance(GROUP, SESSION)).toEqual([
+      { recordId: 'r1', playerId: '0012345', isPlayer: true, name: '' },
+      { recordId: 'r2', playerId: '42', isPlayer: true, name: '' },
+    ]);
+  });
+
+  it('is not_found for a session play-tools does not know', async () => {
+    upstream.use(http.get(RECORDS_URL, () => HttpResponse.json({ code: 'op.generic.not_found' }, { status: 404 })));
+    expect((await upstreamError(gateway().listAttendance(GROUP, SESSION))).code).toBe('not_found');
+  });
+});
+
+describe('addAttendanceBulk (S4: records/_bulk/)', () => {
+  const recorded = (name: string) => {
+    const raw = JSON.parse(readFileSync(join(import.meta.dirname, '__fixtures__', `${name}.json`), 'utf8')) as { status: number; body: unknown };
+    return typeof raw.body === 'string'
+      ? new HttpResponse(raw.body, { status: raw.status, headers: { 'content-type': 'text/html' } })
+      : HttpResponse.json(raw.body as object, { status: raw.status });
+  };
+  const ids = (...xs: string[]) => xs as unknown as PlayerId[];
+
+  it('sends exactly the CLI payload and maps each record guid to its player, in request order', async () => {
+    let body: unknown;
+    upstream.use(
+      http.post(BULK_URL, async ({ request }) => {
+        body = await request.json();
+        return recorded('bulk-response.batch');
+      }),
+    );
+
+    const result = await gateway().addAttendanceBulk(GROUP, SESSION, ids('0012345', '678'));
+
+    expect(body).toEqual([
+      { participant: { player_id: '0012345' }, role: null, player: true, origin: 'roster', updated: '' },
+      { participant: { player_id: '678' }, role: null, player: true, origin: 'roster', updated: '' },
+    ]);
+    expect(result).toEqual({
+      status: 'added',
+      records: [
+        { playerId: '0012345', recordId: '00000000-0000-4000-8000-000000000036' },
+        { playerId: '678', recordId: '00000000-0000-4000-8000-000000000039' },
+      ],
+    });
+  });
+
+  it('maps a recorded duplicate rejection back to the player at that index; nobody was added', async () => {
+    upstream.use(http.post(BULK_URL, () => recorded('bulk-response.duplicate')));
+    expect(await gateway().addAttendanceBulk(GROUP, SESSION, ids('1', '2', '3'))).toEqual({
+      status: 'rejected',
+      alreadyPresent: ['1'],
+      failed: [],
+    });
+  });
+
+  it('reports any other per-player rejection as failed with its code', async () => {
+    upstream.use(
+      http.post(BULK_URL, () =>
+        HttpResponse.json(
+          {
+            code: 'op.generic.bad_request',
+            errors: {
+              body: {
+                '0.participant.player_id': [{ code: 'op.activity_record.cannot_duplicate_participant' }],
+                '2.participant.player_id': [{ code: 'op.player.not_found', message: 'No such player.' }],
+              },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    expect(await gateway().addAttendanceBulk(GROUP, SESSION, ids('1', '2', '3'))).toEqual({
+      status: 'rejected',
+      alreadyPresent: ['1'],
+      failed: [{ playerId: '3', error: 'op.player.not_found' }],
+    });
+  });
+
+  it('fails every player when a 400 names nobody in particular', async () => {
+    upstream.use(http.post(BULK_URL, () => HttpResponse.json({ code: 'op.generic.bad_request', message: 'Invalid request.' }, { status: 400 })));
+    expect(await gateway().addAttendanceBulk(GROUP, SESSION, ids('1', '2'))).toEqual({
+      status: 'rejected',
+      alreadyPresent: [],
+      failed: [
+        { playerId: '1', error: 'op.generic.bad_request' },
+        { playerId: '2', error: 'op.generic.bad_request' },
+      ],
+    });
+  });
+
+  it('turns the recorded HTML 500 into a retryable unavailable', async () => {
+    upstream.use(http.post(BULK_URL, () => recorded('bulk-response.mixed')));
+    const err = await upstreamError(gateway().addAttendanceBulk(GROUP, SESSION, ids('1')));
+    expect(err.code).toBe('unavailable');
+    expect(err.retryable).toBe(true);
+  });
+
+  it('fails loudly when the 201 body does not have one record per player', async () => {
+    upstream.use(http.post(BULK_URL, () => HttpResponse.json([{ guid: 'only-one' }], { status: 201 })));
+    expect((await upstreamError(gateway().addAttendanceBulk(GROUP, SESSION, ids('1', '2')))).code).toBe('unexpected_shape');
+  });
+
+  it('refuses a malformed player id before calling play-tools (one bad id fails the whole batch upstream)', async () => {
+    await expect(gateway().addAttendanceBulk(GROUP, SESSION, ids('1', 'not-a-player-id'))).rejects.toThrow(TypeError);
+  });
+
+  it('calls nothing for an empty batch', async () => {
+    expect(await gateway().addAttendanceBulk(GROUP, SESSION, [])).toEqual({ status: 'added', records: [] });
   });
 });

@@ -159,3 +159,7 @@ Plan (changed 2026-10-10 at the organizer's request): refresh **hourly** from th
 7. **Pre-flight validation:** a single malformed id makes the whole bulk call fail with an HTML 500. Validate every id with `toPlayerId` (digits only) before sending, and never send a batch containing an id that fails it.
 8. **Bulk error mapping:** parse 400 bodies as `OpErrorResponse`. Map `errors.body["<i>.participant.player_id"]` back to `playerIds[i]`, treating `cannot_duplicate_participant` as `alreadyPresent` and anything else as `failed`. Treat a non-JSON 5xx as a batch-level failure, then reconcile by re-reading.
 9. **Atomic batches (ADR-0004 execute step):** a rejected batch added *nobody*. After a 400, take the flagged indices out of the batch and resend the remainder once (respecting the ≥ 15 s spacing). The 201 body maps request index → record guid, so `SUBMISSION_ITEM` can store the upstream record id for undo without a re-read. Reconciliation still re-reads.
+10. **Late-landing batches (field report, M5):** submitting a large batch can answer **502 (gateway
+    timeout)**, yet about a minute later the records list holds every player from the request. A 5xx from
+    `_bulk` therefore means "outcome unknown", not "nothing added": re-read for a settle window before
+    resending (built in M5; see architecture §6.2).

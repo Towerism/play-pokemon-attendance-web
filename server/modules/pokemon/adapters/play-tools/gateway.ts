@@ -1,10 +1,25 @@
 import type { z } from 'zod';
 import { PokemonUpstreamError } from '../../ports/errors';
-import type { League, PlayToolsGateway } from '../../ports/play-tools-gateway';
+import { type PlayerId, toPlayerId } from '../../../../../shared/types/ids';
+import type { AttendanceRecord, BulkResult, League, PlaySession, PlaySessionStatus, PlayToolsGateway } from '../../ports/play-tools-gateway';
 import type { TokenProvider } from '../../ports/token-provider';
 import { fetchUpstream, jsonOrUndefined, throttleOrServerError } from '../http';
 import { OP_API_BASE, OP_API_HEADERS, opPaths } from './constants';
-import { ActivityGroupsPage } from './wire';
+import {
+  ActivityGroupsPage,
+  AttendancePage,
+  BulkResponse,
+  DUPLICATE_PARTICIPANT,
+  OpErrorResponse,
+  PLAY_SESSION_START_GTE,
+  PLAY_SESSION_START_LTE,
+  PlaySessionsPage,
+  bulkRequestBody,
+} from './wire';
+
+/** §4.4: the order statuses are tried in when resolving a date. */
+const RESOLVE_ORDER: readonly PlaySessionStatus[] = ['active', 'complete', 'pending'];
+const PAGE_SIZE = '100';
 
 export interface PlayToolsHttpAdapterOptions {
   tokens: TokenProvider;
@@ -14,8 +29,8 @@ export interface PlayToolsHttpAdapterOptions {
   log?: { warn(message: string, data: { body: unknown }): void };
 }
 
-/** The gateway as built so far: league discovery (M4). Sessions and attendance arrive with M5. */
-export type PlayToolsHttpAdapter = Pick<PlayToolsGateway, 'listLeagues'>;
+/** The gateway as built so far. `removeAttendance` (undo) arrives with M7. */
+export type PlayToolsHttpAdapter = Omit<PlayToolsGateway, 'removeAttendance'>;
 
 /**
  * PlayToolsHttpAdapter (architecture §4.3). The only code that knows the OP
@@ -71,7 +86,99 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
           canSubmit: g.criteria?.play_sessions?.create_attendance === true,
         }));
     },
+
+    async listPlaySessions(groupId, range, statuses = RESOLVE_ORDER): Promise<PlaySession[]> {
+      for (const status of statuses) {
+        const query = new URLSearchParams({
+          status,
+          [PLAY_SESSION_START_GTE]: range.from.toISOString(),
+          [PLAY_SESSION_START_LTE]: range.to.toISOString(),
+          page_size: PAGE_SIZE,
+        });
+        const found = (await getAll(`${opPaths.playSessions(groupId)}?${query}`, PlaySessionsPage, 'Play sessions'))
+          .map((s) => ({
+            id: s.guid,
+            type: s.type,
+            products: s.products,
+            status: s.status,
+            startsAt: new Date(s.start_date),
+            endsAt: s.end_date ? new Date(s.end_date) : null,
+            editableUntil: s.final_modifiable_datetime ? new Date(s.final_modifiable_datetime) : null,
+          }))
+          // The upstream filter is inclusive; the range's end is not.
+          .filter((s) => s.startsAt >= range.from && s.startsAt < range.to);
+        if (found.length > 0) return found;
+      }
+      return [];
+    },
+
+    async listAttendance(groupId, sessionId): Promise<AttendanceRecord[]> {
+      // Unfiltered on purpose: `?player=true` hides staff records, and upstream refuses to add them again (S4).
+      const query = new URLSearchParams({ page_size: PAGE_SIZE });
+      const records = await getAll(`${opPaths.records(groupId, sessionId)}?${query}`, AttendancePage, 'Attendance');
+      return records.map((r) => ({
+        recordId: r.recordId,
+        playerId: r.participant.player_id as PlayerId,
+        isPlayer: r.player,
+        name: [r.participant.display_first_name, r.participant.display_last_name].filter(Boolean).join(' '),
+      }));
+    },
+
+    async addAttendanceBulk(groupId, sessionId, playerIds): Promise<BulkResult> {
+      // One malformed id makes upstream fail the whole call with an HTML 500 (S4).
+      const ids = playerIds.map((id) => toPlayerId(id));
+      if (ids.length === 0) return { status: 'added', records: [] };
+
+      const what = 'Adding attendance';
+      const token = await opts.tokens.getAccessToken(opts.leagueId);
+      const res = await fetchUpstream(
+        new URL(opPaths.recordsBulk(groupId, sessionId), base).toString(),
+        {
+          method: 'POST',
+          headers: { ...OP_API_HEADERS, authorization: `Bearer ${token.value}`, 'content-type': 'application/json' },
+          body: JSON.stringify(bulkRequestBody(ids)),
+        },
+        what,
+      );
+      const body = await jsonOrUndefined(res);
+
+      if (res.ok) {
+        const parsed = BulkResponse.safeParse(body);
+        if (!parsed.success || parsed.data.length !== ids.length) throw unexpected(what, body);
+        return { status: 'added', records: ids.map((playerId, i) => ({ playerId, recordId: parsed.data[i]!.guid })) };
+      }
+      if (res.status === 400) {
+        const parsed = OpErrorResponse.safeParse(body);
+        if (!parsed.success) throw unexpected(what, body);
+        return rejection(ids, parsed.data);
+      }
+      throw throttleOrServerError(res, what) ?? clientError(res.status, what);
+    },
   };
+
+  function unexpected(what: string, body: unknown): PokemonUpstreamError {
+    log.warn(`[pokemon] ${what}: response did not match the wire contract`, { body });
+    return new PokemonUpstreamError('unexpected_shape', `${what}: Pokémon sent a response this version does not understand.`);
+  }
+}
+
+const BULK_ITEM_FIELD = /^(\d+)\.participant\.player_id$/;
+
+/** A 400 from `_bulk` (S4): errors keyed `<index>.participant.player_id`; the batch added nobody. */
+function rejection(ids: readonly PlayerId[], error: OpErrorResponse): BulkResult {
+  const alreadyPresent: PlayerId[] = [];
+  const failed: { playerId: PlayerId; error: string }[] = [];
+  for (const [field, problems] of Object.entries(error.errors?.body ?? {})) {
+    const playerId = ids[Number(BULK_ITEM_FIELD.exec(field)?.[1])];
+    if (!playerId) continue;
+    if (problems.some((p) => p.code === DUPLICATE_PARTICIPANT)) alreadyPresent.push(playerId);
+    else failed.push({ playerId, error: problems[0]?.code ?? error.code });
+  }
+  if (alreadyPresent.length === 0 && failed.length === 0) {
+    return { status: 'rejected', alreadyPresent, failed: ids.map((playerId) => ({ playerId, error: error.code })) };
+  }
+  const order = (a: PlayerId, b: PlayerId) => ids.indexOf(a) - ids.indexOf(b);
+  return { status: 'rejected', alreadyPresent: alreadyPresent.sort(order), failed: failed.sort((a, b) => order(a.playerId, b.playerId)) };
 }
 
 function clientError(status: number, what: string): PokemonUpstreamError {
