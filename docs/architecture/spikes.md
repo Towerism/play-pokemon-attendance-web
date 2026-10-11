@@ -155,7 +155,6 @@ about staff is built until its fixtures exist.
   play-tools, they open DevTools → Network (filter `api.play.pokemon.com`), then:
   - open a tournament's page and its staff section;
   - assign one consenting staffer;
-  - try a second role for the same person, and a staffer who is already a player on that session;
   - remove the staffer again.
 
   Then they save the HAR outside the repo. Tokens, cookies and every name other than the consenting test
@@ -165,8 +164,9 @@ about staff is built until its fixtures exist.
      `POST …/records/` with `player: false` and a `role`?
   2. Is the tournament the date's play session, or a separate resource? How does the page find it from a date?
   3. Where the role list comes from (an endpoint or a bundle constant), and its codes and labels.
-  4. Two roles for one person; staff for someone who already has a player record; whether `PATCH …/records/{id}/`
-     changes `role`.
+  4. How the event lists everyone on it, so the app can check "is this player id already listed" (players and
+     staff, every page) before every assign. The app never sends such an assignment, so the capture doesn't need
+     to provoke a duplicate.
   5. Behaviour after `final_modifiable_datetime`, and which `criteria` permission gates staff edits.
 - **Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the
   routes to `test/server/fake-pokemon.ts`.

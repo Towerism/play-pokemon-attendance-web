@@ -27,6 +27,8 @@ What we know about upstream (spikes S3/S4, [spikes.md](../spikes.md)):
   staff roles.
 - The bundle has `POST …/records/` (single add) and `PATCH …/records/{id}/`, never
   called. No role list, no staff screen and no tournament endpoint has been captured.
+- The organizer's rule: the app must **never attempt** to assign a staff member to a
+  tournament that already lists the same player id.
 
 What we don't know yet is the subject of **spike S6**:
 
@@ -52,7 +54,7 @@ What we don't know yet is the subject of **spike S6**:
 3. **Upstream sits behind an event-neutral port.** `PlayToolsGateway` gains:
    - `listStaffableEvents`
    - `listStaffRoles`
-   - `listStaff`
+   - `listEventRecords` (every record the event lists, players and staff)
    - `assignStaff`
    - `unassignStaff`
 
@@ -73,8 +75,13 @@ What we don't know yet is the subject of **spike S6**:
    - History.
 
    The job runs plan → execute → reconcile:
-   - **Plan:** read the event's staff upstream.
-     - `toAssign` = wanted (player, role) pairs not already there.
+   - **Plan:** read **everything the event lists** upstream: every record, any role,
+     players and staff alike.
+     - `toAssign` = wanted assignments whose player id the event doesn't list at all.
+     - A wanted player the event already lists in the same role is `already_assigned`,
+       and the job adopts that record id.
+     - A wanted player the event lists in any other way (as a player, or as staff in
+       another role) is `already_listed`. **Nothing is sent for them** (decision 8).
      - `toRemove` = staff records **this app created** whose assignment the organizer
        has since removed.
      - Staff assigned directly in play-tools are shown, and **never** deleted
@@ -83,7 +90,7 @@ What we don't know yet is the subject of **spike S6**:
      1 s, never under 500 ms). There is no bulk call: staff counts are in the single
      digits.
    - **Reconcile:** re-read upstream, then mark each item
-     `assigned`/`already_assigned`/`removed`/`failed`. Record ids are written back
+     `assigned`/`already_assigned`/`already_listed`/`removed`/`failed`. Record ids are written back
      to the assignment for later removal.
 
 5. **The staff list is derived from the app's own assignments**, not curated. A staffer
@@ -101,14 +108,27 @@ What we don't know yet is the subject of **spike S6**:
    `already_present (as_staff)`. So staff are applied **before** attendance:
    - The Submit dialog warns when the chosen play session has staff not yet applied,
      and offers to apply them first.
-   - If someone already holds a *player* record when their staff assignment is
-     applied, the staff job:
-     - changes the record's role with `PATCH`, if S6 shows that works and play-tools
-       does the same;
-     - otherwise fails the item with `holds_player_record` and tells the organizer
-       to fix it in play-tools.
+   - If someone is already listed as a *player* when their staff assignment is
+     applied, the item ends `already_listed`, and History shows how they are listed.
+     The organizer fixes it in play-tools if they want. The app never changes their
+     record's role, and never deletes and re-adds it.
 
-   It never deletes and re-adds a player record.
+8. **Never attempt to assign a player id the event already lists.** This is the
+   organizer's rule, and it is absolute. It doesn't depend on whether play-tools would
+   refuse the call:
+   - **Checked against upstream, not memory.** Immediately before each assign call, the
+     job re-reads the event's listing (every page). If the player id is now there in
+     any role, it skips the call. A staffer is a handful of records, so the extra read
+     is cheap, and it closes the gap between plan and call (someone editing in
+     play-tools, or an attendance submission that just finished).
+   - **No blind retries.** After a 5xx or a timeout the call may have landed, so the
+     job re-reads before deciding. If the player id is listed, the item is `assigned`
+     (with our role) or `already_listed`, never sent again.
+   - **One player per event, locally too.** `STAFF_ASSIGNMENT` is unique on
+     `(league_id, event_ref, player_id)` while not removed. The add route refuses a
+     second role for the same player with 409 `player_already_staffed`. Staff search
+     shows players the event already lists as disabled, with how they are listed.
+   - The ids are compared exactly as text, so leading zeros count.
 
 ## Alternatives considered
 
@@ -122,6 +142,10 @@ What we don't know yet is the subject of **spike S6**:
   sessions before S6 says tournaments are play sessions, and couple two flows the
   organizer runs at different times. Rejected for now. The Submit dialog's "apply
   staff first" offer gives most of the benefit.
+- **Let upstream's duplicate rule catch it** (send, then map
+  `cannot_duplicate_participant`). Rejected: the organizer's rule is that the app must
+  never *attempt* such an assignment. S4 only showed the duplicate rule for
+  play-session records, so it may not hold for tournament staff at all.
 - **A curated staff list (like Regulars).** This is more to maintain, and the request
   defines the list by history ("people who have staffed our events before"). It can
   be added later as a `pinned` flag if needed.
@@ -130,6 +154,8 @@ What we don't know yet is the subject of **spike S6**:
 
 - (+) Re-applying is safe: the plan only sends what upstream is missing, so a retry
   never double-assigns.
+- (+) The app never sends an assignment for a player id the event already lists.
+  The guarantee rests on a fresh read, not on upstream refusing the call.
 - (+) Removal is explicit and limited to what this app created, so ADR-0004's
   "never auto-delete upstream records" holds.
 - (+) History becomes the audit trail for staffing, which is the evidence staff need
@@ -150,5 +176,5 @@ What we don't know yet is the subject of **spike S6**:
 | -- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Q1 | Which endpoints does the tournament staff section call? (S6 capture)                        | Single-record `POST …/records/` with a `role` and `player: false`         |
 | Q2 | Is a "tournament" the weekly play session, or a separate event (League Challenge, Cup)?     | The play session(s) on that date. The port allows either                 |
-| Q3 | Which roles does play-tools offer? Can one person hold two roles at one event?              | Roles from upstream when listed. One person, one role per event (S4 rule) |
+| Q3 | Which roles does play-tools offer?                                                          | Roles from upstream when listed. (One person per event is now a rule, decision 8, not a question) |
 | Q4 | Should staff already on play-tools seed the staff list?                                     | No: only staff entered through this app                                  |
