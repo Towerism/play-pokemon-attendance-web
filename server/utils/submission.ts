@@ -14,7 +14,12 @@ export const leagueTimeZone = () => Intl.DateTimeFormat().resolvedOptions().time
 export const leagueToday = () => dateIn(new Date(), leagueTimeZone());
 
 function gateway(leagueId: string) {
-  return createPlayToolsHttpAdapter({ tokens: usePokemon(), leagueId, baseUrl: useRuntimeConfig().pokemon.apiUrl });
+  return createPlayToolsHttpAdapter({
+    tokens: usePokemon(),
+    leagueId,
+    baseUrl: useRuntimeConfig().pokemon.apiUrl,
+    log: useLogger('pokemon'),
+  });
 }
 
 export function usePlaySessionResolver(): PlaySessionResolver {
@@ -37,6 +42,7 @@ export function useSubmissions(): SubmissionService {
       batchDelayMs: Number(config.batchDelayMs),
       settleMs: Number(config.settleMs),
       settlePollMs: Number(config.settlePollMs),
+      log: useLogger('submission'),
     });
   }
   return submissions;

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "nuxt dev",
-    "build": "nuxt build && esbuild server/bootstrap/launcher.ts --bundle --platform=node --format=esm --target=node22 --outfile=.output/launcher.mjs",
+    "build": "nuxt build && esbuild server/bootstrap/launcher.ts --bundle --platform=node --format=esm --target=node22 --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=.output/launcher.mjs",
     "start": "node .output/launcher.mjs",
     "postinstall": "nuxt prepare",
     "test": "vitest run",

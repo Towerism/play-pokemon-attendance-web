@@ -14,7 +14,9 @@ export function usePokemon(): PokemonConnectionService {
       db: useDb(),
       vault: createTokenVault(config.tokenVaultKey),
       oauth: createPtcOAuthClient({ baseUrl: config.pokemon.accessUrl }),
-      gateway: (tokens, leagueId) => createPlayToolsHttpAdapter({ tokens, leagueId, baseUrl: config.pokemon.apiUrl }),
+      gateway: (tokens, leagueId) =>
+        createPlayToolsHttpAdapter({ tokens, leagueId, baseUrl: config.pokemon.apiUrl, log: useLogger('pokemon') }),
+      log: useLogger('pokemon'),
     });
   }
   return pokemon;
