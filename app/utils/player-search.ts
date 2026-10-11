@@ -9,7 +9,11 @@ export function playerSearchTerm(typed: string): string | undefined {
   return term.length >= SEARCH_MIN_LENGTH ? term : undefined;
 }
 
-export type SearchResultStatus = 'addable' | 'regular' | 'alreadyAdded';
+/**
+ * What picking a result does: `addable` adds a session player, `markPresent`
+ * ticks a regular present; `present` and `alreadyAdded` can't be picked.
+ */
+export type SearchResultStatus = 'addable' | 'markPresent' | 'present' | 'alreadyAdded';
 
 export interface SearchResult {
   playerId: string;
@@ -17,15 +21,21 @@ export interface SearchResult {
   status: SearchResultStatus;
 }
 
-/** Tags each found player: regulars and players already in the session can't be added. */
+/** Tags each found player against this date's session players and present regulars. */
 export function toSearchResults(
   players: readonly { playerId: string; displayName: string; isRegular: boolean }[],
-  sessionPlayerIds: ReadonlySet<string>,
+  session: { playerIds: ReadonlySet<string>; presentRegularIds: ReadonlySet<string> },
 ): SearchResult[] {
   return players.map(({ playerId, displayName, isRegular }) => ({
     playerId,
     displayName,
-    status: isRegular ? 'regular' : sessionPlayerIds.has(playerId) ? 'alreadyAdded' : 'addable',
+    status: isRegular
+      ? session.presentRegularIds.has(playerId)
+        ? 'present'
+        : 'markPresent'
+      : session.playerIds.has(playerId)
+        ? 'alreadyAdded'
+        : 'addable',
   }));
 }
 

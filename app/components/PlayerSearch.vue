@@ -1,21 +1,27 @@
 <script setup lang="ts">
 import type { Directive } from 'vue';
 
-const props = defineProps<{ date: string; sessionPlayerIds: ReadonlySet<string> }>();
-const emit = defineEmits<{ added: [] }>();
+const props = defineProps<{ date: string; sessionPlayerIds: ReadonlySet<string>; presentRegularIds: ReadonlySet<string> }>();
+/** A session player was added, or a regular marked present. */
+const emit = defineEmits<{ changed: [] }>();
 const toast = useToast();
 
 type Found = { playerId: string; displayName: string; isRegular: boolean };
 type Item = SearchResult & { label: string; disabled: boolean };
 
-const STATUS_TAG: Record<Exclude<SearchResultStatus, 'addable'>, string> = { regular: 'Regular', alreadyAdded: 'Already added' };
+const STATUS_TAG: Record<SearchResultStatus, string | undefined> = {
+  addable: undefined,
+  markPresent: 'Regular',
+  present: 'Present',
+  alreadyAdded: 'Already added',
+};
 
 const term = ref('');
 /** Bumped to remount the box: in combobox mode the input's text can't be cleared from outside. */
 const resetKey = ref(0);
 const selected = ref<Item>();
 const state = ref<PlayerSearchState<Found[]>>({ status: 'idle' });
-const adding = ref(false);
+const busy = ref(false);
 const menu = useTemplateRef('menu');
 
 const search = createPlayerSearch(
@@ -31,10 +37,10 @@ onScopeDispose(search.reset);
 
 const items = computed<Item[]>(() =>
   state.value.status === 'done'
-    ? toSearchResults(state.value.results, props.sessionPlayerIds).map((r) => ({
+    ? toSearchResults(state.value.results, { playerIds: props.sessionPlayerIds, presentRegularIds: props.presentRegularIds }).map((r) => ({
         ...r,
         label: r.displayName || 'No name',
-        disabled: r.status !== 'addable',
+        disabled: r.status === 'present' || r.status === 'alreadyAdded',
       }))
     : [],
 );
@@ -65,19 +71,28 @@ const vOptionDisabled: Directive<HTMLElement, boolean> = (el, { value }) => {
   el.closest('[role="option"]')?.setAttribute('aria-disabled', String(value));
 };
 
-/** Adds the picked player; on success the box empties and keeps focus for the next one. */
-async function add(item: Item | undefined) {
+/**
+ * Adds the picked player, or marks the picked regular present. On success the
+ * box empties and keeps focus for the next one; on failure the query stays.
+ */
+async function pick(item: Item | undefined) {
   selected.value = undefined;
-  if (!item || item.status !== 'addable') return;
-  adding.value = true;
+  if (!item || item.disabled) return;
+  busy.value = true;
   try {
-    await $fetch(`/api/sessions/${props.date}/players`, { method: 'POST', body: { playerId: item.playerId } });
+    if (item.status === 'markPresent') {
+      await $fetch(`/api/sessions/${props.date}/regulars/${item.playerId}`, { method: 'PUT', body: { present: true } });
+      toast.add({ title: `Marked ${item.displayName || item.playerId} present` });
+    } else {
+      await $fetch(`/api/sessions/${props.date}/players`, { method: 'POST', body: { playerId: item.playerId } });
+    }
     clear();
-    emit('added');
+    emit('changed');
   } catch (err) {
-    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not add the player.') });
+    const fallback = item.status === 'markPresent' ? 'Could not mark the regular present.' : 'Could not add the player.';
+    toast.add({ color: 'error', title: apiErrorMessage(err, fallback) });
   } finally {
-    adding.value = false;
+    busy.value = false;
     await nextTick();
     menu.value?.inputRef?.focus();
   }
@@ -95,21 +110,21 @@ async function add(item: Item | undefined) {
       ignore-filter
       :reset-search-term-on-select="false"
       :reset-search-term-on-blur="false"
-      :loading="state.status === 'loading' || adding"
+      :loading="state.status === 'loading' || busy"
       icon="i-lucide-search"
       placeholder="Find a known player (name or ID)…"
       aria-label="Find a known player"
       :maxlength="100"
       autocomplete="off"
       class="w-full"
-      @update:model-value="add"
+      @update:model-value="pick"
     >
       <template #item-label="{ item }">
         <span v-option-disabled="item.disabled" :class="{ 'text-muted italic': !item.displayName }">{{ item.label }}</span>
       </template>
       <template #item-trailing="{ item }">
         <span class="flex items-center gap-2">
-          <UBadge v-if="item.status !== 'addable'" variant="subtle" color="neutral" size="sm">{{ STATUS_TAG[item.status] }}</UBadge>
+          <UBadge v-if="STATUS_TAG[item.status]" variant="subtle" color="neutral" size="sm">{{ STATUS_TAG[item.status] }}</UBadge>
           <span class="text-muted tabular-nums">{{ item.playerId }}</span>
         </span>
       </template>

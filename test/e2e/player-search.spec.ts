@@ -43,19 +43,22 @@ test('search finds known players by part of a name or id and adds them by hand',
   await search.pressSequentially('sh');
   expect(new URL((await ash).url()).searchParams.get('limit')).toBe('20');
 
-  // A regular and a player already in the session show up, but can't be picked.
+  // A regular can be picked (to mark them present); a player already in the session can't.
   await expect(option(page, 'Ash Ketchum')).toBeVisible();
   await expect(option(page, 'Ash Regular')).toContainText('Regular');
-  await expect(option(page, 'Ash Regular')).toHaveAttribute('aria-disabled', 'true');
+  await expect(option(page, 'Ash Regular')).not.toHaveAttribute('aria-disabled', 'true');
   await expect(option(page, 'Ash Already')).toContainText('Already added');
   await expect(option(page, 'Ash Already')).toHaveAttribute('aria-disabled', 'true');
   await expect(option(page, 'Ash Ketchum')).not.toHaveAttribute('aria-disabled', 'true');
 
-  // Keyboard only: arrow to an addable player and press Enter.
-  await search.press('ArrowDown');
+  // Keyboard only: arrow down to Ash Ketchum (never landing on a disabled option) and press Enter.
   const highlighted = page.locator('[role="option"][data-highlighted]');
-  await expect(highlighted).not.toHaveAttribute('aria-disabled', 'true');
-  const picked = (await highlighted.textContent())!.match(/\d{7}/)![0];
+  for (let presses = 0; presses < 5 && !(await highlighted.textContent())?.includes('Ash Ketchum'); presses++) {
+    await search.press('ArrowDown');
+    await expect(highlighted).not.toHaveAttribute('aria-disabled', 'true');
+  }
+  await expect(highlighted).toContainText('Ash Ketchum');
+  const picked = KETCHUM;
   await search.press('Enter');
 
   await expect(sessionRow(page, picked)).toContainText('By hand');
@@ -71,6 +74,42 @@ test('search finds known players by part of a name or id and adds them by hand',
   // Nothing matches.
   await search.fill('zzz');
   await expect(page.getByText('No known players match. Add them by ID below.')).toBeVisible();
+});
+
+test('picking a regular marks them present for the date instead of adding them', async ({ page, api }) => {
+  await knownPlayers(api);
+  await page.goto(`/?date=${TUESDAY}`);
+  const search = searchBox(page);
+
+  await search.fill('Ash Regular');
+  await option(page, 'Ash Regular').click();
+
+  await expect(page.getByText('Marked Ash Regular present').first()).toBeVisible();
+  await expect(search).toHaveValue('');
+  await expect(search).toBeFocused();
+  await expect(sessionRow(page, REGULAR)).toHaveCount(0);
+  await page.getByRole('button', { name: /^Regulars \(/ }).click();
+  await expect(page.getByRole('checkbox', { name: 'Ash Regular' })).toBeChecked();
+
+  // Searching again: already present, so it can't be picked.
+  await search.fill('Ash Regular');
+  await expect(option(page, 'Ash Regular')).toContainText('Present');
+  await expect(option(page, 'Ash Regular')).toHaveAttribute('aria-disabled', 'true');
+});
+
+test('a regular who stopped being one meanwhile is refused with the reason, and the search stays', async ({ page, api }) => {
+  await knownPlayers(api);
+  await page.goto(`/?date=${TUESDAY}`);
+  const search = searchBox(page);
+
+  await search.fill('Ash Regular');
+  await expect(option(page, 'Ash Regular')).toContainText('Regular');
+  // Someone removes them from the regulars in another tab.
+  expect((await api.request(`/api/regulars/${REGULAR}`, { method: 'DELETE' })).status).toBe(204);
+  await option(page, 'Ash Regular').click();
+
+  await expect(page.getByText(`Player ${REGULAR} is not a regular.`).first()).toBeVisible();
+  await expect(search).toHaveValue('Ash Regular');
 });
 
 test('a player who became a regular meanwhile is refused with the reason, and the search stays', async ({ page, api }) => {

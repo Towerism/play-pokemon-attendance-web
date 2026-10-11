@@ -19,25 +19,37 @@ describe('toSearchResults', () => {
   const players = [
     { playerId: '0011', displayName: 'Ash Ketchum', isRegular: false },
     { playerId: '4200', displayName: 'Misty', isRegular: true },
+    { playerId: '4300', displayName: 'Dawn', isRegular: true },
     { playerId: '0042', displayName: 'Brock', isRegular: false },
     { playerId: '7', displayName: '', isRegular: false },
   ];
+  const session = (playerIds: string[] = [], presentRegularIds: string[] = []) => ({
+    playerIds: new Set(playerIds),
+    presentRegularIds: new Set(presentRegularIds),
+  });
 
-  it('tags each player as addable, a regular, or already in the session', () => {
-    expect(toSearchResults(players, new Set(['0042']))).toEqual([
+  it('tags each player by what picking them does: add, mark present, or nothing', () => {
+    expect(toSearchResults(players, session(['0042'], ['4300']))).toEqual([
       { playerId: '0011', displayName: 'Ash Ketchum', status: 'addable' },
-      { playerId: '4200', displayName: 'Misty', status: 'regular' },
+      { playerId: '4200', displayName: 'Misty', status: 'markPresent' },
+      { playerId: '4300', displayName: 'Dawn', status: 'present' },
       { playerId: '0042', displayName: 'Brock', status: 'alreadyAdded' },
       { playerId: '7', displayName: '', status: 'addable' },
     ]);
   });
 
-  it('calls a regular a regular even if they are listed in the session too', () => {
-    expect(toSearchResults([players[1]!], new Set(['4200']))[0]!.status).toBe('regular');
+  it('treats a regular as a regular even if they are listed in the session too', () => {
+    expect(toSearchResults([players[1]!], session(['4200']))[0]!.status).toBe('markPresent');
+    expect(toSearchResults([players[1]!], session(['4200'], ['4200']))[0]!.status).toBe('present');
+  });
+
+  it('ignores the present list for a non-regular', () => {
+    expect(toSearchResults([players[0]!], session([], ['0011']))[0]!.status).toBe('addable');
   });
 
   it('compares ids as text, so 42 is not 0042', () => {
-    expect(toSearchResults([players[2]!], new Set(['42']))[0]!.status).toBe('addable');
+    expect(toSearchResults([players[3]!], session(['42']))[0]!.status).toBe('addable');
+    expect(toSearchResults([players[1]!], session([], ['04200']))[0]!.status).toBe('markPresent');
   });
 });
 
