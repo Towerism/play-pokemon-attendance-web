@@ -183,8 +183,8 @@ export const submission = sqliteTable(
     error: text('error'),
     /** The attempt this one retries or resumes. */
     retryOf: integer('retry_of'),
-    /** `undo` removes the records another submission added (M7). */
-    kind: text('kind', { enum: ['submit', 'undo'] }).notNull().default('submit'),
+    /** `undo` removes the records another submission added; `clear` removes every player record in the play session (M7). */
+    kind: text('kind', { enum: ['submit', 'undo', 'clear'] }).notNull().default('submit'),
     /** For an undo: the submission whose added records it removes. */
     undoOf: integer('undo_of'),
   },
@@ -202,7 +202,7 @@ export const submissionItem = sqliteTable(
       .notNull()
       .references(() => player.playerId),
     origin: text('origin', { enum: ['session', 'regular', 'upstream'] }).notNull(),
-    /** `removed` and `already_removed` are an undo's outcomes. */
+    /** `removed` and `already_removed` are the outcomes of an undo or a clear. */
     outcome: text('outcome', {
       enum: ['pending', 'added', 'already_present', 'failed', 'skipped', 'unrequested', 'removed', 'already_removed'],
     }).notNull(),
