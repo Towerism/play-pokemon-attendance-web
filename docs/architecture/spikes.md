@@ -162,7 +162,7 @@ about staff is built until its fixtures exist.
 - **Questions:**
   1. The endpoints, methods and request/response bodies for listing, assigning and removing staff. Is it
      `POST …/records/` with `player: false` and a `role`?
-  2. Is the tournament the date's play session, or a separate resource? How does the page find it from a date?
+  2. How play-tools lists a league's tournaments (a separate resource from play sessions, per the organizer) and how to find a date's tournaments.
   3. Where the role list comes from (an endpoint or a bundle constant), and its codes and labels.
   4. How the event lists everyone on it, so the app can check "is this player id already listed" (players and
      staff, every page) before every assign. The app never sends such an assignment, so the capture doesn't need
