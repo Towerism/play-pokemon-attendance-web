@@ -162,4 +162,4 @@ History with retry/resume, and boot/shutdown handling. A 5xx from `_bulk` may st
 so the job re-reads before resending (ADR-0004 update). M6 (metrics and curation) is built: metrics
 computed on read from sightings in one SQL query, the Players page tabs (promotion candidates, stale
 regulars, all), metrics on Regulars, thresholds in Settings (`curation_settings`), and "present" ticks
-for regulars on This week. Next is M7 (hardening); see architecture §13.
+for regulars on This week. Next is M7 (hardening); see architecture §13. M8 (assign staff, #41) is proposed in ADR-0007 and waits on spike S6 (capturing play-tools' staff calls).

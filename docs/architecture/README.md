@@ -32,10 +32,11 @@ Pain points that remain with the CLI:
 - **G3 TDF import.** … uploading a `.tdf`, which extracts its players into the session players (deduplicated against regulars and against the existing session list).
 - **G4 Submit attendance.** One click. The app obtains a valid JWT from `access.pokemon.com` **without manual token copying**, asks *which date* the attendance is for, resolves that date to the play session, and uploads regulars ∪ session players with no duplicates.
 - **G5 Metrics.** Every player ID that ever enters the system is tracked, with enough metrics to curate the regulars list by hand (promote frequent non-regulars, demote regulars who stopped coming).
+- **G6 Assign staff** (M8, [ADR-0007](adr/0007-staff-assignment.md)). In the same weekly flow, assign one or more staff (player ID + role; several people, roles may repeat) to each of the date's tournaments in play-tools, so they earn staff points. A search over the league's **staff list** (everyone this app has assigned before) fills in the player and their last role.
 
 ### Non-goals (v1)
 
-- Replacing any other play-tools feature (tournaments, staff, reporting).
+- Replacing any other play-tools feature (creating or running tournaments, reporting). Staff *assignment* moved into scope as G6 (ADR-0007).
 - Real-time multi-user editing. One or two organizers per league is the expected load.
 - Storing Pokémon Trainer Club **passwords** (see [ADR-0003](adr/0003-pokemon-auth-pkce-refresh-token.md)).
 - Storing minors' birthdates or other PII from the TDF beyond name and player ID.
@@ -69,6 +70,7 @@ flowchart LR
       SESSION["sessions<br/>(session drafts, TDF import)"]
       SUBMIT["submission<br/>(plan → execute → reconcile)"]
       METRICS["metrics<br/>(sightings, curation queries)"]
+      STAFF["staffing<br/>(staff assignments, staff list)"]
       PCONN["pokemon-connection<br/>(token vault, refresh)"]
     end
     JOBS["Nitro plugin job runner + Nitro scheduled task<br/>(submission jobs, token keep-alive)"]
@@ -93,6 +95,8 @@ flowchart LR
   PCONN --> P1 --> A1 --> PTC
   SUBMIT --> P2 --> A2 --> OP
   SESSION --> P2
+  STAFF --> P2
+  SUBMIT -. "kind = staff job" .-> STAFF
   Modules --> DB
   DB -. continuous replication .-> BK
 ```
@@ -136,7 +140,7 @@ app/                         Vue side (Nuxt 4 `app/` dir)
 server/                      Nitro side
   api/                       file-based routes (see §7), e.g. sessions/[date]/tdf.post.ts
   modules/                   domain modules (plain TS; no h3 imports)
-    roster/  sessions/  submission/  metrics/  pokemon/{ports,adapters,vault}/ + pokemon/connection.ts
+    roster/  sessions/  submission/  metrics/  staffing/ (M8)  pokemon/{ports,adapters,vault}/ + pokemon/connection.ts
   plugins/jobs.ts            boot job runner; mark `running` submissions `interrupted`
   tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (hourly)
   db/                        drizzle schema, migrations, client
@@ -293,6 +297,33 @@ default 20 players at least 10 s apart (configurable). That is gentler per
 second than the CLI's 50 every 15 s, and small batches rarely hit the 502
 gateway timeout (ADR-0004 update). Retries happen on 429/5xx only.
 
+#### Staff assignment (proposed, M8; contract frozen by spike S6)
+
+Nobody has captured the play-tools staff calls yet (§12, S6). The port is written in domain terms so that any
+S6 answer fits behind it. A tournament could be the play session itself, or a separate upstream resource.
+Staff could be records with a `role`, or something else entirely. Either way only the adapter, its fixtures
+and `test/server/fake-pokemon.ts` change. See [ADR-0007](adr/0007-staff-assignment.md).
+
+```ts
+interface PlayToolsGateway {
+  // … attendance methods above …
+  listStaffableEvents(groupId: string, range: DateRange): Promise<StaffableEvent[]>;
+  // StaffableEvent = {ref: StaffEventRef, label, startsAt, editableUntil}; one per tournament on the date
+  listStaffRoles(groupId: string): Promise<StaffRole[]>;          // {code, label}; adapter-held list if upstream has none
+  listStaff(ref: StaffEventRef): Promise<StaffRecord[]>;          // {recordId, playerId, role, name}, every page
+  assignStaff(ref: StaffEventRef, a: {playerId: PlayerId; role: string}): Promise<StaffAssignResult>;
+  // = {status: 'assigned', recordId} | {status: 'already_assigned'} | {status: 'holds_player_record', recordId}
+  //   | {status: 'rejected', error}
+  unassignStaff(ref: StaffEventRef, recordId: string): Promise<'removed' | 'not_found'>;
+}
+// StaffEventRef is opaque to the domain (e.g. {groupId, playSessionId} or {tournamentId}); it is stored as JSON text.
+```
+
+Working assumption until S6 (from S3/S4): a staff member is a single `POST …/records/` with `player: false` and a
+`role`, on the date's play session. The existing duplicate-participant rule then applies. The `_bulk` wire schema
+keeps `role: null`, and staff get their own strict request schema. Player ids are refused locally unless they are
+digits only, and record ids unless they match `^[A-Za-z0-9-]{1,64}$`, the same as for attendance.
+
 ### 4.4 Resolving "which play session?" from a date
 
 1. The organizer picks a **date** (defaults to today in the league timezone, e.g. `America/Chicago`).
@@ -327,6 +358,8 @@ erDiagram
   PLAYER ||--o{ SIGHTING : "evidence of attendance"
   LEAGUE ||--|| POKEMON_CONNECTION : "authorized by"
   LEAGUE ||--o| CURATION_SETTINGS : "curated with"
+  LEAGUE ||--o{ STAFF_ASSIGNMENT : "staffs events with"
+  PLAYER ||--o{ STAFF_ASSIGNMENT : "staffs as"
   APP_USER }o--|| LEAGUE : manages
 
   LEAGUE {
@@ -388,17 +421,18 @@ erDiagram
     text status "planned|running|succeeded|partial|failed|interrupted"
     text error "why it stopped early"
     int retry_of "the attempt this one retries or resumes"
-    text kind "submit|undo|clear (M7)"
+    text kind "submit|undo|clear (M7)|staff (M8)"
     int undo_of "for an undo: the submission it undoes"
   }
   SUBMISSION_ITEM {
     int submission_id FK
     text player_id FK
     text origin "regular|session|upstream"
-    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed"
+    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed; staff: assigned|already_assigned|removed|already_removed|failed|skipped"
     text error
     text record_id "upstream record, for undo and clear (M7)"
     bool as_staff "present upstream in a staff role"
+    text role "staff jobs only (M8); null for attendance"
   }
   SUBMISSION_EVENT {
     int id PK "also the SSE event id"
@@ -438,6 +472,21 @@ erDiagram
     int promote_min_sightings "1-52"
     int stale_after_sessions "1-52"
   }
+  STAFF_ASSIGNMENT {
+    int id PK
+    text league_id FK
+    date session_date
+    text event_ref "opaque StaffEventRef JSON (M8)"
+    text event_label "e.g. 'Open play · TCG · Tue 6:00 PM'"
+    text player_id FK
+    text role "upstream role code, stored as text"
+    text state "pending|assigned|failed|removing"
+    text record_id "upstream staff record once assigned"
+    datetime assigned_at "first reached play-tools"
+    datetime removed_at "tombstone: the organizer removed it; the staff job deletes record_id"
+    text created_by
+    datetime created_at
+  }
 ```
 
 Key modelling decisions:
@@ -450,6 +499,14 @@ Key modelling decisions:
 - **Manual session players are evidence.** Adding a player to a date by hand writes a `SIGHTING(kind = manual)`, and removing them retracts it. Adding a regular as a session player is refused (409), since regulars are submitted every session anyway. A removed session player stays on file as a known player.
 - **The session-player list is per date** (`SESSION_DRAFT`). Uploading two TDFs on the same night (e.g. a TCG and a VGC event) merges them, keyed by `player_id`. Re-uploading the same file (same `sha256`) is a no-op.
 - **TDF import is preview → commit.** The preview parses the file and holds its players (name and ID only) in `TDF_UPLOAD_PLAYER` as a `pending` upload; it changes nothing else, and previews never committed are dropped after a day. The commit classifies against the state *at commit time*: every player becomes known, non-regulars become `SESSION_PLAYER(source = tdf)`, and **every** player in the file, regulars included, gets a `SIGHTING(kind = tdf)`. Committing again is a no-op. A player already added by hand stays `manual` and gains the `tdf` sighting. Removing a session player retracts both their `manual` and `tdf` sightings for the date, since the organizer is saying they weren't there.
+- **Staff assignments are desired state** (M8, [ADR-0007](adr/0007-staff-assignment.md)), owned by the `staffing`
+  module. One row per wanted (event, player, role), unique on `(league_id, event_ref, player_id, role)` while
+  not removed. Several people may share a role. Removing a row that never reached play-tools deletes it.
+  Removing one that did sets `removed_at`, and the next staff job deletes only that `record_id`. Staff
+  assigned directly in play-tools are never stored or touched.
+- **The staff list is a query, not a table:** every player with an assignment whose `assigned_at` is set,
+  ranked by latest `session_date` and then by count, with the last role used. Staff are `PLAYER` rows
+  (made known through `RosterService`, name and ID only) but are **not** sightings (ADR-0005).
 - **TDF privacy.** The parser reads `userid`, `firstname`, `lastname` and tournament metadata only. Birthdates and other fields are never persisted, and the raw file is discarded after parsing.
 
 ### Metrics (SQL views, computed on read — the data is small)
@@ -643,6 +700,65 @@ confirmed, so it doesn't contradict ADR-0004's "never deleted automatically" (se
   that ends `succeeded` also resets the date (`SessionsService.resetAfterClear`): the draft goes back to `draft`
   and its committed TDF imports are dropped, so the same file can be imported again.
 
+### 6.4 Assign staff (proposed, M8)
+
+See [ADR-0007](adr/0007-staff-assignment.md). Staff are applied **before** attendance, so a staffer who is
+also a regular is `already_present (as_staff)` when attendance goes in, and never a duplicate.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor O as Organizer
+  participant W as Web
+  participant S as Server (staffing)
+  participant J as Job (kind = staff)
+  participant G as PlayToolsGateway
+
+  O->>W: This week → Staff card
+  W->>S: GET /api/sessions/2026-10-14/staff
+  S->>G: listStaffableEvents(date) + listStaff(each event)
+  S-->>W: events, each with our assignments + staff set in play-tools
+  O->>W: search staff list "ash" → pick, role pre-filled (Judge)
+  W->>S: POST /api/sessions/2026-10-14/staff {eventRef, playerId, role}
+  O->>W: "Assign staff in play-tools"
+  W->>S: POST /api/sessions/2026-10-14/staff/apply {eventRef}
+  S-->>W: 202 {submissionId}
+  J->>G: listStaff(event) → plan toAssign / toRemove
+  loop one call at a time, ≥ NUXT_STAFF_DELAY_MS apart
+    J->>G: assignStaff / unassignStaff
+  end
+  J->>G: listStaff(event) → reconcile
+  J-->>W: SSE: 2 assigned, 0 failed
+```
+
+The job runs on the same rails as undo and clear (§6.3): the per-league lease, the event log and SSE, boot
+recovery, shutdown, retry that re-reads, and History ("Staff for <event>").
+
+- **Plan:** read the event's staff.
+  - `toAssign` = the wanted (player, role) pairs that are not upstream.
+  - `toRemove` = tombstoned assignments with a `record_id`.
+  - A pair already upstream (set in play-tools, or by an earlier run) is `already_assigned`, and its record id
+    is adopted.
+  - Staff upstream that nobody asked for are listed, never deleted.
+- **Execute:** one call at a time, ≥ `NUXT_STAFF_DELAY_MS` (1 s, never under 500 ms) apart.
+  - `holds_player_record`: the person is already on the session as a player. If S6 shows play-tools changes the
+    role in place (`PATCH …/records/{id}/`), the job does the same. Otherwise the item fails with that code and
+    a hint to fix it in play-tools. A player record is never deleted to make room.
+  - Errors: a 429 waits for `Retry-After`; a 5xx re-reads before retrying (it may have landed); an item is
+    tried at most 3 times. Non-retryable errors stop the job and mark the rest `skipped`.
+- **Reconcile:** re-read, then decide each outcome.
+  - `assigned` and `already_assigned` write `record_id` and `assigned_at` back through `StaffingService`.
+    Only then does the person join the staff list.
+  - `removed` and `already_removed` delete the tombstoned row.
+- **Refused** before anything is created:
+  - `nothing_to_apply`;
+  - `edit_window_closed` and `unknown_staff_event` (re-resolved like Submit);
+  - `submission_running` while the lease is held;
+  - `shutting_down`;
+  - `unknown_role` for a role not in `listStaffRoles`.
+- **Submit attendance** warns when the chosen play session has pending staff, and offers **Apply staff first**.
+  This runs the staff job, then the submission.
+
 ## 7. HTTP API (Nitro server routes)
 
 All routes are under `/api` as Nitro file-based handlers in `server/api/`.
@@ -669,23 +785,28 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `GET /submissions?date=` · `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` → 202 | History (newest first), one submission with per-player items, progress (`Last-Event-ID` resumes), retry/resume as a new attempt |
 | `POST /submissions/{id}/undo` → 202                       | Remove the records this submission added, as a new undo attempt → `{ submissionId }` (§6.3). Summaries carry `kind`, `undoOf`, `undoable`, `undoBlockedReason`; items carry `removedBy` |
 | `GET /sessions/{date}/clear?playSessionId=` · `POST /sessions/{date}/clear` → 202 | Clear session (§6.3). `GET` previews `{ playSessionId, playSessionLabel, players: [{ playerId, name, addedByApp }], staffKept, otherSessionHasAppRecords }`. `POST` takes `{ playSessionId, confirmDate }` and starts a `kind = 'clear'` job → `{ submissionId }` |
+| `GET /staff?q=&limit=` (M8)                               | Staff list search: players this app has assigned as staff, `[{ playerId, name, timesStaffed, lastStaffedOn, lastRole }]`, most recent first; `q` as for `/players` |
+| `GET /staff/roles` (M8)                                   | `[{ code, label }]` from `listStaffRoles`, cached 1 h |
+| `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, events: [{ eventRef, label, editable, assignments: [{ id, playerId, name, role, state }], upstreamOnly: [{ playerId, name, role }] }] }`. Reads upstream live, like the clear preview |
+| `POST /sessions/{date}/staff` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | Add `{ eventRef, playerId, role, name? }`: 201 when added, 200 when that (player, role) is already listed for the event, 422 `unknown_role`/`unknown_staff_event`. Delete: 204 (gone or tombstoned for the next apply), 404 |
+| `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ eventRef }` → `{ submissionId }` (§6.4) |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` → 409,
 `cannot_submit` → 403, `unknown_play_session` / `edit_window_closed` / `nothing_to_submit` / `not_undoable` / `nothing_to_undo` /
-`confirmation_mismatch` / `nothing_to_clear` → 422,
+`confirmation_mismatch` / `nothing_to_clear` / `nothing_to_apply` / `unknown_staff_event` / `unknown_role` → 422,
 `not_found` → 404, `shutting_down` → 503.
 
 ## 8. Frontend (Nuxt pages)
 
 | Page (`app/pages/`) | Contents                                                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; a **Find a known player** search (`PlayerSearch`: from 2 characters, debounced, `GET /players?q=&limit=20`; picking a player adds them by hand, picking a regular marks them present like the tick does; present regulars and players already listed show disabled with a tag); session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer; a **Danger zone** with **Clear session…** → `ClearSessionDialog` (session pick, preview, type the date, progress) |
+| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; a **Find a known player** search (`PlayerSearch`: from 2 characters, debounced, `GET /players?q=&limit=20`; picking a player adds them by hand, picking a regular marks them present like the tick does; present regulars and players already listed show disabled with a tag); session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer; a **Staff** card (M8) per tournament on the date, with assignment rows (player, role, state) and play-tools-only staff shown read-only. Its `StaffSearch` searches `GET /staff?q=` first, then every known player, with add-by-ID for a first-time staffer; picking pre-fills their last role. **Assign staff in play-tools** opens the same progress view as Submit; a **Danger zone** with **Clear session…** → `ClearSessionDialog` (session pick, preview, type the date, progress) |
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All** (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
-| `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo and clear rows are labelled ("Undo of #N", "Cleared session …") |
+| `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …") |
 | `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; app users |
 | `login.vue`         | App login (the only page outside `auth.global.ts` middleware)                                                                  |
 
@@ -743,6 +864,7 @@ flowchart LR
   - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils) and `NUXT_TOKEN_VAULT_KEY`. Both are optional. If either is unset, it is generated once into `/data/secrets/` (mode 0600). Env wins over the file. A malformed value fails startup and is never silently regenerated.
   - `NUXT_SUBMISSION_BATCH_SIZE` (20, capped at 50), `NUXT_SUBMISSION_BATCH_DELAY_MS` (10000),
     `NUXT_SUBMISSION_SETTLE_MS` (180000), `NUXT_SUBMISSION_SETTLE_POLL_MS` (15000). Optional tuning, not in the template.
+  - `NUXT_STAFF_DELAY_MS` (1000, never under 500; M8). Optional tuning, not in the template.
   - `NUXT_POKEMON_ACCESS_URL` / `NUXT_POKEMON_API_URL`. **Test doubles only**: they point the adapters at a fake upstream (`test/server/fake-pokemon.ts`). Unset means the real Pokémon hosts; never set them in the template.
   - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag, HSTS and absolute links are right. The launcher sets `NUXT_SESSION_COOKIE_SECURE` from it (`https:` → Secure) unless that is set explicitly; on plain HTTP a Secure cookie would never come back and login would fail.
   - `NUXT_TRUSTED_PROXIES`. Optional *Advanced* template field. Comma-separated addresses or CIDR ranges whose `X-Forwarded-For` is believed for the login rate limit, or `none`. Blank means the default `127.0.0.0/8,::1/128,172.16.0.0/12`, which covers Caddy on the same Unraid box or Docker network. Set it to the proxy's exact address when Caddy runs on `br0` or another host, or when Docker hides client addresses behind its gateway (rootless or userland-proxy setups). An invalid entry fails startup.
@@ -787,6 +909,8 @@ flowchart LR
 | Upstream API / auth changes                                                                                                                                   | Med        | Med    | All knowledge sits in two adapters, with Zod-validated responses and contract tests on recorded fixtures. The connection banner reports auth failures fast.                                      |
 | Auth code capture (S1) doesn't work with paste-back                                                                                                           | Med        | Med    | Companion extension (option b), or the manual token as last resort                                                                                                                               |
 | Refresh token TTL is short                                                                                                                                    | Low        | Low    | Hourly keep-alive. If the TTL is under a week, reconnect is one click at the start of the session.                                                                                                |
+| Staff upstream contract unknown until S6, or staff aren't play-session records at all (M8) | Med | Med | Event-neutral port (`StaffEventRef`), so S6 changes only the adapter. Nothing in M8 is built before S6 fixtures exist |
+| A staffer already holds a player record (duplicate-participant rule) | Med | Low | Apply staff before attendance, with a warning in Submit; `holds_player_record` names the fix; never delete a player record to make room |
 | Rate limiting                                                                                                                                                 | Low        | Low    | Throttled batches, plus retry on 429 with `Retry-After`                                                                                                                                          |
 
 ## 12. Spikes before building (timeboxed, ≤ 1 day total)
@@ -798,6 +922,7 @@ flowchart LR
 | S3 | `play_sessions` response shape: date field, timezone, pagination, statuses                                        | Record fixtures with a real token                                                              |
 | S4 | `_bulk` semantics: response shape, partial failures, posting an already-present player (error or no-op?)          | Bulk-add to a throwaway session, then undo                                                     |
 | S5 | `userId` for `users/{id}/activity_groups/`: JWT `sub` or a separate profile ID?                                    | Decode the JWT and compare it with play-tools network calls                                    |
+| S6 | Staff (M8): which calls the tournament page's staff section makes, the role list, whether a tournament is a play session, what an existing player or staff record does to an assignment, PATCH of `role` | The organizer records a HAR in their own browser while assigning and removing one staffer; we scrub it into fixtures ([spikes.md](spikes.md#s6-staff-assignment-planned)) |
 
 Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions they trigger are in [spikes.md](spikes.md).
 
@@ -813,6 +938,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
+| M8 Staff                      | S6 capture and fixtures, then the `staffing` module, gateway staff methods + fake, staff job kind, routes, Staff card and `StaffSearch` ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
 
 ## 14. Architecture Decision Records
 
@@ -822,3 +948,4 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 - [ADR-0004](adr/0004-idempotent-diff-based-submission.md) Idempotent diff-based submission (plan → execute → reconcile)
 - [ADR-0005](adr/0005-sightings-based-metrics.md) Curation metrics from sightings, not submissions
 - [ADR-0006](adr/0006-docker-on-unraid.md) Production deployment as a Docker container on Unraid
+- [ADR-0007](adr/0007-staff-assignment.md) Assign staff to events as desired state, applied by a reconcile job (proposed, M8)

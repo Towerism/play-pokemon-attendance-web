@@ -146,6 +146,31 @@ Plan (changed 2026-10-10 at the organizer's request): refresh **hourly** from th
   - `criteria`: the caller's **permissions** per resource, e.g. `play_sessions.create_attendance`.
 - `https://me.pokemon.com/me` → 200 with `guid`, `consent_age`, `mailing_address`, `meta` and `organized_play`. Not needed.
 
+### S6: staff assignment (planned)
+
+This decides the staff methods on `PlayToolsGateway` ([ADR-0007](adr/0007-staff-assignment.md), issue #41). Nothing
+about staff is built until its fixtures exist.
+
+- **Capture:** the organizer works in their own logged-in browser; there is no headless login. On
+  play-tools, they open DevTools → Network (filter `api.play.pokemon.com`), then:
+  - open a tournament's page and its staff section;
+  - assign one consenting staffer;
+  - try a second role for the same person, and a staffer who is already a player on that session;
+  - remove the staffer again.
+
+  Then they save the HAR outside the repo. Tokens, cookies and every name other than the consenting test
+  people are scrubbed before anything becomes a fixture under `server/modules/pokemon/adapters/play-tools/fixtures/`.
+- **Questions:**
+  1. The endpoints, methods and request/response bodies for listing, assigning and removing staff. Is it
+     `POST …/records/` with `player: false` and a `role`?
+  2. Is the tournament the date's play session, or a separate resource? How does the page find it from a date?
+  3. Where the role list comes from (an endpoint or a bundle constant), and its codes and labels.
+  4. Two roles for one person; staff for someone who already has a player record; whether `PATCH …/records/{id}/`
+     changes `role`.
+  5. Behaviour after `final_modifiable_datetime`, and which `criteria` permission gates staff edits.
+- **Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the
+  routes to `test/server/fake-pokemon.ts`.
+
 ## Design changes triggered (apply in M4/M5)
 
 1. **§4.4 date → session:** make one query with `start_date:greater_than_or_equal_to = localMidnight(date)` and `start_date:less_than_or_equal_to = localMidnight(date + 1)`, both converted to UTC, per status. Don't page through all sessions. `PlaySessionStatus` is now `active | pending | complete`.
