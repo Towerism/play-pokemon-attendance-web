@@ -65,6 +65,8 @@ export const PlayerPatch = z
   .refine((p) => Object.keys(p).length > 0, 'Nothing to change');
 export type PlayerPatch = z.infer<typeof PlayerPatch>;
 
+export const PLAYERS_LIMIT_MAX = 100;
+
 /** The Players page tabs: promotion candidates, stale regulars, everyone (architecture §8). */
 export const PlayersQuery = z
   .object({
@@ -75,6 +77,13 @@ export const PlayersQuery = z
       .max(100)
       .optional()
       .transform((s) => s || undefined),
+    /** Caps the result, e.g. for search-as-you-type; absent means every match. */
+    limit: z
+      .string()
+      .regex(/^\d+$/, 'Use a whole number')
+      .transform(Number)
+      .pipe(z.number().int().min(1).max(PLAYERS_LIMIT_MAX))
+      .optional(),
   })
   .transform(compact);
 export type PlayersQuery = z.infer<typeof PlayersQuery>;

@@ -101,4 +101,16 @@ describe('PlayersQuery', () => {
   it('rejects an unknown filter', () => {
     expect(PlayersQuery.safeParse({ filter: 'regulars' }).success).toBe(false);
   });
+
+  it.each([
+    ['1', 1],
+    ['20', 20],
+    ['100', 100],
+  ])('takes limit=%s from the query string', (limit, expected) => {
+    expect(PlayersQuery.parse({ limit })).toEqual({ filter: 'all', limit: expected });
+  });
+
+  it.each(['0', '101', '2.5', 'abc', '', '-1'])('rejects limit=%j', (limit) => {
+    expect(PlayersQuery.safeParse({ limit }).success).toBe(false);
+  });
 });
