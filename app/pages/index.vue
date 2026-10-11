@@ -159,5 +159,14 @@ async function removePlayer(player: SessionPlayer) {
         </template>
       </UCollapsible>
     </section>
+
+    <section class="space-y-2 rounded-md border border-error/40 p-4" aria-labelledby="danger-zone">
+      <h2 id="danger-zone" class="text-lg font-medium text-error">Danger zone</h2>
+      <p class="text-sm text-muted">
+        Clear session deletes every player's attendance in one play session in play-tools, including anyone entered there directly.
+        Staff records stay. To remove only what one submission added, use Undo in History instead.
+      </p>
+      <ClearSessionDialog :date="date" :play-session-id="session?.playSessionId ?? null" @finished="refresh" />
+    </section>
   </div>
 </template>

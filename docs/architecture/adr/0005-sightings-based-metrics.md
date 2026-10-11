@@ -48,3 +48,7 @@ the sightings of a player another play session that day still has. Metrics are c
 backfilled: the player's counts, last seen and streak drop that date, and a date left with no sightings at all
 stops counting as a session held. The decision above is unchanged; this is one more way evidence is retracted.
 
+**Clear session also retracts `upstream_existing`** (#15). Unlike an undo, it deletes the very records entered
+in play-tools by someone else, so the evidence behind that sighting is gone too. A cleared player loses every
+sighting for that date, unless another play session that day still has them.
+

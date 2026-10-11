@@ -65,6 +65,8 @@ const STATUS: Record<SubmissionErrorCode, number> = {
   not_found: 404,
   not_undoable: 422,
   nothing_to_undo: 422,
+  confirmation_mismatch: 422,
+  nothing_to_clear: 422,
 };
 
 /** Maps submission and Pokémon errors to HTTP; `data.code` tells the UI what to show. */
@@ -73,4 +75,11 @@ export function submissionHttpError(err: unknown): never {
     throw createError({ statusCode: STATUS[err.code], message: err.message, data: { code: err.code } });
   }
   return pokemonHttpError(err);
+}
+
+/** Clear session runs only when the organizer typed the session's date exactly; 422 `confirmation_mismatch` otherwise. */
+export function assertClearConfirmed(date: string, confirmDate: string): void {
+  if (confirmDate !== date) {
+    submissionHttpError(new SubmissionError('confirmation_mismatch', `Type ${date} exactly to confirm clearing the session.`));
+  }
 }

@@ -1376,3 +1376,450 @@ describe('undo never deletes what it did not add', () => {
   }, 60_000);
 });
 
+
+// --- Clear session (danger zone): every player record in one play session ---
+
+/** Clears the play session and waits for the job to finish. */
+async function clear(playSessionId = PS): Promise<SubmissionView> {
+  const started = await service.clear(L, TUESDAY, playSessionId, 'organizer');
+  await service.idle();
+  return service.get(L, started.submissionId);
+}
+
+/** A submission for another play session the same day, written as M5 would have. */
+function eveningSubmission(items: { playerId: string; outcome: 'added' | 'already_present' }[]): number {
+  const row = database.sqlite
+    .prepare(
+      "insert into submission (league_id, session_date, play_session_id, play_session_label, started_by, started_at, status) values ('default', ?, 'ps-evening', 'Evening', 'o', 0, 'succeeded') returning id",
+    )
+    .get(TUESDAY) as { id: number };
+  roster.ensurePlayers(L, items.map((i) => ({ playerId: id(i.playerId) })));
+  for (const item of items) {
+    database.sqlite
+      .prepare("insert into submission_item (submission_id, player_id, origin, outcome, record_id) values (?, ?, 'session', ?, ?)")
+      .run(row.id, item.playerId, item.outcome, `ev-${item.playerId}`);
+  }
+  return row.id;
+}
+
+describe('clearing a play session', () => {
+  it('deletes every player record, including ones entered in play-tools directly, and keeps the staff record', async () => {
+    sessionPlayers('1');
+    await submit();
+    upstream.has('5', { name: 'Misty Waterflower' }); // entered in play-tools directly
+    upstream.has('7', { asStaff: true }); // the organizer's record
+    const players = [upstream.recordOf('1'), upstream.recordOf('5')];
+
+    const cleared = await clear();
+
+    expect(upstream.removeCalls.map((c) => c.recordId).sort()).toEqual(players.sort());
+    expect(upstream.ids()).toEqual(['7']);
+    expect(cleared).toMatchObject({ kind: 'clear', undoOf: null, status: 'succeeded', playSessionId: PS, date: TUESDAY });
+    expect(outcomes(cleared)).toEqual({ '1': 'removed', '5': 'removed' });
+    expect(cleared.items.every((i) => i.origin === 'upstream')).toBe(true);
+  });
+
+  it('adds players it finds upstream but does not know to the roster, with the name play-tools shows', async () => {
+    upstream.has('0042', { name: 'Brock Harrison' });
+
+    const cleared = await clear();
+
+    expect(roster.getPlayers(L, [id('0042')])).toEqual([expect.objectContaining({ playerId: '0042', displayName: 'Brock Harrison' })]);
+    expect(cleared.items).toEqual([expect.objectContaining({ playerId: '0042', displayName: 'Brock Harrison', outcome: 'removed' })]);
+  });
+
+  it('never deletes a record added after its own first read', async () => {
+    upstream.has('1');
+    upstream.has('2');
+    upstream.onRemove = (_r, call) => {
+      if (call === 1) upstream.has('8'); // someone adds a player while the clear runs
+    };
+
+    const cleared = await clear();
+
+    expect(upstream.removeCalls.map((c) => c.recordId)).not.toContain('pre-8');
+    expect(upstream.ids()).toEqual(['8']);
+    expect(outcomes(cleared)).toEqual({ '1': 'removed', '2': 'removed' });
+    expect(cleared.status).toBe('succeeded');
+  });
+
+  it('sends deletes one at a time, at least the undo delay apart', async () => {
+    for (const p of ['1', '2', '3', '4', '5']) upstream.has(p);
+    let inFlight = 0;
+    upstream.onRemove = () => {
+      inFlight += 1;
+      expect(inFlight).toBe(1);
+      inFlight -= 1;
+    };
+
+    await clear();
+
+    const starts = upstream.removeCalls.map((c) => c.at);
+    expect(starts).toHaveLength(5);
+    for (let i = 1; i < starts.length; i += 1) expect(starts[i]! - starts[i - 1]!).toBeGreaterThanOrEqual(UNDO_DELAY);
+    expect(sleeps).toEqual([UNDO_DELAY, UNDO_DELAY, UNDO_DELAY, UNDO_DELAY]);
+  });
+
+  it('counts a 404 as already removed and trusts the final re-read for the rest: partial', async () => {
+    upstream.has('1');
+    upstream.has('5');
+    upstream.onRemove = (recordId) => {
+      if (recordId === 'pre-1') {
+        upstream.records = upstream.records.filter((r) => r.recordId !== recordId);
+        return 'not_found';
+      }
+      return 'removed'; // says 204 for 5, but keeps it
+    };
+
+    const cleared = await clear();
+
+    expect(outcomes(cleared)).toEqual({ '1': 'already_removed', '5': 'failed' });
+    expect(cleared.items.find((i) => i.playerId === '5')!.error).toMatch(/still in play-tools/i);
+    expect(cleared.status).toBe('partial');
+  });
+
+  it('deletes every record of a player listed twice, keeping one item for them', async () => {
+    upstream.has('1');
+    upstream.records.push({ recordId: 'dup-1', playerId: id('1'), isPlayer: true, name: '' });
+
+    const cleared = await clear();
+
+    expect(upstream.removeCalls.map((c) => c.recordId).sort()).toEqual(['dup-1', 'pre-1']);
+    expect(cleared.items).toEqual([expect.objectContaining({ playerId: '1', outcome: 'removed', recordId: 'pre-1' })]);
+    expect(cleared.status).toBe('succeeded');
+  });
+
+  it('reports progress like an undo: planned, one event per delete, reconciled, finished', async () => {
+    upstream.has('1');
+    upstream.has('2');
+
+    const cleared = await clear();
+
+    expect(service.events(L, cleared.id).map((e) => [e.type, e.done, e.total])).toEqual([
+      ['planned', 0, 2],
+      ['record_removed', 1, 2],
+      ['record_removed', 2, 2],
+      ['reconciled', 2, 2],
+      ['finished', 2, 2],
+    ]);
+    expect(service.events(L, cleared.id).at(-1)!.message).toMatch(/clear succeeded/i);
+  });
+});
+
+describe('starting a clear', () => {
+  it('is refused while a submission runs for the league, before anything is created', async () => {
+    sessionPlayers('1');
+    upstream.has('5');
+    let release!: () => void;
+    upstream.gate = new Promise((r) => (release = r));
+    await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    const before = countSubmissions();
+
+    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('submission_running');
+    expect(countSubmissions()).toBe(before);
+    release();
+    await service.idle();
+    expect(upstream.removeCalls).toEqual([]);
+  });
+
+  it('is refused once the edit window has closed, for an unknown play session, and when there is nobody to clear', async () => {
+    upstream.has('7', { asStaff: true });
+    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('nothing_to_clear');
+    expect((await refusal(service.clear(L, TUESDAY, 'ps-nope', 'o'))).code).toBe('unknown_play_session');
+    upstream.has('1');
+    clock = new Date('2026-10-21T00:00:00Z');
+    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('edit_window_closed');
+    expect(countSubmissions()).toBe(0);
+    expect(upstream.removeCalls).toEqual([]);
+  });
+
+  it('is refused while the app shuts down', async () => {
+    upstream.has('1');
+    await service.shutdown();
+    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('shutting_down');
+  });
+});
+
+describe('a clear keeps local evidence in line with play-tools', () => {
+  const kinds = (playerId: string, date: SessionDate = TUESDAY) =>
+    sightings
+      .on(L, date)
+      .filter((x) => x.playerId === playerId)
+      .map((x) => x.kind)
+      .sort();
+  const listed = () => sessions.getSession(L, TUESDAY).players.map((p) => p.playerId);
+
+  it('retracts every sighting of a cleared player for the date, upstream_existing too, and takes them off the list', async () => {
+    regulars('9');
+    sessionPlayers('1');
+    sightings.record(L, TUESDAY, 'tdf', [id('1')]);
+    sessions.setRegularPresent(L, TUESDAY, id('9'), true);
+    await submit(); // adds 1 and 9
+    upstream.has('5');
+    roster.ensurePlayers(L, [{ playerId: id('5') }]);
+    sightings.record(L, TUESDAY, 'upstream_existing', [id('5')]);
+    sightings.record(L, '2026-10-06' as SessionDate, 'upstream_existing', [id('5')]);
+
+    const cleared = await clear();
+
+    expect(outcomes(cleared)).toEqual({ '1': 'removed', '5': 'removed', '9': 'removed' });
+    expect(sightings.on(L, TUESDAY)).toEqual([]);
+    expect(kinds('5', '2026-10-06' as SessionDate)).toEqual(['upstream_existing']);
+    expect(listed()).toEqual([]);
+    expect(roster.regularIds(L).has(id('9'))).toBe(true);
+  });
+
+  it('keeps everything for a player another play session that day still has', async () => {
+    sessionPlayers('1');
+    sightings.record(L, TUESDAY, 'upstream_existing', [id('1')]);
+    upstream.has('1');
+    eveningSubmission([{ playerId: '1', outcome: 'already_present' }]);
+
+    const cleared = await clear();
+
+    expect(outcomes(cleared)).toEqual({ '1': 'removed' });
+    expect(listed()).toEqual(['1']);
+    expect(kinds('1')).toEqual(['manual', 'upstream_existing']);
+  });
+
+  it('does count the other play session as gone once a clear of it removed the player', async () => {
+    sessionPlayers('1');
+    upstream.has('1');
+    const evening = eveningSubmission([{ playerId: '1', outcome: 'added' }]);
+    // The evening session was cleared afterwards.
+    const clearRow = database.sqlite
+      .prepare(
+        "insert into submission (league_id, session_date, play_session_id, play_session_label, started_by, started_at, status, kind) values ('default', ?, 'ps-evening', 'Evening', 'o', 0, 'succeeded', 'clear') returning id",
+      )
+      .get(TUESDAY) as { id: number };
+    expect(clearRow.id).toBeGreaterThan(evening);
+    database.sqlite
+      .prepare("insert into submission_item (submission_id, player_id, origin, outcome, record_id) values (?, '1', 'upstream', 'removed', 'ev-1')")
+      .run(clearRow.id);
+
+    await clear();
+
+    expect(listed()).toEqual([]);
+    expect(kinds('1')).toEqual([]);
+  });
+
+  it('touches nothing for a player whose delete failed', async () => {
+    sessionPlayers('1');
+    sightings.record(L, TUESDAY, 'upstream_existing', [id('1')]);
+    upstream.has('1');
+    upstream.onRemove = () => {
+      throw new PokemonUpstreamError('unavailable', 'Pokémon answered 502.', { status: 502 });
+    };
+
+    const cleared = await clear();
+
+    expect(outcomes(cleared)).toEqual({ '1': 'failed' });
+    expect(listed()).toEqual(['1']);
+    expect(kinds('1')).toEqual(['manual', 'upstream_existing']);
+  });
+
+  it('rolls the outcome, the list and all three retractions back together when a local write fails', async () => {
+    sessionPlayers('1', '2');
+    upstream.has('1');
+    upstream.has('2');
+    sightings.record(L, TUESDAY, 'upstream_existing', [id('1')]);
+    const failing: SightingsService = {
+      ...sightings,
+      retract: (league, date, kind, ids) => {
+        if (kind === 'upstream_existing' && ids.includes(id('1'))) throw new Error('disk I/O error');
+        sightings.retract(league, date, kind, ids);
+      },
+    };
+    service = build({ sightings: failing });
+
+    const cleared = await clear();
+
+    expect(cleared.items.find((i) => i.playerId === '1')).toMatchObject({ outcome: 'failed', error: 'local_write_failed' });
+    expect(outcomes(cleared)['2']).toBe('removed');
+    expect(listed()).toEqual(['1']);
+    expect(kinds('1')).toEqual(['manual', 'upstream_existing']);
+    expect(cleared.status).toBe('partial');
+  });
+
+  it('puts the draft back to draft only when the clear succeeds', async () => {
+    sessionPlayers('1', '2');
+    await submit();
+    expect(sessions.getSession(L, TUESDAY).status).toBe('submitted');
+    const r2 = upstream.recordOf('2');
+    upstream.onRemove = (recordId) => (recordId === r2 ? 'removed' : undefined); // 2 stays: partial
+
+    expect((await clear()).status).toBe('partial');
+    expect(sessions.getSession(L, TUESDAY).status).toBe('submitted');
+
+    upstream.onRemove = undefined;
+    expect((await clear()).status).toBe('succeeded');
+    expect(sessions.getSession(L, TUESDAY).status).toBe('draft');
+  });
+});
+
+describe('a clear when play-tools misbehaves, crashes and retries', () => {
+  it('waits as long as play-tools asks after a 429, then removes the record', async () => {
+    upstream.has('1');
+    upstream.onRemove = (_r, call) => {
+      if (call === 1) throw new PokemonUpstreamError('rate_limited', 'Slow down.', { status: 429, retryAfterMs: 2_000 });
+    };
+
+    const cleared = await clear();
+
+    expect(sleeps).toContain(2_000);
+    expect(outcomes(cleared)).toEqual({ '1': 'removed' });
+  });
+
+  it('stops when Pokémon refuses the login: failed with the reason, the rest skipped', async () => {
+    upstream.has('1');
+    upstream.has('2');
+    upstream.onRemove = (_r, call) => {
+      if (call === 2) throw new PokemonUpstreamError('needs_reconnect', 'Pokémon no longer accepts the saved login.');
+    };
+
+    const cleared = await clear();
+
+    expect(cleared).toMatchObject({ status: 'failed', error: expect.stringMatching(/no longer accepts/) });
+    expect(Object.values(outcomes(cleared)).sort()).toEqual(['removed', 'skipped']);
+  });
+
+  it('after a crash: interrupted, the lock is free, and a retry clears the rest without deleting anything twice', async () => {
+    for (const p of ['1', '2', '3']) upstream.has(p);
+    upstream.onRemove = (_r, call) => {
+      if (call === 2) return new Promise(() => undefined) as never; // the process dies during the second delete
+    };
+    const started = await service.clear(L, TUESDAY, PS, 'o');
+    for (let i = 0; i < 20 && upstream.removeCalls.length < 2; i += 1) await new Promise((r) => setTimeout(r, 0));
+    expect(upstream.removeCalls).toHaveLength(2);
+
+    service = build();
+    expect(service.recoverInterrupted()).toBe(1);
+    const interrupted = service.get(L, started.submissionId);
+    expect(interrupted.status).toBe('interrupted');
+    expect(outcomes(interrupted)).toEqual({ '1': 'removed', '2': 'skipped', '3': 'skipped' });
+    expect(database.sqlite.prepare('select count(*) n from submission_lock').get()).toEqual({ n: 0 });
+    upstream.onRemove = undefined;
+    upstream.records = upstream.records.filter((r) => r.recordId !== 'pre-2'); // the second delete landed
+    upstream.removeCalls = [];
+
+    const retried = await service.retry(L, started.submissionId, 'o');
+    await service.idle();
+    const again = service.get(L, retried.submissionId);
+
+    expect(again).toMatchObject({ kind: 'clear', retryOf: started.submissionId, status: 'succeeded' });
+    expect(upstream.removeCalls.map((c) => c.recordId)).toEqual(['pre-3']);
+    expect(upstream.ids()).toEqual([]);
+  });
+});
+
+describe('history after a clear', () => {
+  it('lists the clear as kind clear, never undoable', async () => {
+    upstream.has('1');
+    const cleared = await clear();
+
+    expect(service.list(L).find((s) => s.id === cleared.id)).toMatchObject({
+      kind: 'clear',
+      undoOf: null,
+      undoable: false,
+      undoBlockedReason: 'not_undoable',
+    });
+  });
+
+  it('an undo of a submission whose records a clear removed sends no delete', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    await clear();
+    upstream.removeCalls = [];
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls).toEqual([]);
+    expect(outcomes(undone)).toEqual({ '1': 'already_removed' });
+  });
+});
+
+describe('previewing a clear', () => {
+  it('lists who would be deleted, how many staff records stay, and whether another play session has our records; changes nothing', async () => {
+    sessionPlayers('1');
+    await submit();
+    upstream.has('5', { name: 'Misty Waterflower' });
+    upstream.has('7', { asStaff: true });
+    eveningSubmission([{ playerId: '3', outcome: 'added' }]);
+    const before = countSubmissions();
+
+    const preview = await service.previewClear(L, TUESDAY, PS);
+
+    expect(preview).toEqual({
+      playSessionId: PS,
+      playSessionLabel: 'Open play · TCG · Tue 6:00 PM',
+      players: [
+        { playerId: '1', name: 'Player 1', addedByApp: true },
+        { playerId: '5', name: 'Misty Waterflower', addedByApp: false },
+      ],
+      staffKept: 1,
+      otherSessionHasAppRecords: true,
+    });
+    expect(upstream.removeCalls).toEqual([]);
+    expect(countSubmissions()).toBe(before);
+    expect(roster.getPlayers(L, [id('5')])).toEqual([]);
+  });
+
+  it('says no other play session has our records when none does', async () => {
+    upstream.has('1');
+    eveningSubmission([{ playerId: '3', outcome: 'already_present' }]);
+    expect((await service.previewClear(L, TUESDAY, PS)).otherSessionHasAppRecords).toBe(false);
+  });
+
+  it('refuses an unknown play session', async () => {
+    expect((await refusal(service.previewClear(L, TUESDAY, 'ps-nope'))).code).toBe('unknown_play_session');
+  });
+
+  it('passes on a play-tools outage as the upstream error, so the dialog can show it', async () => {
+    upstream.onList = () => {
+      throw new PokemonUpstreamError('unavailable', 'Pokémon answered 502.', { status: 502 });
+    };
+    await expect(service.previewClear(L, TUESDAY, PS)).rejects.toMatchObject({ code: 'unavailable' });
+  });
+});
+
+describe('a clear never deletes a staff record or a record added after it started', () => {
+  function rng(seed: number): () => number {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it('across 200 generated play-tools states, exactly the player records at its first read are sent a delete', async () => {
+    for (let seed = 1; seed <= 200; seed += 1) {
+      database.close();
+      setUp();
+      const random = rng(seed);
+      const pick = (n: number) => Math.floor(random() * n);
+      const players = (from: number, count: number) => Array.from({ length: count }, (_, i) => String(from + i));
+
+      for (const p of players(900, 1 + pick(2))) upstream.has(p, { asStaff: true });
+      for (const p of players(800, pick(4))) upstream.has(p);
+      const mine = players(100, pick(5));
+      if (mine.length > 0) {
+        sessionPlayers(...mine);
+        await submit();
+      }
+      if (upstream.records.every((r) => !r.isPlayer)) upstream.has('700');
+      const atFirstRead = new Set(upstream.records.filter((r) => r.isPlayer).map((r) => r.recordId));
+      const staff = upstream.records.filter((r) => !r.isPlayer);
+      const late = random() < 0.5 ? players(600, 1 + pick(3)) : [];
+      upstream.onRemove = (_r, call) => {
+        if (call === 1) for (const p of late) upstream.has(p);
+      };
+
+      await clear();
+
+      expect(new Set(upstream.removeCalls.map((c) => c.recordId)), `seed ${seed}`).toEqual(atFirstRead);
+      for (const s of staff) expect(upstream.records, `seed ${seed}`).toContainEqual(s);
+      for (const p of late) expect(upstream.ids(), `seed ${seed}`).toContain(p);
+    }
+  }, 60_000);
+});

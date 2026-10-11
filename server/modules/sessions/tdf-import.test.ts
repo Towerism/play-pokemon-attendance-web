@@ -255,6 +255,39 @@ describe('commit', () => {
   });
 });
 
+describe('resetting a date after its play session was cleared', () => {
+  const content = tdf([{ userid: '1' }, { userid: '2' }]);
+
+  it('puts the draft back to draft and drops its committed imports, so the same file can be imported again', () => {
+    imports.commit(L, WED, imports.preview(L, WED, { filename: 'cup.tdf', content }).uploadId);
+    sessions.recordSubmission(L, WED, { playSessionId: 'ps-1', status: 'submitted' });
+
+    sessions.resetAfterClear(L, WED);
+
+    expect(sessions.getSession(L, WED)).toMatchObject({ status: 'draft', imports: [] });
+    expect(count('tdf_upload_player')).toBe(0);
+    const again = imports.preview(L, WED, { filename: 'cup.tdf', content });
+    expect(again.alreadyImported).toBe(false);
+    expect(imports.commit(L, WED, again.uploadId)).toMatchObject({ alreadyImported: false });
+  });
+
+  it("leaves other dates and other leagues alone", () => {
+    imports.commit(L, NEXT_WED, imports.preview(L, NEXT_WED, { filename: 'cup.tdf', content }).uploadId);
+    imports.commit(OTHER, WED, imports.preview(OTHER, WED, { filename: 'cup.tdf', content }).uploadId);
+    sessions.recordSubmission(L, NEXT_WED, { playSessionId: 'ps-2', status: 'submitted' });
+
+    sessions.resetAfterClear(L, WED);
+
+    expect(sessions.getSession(L, NEXT_WED)).toMatchObject({ status: 'submitted', imports: [expect.anything()] });
+    expect(sessions.getSession(OTHER, WED).imports).toHaveLength(1);
+  });
+
+  it('is a no-op for a date with no draft', () => {
+    sessions.resetAfterClear(L, WED);
+    expect(count('session_draft')).toBe(0);
+  });
+});
+
 describe('removing a session player who came from a TDF', () => {
   it('retracts their tdf sighting too: the organizer says they were not there', () => {
     imports.commit(L, WED, imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) }).uploadId);

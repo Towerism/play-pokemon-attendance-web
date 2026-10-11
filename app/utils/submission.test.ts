@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { PlayerId } from '../../shared/types/ids';
 import type { SubmissionItemView } from '../../server/modules/submission/service';
 import {
+  clearConfirmText,
+  clearConfirmed,
   historyLabel,
   isSubmissionActive,
   progressPercent,
@@ -76,8 +79,8 @@ describe('undo wording', () => {
   });
 
   it('labels an undo in the history list with the submission it undoes', () => {
-    expect(historyLabel({ kind: 'undo', undoOf: 7 })).toBe('Undo of #7');
-    expect(historyLabel({ kind: 'submit', undoOf: null })).toBeNull();
+    expect(historyLabel({ kind: 'undo', undoOf: 7, playSessionLabel: 'Open play' })).toBe('Undo of #7');
+    expect(historyLabel({ kind: 'submit', undoOf: null, playSessionLabel: 'Open play' })).toBeNull();
   });
 
   it('lists who the undo would remove: added players with a record, not removed yet', () => {
@@ -110,5 +113,39 @@ describe('undo wording', () => {
   it('labels a running undo as removing, not sending', () => {
     expect(submissionStatus('running', 'undo')).toEqual({ label: 'Removing…', color: 'info' });
     expect(submissionStatus('running', 'submit')).toEqual({ label: 'Sending…', color: 'info' });
+  });
+});
+
+describe('clear session wording', () => {
+  it('labels a clear in the history list with the play session it cleared', () => {
+    expect(historyLabel({ kind: 'clear', undoOf: null, playSessionLabel: 'Open play · TCG · Tue 6:00 PM' })).toBe(
+      'Cleared session Open play · TCG · Tue 6:00 PM',
+    );
+  });
+
+  it('says a running clear is removing, and that a clear cannot be undone', () => {
+    expect(submissionStatus('running', 'clear')).toEqual({ label: 'Removing…', color: 'info' });
+    expect(undoBlockedText({ kind: 'clear', undoBlockedReason: 'not_undoable', items: [] })).toBe("A cleared session can't be undone.");
+  });
+
+  it('confirms only when the typed text is exactly the date', () => {
+    expect(clearConfirmed('2026-10-13', '2026-10-13')).toBe(true);
+    for (const typed of ['', '2026-10-1', '2026-10-14', ' 2026-10-13', '2026-10-13 ', '10/13/2026']) {
+      expect(clearConfirmed(typed, '2026-10-13'), typed).toBe(false);
+    }
+  });
+
+  it('says how many players go, that staff records stay, and warns about another play session that day', () => {
+    const player = (playerId: string, name: string, addedByApp: boolean) => ({ playerId: playerId as PlayerId, name, addedByApp });
+    const preview = { players: [player('1', 'Ash', true)], staffKept: 1, otherSessionHasAppRecords: false };
+    expect(clearConfirmText(preview)).toBe(
+      'Delete 1 player from this play session in play-tools, including anyone entered there directly. 1 staff record stays.',
+    );
+    expect(
+      clearConfirmText({ ...preview, players: [...preview.players, player('2', '', false)], staffKept: 0, otherSessionHasAppRecords: true }),
+    ).toBe(
+      'Delete 2 players from this play session in play-tools, including anyone entered there directly. ' +
+        "Another play session that day also has players from this app; this date's player list and TDF imports are reset for the whole date.",
+    );
   });
 });

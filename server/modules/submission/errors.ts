@@ -18,7 +18,11 @@ export type SubmissionErrorCode =
   /** The submission is an undo itself, or is still running. */
   | 'not_undoable'
   /** The submission added nobody that an undo has not removed already. */
-  | 'nothing_to_undo';
+  | 'nothing_to_undo'
+  /** Clear session: the typed date does not match the session's date. */
+  | 'confirmation_mismatch'
+  /** Clear session: the play session has no player records. */
+  | 'nothing_to_clear';
 
 export class SubmissionError extends Error {
   override name = 'SubmissionError';

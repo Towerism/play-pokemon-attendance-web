@@ -42,3 +42,19 @@ per-league lease lock prevents concurrent submissions for the same session.
   steady rate is below the CLI's roughly 3.3 players/s, so traffic stays human-scale. Batches still go one at
   a time, both values remain configurable (`NUXT_SUBMISSION_BATCH_SIZE`, `NUXT_SUBMISSION_BATCH_DELAY_MS`),
   and the batch size stays capped at 50.
+
+## Update (M7, 2026-10-11)
+
+**Deleting upstream records is always an explicit organizer action, never part of a submission.** Two M7
+actions delete records in play-tools, and neither changes the decision above:
+
+- **Undo** (#9) removes only the records one submission added, after a confirm dialog.
+- **Clear session** (#15) is the one exception to "only what this app added". It deletes every *player* record
+  in one play session, including records entered in play-tools directly, but never a staff record. It sits in a
+  danger zone, shows a fresh preview of who would go, and runs only after the organizer types the session's
+  date exactly; the server checks the typed date too. It is the web version of the CLI's `delete.js`.
+
+Both run as jobs on the same rails as a submission: the per-league lease, one DELETE at a time at least
+`NUXT_UNDO_DELAY_MS` apart, a closing re-read that decides each outcome, and retry that re-reads first, so
+nothing is deleted twice. A submission itself still only adds, and reports unwanted upstream players
+without deleting them. Details are in architecture §6.3.

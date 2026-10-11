@@ -388,16 +388,16 @@ erDiagram
     text status "planned|running|succeeded|partial|failed|interrupted"
     text error "why it stopped early"
     int retry_of "the attempt this one retries or resumes"
-    text kind "submit|undo (M7)"
+    text kind "submit|undo|clear (M7)"
     int undo_of "for an undo: the submission it undoes"
   }
   SUBMISSION_ITEM {
     int submission_id FK
     text player_id FK
     text origin "regular|session|upstream"
-    text outcome "pending|added|already_present|failed|skipped|unrequested; undo: removed|already_removed"
+    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed"
     text error
-    text record_id "upstream record, for undo (M7)"
+    text record_id "upstream record, for undo and clear (M7)"
     bool as_staff "present upstream in a staff role"
   }
   SUBMISSION_EVENT {
@@ -619,6 +619,30 @@ As built (M7, `server/modules/submission/service.ts`):
   `upstream_existing` sightings. `timesSubmitted` stops counting a removed record; History shows
   `removedBy` per item and labels undo rows "Undo of #N".
 
+**Clear session** (M7, #15) is the danger-zone action on This week. It deletes every *player* record in one
+play session, including records entered in play-tools directly, and never a staff record. It is explicit and
+confirmed, so it doesn't contradict ADR-0004's "never deleted automatically" (see its M7 update).
+
+- **Preview first:** `GET /sessions/{date}/clear?playSessionId=` reads the session fresh and lists who would go
+  (flagging who this app added), how many staff records stay, and whether another play session that day holds
+  this app's records. It changes nothing.
+- **Confirm:** `POST /sessions/{date}/clear` with `{ playSessionId, confirmDate }`. The typed date must equal
+  `{date}` exactly, or it is 422 `confirmation_mismatch` with nothing sent upstream. It is also refused with
+  `nothing_to_clear` (only staff records), and with the same checks as an undo (`edit_window_closed`,
+  `unknown_play_session`, `submission_running`, `shutting_down`).
+- **A clear is a submission row** with `kind = 'clear'`, reusing undo's machinery: the lease, events and SSE,
+  crash recovery, shutdown, retry (a new clear of the same play session that re-reads, with no new confirmation)
+  and History ("Cleared session <play session>", never undoable).
+- **Plan, execute, reconcile:** read every page once; the targets are the player records that read listed, so a
+  record added later is never deleted. Players found upstream but unknown locally join the roster first (name and
+  ID only). One item per player: if a listing ever shows a player twice, every record of theirs is deleted. Then
+  the same paced DELETE loop and closing re-read as an undo.
+- **Local follow-up:** the same per-player step as an undo (`forgetAttendance`, one transaction with the
+  outcome, same "another play session that day still has them" exception), **plus** retracting the player's
+  `upstream_existing` sighting for the date: the clear deleted the very records that sighting stood for. A clear
+  that ends `succeeded` also resets the date (`SessionsService.resetAfterClear`): the draft goes back to `draft`
+  and its committed TDF imports are dropped, so the same file can be imported again.
+
 ## 7. HTTP API (Nitro server routes)
 
 All routes are under `/api` as Nitro file-based handlers in `server/api/`.
@@ -644,22 +668,24 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`) → `{ submissionId }` |
 | `GET /submissions?date=` · `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` → 202 | History (newest first), one submission with per-player items, progress (`Last-Event-ID` resumes), retry/resume as a new attempt |
 | `POST /submissions/{id}/undo` → 202                       | Remove the records this submission added, as a new undo attempt → `{ submissionId }` (§6.3). Summaries carry `kind`, `undoOf`, `undoable`, `undoBlockedReason`; items carry `removedBy` |
+| `GET /sessions/{date}/clear?playSessionId=` · `POST /sessions/{date}/clear` → 202 | Clear session (§6.3). `GET` previews `{ playSessionId, playSessionLabel, players: [{ playerId, name, addedByApp }], staffKept, otherSessionHasAppRecords }`. `POST` takes `{ playSessionId, confirmDate }` and starts a `kind = 'clear'` job → `{ submissionId }` |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` → 409,
-`cannot_submit` → 403, `unknown_play_session` / `edit_window_closed` / `nothing_to_submit` / `not_undoable` / `nothing_to_undo` → 422,
+`cannot_submit` → 403, `unknown_play_session` / `edit_window_closed` / `nothing_to_submit` / `not_undoable` / `nothing_to_undo` /
+`confirmation_mismatch` / `nothing_to_clear` → 422,
 `not_found` → 404, `shutting_down` → 503.
 
 ## 8. Frontend (Nuxt pages)
 
 | Page (`app/pages/`) | Contents                                                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer |
+| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer; a **Danger zone** with **Clear session…** → `ClearSessionDialog` (session pick, preview, type the date, progress) |
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All** (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
-| `history/`          | Submissions by date with per-player outcomes, Retry and Undo                                                                   |
+| `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo and clear rows are labelled ("Undo of #N", "Cleared session …") |
 | `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; app users |
 | `login.vue`         | App login (the only page outside `auth.global.ts` middleware)                                                                  |
 
