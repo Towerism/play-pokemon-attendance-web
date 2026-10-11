@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray } from 'drizzle-orm';
+import { and, countDistinct, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { submission, submissionEvent, submissionItem, submissionLock } from '../../db/schema';
@@ -82,6 +82,8 @@ export interface SubmissionService {
   get(leagueId: string, submissionId: number): SubmissionView;
   /** Newest first. */
   list(leagueId: string, filter?: { date?: SessionDate }): SubmissionSummary[];
+  /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
+  timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
   events(leagueId: string, submissionId: number, afterId?: number): SubmissionEvent[];
   /** Live events for a submission; returns the unsubscribe. */
@@ -589,6 +591,17 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         .orderBy(desc(submission.startedAt), desc(submission.id))
         .all()
         .map(summary);
+    },
+
+    timesSubmitted(leagueId) {
+      const rows = db
+        .select({ playerId: submissionItem.playerId, dates: countDistinct(submission.sessionDate) })
+        .from(submissionItem)
+        .innerJoin(submission, eq(submission.id, submissionItem.submissionId))
+        .where(and(eq(submission.leagueId, leagueId), inArray(submissionItem.outcome, ['added', 'already_present'])))
+        .groupBy(submissionItem.playerId)
+        .all();
+      return new Map(rows.map((r) => [r.playerId as PlayerId, r.dates]));
     },
 
     events(leagueId, submissionId, afterId = 0) {

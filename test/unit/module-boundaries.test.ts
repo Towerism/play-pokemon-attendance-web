@@ -32,6 +32,7 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'usePokemon()',
     'useSightings()',
     'useSubmissions()',
+    'useMetrics()',
     'usePlaySessionResolver()',
     'requireLeague(e)',
   ])(

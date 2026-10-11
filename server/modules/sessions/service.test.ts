@@ -5,7 +5,7 @@ import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/clien
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
 import { type RosterService, createRosterService } from '../roster/service';
-import { AlreadyRegularError, type SessionsService, createSessionsService } from './service';
+import { AlreadyRegularError, NotARegularError, type SessionsService, createSessionsService } from './service';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const OTHER = 'other-league';
@@ -150,5 +150,58 @@ describe('removePlayer', () => {
     expect(sessions.removePlayer(L, WED, id('2'))).toBe(false);
     expect(sessions.removePlayer(L, '2026-12-25' as SessionDate, id('1'))).toBe(false);
     expect(sessions.removePlayer(OTHER, WED, id('1'))).toBe(false);
+  });
+});
+
+describe('setRegularPresent (ADR-0005: evidence for regulars who skip the tournament)', () => {
+  beforeEach(() => {
+    roster.addRegular(L, { playerId: id('9'), name: 'Brock' });
+    roster.addRegular(L, { playerId: id('8'), name: 'Misty' });
+  });
+  const regular = (date: SessionDate, playerId: string) => sessions.getSession(L, date).regulars.find((r) => r.playerId === playerId);
+
+  it('shows every regular as not present on a date with no evidence', () => {
+    expect(regular(WED, '9')).toMatchObject({ present: false, inTournament: false });
+  });
+
+  it('ticking a regular present records a manual sighting for that date only', () => {
+    expect(sessions.setRegularPresent(L, WED, id('9'), true)).toEqual({ present: true, inTournament: false });
+
+    expect(sightings.on(L, WED)).toEqual([{ playerId: '9', kind: 'manual' }]);
+    expect(regular(WED, '9')).toMatchObject({ present: true, inTournament: false });
+    expect(regular(NEXT_WED, '9')).toMatchObject({ present: false });
+    expect(regular(WED, '8')).toMatchObject({ present: false });
+  });
+
+  it('unticking retracts it; both are idempotent', () => {
+    sessions.setRegularPresent(L, WED, id('9'), true);
+    sessions.setRegularPresent(L, WED, id('9'), true);
+    expect(sessions.setRegularPresent(L, WED, id('9'), false)).toEqual({ present: false, inTournament: false });
+    sessions.setRegularPresent(L, WED, id('9'), false);
+
+    expect(sightings.on(L, WED)).toEqual([]);
+  });
+
+  it('a regular in an imported tournament is present, and unticking keeps that evidence', () => {
+    sightings.record(L, WED, 'tdf', [id('9')]);
+
+    expect(regular(WED, '9')).toMatchObject({ present: true, inTournament: true });
+    expect(sessions.setRegularPresent(L, WED, id('9'), false)).toEqual({ present: true, inTournament: true });
+    expect(sightings.on(L, WED)).toEqual([{ playerId: '9', kind: 'tdf' }]);
+  });
+
+  it('being already recorded upstream is not presence', () => {
+    sightings.record(L, WED, 'upstream_existing', [id('9')]);
+
+    expect(regular(WED, '9')).toMatchObject({ present: false });
+  });
+
+  it('refuses a player who is not a regular, in this league, and writes nothing', () => {
+    roster.ensurePlayers(L, [{ playerId: id('1') }]);
+
+    expect(() => sessions.setRegularPresent(L, WED, id('1'), true)).toThrow(NotARegularError);
+    expect(() => sessions.setRegularPresent(L, WED, id('404'), true)).toThrow(NotARegularError);
+    expect(() => sessions.setRegularPresent(OTHER, WED, id('9'), true)).toThrow(NotARegularError);
+    expect(sightings.on(L, WED)).toEqual([]);
   });
 });

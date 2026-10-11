@@ -1,8 +1,12 @@
 import { PlayersQuery } from '#shared/schemas/roster';
 
-/** Every player known in the league. Metrics and the promote/stale filters arrive in M6. */
+/** Players with curation metrics: everyone, promotion candidates, or stale regulars (architecture §5). */
 export default defineEventHandler(async (event) => {
   const leagueId = await requireLeague(event);
-  const { q } = await getValidatedQuery(event, PlayersQuery.parse);
-  return { players: useRoster().listPlayers(leagueId, { q }) };
+  const { filter, q } = await getValidatedQuery(event, PlayersQuery.parse);
+  const metrics = useMetrics();
+  return {
+    players: metrics.listPlayers(leagueId, { filter, q, today: leagueToday() }),
+    thresholds: metrics.getThresholds(leagueId),
+  };
 });

@@ -145,6 +145,20 @@ export const sighting = sqliteTable(
 );
 
 /**
+ * The league's curation thresholds (architecture §5), set in Settings. Owned
+ * by the metrics module; a league without a row uses the defaults.
+ */
+export const curationSettings = sqliteTable('curation_settings', {
+  leagueId: text('league_id')
+    .primaryKey()
+    .references(() => league.id),
+  /** Promotion candidate: a non-regular with at least this many sightings in the last 8 weeks. */
+  promoteMinSightings: integer('promote_min_sightings').notNull(),
+  /** Stale regular: no tdf or manual sighting in this many league sessions. */
+  staleAfterSessions: integer('stale_after_sessions').notNull(),
+});
+
+/**
  * One attempt to bring a play session's upstream attendance up to date
  * (ADR-0004). Retry and resume start a new attempt; the history keeps each.
  * Owned by the submission module, which keys it by league and date instead of

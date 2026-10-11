@@ -36,6 +36,13 @@
       "when": 1791687162499,
       "tag": "0004_submissions",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791689448766,
+      "tag": "0005_curation_settings",
+      "breakpoints": true
     }
   ]
 }

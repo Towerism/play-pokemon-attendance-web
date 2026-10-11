@@ -11,6 +11,12 @@ export function localDay(date: SessionDate, timeZone: string): DateRange {
   return { from: localMidnight(y, m, d, timeZone), to: localMidnight(y, m, d + 1, timeZone) };
 }
 
+/** The calendar date of `instant` on the wall clock of `timeZone`. */
+export function dateIn(instant: Date, timeZone: string): SessionDate {
+  // en-CA formats dates as YYYY-MM-DD.
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(instant) as SessionDate;
+}
+
 function localMidnight(y: number, m: number, d: number, timeZone: string): Date {
   const wall = Date.UTC(y, m - 1, d);
   // Two passes: the offset at the guess can differ from the offset at the answer around a DST change.

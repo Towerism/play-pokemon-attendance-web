@@ -65,10 +65,10 @@ export const PlayerPatch = z
   .refine((p) => Object.keys(p).length > 0, 'Nothing to change');
 export type PlayerPatch = z.infer<typeof PlayerPatch>;
 
-/** `promote` and `stale` arrive with metrics (M6). */
+/** The Players page tabs: promotion candidates, stale regulars, everyone (architecture §8). */
 export const PlayersQuery = z
   .object({
-    filter: z.enum(['all']).default('all'),
+    filter: z.enum(['all', 'promote', 'stale']).default('all'),
     q: z
       .string()
       .trim()
