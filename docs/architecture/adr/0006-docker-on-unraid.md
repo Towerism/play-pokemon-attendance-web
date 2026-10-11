@@ -62,7 +62,8 @@ what we design, document and test for.
 
 - Published to **GHCR** by CI as `ghcr.io/<owner>/play-pokemon-attendance`,
   multi-arch (`linux/amd64`, `linux/arm64`). Tags: `latest` (stable),
-  `X.Y.Z`, `X.Y`.
+  `X.Y.Z`, `X.Y`, cut automatically by semantic-release from the
+  Conventional Commits on `main`; `edge` is the unreleased tip of `main`.
 - Multi-stage build. pnpm builds `.output/`, and the runtime stage is
   `node:22-slim` with the prebuilt `better-sqlite3` native module and the
   `litestream` binary. No build tools ship in the final image.

@@ -719,7 +719,7 @@ that includes the play-tools credential. See
 
 ```mermaid
 flowchart LR
-  GH["GitHub Actions<br/>lint · typecheck · test · build multi-arch image"] --> REG[(GHCR)]
+  GH["GitHub Actions<br/>lint · typecheck · test · build multi-arch image · semantic-release"] --> REG[(GHCR)]
   REG -- "Docker tab: update ready" --> HOST["Unraid server<br/>container from deploy/unraid template<br/>:3000, PUID 99 / PGID 100"]
   HOST --- VOL[("/mnt/user/appdata/play-pokemon-attendance → /data<br/>app.db · secrets/")]
   VOL -. "Appdata Backup plugin" .-> AB[("Unraid backup share")]
@@ -754,7 +754,7 @@ flowchart LR
     If `app.db` is missing, it is first restored from the replica (an empty replica means a normal first run). A broken Litestream config or a failed restore exits the container non-zero instead of running without backups.
 - **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect, and a lost session password logs everyone out. No attendance data is lost in either case. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
 - **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (they resume on boot), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
-- **Updates:** CI publishes `latest`, `X.Y.Z` and `X.Y` tags. Unraid shows "update ready" and migrations run on boot.
+- **Updates:** releases are automatic. On every push to `main` that passes CI, semantic-release reads the Conventional Commits since the last `vX.Y.Z` tag; when a `fix`, `feat` or breaking change landed, it tags the image that run tested `X.Y.Z`, `X.Y` and `latest`, then pushes the git tag and a GitHub Release with generated notes. `edge` is the unreleased tip of `main`. Unraid shows "update ready" and migrations run on boot.
 - **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
 - **Observability:** pino logs to stdout, so they show up in Unraid's *Logs* view.
   - **Readable by default** (pino-pretty, a production dependency): one line per record,
