@@ -37,7 +37,12 @@ export interface PlayToolsGateway {
    */
   addAttendanceBulk(groupId: string, sessionId: string, playerIds: readonly PlayerId[]): Promise<BulkResult>;
 
-  removeAttendance(groupId: string, sessionId: string, recordId: string): Promise<void>;
+  /**
+   * Deletes one attendance record (undo). `not_found` when play-tools no
+   * longer has it: someone removed it already.
+   * @throws TypeError for a record id that could change the request path, before calling upstream
+   */
+  removeAttendance(groupId: string, sessionId: string, recordId: string): Promise<'removed' | 'not_found'>;
 }
 
 export interface League {

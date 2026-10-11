@@ -398,3 +398,46 @@ describe('addAttendanceBulk (S4: records/_bulk/)', () => {
     expect(await gateway().addAttendanceBulk(GROUP, SESSION, [])).toEqual({ status: 'added', records: [] });
   });
 });
+
+describe('removeAttendance (S4: DELETE records/{id}/ → 204)', () => {
+  const RECORD = '00000000-0000-4000-8000-000000000036';
+  const RECORD_URL = `${RECORDS_URL}${RECORD}/`;
+
+  it('deletes the one record with the bearer token and reports it removed', async () => {
+    let seen: Request | undefined;
+    upstream.use(
+      http.delete(RECORD_URL, ({ request }) => {
+        seen = request;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+
+    expect(await gateway().removeAttendance(GROUP, SESSION, RECORD)).toBe('removed');
+    expect(seen!.headers.get('authorization')).toBe('Bearer access-jwt');
+  });
+
+  it('reports a record play-tools no longer has as not_found, not as an error', async () => {
+    upstream.use(http.delete(RECORD_URL, () => HttpResponse.json({ code: 'op.generic.not_found' }, { status: 404 })));
+    expect(await gateway().removeAttendance(GROUP, SESSION, RECORD)).toBe('not_found');
+  });
+
+  it('is forbidden when play-tools refuses the delete', async () => {
+    upstream.use(http.delete(RECORD_URL, () => HttpResponse.json({ code: 'op.generic.forbidden' }, { status: 403 })));
+    expect((await upstreamError(gateway().removeAttendance(GROUP, SESSION, RECORD))).code).toBe('forbidden');
+  });
+
+  it('turns a 5xx into a retryable unavailable and a 429 into rate_limited with Retry-After', async () => {
+    upstream.use(http.delete(RECORD_URL, () => new HttpResponse('<html>', { status: 502 })));
+    expect((await upstreamError(gateway().removeAttendance(GROUP, SESSION, RECORD))).code).toBe('unavailable');
+
+    upstream.use(http.delete(RECORD_URL, () => new HttpResponse(null, { status: 429, headers: { 'retry-after': '2' } })));
+    const throttled = await upstreamError(gateway().removeAttendance(GROUP, SESSION, RECORD));
+    expect(throttled.code).toBe('rate_limited');
+    expect(throttled.details.retryAfterMs).toBe(2000);
+  });
+
+  it.each(['../x', '', 'a/b', 'x'.repeat(65), 'abc?def', '%2e%2e'])('refuses the record id %j before calling play-tools', async (recordId) => {
+    // onUnhandledRequest: 'error' fails the test if anything is sent.
+    await expect(gateway().removeAttendance(GROUP, SESSION, recordId)).rejects.toThrow(TypeError);
+  });
+});
