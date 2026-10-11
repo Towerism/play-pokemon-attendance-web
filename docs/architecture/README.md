@@ -285,9 +285,10 @@ isn't digits only is refused locally before any call.
 The adapter is the only place that knows about Pokémon's JSON shapes,
 pagination quirks (`results` vs `data`), and headers. Responses are parsed
 with Zod using `passthrough()`, and an unexpected shape fails loudly with the
-raw body logged. Outbound calls are throttled (default ≥ 15 s between bulk
-batches, matching the CLI's empirically safe spacing, and configurable) and
-retried with backoff on 429/5xx only.
+raw body logged. Outbound calls are throttled: one bulk batch at a time, by
+default 20 players at least 10 s apart (configurable). That is gentler per
+second than the CLI's 50 every 15 s, and small batches rarely hit the 502
+gateway timeout (ADR-0004 update). Retries happen on 429/5xx only.
 
 ### 4.4 Resolving "which play session?" from a date
 
@@ -506,7 +507,7 @@ before?", only "what is upstream missing?".
    - Players in `existing ∩ desired` become `SUBMISSION_ITEM(outcome = already_present)`. Upstream players unknown locally become `SIGHTING(kind = upstream_existing)` and new `PLAYER` rows, so *every player ID that enters the system* is tracked.
 2. **Execute**
    - Send session players before regulars, as the CLI did.
-   - Chunk into batches of ≤ 50. Batches are ≥ 15 s apart (configurable), and the token is re-fetched per batch.
+   - Chunk into batches of 20 (configurable, never more than 50), sent one at a time ≥ 10 s apart (configurable). The token is re-fetched per batch.
    - Progress events are persisted, then pushed over SSE.
 3. **Reconcile**
    - Re-read `listAttendance`. Each `toAdd` player present upstream becomes `added`; the rest become `failed`, with the per-player error from the bulk response when present.
@@ -524,8 +525,8 @@ As built (M5, `server/modules/submission/`):
   (`origin = upstream`) and known players, named from the record. They get an `upstream_existing` sighting
   only if their record id wasn't added by one of our own earlier submissions, so a player the organizer
   removed locally after submitting isn't counted as evidence.
-- **Execute:** batches of `NUXT_SUBMISSION_BATCH_SIZE` (≤ 50) at least `NUXT_SUBMISSION_BATCH_DELAY_MS`
-  (15 s) apart, session players first. A 201's record ids are written to the items right away, so a run that
+- **Execute:** one batch at a time, `NUXT_SUBMISSION_BATCH_SIZE` players (20; never more than 50), at
+  least `NUXT_SUBMISSION_BATCH_DELAY_MS` (10 s) apart, session players first. A 201's record ids are written to the items right away, so a run that
   stops early still knows what it added. After an S4 rejection, the named players are dropped
   (`alreadyPresent` → `already_present`, others → `failed` with the upstream code) and the rest is resent
   **once**; a second rejection fails whoever is left. A 429 waits for `Retry-After`, then re-reads.
@@ -654,7 +655,7 @@ flowchart LR
   - `TZ`, which Unraid sets. It drives session dates and the keep-alive schedule.
   - `NUXT_DATABASE_PATH` (default `/data/app.db`)
   - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils) and `NUXT_TOKEN_VAULT_KEY`. Both are optional. If either is unset, it is generated once into `/data/secrets/` (mode 0600). Env wins over the file. A malformed value fails startup and is never silently regenerated.
-  - `NUXT_SUBMISSION_BATCH_SIZE` (50, capped at 50), `NUXT_SUBMISSION_BATCH_DELAY_MS` (15000),
+  - `NUXT_SUBMISSION_BATCH_SIZE` (20, capped at 50), `NUXT_SUBMISSION_BATCH_DELAY_MS` (10000),
     `NUXT_SUBMISSION_SETTLE_MS` (180000), `NUXT_SUBMISSION_SETTLE_POLL_MS` (15000). Optional tuning, not in the template.
   - `NUXT_POKEMON_ACCESS_URL` / `NUXT_POKEMON_API_URL`. **Test doubles only**: they point the adapters at a fake upstream (`test/server/fake-pokemon.ts`). Unset means the real Pokémon hosts; never set them in the template.
   - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag and absolute links are right. The launcher sets `NUXT_SESSION_COOKIE_SECURE` from it (`https:` → Secure) unless that is set explicitly; on plain HTTP a Secure cookie would never come back and login would fail.

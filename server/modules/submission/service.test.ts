@@ -92,7 +92,7 @@ let sleeps: number[];
 let onSleep: ((signal: AbortSignal) => Promise<void> | void) | undefined;
 let service: SubmissionService;
 
-function build(over: { batchSize?: number } = {}): SubmissionService {
+function build(over: { batchSize?: number; defaults?: boolean } = {}): SubmissionService {
   const resolver = createPlaySessionResolver({
     connections: { getStatus: () => connection },
     gateway: () => upstream,
@@ -113,8 +113,7 @@ function build(over: { batchSize?: number } = {}): SubmissionService {
       await onSleep?.(signal);
       clock = new Date(clock.getTime() + ms);
     },
-    batchSize: over.batchSize ?? 50,
-    batchDelayMs: DELAY,
+    ...(over.defaults ? {} : { batchSize: over.batchSize ?? 50, batchDelayMs: DELAY }),
     log: { warn: () => undefined },
   });
 }
@@ -214,6 +213,16 @@ describe('a submission (ADR-0004 plan → execute → reconcile)', () => {
 
     expect(upstream.bulkCalls).toEqual([]);
     expect(view.items).toEqual([expect.objectContaining({ playerId: '9', outcome: 'already_present', asStaff: true })]);
+  });
+
+  it('by default sends 20 players per batch, 10 s apart (smaller batches rarely hit the 502 gateway timeout)', async () => {
+    service = build({ defaults: true });
+    sessionPlayers(...Array.from({ length: 45 }, (_, i) => String(i + 1)));
+
+    await submit();
+
+    expect(upstream.bulkCalls.map((b) => b.length)).toEqual([20, 20, 5]);
+    expect(sleeps).toEqual([10_000, 10_000]);
   });
 
   it('sends session players before regulars, in batches of at most the batch size, spaced by the batch delay', async () => {

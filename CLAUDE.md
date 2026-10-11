@@ -97,7 +97,7 @@ High-value areas:
   unset, from files generated once in `/data/secrets/` (mode 0600). Never the DB or repo.
 - Never persist TDF birthdates or raw TDF files.
 - Never store the organizer's PTC password; no headless-browser login.
-- Keep outbound play-tools traffic human-scale (≥ 15 s between bulk batches by default).
+- Keep outbound play-tools traffic human-scale: one bulk batch at a time, by default 20 players at least 10 s apart (ADR-0004 update; never more than 50 per batch).
 
 ## Toolchain
 

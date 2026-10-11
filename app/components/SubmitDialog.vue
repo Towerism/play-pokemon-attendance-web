@@ -81,7 +81,7 @@ watch(result, (view) => {
           <template v-if="!result">
             <UProgress :model-value="latest ? progressPercent(latest.done, latest.total) : null" />
             <p class="text-sm text-muted">{{ latest?.message ?? 'Reading what play-tools already has…' }}</p>
-            <p class="text-xs text-muted">Batches go out at least 15 seconds apart. You can close this; it keeps going.</p>
+            <p class="text-xs text-muted">Batches of up to 20 players go out at least 10 seconds apart. You can close this; it keeps going.</p>
           </template>
           <template v-else>
             <UBadge :color="submissionStatus(result.status).color" variant="subtle" size="lg">{{ submissionStatus(result.status).label }}</UBadge>

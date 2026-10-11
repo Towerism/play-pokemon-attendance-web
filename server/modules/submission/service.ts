@@ -105,9 +105,9 @@ export interface SubmissionDeps {
   now?: () => Date;
   /** Rejects with `signal.reason` when the signal aborts. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
-  /** ≤ 50 (ADR-0004). */
+  /** Default 20, at most 50 (ADR-0004). Smaller batches rarely hit the 502 gateway timeout. */
   batchSize?: number;
-  /** ≥ 15 s by default, the CLI's empirically safe spacing. */
+  /** Default 10 s between bulk calls (ADR-0004 update). */
   batchDelayMs?: number;
   /**
    * After a 5xx on a bulk call, how long to keep re-reading for the batch to
@@ -169,8 +169,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? abortableSleep;
-  const batchSize = deps.batchSize ?? 50;
-  const batchDelayMs = deps.batchDelayMs ?? 15_000;
+  const batchSize = deps.batchSize ?? 20;
+  const batchDelayMs = deps.batchDelayMs ?? 10_000;
   const settleMs = deps.settleMs ?? 3 * 60_000;
   const settlePollMs = deps.settlePollMs ?? 15_000;
   const log = deps.log ?? { warn: (message: string) => console.warn(message) };

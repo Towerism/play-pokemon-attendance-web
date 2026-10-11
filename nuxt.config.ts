@@ -17,9 +17,9 @@ export default defineNuxtConfig({
     // Empty means the real Pokémon hosts. Only test doubles set these
     // (NUXT_POKEMON_ACCESS_URL / NUXT_POKEMON_API_URL); see test/server/fake-pokemon.ts.
     pokemon: { accessUrl: '', apiUrl: '' },
-    // ADR-0004: bulk calls ≤ 50 players, ≥ 15 s apart; after a 5xx, re-read for up to 3 min
+    // ADR-0004: bulk calls of 20 players (≤ 50), 10 s apart; after a 5xx, re-read for up to 3 min
     // before resending (large batches can 502 yet land a minute later). NUXT_SUBMISSION_*.
-    submission: { batchSize: 50, batchDelayMs: 15_000, settleMs: 180_000, settlePollMs: 15_000 },
+    submission: { batchSize: 20, batchDelayMs: 10_000, settleMs: 180_000, settlePollMs: 15_000 },
     session: {
       // The launcher turns this on when NUXT_PUBLIC_SITE_URL is https: a Secure
       // cookie is never sent back over plain-HTTP LAN access (ADR-0006).
