@@ -20,6 +20,8 @@ export default defineNuxtConfig({
     // ADR-0004: bulk calls of 20 players (≤ 50), 10 s apart; after a 5xx, re-read for up to 3 min
     // before resending (large batches can 502 yet land a minute later). NUXT_SUBMISSION_*.
     submission: { batchSize: 20, batchDelayMs: 10_000, settleMs: 180_000, settlePollMs: 15_000 },
+    // Undo deletes one record at a time, at least this far apart (never under 500 ms). NUXT_UNDO_DELAY_MS.
+    undo: { delayMs: 1_000 },
     session: {
       // The launcher turns this on when NUXT_PUBLIC_SITE_URL is https: a Secure
       // cookie is never sent back over plain-HTTP LAN access (ADR-0006).

@@ -42,6 +42,7 @@ export function useSubmissions(): SubmissionService {
       batchDelayMs: Number(config.batchDelayMs),
       settleMs: Number(config.settleMs),
       settlePollMs: Number(config.settlePollMs),
+      undoDelayMs: Math.max(500, Number(useRuntimeConfig().undo.delayMs) || 0),
       log: useLogger('submission'),
     });
   }
