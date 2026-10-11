@@ -506,6 +506,26 @@ describe('submission API', () => {
       expect(deletes()).toEqual([]);
     });
 
+    it('never touches another play session the same day', async () => {
+      const EVENING = 'ps-tuesday-evening';
+      fake.playSessions = [SESSION, { ...SESSION, guid: EVENING, start_date: '2026-10-14T01:00:00Z', end_date: '2026-10-14T03:00:00Z' }];
+      fake.records.get(PS)!.push(fakeRecord('777'));
+      fake.records.set(EVENING, [fakeRecord('888', { guid: 'evening-888' })]);
+
+      await finished(await clear());
+
+      expect(upstreamIds()).toEqual(['9999991']);
+      expect(fake.records.get(EVENING)!.map((r) => r.guid)).toEqual(['evening-888']);
+      expect(deletes().every((r) => r.path.includes(`/play_sessions/${PS}/`))).toBe(true);
+    });
+
+    it('is 400 for a date that is not YYYY-MM-DD, with nothing sent to play-tools', async () => {
+      fake.requests.length = 0;
+      expect((await api('/sessions/13-10-2026/clear?playSessionId=ps-tuesday')).status).toBe(400);
+      expect((await api('/sessions/13-10-2026/clear', { method: 'POST', json: clearBody({ confirmDate: '13-10-2026' }) })).status).toBe(400);
+      expect(fake.requests).toEqual([]);
+    });
+
     it('is 422 nothing_to_clear when play-tools only has the staff record', async () => {
       const res = await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: clearBody() });
       expect(res.status).toBe(422);

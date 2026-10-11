@@ -1773,6 +1773,13 @@ describe('previewing a clear', () => {
   it('refuses an unknown play session', async () => {
     expect((await refusal(service.previewClear(L, TUESDAY, 'ps-nope'))).code).toBe('unknown_play_session');
   });
+
+  it('passes on a play-tools outage as the upstream error, so the dialog can show it', async () => {
+    upstream.onList = () => {
+      throw new PokemonUpstreamError('unavailable', 'Pokémon answered 502.', { status: 502 });
+    };
+    await expect(service.previewClear(L, TUESDAY, PS)).rejects.toMatchObject({ code: 'unavailable' });
+  });
 });
 
 describe('a clear never deletes a staff record or a record added after it started', () => {
