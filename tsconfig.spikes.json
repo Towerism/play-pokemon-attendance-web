@@ -14,5 +14,5 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["spikes", "server/modules/pokemon/adapters", "server/modules/pokemon/ports", "server/modules/pokemon/test-helpers.ts", "shared/types/ids.ts"]
+  "include": ["spikes", "server/modules/pokemon/adapters", "server/modules/pokemon/ports", "server/modules/pokemon/test-helpers.ts", "server/logging/types.ts", "shared/types/ids.ts"]
 }

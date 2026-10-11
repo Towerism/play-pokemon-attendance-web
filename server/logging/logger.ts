@@ -118,8 +118,8 @@ function prettyLine(destination: LogDestination): (line: string) => string {
     hideObject: true,
     singleLine: true,
     messageFormat: (record: Record<string, unknown>) => {
-      const { msg, scope, err, time: _time, level: _level, ...rest } = record;
-      if (scope === 'http') for (const field of HTTP_FIELDS) delete rest[field];
+      const { msg, scope, err, time: _time, level: _level, ...fields } = record;
+      const rest = scope === 'http' ? Object.fromEntries(Object.entries(fields).filter(([k]) => !HTTP_FIELDS.includes(k))) : fields;
       let text = `[${String(scope)}] ${String(msg ?? '').replace(/\r?\n|\r/g, '\\n')}`;
       if (Object.keys(rest).length > 0) text += ` ${JSON.stringify(rest)}`;
       if (err) text += `\n${indent(stackOf(err))}`;

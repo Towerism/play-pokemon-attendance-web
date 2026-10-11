@@ -16,7 +16,7 @@ const POKEMON_HOSTS = [
 
 // h3 / Nitro / nuxt-auth-utils / server/utils auto-imports: invisible to no-restricted-imports.
 const SERVER_AUTO_IMPORTS =
-  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts|useRoster|useSessions|useTdfImports|useSightings|usePokemon|useSubmissions|useMetrics|usePlaySessionResolver|requireLeague)$/;
+  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts|useRoster|useSessions|useTdfImports|useSightings|usePokemon|useSubmissions|useMetrics|usePlaySessionResolver|requireLeague|useLogger)$/;
 
 // Tests use Pokémon URLs as data (the play-tools callback); MSW and test/server/fake-pokemon.ts
 // keep them off the network, so the host rule doesn't apply to them.
@@ -58,6 +58,10 @@ export default withNuxt(
               regex: '^(h3|nitropack|nitro|nuxt|nuxt-auth-utils|#imports|#app|#auth-utils|#nitro)(/.*)?$',
               message: 'server/modules/* are plain TS: no h3 or Nuxt imports.',
             },
+            {
+              regex: '(^|/)logging/(logger|request-id)$',
+              message: 'server/modules/* take a Logger (server/logging/types) as a dependency; server/utils injects it.',
+            },
           ],
         },
       ],
@@ -71,6 +75,12 @@ export default withNuxt(
   {
     files: ['server/modules/pokemon/adapters/**/*.ts'],
     rules: { 'no-restricted-syntax': ['error', NO_NUXT_IN_MODULES] },
+  },
+  {
+    // Server code logs through pino (redacted, request-tagged), never the console (architecture §10).
+    files: ['server/**/*.ts'],
+    ignores: TEST_FILES,
+    rules: { 'no-console': 'error' },
   },
   {
     // Module tests may hold Pokémon URLs as data, but stay plain TS.
