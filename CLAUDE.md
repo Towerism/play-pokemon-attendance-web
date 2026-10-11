@@ -129,6 +129,21 @@ CI runs `pnpm audit --prod --audit-level high`. `pnpm.auditConfig.ignoreGhsas` i
 that never reach `.output/` (check with `ls .output/server/node_modules`).
 Ignore an advisory only after confirming that, and drop entries once Nuxt ships the fix.
 
+## Releases
+
+Releases are automatic. Every push to `main` that passes CI runs semantic-release
+(`.releaserc.json`, the `release` job in `ci.yml`), so **commits on `main` must be
+Conventional Commits**: `fix`/`perf` → patch, `feat` → minor, `!` or a
+`BREAKING CHANGE:` footer → major; `docs`, `test`, `chore`, `ci`, `refactor`,
+`build` and merge commits release nothing. A release tags the image that run tested
+`X.Y.Z` / `X.Y` / `latest` first, then pushes the `vX.Y.Z` git tag and a GitHub
+Release with generated notes (the Releases page is the changelog). Nothing is
+committed back to `main`. `edge` is the unreleased tip of `main`. Never push a `v*`
+tag by hand.
+
+If a run pushed the git tag but failed to create the GitHub Release, a re-run won't
+retry it; create it with `gh release create vX.Y.Z --generate-notes --verify-tag`.
+
 ## Status
 
 M0 (spikes) is done. M1 (skeleton) is built: login with first-run setup code,
