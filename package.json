@@ -22,6 +22,8 @@
     "spike:s2": "tsx spikes/s2-refresh.ts",
     "spike:s3": "tsx spikes/s3-discover.ts",
     "spike:s4": "tsx spikes/s4-bulk.ts",
+    "spike:s6": "tsx spikes/s6-har.ts",
+    "spike:s6-live": "tsx spikes/s6-live.ts",
     "spike:fixtures": "tsx spikes/sanitize-fixtures.ts"
   },
   "dependencies": {

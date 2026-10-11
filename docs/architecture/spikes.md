@@ -10,6 +10,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 | S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ✅ done | UTC `start_date`/`end_date`. Statuses are `active`/`pending`/`complete`. DRF pagination. Server-side date filters exist. No title field. Attendance locks at `final_modifiable_datetime` (= start + 7 d). | §4.4 and the submission flow change ([below](#design-changes-triggered-apply-in-m4m5)). |
 | S4 | `_bulk` semantics: response, partial failure, already-present player | ✅ done | 201 `[{guid}]` in request order. **All-or-nothing:** one rejected item adds nobody. Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record. DELETE → 204. | Diff against **all** records. Validate ids locally. Retry without the offending index. (See design changes 6–9.) |
 | S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
+| S6 | Staff (M8): tournament list, staff assign/remove calls, roles, organizer, edit window | 🟡 part 1 done | Bundle analysis (2026-10-11): one `POST core/tournaments/{guid}/records` per staffer (`player:false`, `role`), `PATCH`/`DELETE …/records/{guid}`; roles are a bundle constant; tournaments are `core/activities?type=tournament`; organizer is in the tournament details; adding stays open until start + 90 d. HAR capture pending. | See [S6](#s6-staff-assignment-in-progress); ADR-0007 updates wait for the HAR. |
 
 ## Verified without a login (2026-10-10)
 
@@ -146,32 +147,148 @@ Plan (changed 2026-10-10 at the organizer's request): refresh **hourly** from th
   - `criteria`: the caller's **permissions** per resource, e.g. `play_sessions.create_attendance`.
 - `https://me.pokemon.com/me` → 200 with `guid`, `consent_age`, `mailing_address`, `meta` and `organized_play`. Not needed.
 
-### S6: staff assignment (planned)
+### S6: staff assignment (in progress)
 
 This decides the staff methods on `PlayToolsGateway` ([ADR-0007](adr/0007-staff-assignment.md), issue #41). Nothing
 about staff is built until its fixtures exist.
 
-- **Capture:** the organizer works in their own logged-in browser; there is no headless login. On
-  play-tools, they open DevTools → Network (filter `api.play.pokemon.com`), then:
-  - open a tournament's page and its staff section;
-  - assign one consenting staffer;
-  - remove the staffer again.
+S6 runs in two parts:
 
-  Then they save the HAR outside the repo. Tokens, cookies and every name other than the consenting test
-  people are scrubbed before anything becomes a fixture under `server/modules/pokemon/adapters/play-tools/fixtures/`.
-- **Questions:**
-  1. The endpoints, methods and request/response bodies for listing, assigning and removing staff. Is it
-     `POST …/records/` with `player: false` and a `role`?
-  2. How play-tools lists a league's tournaments (a separate resource from play sessions, per the organizer) and how to find a date's tournaments.
-  3. Where the role list comes from (an endpoint or a bundle constant), and its codes and labels.
-  4. How the event lists everyone on it, so the app can check "is this player id already listed" (players and
-     staff, every page) before every assign. The app never sends such an assignment, so the capture doesn't need
-     to provoke a duplicate.
-  5. How the tournament names its organizer (S4: a record with `role: "organizer"`), so the app can refuse to
-     staff them. The organizer role is fixed and never assigned.
-  6. Behaviour after `final_modifiable_datetime`, and which `criteria` permission gates staff edits.
-- **Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the
-  routes to `test/server/fake-pokemon.ts`.
+1. **Bundle analysis.** Done 2026-10-11, no login (findings below).
+2. **HAR capture.** Pending. It turns the bundle's claims into fixtures and confirms what only the server knows.
+
+#### Part 1: what the public play-tools bundle shows (2026-10-11)
+
+The play-tools SPA bundle (`https://play-tools.pokemon.com/assets/index-*.js` and its chunks) is
+Istanbul-instrumented, so every module carries its source path (e.g.
+`src/components/TournamentsView/TournamentDetail/Tabs/StaffTab/StaffHeading`). Nothing was called. The answers
+below are what the client *sends* and *expects*. Claims marked *(inferred)* need the HAR.
+
+**Transport.**
+
+- The base URL is `https://api.play.pokemon.com/services`, the same gateway as play sessions.
+- Requests carry only `Authorization: Bearer …`, `Content-Type` and `Accept: application/json`.
+- Paths are built without a trailing slash (`core/tournaments/{guid}/records`).
+- The client has no rate-limit or throttle logic of its own.
+
+**Q1. Assign, change and remove** (`TournamentService`, Staff tab). `{t}` is the tournament `guid` (not its
+`display_id`), and `{r}` is the staff record's `guid`.
+
+| Action | Call | Body |
+| ------ | ---- | ---- |
+| Assign | `POST core/tournaments/{t}/records` | **One object**, not a list: `{"role":"judge","player":false,"participant":{"player_id":"…"},"origin":"manual"}` |
+| Change role | `PATCH core/tournaments/{t}/records/{r}` | JSON-Patch array: `[{"op":"replace","path":"/role","value":"scorekeeper"}]` |
+| Remove | `DELETE core/tournaments/{t}/records/{r}` | `[{"legacy_alias":"<the staffer's player_id>"}]` |
+
+- **Assign has no lookup step.** The UI is a plain *Player ID* field and a role select, and it posts straight away.
+- **A tournament has no invite or consent step.** Invites exist only for *league* staff, a different feature.
+- **Assign errors:**
+  - 403 → "User is not authorized to add staff to this tournament".
+  - Otherwise `errors.body["participant.player_id"]` holds a list of `{code, attributes}`.
+- **Codes the UI translates** (*which ones the assign endpoint really returns is inferred*):
+
+  | Code | Meaning |
+  | ---- | ------- |
+  | `op.activity_record.cannot_duplicate_participant` | Already listed |
+  | `op.activity_record.missing_certification` | No certification for this role |
+  | `op.activity_record.player_id_must_be_claimed` | Player id not claimed |
+  | `op.player.no_user` | No user |
+  | `op.player.below_age` | Below age |
+  | `op.player.disciplined` | Disciplined |
+  | `op.player.merged_player_id` | Merged id; attributes carry `provided_player_id` → `actual_player_id` |
+  | `op.value.unknown_reference` | Invalid player id |
+
+  With no code, the UI falls back to "Player ID … is not a Professor". The UI also has strings for "was a
+  participant and cannot also be on staff" and "has already been added to this event".
+- **Change-role errors** come back per item as `errors.role[]`. Code `cannot.change.player.info` means the person
+  is a participant.
+- The assign response body is not used by the UI. *Its shape is inferred* (probably the created record).
+
+**Q2. Listing tournaments.**
+
+- "My tournaments" calls `GET core/activities` with `type=tournament`, `role=organizer`, `activity_group_id`,
+  `product`, `sort_by`, `page_size=40` (or `days=90` / `year`). It follows the DRF `next` URL.
+- `type` tells the two kinds apart: `tournament` vs `play_session`. Play sessions are activities too, so this is
+  the same resource family seen through another endpoint.
+- **Row fields:** `guid`, `name`, `display_id` (the tournament id people see), `start_date` / `start_date_v2` +
+  `start_date_timezone`, `status`, `activity_state` and `activity_group`.
+- **Status values:**
+  - `status`: `sanctioned`, `complete`, `cancelled`, `deleted`, `approval-pending`, `sanctioning-error`, `invalidated`.
+  - `activity_state`: `pending`, `upload_in_progress`, `upload_failed`, `completed`.
+- **Date filters** use the S3 syntax: `start_date_v2:greater_than_or_equal_to` / `…:less_than_or_equal_to`.
+  The bundle shows them on `core/users/{guid}/activities` (staffing history). *Whether `core/activities`
+  accepts them is inferred.*
+- Details come from `GET core/tournament/{guid}`, singular.
+
+**Q3. Roles are a bundle constant, not an endpoint.**
+
+| Wire value | Label |
+| ---------- | ----- |
+| `judge` | Judge (the default) |
+| `headjudge` | Head Judge |
+| `scorekeeper` | Scorekeeper |
+| `administration` | Support Staff |
+| `translator` | Translator |
+
+- `organizer` is fixed. It renders as a disabled select with no delete.
+- `generic-staff` appears only as a play-session filter value.
+- The client has no per-role checks. The server enforces certification.
+
+**Q4. Everyone on the event** is `GET core/tournaments/{t}/records`, DRF-paged (`count`, `next`, `results`):
+
+- **Staff:** `player=false`, `role:null=false`, `page_size=500`. The Staff tab reads one page only.
+- **Players:** `player=true`, `status=active`, `page`, `page_size`. `useGetAllRecords` follows `next` to the end.
+- **Fields:** `guid`, `role`, `participant.player_id` and `participant.display_first_name` / `display_last_name`.
+
+The "already listed" check needs both lists, every page. One unfiltered pass would do if the server allows it
+(*HAR*).
+
+**Q5. The organizer.**
+
+- Tournament details carry `organizer: {player_id, first_name, last_name}`.
+- The records list also holds a `role: "organizer"` record, as in S4.
+- The UI decides "is organizer" by comparing the user's player id with `organizer.player_id`.
+
+**Q6. Edit window and permissions.**
+
+- The UI enables *adding* staff until **90 days after the tournament's start** (`start_date_actual + 90 d`).
+  After that, adding needs the admin permission `activities.modify_participant_staff`.
+- The add section shows for the organizer, or for that admin permission. The tab shows with
+  `view_participants` or `modify_participant_staff`.
+- Change-role and remove are not gated by date or status in the UI. *What the server does after the window is
+  unknown.*
+- The play-session `final_modifiable_datetime` (start + 7 d) does not apply to tournaments.
+
+**What this changes in ADR-0007** (for the ADR's owner to apply after the HAR):
+
+- The assign body is a single object, so assign is **one call per staffer**. There is no `_bulk`. Batch spacing
+  becomes per-call spacing.
+- Remove needs the record `guid` *and* the player id (`legacy_alias`). The app should store the record `guid` from
+  the assign response, or re-read the records list.
+- Eligibility is server-side: certification, claimed id, age and discipline. Map its codes to per-staffer outcomes.
+  `op.player.merged_player_id` is a "use this id instead" outcome, not a plain failure.
+- The organizer check can use `organizer.player_id` from `GET core/tournament/{guid}`. No records scan is needed.
+- The edit window is start + 90 d, not `final_modifiable_datetime`.
+
+#### Part 2: HAR capture (pending, needs the organizer)
+
+Steps are in [`spikes/README.md`](../../spikes/README.md#s6-staff-assignment-har-capture-pnpm-spikes6). They are
+done in the organizer's own logged-in browser, because there is no headless login. `pnpm spike:s6 <file.har>` keeps
+only `api.play.pokemon.com` calls and never reads headers or cookies. It pseudonymises ids, names and search terms,
+then writes `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`. It refuses to write anything if an
+original id survives.
+
+The HAR must confirm:
+
+- the assign response body and status;
+- one real error body (e.g. a non-Professor id);
+- the remove status;
+- a `core/activities?type=tournament` page, and whether it accepts `start_date_v2` filters;
+- a records page with `player=false` and one unfiltered;
+- the tournament details `organizer` block.
+
+**Result (when done):** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and
+add the routes to `test/server/fake-pokemon.ts`.
 
 ## Design changes triggered (apply in M4/M5)
 

@@ -1,0 +1,86 @@
+/**
+ * Turns a browser HAR (spike S6: the organizer's own DevTools capture) into
+ * calls that can become contract fixtures. Headers and cookies are never
+ * read, so tokens and session cookies cannot leak; only method, path, query,
+ * status and JSON bodies are kept, then pseudonymised with `Sanitizer`.
+ */
+import { Sanitizer, findLeaks } from './sanitize';
+
+export interface ApiCall {
+  method: string;
+  path: string;
+  query: Record<string, string>;
+  status: number;
+  request: unknown;
+  response: unknown;
+}
+
+interface HarEntry {
+  request: { method: string; url: string; postData?: { mimeType?: string; text?: string } };
+  response: { status: number; content?: { mimeType?: string; text?: string; encoding?: string } };
+}
+
+const SEARCH_KEY = /^(q|query|search|term|keyword)$/i;
+
+export function apiCalls(har: unknown, host = 'api.play.pokemon.com'): ApiCall[] {
+  const entries = (har as { log?: { entries?: unknown } })?.log?.entries;
+  if (!Array.isArray(entries)) throw new Error('Input is not a HAR (no log.entries)');
+  return (entries as HarEntry[])
+    .filter((e) => new URL(e.request.url).host === host && e.request.method !== 'OPTIONS')
+    .map((e) => {
+      const url = new URL(e.request.url);
+      const content = e.response.content ?? {};
+      const text = content.encoding === 'base64' ? Buffer.from(content.text ?? '', 'base64').toString('utf8') : (content.text ?? '');
+      return {
+        method: e.request.method,
+        path: url.pathname,
+        query: Object.fromEntries(url.searchParams),
+        status: e.response.status,
+        request: body(e.request.postData?.text ?? '', e.request.postData?.mimeType),
+        response: body(text, content.mimeType),
+      };
+    });
+}
+
+function body(text: string, mimeType = ''): unknown {
+  if (text === '') return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { nonJson: mimeType || 'unknown', bytes: Buffer.byteLength(text) };
+  }
+}
+
+/** A HAR, or the list of calls `spikes/s6-live.ts` recorded. */
+export function loadCalls(json: unknown): ApiCall[] {
+  if (!Array.isArray(json)) return apiCalls(json);
+  return json.map((c: Partial<ApiCall>) => {
+    if (typeof c?.method !== 'string' || typeof c.path !== 'string' || typeof c.status !== 'number') {
+      throw new Error('Input list item is not a recorded call (method, path, status)');
+    }
+    return c as ApiCall;
+  });
+}
+
+/** Pseudonymises all calls with one Sanitizer, so ids stay consistent across them. */
+export function sanitizeCalls(calls: readonly ApiCall[]): { calls: ApiCall[]; leaks: string[] } {
+  const s = new Sanitizer();
+  const firstPass = calls.map((c) => ({
+    ...c,
+    query: Object.fromEntries(
+      Object.entries(s.sanitize(c.query) as Record<string, string>).map(([k, v]) => [k, SEARCH_KEY.test(k) ? '<redacted>' : v]),
+    ),
+    request: s.sanitize(c.request),
+    response: s.sanitize(c.response),
+  }));
+  // Second pass: ids seen under a player-id key anywhere replace their
+  // occurrences in paths and free text (error messages) everywhere.
+  const out = firstPass.map((c) => ({
+    ...c,
+    path: s.replaceKnownIds(s.sanitize(c.path) as string),
+    query: JSON.parse(s.replaceKnownIds(JSON.stringify(c.query))) as Record<string, string>,
+    request: JSON.parse(s.replaceKnownIds(JSON.stringify(c.request))) as unknown,
+    response: JSON.parse(s.replaceKnownIds(JSON.stringify(c.response))) as unknown,
+  }));
+  return { calls: out, leaks: findLeaks(JSON.stringify(out), s.originals) };
+}
