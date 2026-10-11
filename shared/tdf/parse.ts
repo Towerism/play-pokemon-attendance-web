@@ -1,10 +1,8 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { type PlayerId, type SessionDate, toPlayerId } from '../types/ids';
+import { TDF_MAX_BYTES, TDF_MAX_PLAYERS } from './limits';
 
-/** Upload limit (architecture §9). Real files are a few KB per 100 players. */
-export const TDF_MAX_BYTES = 2 * 1024 * 1024;
-/** Same cap as a `regulars.json` import. */
-export const TDF_MAX_PLAYERS = 2000;
+export { TDF_MAX_BYTES, TDF_MAX_PLAYERS };
 /** Same limit as a typed player name (`shared/schemas/roster`). */
 const NAME_MAX = 100;
 

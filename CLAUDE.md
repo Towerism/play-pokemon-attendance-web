@@ -126,5 +126,7 @@ M0 (spikes) is done. M1 (skeleton) is built: login with first-run setup code,
 secret bootstrap, migrations, image + entrypoint, CI/GHCR, Unraid template.
 The test install on the Unraid box is still open. M2 (rosters) is built:
 players, regulars CRUD, `regulars.json` import, manual session players with
-manual sightings, and the This week / Regulars / Players pages. Next is M3
-(TDF); see architecture §13.
+manual sightings, and the This week / Regulars / Players pages. M3 (TDF) is
+built: the `shared/tdf` parser, preview → commit routes (the file travels as
+JSON), `tdf` sightings for every player in the file, and the dropzone and
+preview modal on This week. Next is M4 (Pokémon connection); see architecture §13.

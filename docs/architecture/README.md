@@ -320,10 +320,19 @@ erDiagram
     int id PK
     int draft_id FK
     text filename
-    text sha256 "detect re-uploads"
+    text sha256 "unique per draft: detect re-uploads"
     text tournament_name
     date tournament_date
     int player_count
+    text status "pending|committed"
+    datetime created_at
+    datetime committed_at
+  }
+  TDF_UPLOAD ||--o{ TDF_UPLOAD_PLAYER : "parsed into"
+  TDF_UPLOAD_PLAYER {
+    int upload_id FK
+    text player_id "no FK: may be unknown until commit"
+    text name "name and ID only"
   }
   SUBMISSION {
     int id PK
@@ -365,6 +374,7 @@ Key modelling decisions:
 - **Names belong to the player.** The first non-empty name seen (typed, imported or from a TDF) sticks, and later sources never overwrite it. Only an explicit rename (`PATCH /players/{id}`) changes it. `last_seen` is not stored on `PLAYER`; it is derived from sightings (see Metrics).
 - **Manual session players are evidence.** Adding a player to a date by hand writes a `SIGHTING(kind = manual)`, and removing them retracts it. Adding a regular as a session player is refused (409), since regulars are submitted every session anyway. A removed session player stays on file as a known player.
 - **The session-player list is per date** (`SESSION_DRAFT`). Uploading two TDFs on the same night (e.g. a TCG and a VGC event) merges them, keyed by `player_id`. Re-uploading the same file (same `sha256`) is a no-op.
+- **TDF import is preview → commit.** The preview parses the file and holds its players (name and ID only) in `TDF_UPLOAD_PLAYER` as a `pending` upload; it changes nothing else, and previews never committed are dropped after a day. The commit classifies against the state *at commit time*: every player becomes known, non-regulars become `SESSION_PLAYER(source = tdf)`, and **every** player in the file, regulars included, gets a `SIGHTING(kind = tdf)`. Committing again is a no-op. A player already added by hand stays `manual` and gains the `tdf` sighting. Removing a session player retracts both their `manual` and `tdf` sightings for the date, since the organizer is saying they weren't there.
 - **TDF privacy.** The parser reads `userid`, `firstname`, `lastname` and tournament metadata only. Birthdates and other fields are never persisted, and the raw file is discarded after parsing.
 
 ### Metrics (SQL views, computed on read — the data is small)
@@ -401,7 +411,7 @@ sequenceDiagram
 
   O->>W: "This week" (date defaults to today)
   O->>W: drop tournament.tdf
-  W->>S: POST /api/sessions/2026-10-14/tdf (multipart)
+  W->>S: POST /api/sessions/2026-10-14/tdf (JSON: filename + file text)
   S->>S: parse → preview {new: 3, known: 9, regulars: 6, invalid: 0}
   S-->>W: preview
   O->>W: confirm import
@@ -471,7 +481,7 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `POST /regulars/import`                                   | One-time import of the CLI's `regulars.json`. The body is the file's JSON array as is (`[{ name, player_id }]`, ≤ 2,000 entries); all-or-nothing |
 | `GET /sessions/{date}`                                    | Draft for a date: session players, regulars, resolved session |
 | `POST /sessions/{date}/players` · `DELETE /sessions/{date}/players/{playerId}` | Manual session players. `POST` is 201 when added, 200 when already listed, 409 for a regular |
-| `POST /sessions/{date}/tdf` → preview · `POST /sessions/{date}/tdf/{uploadId}/commit` | TDF import          |
+| `POST /sessions/{date}/tdf` → preview · `POST /sessions/{date}/tdf/{uploadId}/commit` | TDF import. The body is JSON `{ filename, content }` (the file's text). Preview: 200, 413 over 2 MB, 422 with `data.code` for a file that isn't a usable tournament. Commit: 200 (`alreadyImported` on a repeat), 404 for an upload not previewed for that date |
 | `POST /sessions/{date}/resolve`                           | Date → upstream play session candidates                     |
 | `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`)                |
 | `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` | Job status          |
@@ -504,9 +514,9 @@ Client patterns:
 | Theft of the refresh token (acts as the organizer in play-tools) | AES-256-GCM at rest. The key is never stored in the DB: it comes from `NUXT_TOKEN_VAULT_KEY` if that is set, otherwise from `/data/secrets/token-vault.key`, generated on first boot with mode 0600. Litestream replicas and copies of `app.db` stay unreadable without the key. The token is never sent to the browser or logged. Disconnect revokes it at Hydra (`/oauth2/revoke`) and deletes the ciphertext. Trade-offs are in [ADR-0006](adr/0006-docker-on-unraid.md). |
 | Unauthorized use of the app                            | `nuxt-auth-utils`: scrypt-hashed passwords (`hashPassword`), with WebAuthn/passkeys available later. Sealed httpOnly, SameSite=Lax cookies (`NUXT_SESSION_PASSWORD`, or a generated `/data/secrets/session-password`). Cookies are `Secure` when served over HTTPS. `requireUserSession` in every handler. Login rate-limited (`nuxt-security` rate limiter). Plain HTTP is for the LAN only. Remote access goes through an HTTPS reverse proxy or Tailscale. |
 | Hijacking first-run setup on the LAN                   | The organizer account can only be created while no users exist, and only with a one-time setup code printed to the container log on boot |
-| CSRF on state-changing routes                          | SameSite=Lax plus required `Content-Type: application/json` (`server/middleware/json-only.ts`: an `/api` POST/PUT/PATCH/DELETE whose body isn't JSON gets 415). `nuxt-csurf` token on the multipart TDF upload. |
+| CSRF on state-changing routes                          | SameSite=Lax plus required `Content-Type: application/json` (`server/middleware/json-only.ts`: an `/api` POST/PUT/PATCH/DELETE whose body isn't JSON gets 415). The TDF upload is JSON too (the file's text in the body), so the same guard covers it and no CSRF token module is needed. |
 | Missing security headers                               | `nuxt-security` module (CSP, HSTS, X-Frame-Options, request size limits)                                                                |
-| Malicious TDF (XXE, billion-laughs, huge file)         | `fast-xml-parser` with `processEntities:false`, no DTD handling, 2 MB upload limit, a 2,000-player cap, Zod validation of every player |
+| Malicious TDF (XXE, billion-laughs, huge file)         | Any `<!DOCTYPE`/`<!ENTITY` is refused before parsing; `fast-xml-parser` runs with `processEntities:false` (only XML's five escapes and numeric references are decoded). Bodies over the limit are refused by `Content-Length` before they are read; 2 MB file limit; 2,000-player cap; every player ID validated |
 | OAuth `state` / code injection on connect              | `state` + PKCE verifier stored server-side and bound to the app user's session, with a 10-min TTL and single use                       |
 | Minors' PII                                            | Only name and player ID are stored. No birthdates. Raw TDFs are not retained.                                                          |
 | Supply chain                                           | Lockfile, Renovate, `pnpm audit` in CI                                                                                                 |
@@ -581,7 +591,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures ([status](spikes.md))                                        |
 | M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login with first-run setup, secret bootstrap, CI, Dockerfile + entrypoint, GHCR publish, Unraid template, with a test install on the Unraid box. Built; the test install on the Unraid box is still open. |
 | M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players. Built.                                |
-| M3 TDF                        | `shared/tdf` parser, preview → commit, sightings                                                              |
+| M3 TDF                        | `shared/tdf` parser, preview → commit, sightings. Built.                                                      |
 | M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery                                                       |
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry                                        |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds                                                                          |

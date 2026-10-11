@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { TDF_MAX_BYTES } from '../tdf/parse';
+import { TDF_MAX_BYTES } from '../tdf/limits';
 import { sessionDate } from './sessions';
 
 /**
