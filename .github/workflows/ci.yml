@@ -59,36 +59,45 @@ jobs:
       - name: Container smoke test (entrypoint, PUID/PGID, secrets, setup, graceful stop)
         run: test/docker/smoke.sh play-pokemon-attendance:test
 
+      # Pushes publish, and so do PRs from this repo, so a PR can be tried on
+      # Unraid as :pr-<number>. Fork PRs get a read-only token: smoke test only.
+      - name: Decide whether to publish
+        id: publish
+        run: echo "enabled=${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}" >> "$GITHUB_OUTPUT"
+
       - name: Image tags
         id: meta
-        if: github.event_name == 'push'
+        if: steps.publish.outputs.enabled == 'true'
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
-          # latest / X.Y.Z / X.Y from release tags (ADR-0006); edge + sha from main.
+          # latest / X.Y.Z / X.Y from release tags (ADR-0006); edge + sha from main;
+          # pr-<number> from PRs (moves with each push to the PR).
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=edge,branch=main
-            type=sha
+            type=ref,event=pr
+            type=sha,enable=${{ github.event_name == 'push' }}
 
       - uses: docker/setup-qemu-action@v3
         if: github.event_name == 'push'
       - uses: docker/login-action@v3
-        if: github.event_name == 'push'
+        if: steps.publish.outputs.enabled == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish multi-arch image to GHCR
-        if: github.event_name == 'push'
+      - name: Publish image to GHCR
+        if: steps.publish.outputs.enabled == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           target: app
-          platforms: linux/amd64,linux/arm64
+          # PR images are amd64 only (Unraid), skipping the slow QEMU arm64 build.
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

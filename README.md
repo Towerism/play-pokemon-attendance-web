@@ -20,6 +20,12 @@ Design: [`docs/architecture/`](docs/architecture/README.md).
 Everything persistent lives in `/mnt/user/appdata/play-pokemon-attendance`. Back
 up the whole folder, and always restore `secrets/` together with `app.db`.
 
+To try a pull request, set the container's *Repository* to
+`ghcr.io/towerism/play-pokemon-attendance:pr-<number>` (amd64 only; CI publishes
+it for PRs opened from this repo, and refreshes it on every push to the PR).
+Switch back to `:latest` afterwards; a PR may add migrations that a release
+does not have yet, so test against a copy of appdata.
+
 Any other Docker host works too: `docker compose up -d app`, then
 `docker compose logs app` to get the setup code.
 
