@@ -35,3 +35,16 @@ The metrics are computed on read as decided, but by one parameterized SQL query 
 which a view can't take as parameters. Nothing is stored, so changing a definition or a threshold still
 needs no backfill. "A league session was held" means a date with any sighting in the league. Details
 are in architecture §5, "As built (M6)".
+
+## Update (M7, 2026-10-11)
+
+**Undo retracts evidence.** When an undo removes a record from play-tools (or finds it already gone), the
+player's `tdf` and `manual` sightings for that date are retracted and they come off the date's session players,
+in the same transaction as the undo's outcome for them. It follows the rule removing a session player by hand
+already applies (§5: "the organizer is saying they weren't there"). The organizer's reasoning: either the
+removal was an accident, and the player will be added again anyway, or the add was, and the sighting needs
+correcting. `upstream_existing` sightings stay, since they record someone else's entry in play-tools, and so do
+the sightings of a player another play session that day still has. Metrics are computed on read, so nothing is
+backfilled: the player's counts, last seen and streak drop that date, and a date left with no sightings at all
+stops counting as a session held. The decision above is unchanged; this is one more way evidence is retracted.
+

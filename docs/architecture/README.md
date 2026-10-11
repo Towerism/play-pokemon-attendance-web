@@ -271,7 +271,7 @@ interface PlayToolsGateway {
   listAttendance(groupId: string, sessionId: string): Promise<AttendanceRecord[]>; // {recordId, playerId, isPlayer, name}, every role
   addAttendanceBulk(groupId: string, sessionId: string, playerIds: PlayerId[]): Promise<BulkResult>;
   // BulkResult = {status: 'added', records: [{playerId, recordId}]} | {status: 'rejected', alreadyPresent, failed}
-  removeAttendance(groupId: string, sessionId: string, recordId: string): Promise<void>; // M7 (undo)
+  removeAttendance(groupId: string, sessionId: string, recordId: string): Promise<'removed' | 'not_found'>; // M7 (undo)
 }
 ```
 
@@ -281,6 +281,9 @@ all-or-nothing semantics: a 400 maps `errors.body["<i>.participant.player_id"]` 
 (`cannot_duplicate_participant` → `alreadyPresent`, anything else → `failed`; a 400 naming nobody fails
 everyone), a 201 maps record guids to players in request order, a 5xx throws `unavailable`, and an id that
 isn't digits only is refused locally before any call.
+`removeAttendance` (M7) sends `DELETE …/records/{recordId}/`: 204 → `removed`, 404 → `not_found` (someone removed it
+already), other statuses map like the rest. A record id that isn't `^[A-Za-z0-9-]{1,64}$` is refused locally, so it
+can never change the request path.
 
 The adapter is the only place that knows about Pokémon's JSON shapes,
 pagination quirks (`results` vs `data`), and headers. Responses are parsed
@@ -385,12 +388,14 @@ erDiagram
     text status "planned|running|succeeded|partial|failed|interrupted"
     text error "why it stopped early"
     int retry_of "the attempt this one retries or resumes"
+    text kind "submit|undo (M7)"
+    int undo_of "for an undo: the submission it undoes"
   }
   SUBMISSION_ITEM {
     int submission_id FK
     text player_id FK
     text origin "regular|session|upstream"
-    text outcome "pending|added|already_present|failed|skipped|unrequested"
+    text outcome "pending|added|already_present|failed|skipped|unrequested; undo: removed|already_removed"
     text error
     text record_id "upstream record, for undo (M7)"
     bool as_staff "present upstream in a staff role"
@@ -399,7 +404,7 @@ erDiagram
     int id PK "also the SSE event id"
     int submission_id FK
     datetime at
-    text type "planned|batch_sent|batch_rejected|retrying|reconciled|finished"
+    text type "planned|batch_sent|batch_rejected|retrying|reconciled|finished|record_removed"
     text message
     int done "players dealt with"
     int total "players to add"
@@ -586,7 +591,33 @@ From History, an organizer can open **Remove players added by this
 submission**. It deletes only records whose `player_id` is in that
 submission's `added` set. It is never "delete everyone", unless the organizer
 uses the separate danger-zone action **Clear session**, which requires typing
-the date to confirm.
+the date to confirm (#15).
+
+As built (M7, `server/modules/submission/service.ts`):
+
+- **An undo is a submission row** with `kind = 'undo'` and `undo_of` pointing at the original. It reuses the
+  per-league lease lock, the event log and SSE, crash recovery, shutdown and History. Its items are the
+  original's `added` items that have a record id and that no earlier undo removed, so undoing twice finishes
+  what a partial undo left. Retry on an undo starts a new undo of the same original (`retry_of` set).
+- **Refused** (before anything is created): `not_undoable` for an undo or a still-running submission,
+  `nothing_to_undo`, `edit_window_closed` and `unknown_play_session` (same resolver check as Submit),
+  `submission_running` while the league's lock is held, `shutting_down`.
+- **Plan:** re-read every page of the records first (spike F4). A record no longer listed is
+  `already_removed`; a record now listed for a different player is left alone (`failed`, `record_mismatch`).
+- **Execute:** one DELETE at a time, at least `NUXT_UNDO_DELAY_MS` apart (default 1 s, never under 500 ms). A
+  204 is `removed`, a 404 `already_removed`. A 429 waits for `Retry-After`; a 5xx re-reads first (the delete may
+  have landed); a record is tried at most 3 times. Non-retryable errors stop the job (`failed`, rest `skipped`).
+  Each outcome is written as soon as its DELETE returns.
+- **Reconcile:** re-read; a record still listed is `failed` ("Still in play-tools after removing."). Then each
+  `removed`/`already_removed` outcome is made final in one transaction per player together with
+  `forgetAttendance` (`submission/forget.ts`): `SessionsService.removePlayer` for the date, then
+  `SightingsService.retract` for `tdf` and `manual`. Players another play session on the same date still has
+  (added or present there, not undone) are left alone. A failed local write fails that player
+  (`local_write_failed`) and rolls back its list entry and sightings. An undo that stops early or is recovered
+  after a crash runs the same step for what it removed.
+- **Never touched:** the draft's status and play session, regular membership, `PLAYER` rows and
+  `upstream_existing` sightings. `timesSubmitted` stops counting a removed record; History shows
+  `removedBy` per item and labels undo rows "Undo of #N".
 
 ## 7. HTTP API (Nitro server routes)
 
@@ -612,13 +643,13 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `POST /sessions/{date}/resolve`                           | Date → upstream play session candidates `{ timeZone, candidates: [{ id, label, status, startsAt, endsAt, editableUntil, editable }] }` |
 | `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`) → `{ submissionId }` |
 | `GET /submissions?date=` · `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` → 202 | History (newest first), one submission with per-player items, progress (`Last-Event-ID` resumes), retry/resume as a new attempt |
-| `POST /submissions/{id}/undo`                             | Remove the records this submission added                    |
+| `POST /submissions/{id}/undo` → 202                       | Remove the records this submission added, as a new undo attempt → `{ submissionId }` (§6.3). Summaries carry `kind`, `undoOf`, `undoable`, `undoBlockedReason`; items carry `removedBy` |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` → 409,
-`cannot_submit` → 403, `unknown_play_session` / `edit_window_closed` / `nothing_to_submit` → 422,
+`cannot_submit` → 403, `unknown_play_session` / `edit_window_closed` / `nothing_to_submit` / `not_undoable` / `nothing_to_undo` → 422,
 `not_found` → 404, `shutting_down` → 503.
 
 ## 8. Frontend (Nuxt pages)
