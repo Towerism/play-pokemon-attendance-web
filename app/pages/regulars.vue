@@ -10,9 +10,10 @@ const columns: TableColumn<Regular>[] = [
   { accessorKey: 'displayName', header: 'Name' },
   { accessorKey: 'playerId', header: 'Player ID' },
   { accessorKey: 'regularSince', header: 'Regular since' },
+  { id: 'lastSeen', header: 'Last seen' },
+  { id: 'rate8w', header: 'Rate (8 wk)' },
   { id: 'actions' },
 ];
-// Last seen and 8-week rate join this table with metrics (M6).
 
 const form = useTemplateRef('form');
 const adding = ref(false);
@@ -96,6 +97,15 @@ const formatDate = (iso: string) => new Date(iso).toLocaleDateString();
       </template>
       <template #regularSince-cell="{ row }">
         {{ formatDate(row.original.regularSince) }}
+      </template>
+      <template #lastSeen-cell="{ row }">
+        <div class="flex flex-wrap items-center gap-2" :title="row.original.metrics?.lastSeen">
+          {{ lastSeenLabel(row.original.metrics) }}
+          <UBadge v-if="row.original.stale" color="warning" variant="subtle" size="sm" :title="absenceLabel(row.original.metrics)">Stale</UBadge>
+        </div>
+      </template>
+      <template #rate8w-cell="{ row }">
+        <span class="tabular-nums">{{ ratePercent(row.original.metrics?.attendanceRate8w ?? null) }}</span>
       </template>
       <template #actions-cell="{ row }">
         <div class="text-right">

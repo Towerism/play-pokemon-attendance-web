@@ -139,4 +139,7 @@ league discovery, and the Settings page with the reconnect banner. Server tests 
 `test/server/fake-pokemon.ts` through `NUXT_POKEMON_*_URL`. M5 (submission) is built: date → play-session
 resolve in the league `TZ`, the plan → execute → reconcile job with a per-league lease, SSE progress,
 History with retry/resume, and boot/shutdown handling. A 5xx from `_bulk` may still land a minute later,
-so the job re-reads before resending (ADR-0004 update). Next is M6 (metrics and curation); see architecture §13.
+so the job re-reads before resending (ADR-0004 update). M6 (metrics and curation) is built: metrics
+computed on read from sightings in one SQL query, the Players page tabs (promotion candidates, stale
+regulars, all), metrics on Regulars, thresholds in Settings (`curation_settings`), and "present" ticks
+for regulars on This week. Next is M7 (hardening); see architecture §13.

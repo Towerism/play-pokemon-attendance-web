@@ -134,8 +134,8 @@ describe('roster and session API', () => {
       expect(players.map((p: { playerId: string }) => p.playerId)).toEqual(['0012345']);
     });
 
-    it('GET 400 for a filter that arrives with metrics', async () => {
-      expect((await api('/players?filter=promote')).status).toBe(400);
+    it('GET 400 for an unknown filter (promote and stale: metrics.test.ts)', async () => {
+      expect((await api('/players?filter=regulars')).status).toBe(400);
     });
 
     it('PATCH renames, sets notes and toggles regular', async () => {
