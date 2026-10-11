@@ -27,3 +27,11 @@ sightings with SQL views. Submissions are kept separately for audit
 - (+) "Promotion candidates" and "stale regulars" reflect reality.
 - (−) A regular who attends but doesn't play in the tournament leaves no TDF evidence. This is mitigated by the one-tap "present" checkbox, and the UI labels the metric "seen in events" so it isn't over-trusted.
 - (+) Views are recomputed on read, so threshold or definition changes need no backfill.
+
+## Update (M6, 2026-10-10)
+
+The metrics are computed on read as decided, but by one parameterized SQL query (CTEs) rather than
+`CREATE VIEW`s. The windows depend on today, in the league timezone, and on the organizer's thresholds,
+which a view can't take as parameters. Nothing is stored, so changing a definition or a threshold still
+needs no backfill. "A league session was held" means a date with any sighting in the league. Details
+are in architecture §5, "As built (M6)".

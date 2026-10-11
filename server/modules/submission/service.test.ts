@@ -566,6 +566,23 @@ describe('history', () => {
     expect(service.list('other')).toEqual([]);
   });
 
+  it('counts, per player, the session dates they were added to or already present on (audit, §5)', async () => {
+    regulars('9');
+    sessionPlayers('1', '2');
+    upstream.has('5'); // nobody here asked for 5: unrequested
+    upstream.onBulk = (ids) =>
+      ids.includes(id('2')) ? { status: 'rejected', alreadyPresent: [], failed: [{ playerId: id('2'), error: 'op.x' }] } : undefined;
+    await submit();
+
+    expect(service.timesSubmitted(L)).toEqual(new Map([['1', 1], ['9', 1]]));
+
+    upstream.onBulk = undefined;
+    await submit(); // a second attempt for the same date: 2 added, 1 and 9 already present
+
+    expect(service.timesSubmitted(L)).toEqual(new Map([['1', 1], ['2', 1], ['9', 1]]));
+    expect(service.timesSubmitted('other')).toEqual(new Map());
+  });
+
   it('get is not_found for an unknown id or another league', async () => {
     sessionPlayers('1');
     const { id: submissionId } = await submit();

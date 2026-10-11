@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionDate } from '../../../shared/types/ids';
-import { localDay, sessionLabel } from './local-time';
+import { dateIn, localDay, sessionLabel } from './local-time';
 
 const day = (s: string) => s as SessionDate;
 
@@ -54,5 +54,14 @@ describe('sessionLabel', () => {
     expect(sessionLabel({ type: 'open_play', products: [], startsAt: new Date('2026-10-13T17:00:00Z') }, 'UTC')).toBe(
       'Open play · Tue 5:00 PM',
     );
+  });
+});
+
+describe('dateIn', () => {
+  it('is the calendar date on the league wall clock, not in UTC', () => {
+    // 9 PM Tuesday in Chicago is already Wednesday in UTC.
+    expect(dateIn(new Date('2026-10-14T02:00:00Z'), 'America/Chicago')).toBe('2026-10-13');
+    expect(dateIn(new Date('2026-10-14T05:00:00Z'), 'America/Chicago')).toBe('2026-10-14');
+    expect(dateIn(new Date('2026-10-14T02:00:00Z'), 'UTC')).toBe('2026-10-14');
   });
 });

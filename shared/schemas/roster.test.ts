@@ -94,7 +94,11 @@ describe('PlayersQuery', () => {
     expect(PlayersQuery.parse({ q: ' ' })).toEqual({ filter: 'all' });
   });
 
-  it('rejects filters that arrive with metrics (M6)', () => {
-    expect(PlayersQuery.safeParse({ filter: 'promote' }).success).toBe(false);
+  it.each(['promote', 'stale', 'all'])('takes the %s filter', (filter) => {
+    expect(PlayersQuery.parse({ filter })).toEqual({ filter });
+  });
+
+  it('rejects an unknown filter', () => {
+    expect(PlayersQuery.safeParse({ filter: 'regulars' }).success).toBe(false);
   });
 });

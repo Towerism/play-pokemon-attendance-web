@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SessionDateParam, SessionPlayerParams } from './sessions';
+import { RegularPresentBody, SessionDateParam, SessionPlayerParams } from './sessions';
 
 describe('SessionDateParam', () => {
   it('accepts a real calendar date', () => {
@@ -17,5 +17,19 @@ describe('SessionPlayerParams', () => {
       date: '2026-10-14',
       playerId: '007',
     });
+  });
+});
+
+describe('RegularPresentBody', () => {
+  it.each([true, false])('takes present: %s', (present) => {
+    expect(RegularPresentBody.parse({ present })).toEqual({ present });
+  });
+
+  it.each([
+    ['missing', {}],
+    ['a string', { present: 'true' }],
+    ['a number', { present: 1 }],
+  ])('rejects present that is %s', (_l, body) => {
+    expect(RegularPresentBody.safeParse(body).success).toBe(false);
   });
 });

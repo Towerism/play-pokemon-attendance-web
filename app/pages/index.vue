@@ -16,6 +16,7 @@ const { data: session, refresh } = await useFetch(() => `/api/sessions/${date.va
 });
 
 type SessionPlayer = NonNullable<typeof session.value>['players'][number];
+type SessionRegular = NonNullable<typeof session.value>['regulars'][number];
 type DraftStatus = NonNullable<typeof session.value>['status'];
 
 const DRAFT_STATUS: Record<DraftStatus, { label: string; color: 'neutral' | 'info' | 'success' | 'warning' | 'error' }> = {
@@ -45,6 +46,24 @@ async function addPlayer(player: PlayerInput) {
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not add the player.') });
   } finally {
     adding.value = false;
+  }
+}
+
+const presentCount = computed(() => session.value?.regulars.filter((r) => r.present).length ?? 0);
+
+/** "Present" is evidence for curation (ADR-0005); regulars are submitted either way. Optimistic. */
+async function setPresent(regular: SessionRegular, present: boolean) {
+  const before = regular.present;
+  regular.present = present;
+  try {
+    const presence = await $fetch<Pick<SessionRegular, 'present' | 'inTournament'>>(`/api/sessions/${date.value}/regulars/${regular.playerId}`, {
+      method: 'PUT',
+      body: { present },
+    });
+    Object.assign(regular, presence);
+  } catch (err) {
+    regular.present = before;
+    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not mark the regular present.') });
   }
 }
 
@@ -116,12 +135,21 @@ async function removePlayer(player: SessionPlayer) {
       <UCollapsible>
         <UButton variant="link" color="neutral" trailing-icon="i-lucide-chevron-down" class="px-0 text-lg font-medium text-left">
           Regulars ({{ session?.regulars.length ?? 0 }})
-          <span class="text-sm font-normal text-muted">· submitted every session</span>
+          <span class="text-sm font-normal text-muted">· submitted every session · {{ presentCount }} present</span>
         </UButton>
         <template #content>
+          <p class="mt-2 text-sm text-muted">
+            Tick who came, even if they skipped the tournament. It only feeds the curation metrics; every regular is submitted either way.
+          </p>
           <ul class="mt-2 grid gap-1 sm:grid-cols-2 text-sm">
-            <li v-for="regular in session?.regulars" :key="regular.playerId" class="flex justify-between gap-2 border-b border-default py-1">
-              <span>{{ regular.displayName || 'No name' }}</span>
+            <li v-for="regular in session?.regulars" :key="regular.playerId" class="flex items-center justify-between gap-2 border-b border-default py-1">
+              <UCheckbox
+                :model-value="regular.present"
+                :disabled="regular.inTournament"
+                :label="regular.displayName || 'No name'"
+                :description="regular.inTournament ? 'In the tournament' : undefined"
+                @update:model-value="setPresent(regular, $event === true)"
+              />
               <span class="text-muted tabular-nums">{{ regular.playerId }}</span>
             </li>
           </ul>

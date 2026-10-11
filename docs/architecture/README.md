@@ -323,6 +323,7 @@ erDiagram
   SUBMISSION ||--o{ SUBMISSION_ITEM : contains
   PLAYER ||--o{ SIGHTING : "evidence of attendance"
   LEAGUE ||--|| POKEMON_CONNECTION : "authorized by"
+  LEAGUE ||--o| CURATION_SETTINGS : "curated with"
   APP_USER }o--|| LEAGUE : manages
 
   LEAGUE {
@@ -427,6 +428,11 @@ erDiagram
     text activity_group_display_id "e.g. L5012"
     bool activity_group_can_submit "criteria.play_sessions.create_attendance"
   }
+  CURATION_SETTINGS {
+    text league_id PK "no row: defaults 4 and 6"
+    int promote_min_sightings "1-52"
+    int stale_after_sessions "1-52"
+  }
 ```
 
 Key modelling decisions:
@@ -459,6 +465,28 @@ Curation views on the Players page, with thresholds configurable in Settings:
 
 - **Promotion candidates:** not regular, and `sightings_last_8w ≥ 4`.
 - **Stale regulars:** regular, and no TDF or manual sighting in the last 6 sessions. Caveat: regulars who come but skip the tournament never get a TDF sighting, so the UI offers a per-session "mark present" checkbox for regulars to capture that evidence cheaply.
+
+As built (M6, `server/modules/metrics/metrics.ts`):
+
+- **One parameterized SQL query, not `CREATE VIEW`.** The windows depend on today and the thresholds, so
+  `forLeague(leagueId, today)` runs CTEs (with one `row_number()` window) over `sighting` on every read. It
+  needs no backfill, as ADR-0005 intends, and the SQL is portable (no SQLite date functions: window
+  starts are computed in TS).
+- **A league session was held** on every date with any sighting in the league, up to today. Today is
+  the date in the league timezone (the container's `TZ`). Sightings dated after today are ignored.
+- **Windows** are `(today − 7·N days, today]`. Streaks and "since" counts are in league sessions, so a week
+  the league didn't meet breaks nothing. `weeks_since_last_seen` is built as `sessionsSinceLastSeen`, and
+  `sessionsSinceLastPresent` counts only TDF and manual sightings (for stale regulars).
+  `attendanceRate8w` is null when no session was held in the window.
+- **Thresholds** live in `CURATION_SETTINGS` (owned by the metrics module): `promoteMinSightings`
+  (default 4, over the fixed 8-week window) and `staleAfterSessions` (default 6), each 1–52. A regular
+  only becomes stale once the league has held that many sessions. A regular never present counts as
+  absent forever and sorts first.
+- **`times_submitted`** comes from the submission service (`timesSubmitted`). It counts distinct session
+  dates with an `added` or `already_present` item, so retries of one date count once.
+- **"Present" ticks:** `SessionsService.setRegularPresent` records or retracts a `manual` sighting for a
+  regular. A regular in an imported TDF shows as present (`inTournament`), and unticking can't remove
+  that evidence.
 
 ## 6. Core flows
 
@@ -573,19 +601,20 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | Method & path                                             | Purpose                                                     |
 | --------------------------------------------------------- | ----------------------------------------------------------- |
 | `POST /auth/login` · `POST /auth/logout`                  | App login (organizer accounts). On the client, `useUserSession()` from `nuxt-auth-utils` replaces a `/me` endpoint. |
-| `GET /players?filter=promote\|stale\|all&q=`              | Players with metrics (M2: `filter=all` and `q` only; metrics and the other filters come in M6) |
+| `GET /players?filter=promote\|stale\|all&q=`              | Players with `metrics` (null when never seen), `timesSubmitted`, `promotionCandidate` and `stale`, plus the league's `thresholds`. `all` by name, `promote` most seen first, `stale` longest absent first |
 | `PATCH /players/{playerId}`                               | Rename, notes, `isRegular`                                  |
-| `GET /regulars` · `POST /regulars` · `DELETE /regulars/{playerId}` | Regular list CRUD. `POST` is 201 when added, 200 when already a regular; `DELETE` is 404 when not a regular |
+| `GET /regulars` · `POST /regulars` · `DELETE /regulars/{playerId}` | Regular list CRUD. `GET` carries each regular's `metrics`, `timesSubmitted` and `stale`. `POST` is 201 when added, 200 when already a regular; `DELETE` is 404 when not a regular |
 | `POST /regulars/import`                                   | One-time import of the CLI's `regulars.json`. The body is the file's JSON array as is (`[{ name, player_id }]`, ≤ 2,000 entries); all-or-nothing |
 | `GET /sessions/{date}`                                    | Draft for a date: session players, regulars, resolved session |
 | `POST /sessions/{date}/players` · `DELETE /sessions/{date}/players/{playerId}` | Manual session players. `POST` is 201 when added, 200 when already listed, 409 for a regular |
+| `PUT /sessions/{date}/regulars/{playerId}`                | Tick a regular "present" (`{ present: boolean }`, a `manual` sighting) → `{ present, inTournament }`; 404 when not a regular. `GET /sessions/{date}` regulars carry the same two flags |
 | `POST /sessions/{date}/tdf` → preview · `POST /sessions/{date}/tdf/{uploadId}/commit` | TDF import. The body is JSON `{ filename, content }` (the file's text). Preview: 200, 413 over 2 MB, 422 with `data.code` for a file that isn't a usable tournament. Commit: 200 (`alreadyImported` on a repeat), 404 for an upload not previewed for that date |
 | `POST /sessions/{date}/resolve`                           | Date → upstream play session candidates `{ timeZone, candidates: [{ id, label, status, startsAt, endsAt, editableUntil, editable }] }` |
 | `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`) → `{ submissionId }` |
 | `GET /submissions?date=` · `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` → 202 | History (newest first), one submission with per-player items, progress (`Last-Event-ID` resumes), retry/resume as a new attempt |
 | `POST /submissions/{id}/undo`                             | Remove the records this submission added                    |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
-| `GET /leagues/upstream` · `PUT /settings`                 | Pick activity group, timezone, thresholds, batch delay. M4: `PUT` takes `{ activityGroupId }` (422 `unknown_league` if the account lacks it) |
+| `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` → 409,
@@ -596,11 +625,11 @@ Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submi
 
 | Page (`app/pages/`) | Contents                                                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks; big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer |
-| `regulars.vue`      | List with each regular's last-seen and 8-week rate (M6); add, remove, import JSON                                              |
-| `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**; one-click toggle regular        |
+| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer |
+| `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
+| `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All** (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
 | `history/`          | Submissions by date with per-player outcomes, Retry and Undo                                                                   |
-| `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds; batch delay; app users    |
+| `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; app users |
 | `login.vue`         | App login (the only page outside `auth.global.ts` middleware)                                                                  |
 
 Client patterns:
@@ -700,7 +729,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M3 TDF                        | `shared/tdf` parser, preview → commit, sightings. Built.                                                      |
 | M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery. Built (the manual-token fallback is deferred).        |
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
-| M6 Metrics and curation       | Views, Players page tabs, thresholds                                                                          |
+| M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, `docs/deploy/unraid.md` (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 
 ## 14. Architecture Decision Records

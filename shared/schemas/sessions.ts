@@ -15,3 +15,6 @@ export const sessionDate = z
 export const SessionDateParam = z.object({ date: sessionDate });
 
 export const SessionPlayerParams = z.object({ date: sessionDate, playerId });
+
+/** Ticks a regular "present" (or not) for a date (ADR-0005). */
+export const RegularPresentBody = z.object({ present: z.boolean() });

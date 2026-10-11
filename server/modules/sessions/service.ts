@@ -22,10 +22,20 @@ export interface SessionView {
   /** Non-regulars listed for this date. */
   players: SessionPlayer[];
   /** Submitted every session alongside `players`. */
-  regulars: Regular[];
+  regulars: SessionRegular[];
   /** Tournament files committed for this date, oldest first. */
   imports: SessionImport[];
 }
+
+/** Whether there is evidence the regular came (ADR-0005); being submitted is not evidence. */
+export interface RegularPresence {
+  /** A tdf or manual sighting for the date. */
+  present: boolean;
+  /** In a tournament imported for the date; unticking "present" can't undo that. */
+  inTournament: boolean;
+}
+
+export type SessionRegular = Regular & RegularPresence;
 
 export interface SessionImport {
   uploadId: number;
@@ -39,6 +49,13 @@ export class AlreadyRegularError extends Error {
   override name = 'AlreadyRegularError';
   constructor(playerId: string) {
     super(`Player ${playerId} is a regular and is already submitted every session.`);
+  }
+}
+
+export class NotARegularError extends Error {
+  override name = 'NotARegularError';
+  constructor(playerId: string) {
+    super(`Player ${playerId} is not a regular.`);
   }
 }
 
@@ -56,6 +73,12 @@ export interface SessionsService {
    * the organizer is saying they weren't there. False when they weren't listed.
    */
   removePlayer(leagueId: string, date: SessionDate, playerId: PlayerId): boolean;
+  /**
+   * Ticks a regular "present" (or not) for the date: a manual sighting, so
+   * regulars who skip the tournament still count as attending. Idempotent.
+   * @throws NotARegularError
+   */
+  setRegularPresent(leagueId: string, date: SessionDate, playerId: PlayerId, present: boolean): RegularPresence;
   /** The submission module reports the upstream play session it resolved and how the submission is going. */
   recordSubmission(leagueId: string, date: SessionDate, state: { playSessionId: string; status: SessionStatus }): void;
 }
@@ -75,6 +98,19 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
     return rows
       .map((r) => ({ playerId: r.playerId as PlayerId, displayName: names.get(r.playerId as PlayerId) ?? '', source: r.source }))
       .sort(byName);
+  };
+
+  const regularsOn = (leagueId: string, date: SessionDate): SessionRegular[] => {
+    const of = presence(leagueId, date);
+    return roster.listRegulars(leagueId).map((r) => ({ ...r, ...of(r.playerId) }));
+  };
+
+  const presence = (leagueId: string, date: SessionDate) => {
+    const on = sightings.on(leagueId, date);
+    const has = (kinds: string[]) => new Set(on.filter((s) => kinds.includes(s.kind)).map((s) => s.playerId));
+    const present = has(['tdf', 'manual']);
+    const inTournament = has(['tdf']);
+    return (playerId: PlayerId): RegularPresence => ({ present: present.has(playerId), inTournament: inTournament.has(playerId) });
   };
 
   const committedImports = (draftId: number): SessionImport[] =>
@@ -99,7 +135,7 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
         status: draft?.status ?? 'draft',
         playSessionId: draft?.playSessionId ?? null,
         players: draft ? listedPlayers(leagueId, draft.id) : [],
-        regulars: roster.listRegulars(leagueId),
+        regulars: regularsOn(leagueId, date),
         imports: draft ? committedImports(draft.id) : [],
       };
     },
@@ -135,6 +171,15 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
           sightings.retract(leagueId, date, 'tdf', [playerId]);
         }
         return changes > 0;
+      });
+    },
+
+    setRegularPresent(leagueId, date, playerId, present) {
+      return db.transaction(() => {
+        if (!roster.regularIds(leagueId).has(playerId)) throw new NotARegularError(playerId);
+        if (present) sightings.record(leagueId, date, 'manual', [playerId]);
+        else sightings.retract(leagueId, date, 'manual', [playerId]);
+        return presence(leagueId, date)(playerId);
       });
     },
 

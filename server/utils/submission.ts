@@ -1,5 +1,6 @@
 import { createPlayToolsHttpAdapter } from '../modules/pokemon/adapters/play-tools/gateway';
 import { SubmissionError, type SubmissionErrorCode } from '../modules/submission/errors';
+import { dateIn } from '../modules/submission/local-time';
 import { type PlaySessionResolver, createPlaySessionResolver } from '../modules/submission/resolve';
 import { type SubmissionService, createSubmissionService } from '../modules/submission/service';
 
@@ -8,6 +9,9 @@ let submissions: SubmissionService | undefined;
 
 /** The league timezone: the container's `TZ` (ADR-0006). */
 export const leagueTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/** Today's session date in the league timezone; curation metrics are as of this date. */
+export const leagueToday = () => dateIn(new Date(), leagueTimeZone());
 
 function gateway(leagueId: string) {
   return createPlayToolsHttpAdapter({ tokens: usePokemon(), leagueId, baseUrl: useRuntimeConfig().pokemon.apiUrl });
