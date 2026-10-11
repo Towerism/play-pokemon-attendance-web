@@ -2,8 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import type { PlayerInput } from '../../../shared/schemas/roster';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
-import type { sessionDraft} from '../../db/schema';
-import { sessionPlayer, tdfUpload } from '../../db/schema';
+import { sessionDraft, sessionPlayer, tdfUpload } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
 import type { Regular, RosterService } from '../roster/service';
 import { createDrafts } from './drafts';
@@ -57,6 +56,8 @@ export interface SessionsService {
    * the organizer is saying they weren't there. False when they weren't listed.
    */
   removePlayer(leagueId: string, date: SessionDate, playerId: PlayerId): boolean;
+  /** The submission module reports the upstream play session it resolved and how the submission is going. */
+  recordSubmission(leagueId: string, date: SessionDate, state: { playSessionId: string; status: SessionStatus }): void;
 }
 
 export function createSessionsService(deps: { db: Db; roster: RosterService; sightings: SightingsService }): SessionsService {
@@ -135,6 +136,11 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
         }
         return changes > 0;
       });
+    },
+
+    recordSubmission(leagueId, date, state) {
+      const draft = drafts.ensure(leagueId, date);
+      db.update(sessionDraft).set(state).where(eq(sessionDraft.id, draft.id)).run();
     },
   };
 }

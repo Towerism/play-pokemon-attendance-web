@@ -110,6 +110,22 @@ describe('addPlayer', () => {
   });
 });
 
+describe('recordSubmission', () => {
+  it('stores the resolved play session and the submission state on the draft (§4.4 step 4)', () => {
+    sessions.recordSubmission(L, WED, { playSessionId: 'ps-1', status: 'submitting' });
+    expect(sessions.getSession(L, WED)).toMatchObject({ status: 'submitting', playSessionId: 'ps-1' });
+
+    sessions.recordSubmission(L, WED, { playSessionId: 'ps-1', status: 'partial' });
+    expect(sessions.getSession(L, WED).status).toBe('partial');
+  });
+
+  it('keeps the players already listed for the date', () => {
+    sessions.addPlayer(L, WED, { playerId: id('1') });
+    sessions.recordSubmission(L, WED, { playSessionId: 'ps-1', status: 'submitted' });
+    expect(sessions.getSession(L, WED).players).toHaveLength(1);
+  });
+});
+
 describe('removePlayer', () => {
   beforeEach(() => {
     sessions.addPlayer(L, WED, { playerId: id('1'), name: 'Ash' });
