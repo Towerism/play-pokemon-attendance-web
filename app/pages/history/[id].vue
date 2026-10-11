@@ -21,6 +21,8 @@ const OUTCOME: Record<ItemOutcome, { label: string; color: 'success' | 'neutral'
   skipped: { label: 'Not sent', color: 'warning' },
   pending: { label: 'Waiting', color: 'info' },
   unrequested: { label: 'Only in play-tools', color: 'info' },
+  removed: { label: 'Removed', color: 'success' },
+  already_removed: { label: 'Already gone', color: 'neutral' },
 };
 const ORIGIN = { session: 'Session player', regular: 'Regular', upstream: 'Added in play-tools' } as const;
 
@@ -30,10 +32,37 @@ const columns: TableColumn<SubmissionItemView>[] = [
   { accessorKey: 'outcome', header: 'Outcome' },
 ];
 // Problems first, then what was added, then the rest.
-const RANK: Record<ItemOutcome, number> = { failed: 0, skipped: 1, pending: 2, added: 3, already_present: 4, unrequested: 5 };
+const RANK: Record<ItemOutcome, number> = {
+  failed: 0,
+  skipped: 1,
+  pending: 2,
+  added: 3,
+  removed: 3,
+  already_present: 4,
+  already_removed: 4,
+  unrequested: 5,
+};
 const items = computed(() =>
   [...(submission.value?.items ?? [])].sort((a, b) => RANK[a.outcome] - RANK[b.outcome] || a.displayName.localeCompare(b.displayName)),
 );
+
+// Undo: remove the players this submission added (after a confirm).
+const undoOpen = ref(false);
+const undoing = ref(false);
+const candidates = computed(() => undoCandidates(submission.value?.items ?? []));
+const blocked = computed(() => (submission.value ? undoBlockedText(submission.value) : null));
+async function undo() {
+  undoing.value = true;
+  try {
+    const started = await $fetch<{ submissionId: number }>(`/api/submissions/${id.value}/undo`, { method: 'POST' });
+    undoOpen.value = false;
+    await router.push(`/history/${started.submissionId}`);
+  } catch (err) {
+    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not start the undo.') });
+  } finally {
+    undoing.value = false;
+  }
+}
 
 const retrying = ref(false);
 async function retry() {
@@ -64,10 +93,15 @@ async function retry() {
             <template v-if="submission.retryOf">
               · retries <NuxtLink :to="`/history/${submission.retryOf}`" class="underline">#{{ submission.retryOf }}</NuxtLink>
             </template>
+            <template v-if="submission.undoOf">
+              · undoes <NuxtLink :to="`/history/${submission.undoOf}`" class="underline">#{{ submission.undoOf }}</NuxtLink>
+            </template>
           </p>
         </div>
         <div class="flex items-center gap-2">
-          <UBadge size="lg" variant="subtle" :color="submissionStatus(submission.status).color">{{ submissionStatus(submission.status).label }}</UBadge>
+          <UBadge size="lg" variant="subtle" :color="submissionStatus(submission.status, submission.kind).color">
+            {{ submissionStatus(submission.status, submission.kind).label }}
+          </UBadge>
           <UButton
             v-if="['partial', 'failed', 'interrupted'].includes(submission.status)"
             icon="i-lucide-rotate-cw"
@@ -83,9 +117,33 @@ async function retry() {
         <UProgress :model-value="latest ? progressPercent(latest.done, latest.total) : null" />
         <p class="text-sm text-muted">{{ latest?.message ?? 'Starting…' }}</p>
       </div>
-      <p v-else class="text-sm">{{ submissionSummary(submission.counts) }}</p>
+      <p v-else-if="submission.kind === 'submit'" class="text-sm">{{ submissionSummary(submission.counts) }}</p>
       <UAlert v-if="submission.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="submission.error" />
-      <p class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
+      <p v-if="submission.kind === 'submit'" class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
+
+      <div v-if="!liveId" class="flex flex-wrap items-center gap-2">
+        <UButton v-if="submission.undoable" color="error" variant="soft" icon="i-lucide-undo-2" @click="undoOpen = true">
+          Remove players added by this submission
+        </UButton>
+        <p v-else-if="blocked" class="text-sm text-muted">{{ blocked }}</p>
+      </div>
+
+      <UModal v-model:open="undoOpen" title="Remove players added by this submission" :description="undoConfirmText(candidates.names.length)">
+        <template #body>
+          <ul class="list-disc space-y-0.5 pl-5 text-sm">
+            <li v-for="name in candidates.names" :key="name">{{ name }}</li>
+          </ul>
+          <p v-if="candidates.withoutRecord" class="mt-2 text-xs text-muted">
+            {{ candidates.withoutRecord }} more can't be removed automatically; remove them in play-tools.
+          </p>
+        </template>
+        <template #footer>
+          <div class="flex w-full justify-end gap-2">
+            <UButton variant="ghost" color="neutral" @click="undoOpen = false">Cancel</UButton>
+            <UButton color="error" icon="i-lucide-undo-2" :loading="undoing" @click="undo">Remove</UButton>
+          </div>
+        </template>
+      </UModal>
 
       <UTable :data="items" :columns="columns">
         <template #displayName-cell="{ row }">

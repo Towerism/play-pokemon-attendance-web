@@ -30,8 +30,10 @@ export interface PlayToolsHttpAdapterOptions {
   log?: Pick<Logger, 'warn'>;
 }
 
-/** The gateway as built so far. `removeAttendance` (undo) arrives with M7. */
-export type PlayToolsHttpAdapter = Omit<PlayToolsGateway, 'removeAttendance'>;
+export type PlayToolsHttpAdapter = PlayToolsGateway;
+
+/** Record ids are GUIDs; anything else could change the request path. */
+const RECORD_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 /**
  * PlayToolsHttpAdapter (architecture §4.3). The only code that knows the OP
@@ -152,6 +154,21 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
         if (!parsed.success) throw unexpected(what, url, body, parsed.error);
         return rejection(ids, parsed.data);
       }
+      throw throttleOrServerError(res, what) ?? clientError(res.status, what);
+    },
+
+    async removeAttendance(groupId, sessionId, recordId) {
+      if (!RECORD_ID.test(recordId)) throw new TypeError(`Not an attendance record id: ${JSON.stringify(recordId)}`);
+
+      const what = 'Removing attendance';
+      const token = await opts.tokens.getAccessToken(opts.leagueId);
+      const res = await fetchUpstream(
+        new URL(opPaths.record(groupId, sessionId, recordId), base).toString(),
+        { method: 'DELETE', headers: { ...OP_API_HEADERS, authorization: `Bearer ${token.value}` } },
+        what,
+      );
+      if (res.ok) return 'removed';
+      if (res.status === 404) return 'not_found';
       throw throttleOrServerError(res, what) ?? clientError(res.status, what);
     },
   };

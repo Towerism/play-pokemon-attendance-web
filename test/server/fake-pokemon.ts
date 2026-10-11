@@ -13,7 +13,8 @@ export interface FakePokemon {
   url: string;
   env: Record<string, string>;
   /** Every request, in order: `METHOD /path` plus the form for token calls. */
-  requests: { method: string; path: string; form?: Record<string, string> }[];
+  /** Every request, with when it arrived (ms since epoch). */
+  requests: { method: string; path: string; at?: number; form?: Record<string, string> }[];
   /** Seconds; under 120 makes every access-token use refresh. */
   accessTtl: number;
   leagues: { guid: string; display_id: string; display_name: string; canSubmit: boolean }[];
@@ -66,6 +67,7 @@ export function fakeRecord(playerId: string, opts: { role?: string; first?: stri
 
 const SESSIONS_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/$/;
 const RECORDS_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/([^/]+)\/records\/$/;
+const RECORD_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/([^/]+)\/records\/([^/]+)\/$/;
 const BULK_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/([^/]+)\/records\/_bulk\/$/;
 
 export async function startFakePokemon(): Promise<FakePokemon> {
@@ -96,7 +98,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://fake');
-    const entry: FakePokemon['requests'][number] = { method: req.method ?? '', path: url.pathname };
+    const entry: FakePokemon['requests'][number] = { method: req.method ?? '', path: url.pathname, at: Date.now() };
     fake.requests.push(entry);
 
     if (req.method === 'POST' && url.pathname === '/oauth2/token') {
@@ -168,6 +170,17 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       const added = items.map((i) => fakeRecord(i.participant.player_id, { guid: `rec-${++serial}` }));
       fake.records.set(bulkMatch[2]!, [...records, ...added]);
       return json(res, 201, added.map((r) => ({ guid: r.guid })));
+    }
+
+    // S4: DELETE one record → 204; a record it doesn't have → 404.
+    const recordMatch = RECORD_PATH.exec(url.pathname);
+    if (req.method === 'DELETE' && recordMatch && recordMatch[3] !== '_bulk') {
+      const records = fake.records.get(recordMatch[2]!) ?? [];
+      const kept = records.filter((r) => r.guid !== recordMatch[3]);
+      if (kept.length === records.length) return json(res, 404, { code: 'op.generic.not_found' });
+      fake.records.set(recordMatch[2]!, kept);
+      res.writeHead(204).end();
+      return;
     }
 
     if (req.method === 'GET' && url.pathname === `/services/core/users/${FAKE_SUB}/activity_groups/`) {

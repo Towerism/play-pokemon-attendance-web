@@ -26,10 +26,13 @@ const columns: TableColumn<Row>[] = [
         <NuxtLink :to="`/history/${row.original.id}`" class="underline tabular-nums">{{ row.original.date }}</NuxtLink>
       </template>
       <template #status-cell="{ row }">
-        <UBadge variant="subtle" :color="submissionStatus(row.original.status).color">{{ submissionStatus(row.original.status).label }}</UBadge>
+        <UBadge variant="subtle" :color="submissionStatus(row.original.status, row.original.kind).color">
+          {{ submissionStatus(row.original.status, row.original.kind).label }}
+        </UBadge>
       </template>
       <template #summary-cell="{ row }">
-        <span class="text-sm">{{ submissionSummary(row.original.counts) }}</span>
+        <span v-if="historyLabel(row.original)" class="text-sm">{{ historyLabel(row.original) }}</span>
+        <span v-else class="text-sm">{{ submissionSummary(row.original.counts) }}</span>
       </template>
       <template #startedAt-cell="{ row }">
         <span class="text-sm text-muted">{{ new Date(row.original.startedAt).toLocaleString() }} · {{ row.original.startedBy }}</span>

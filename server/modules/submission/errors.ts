@@ -14,7 +14,11 @@ export type SubmissionErrorCode =
   /** The app is stopping; start again after it restarts. */
   | 'shutting_down'
   /** No such submission. */
-  | 'not_found';
+  | 'not_found'
+  /** The submission is an undo itself, or is still running. */
+  | 'not_undoable'
+  /** The submission added nobody that an undo has not removed already. */
+  | 'nothing_to_undo';
 
 export class SubmissionError extends Error {
   override name = 'SubmissionError';

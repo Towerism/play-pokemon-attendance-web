@@ -19,6 +19,7 @@ const TUESDAY = '2026-10-13' as SessionDate;
 const PS = 'ps-tuesday';
 const GROUP = 'group-1';
 const DELAY = 15_000;
+const UNDO_DELAY = 1_000;
 const id = (s: string) => s as PlayerId;
 
 /**
@@ -79,6 +80,25 @@ class FakePlayTools {
     for (const r of records) this.records.push({ ...r, isPlayer: true, name: '' });
     return { status: 'added', records };
   }
+
+  /** Record ids sent a DELETE, with the fake clock's time when each started. */
+  removeCalls: { recordId: string; at: number }[] = [];
+  /** Runs before each delete; may throw, or return a result to short-circuit. */
+  onRemove: ((recordId: string, call: number) => unknown) | undefined;
+
+  async removeAttendance(groupId: string, sessionId: string, recordId: string): Promise<'removed' | 'not_found'> {
+    expect([groupId, sessionId]).toEqual([GROUP, PS]);
+    this.removeCalls.push({ recordId, at: clock.getTime() });
+    const injected = this.onRemove?.(recordId, this.removeCalls.length) as 'removed' | 'not_found' | undefined;
+    if (injected) return injected;
+    const before = this.records.length;
+    this.records = this.records.filter((r) => r.recordId !== recordId);
+    return this.records.length < before ? 'removed' : 'not_found';
+  }
+
+  recordOf(playerId: string): string {
+    return this.records.find((r) => r.playerId === playerId)!.recordId;
+  }
 }
 
 let database: OpenDatabase;
@@ -93,7 +113,16 @@ let sleeps: number[];
 let onSleep: ((signal: AbortSignal) => Promise<void> | void) | undefined;
 let service: SubmissionService;
 
-function build(over: { batchSize?: number; defaults?: boolean; log?: SubmissionDeps['log'] | null } = {}): SubmissionService {
+function build(
+  over: {
+    batchSize?: number;
+    defaults?: boolean;
+    log?: SubmissionDeps['log'] | null;
+    undoDelayMs?: number;
+    sessions?: SessionsService;
+    sightings?: SightingsService;
+  } = {},
+): SubmissionService {
   const resolver = createPlaySessionResolver({
     connections: { getStatus: () => connection },
     gateway: () => upstream,
@@ -102,9 +131,9 @@ function build(over: { batchSize?: number; defaults?: boolean; log?: SubmissionD
   });
   return createSubmissionService({
     db: database.db,
-    sessions,
+    sessions: over.sessions ?? sessions,
     roster,
-    sightings,
+    sightings: over.sightings ?? sightings,
     connections: { getStatus: () => connection },
     gateway: () => upstream,
     resolver,
@@ -114,12 +143,13 @@ function build(over: { batchSize?: number; defaults?: boolean; log?: SubmissionD
       await onSleep?.(signal);
       clock = new Date(clock.getTime() + ms);
     },
-    ...(over.defaults ? {} : { batchSize: over.batchSize ?? 50, batchDelayMs: DELAY }),
+    ...(over.defaults ? {} : { batchSize: over.batchSize ?? 50, batchDelayMs: DELAY, undoDelayMs: over.undoDelayMs ?? UNDO_DELAY }),
     ...(over.log === null ? {} : { log: over.log ?? silentLogger }),
   });
 }
 
-beforeEach(() => {
+/** A fresh database, services and fake play-tools. */
+function setUp(): void {
   database = openDatabase(':memory:');
   migrateDatabase(database.db, MIGRATIONS_DIR);
   roster = createRosterService({ db: database.db });
@@ -137,7 +167,8 @@ beforeEach(() => {
   sleeps = [];
   onSleep = undefined;
   service = build();
-});
+}
+beforeEach(setUp);
 afterEach(() => database.close());
 
 const regulars = (...ids: string[]) => ids.forEach((p) => roster.addRegular(L, { playerId: id(p), name: `Regular ${p}` }));
@@ -177,6 +208,7 @@ describe('a submission (ADR-0004 plan → execute → reconcile)', () => {
       error: null,
       recordId: expect.stringMatching(/^rec-/),
       asStaff: false,
+      removedBy: null,
     });
     expect(view.finishedAt).toEqual(clock);
   });
@@ -611,6 +643,10 @@ describe('history', () => {
       finishedAt: clock,
       status: 'succeeded',
       retryOf: null,
+      kind: 'submit',
+      undoOf: null,
+      undoable: false,
+      undoBlockedReason: 'nothing_to_undo',
       counts: { added: 0, alreadyPresent: 1, failed: 0, skipped: 0, unrequested: 0 },
     });
     expect(service.list(L, { date: '2026-10-20' as SessionDate })).toEqual([]);
@@ -721,3 +757,622 @@ describe('shutdown', () => {
     expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' }))).code).toBe('shutting_down');
   });
 });
+
+/** Undoes a submission and waits for the undo to finish. */
+async function undo(submissionId: number): Promise<SubmissionView> {
+  const started = await service.undo(L, submissionId, 'organizer');
+  await service.idle();
+  return service.get(L, started.submissionId);
+}
+
+describe('undo: removing the players a submission added', () => {
+  it('deletes exactly the records the submission added, nobody else, and records the outcome', async () => {
+    regulars('9');
+    sessionPlayers('1', '2');
+    upstream.has('5'); // added in play-tools directly
+    upstream.has('7', { asStaff: true }); // the organizer's record
+    const submitted = await submit();
+    const ours = [upstream.recordOf('1'), upstream.recordOf('2'), upstream.recordOf('9')];
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls.map((c) => c.recordId).sort()).toEqual(ours.sort());
+    expect(upstream.ids().sort()).toEqual(['5', '7']);
+    expect(undone).toMatchObject({ kind: 'undo', undoOf: submitted.id, status: 'succeeded', playSessionId: PS, date: TUESDAY });
+    expect(outcomes(undone)).toEqual({ '1': 'removed', '2': 'removed', '9': 'removed' });
+    expect(undone.id).not.toBe(submitted.id);
+  });
+
+  it('sends no delete for a record someone already removed in play-tools; that player is already_removed', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    const [r1, r2] = [upstream.recordOf('1'), upstream.recordOf('2')];
+    upstream.records = upstream.records.filter((r) => r.recordId !== r2); // removed by hand
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls.map((c) => c.recordId)).toEqual([r1]);
+    expect(outcomes(undone)).toEqual({ '1': 'removed', '2': 'already_removed' });
+    expect(undone.status).toBe('succeeded');
+  });
+
+  it('counts a delete play-tools answers 404 as already removed, not failed', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    // Someone removes it in play-tools between our re-read and our delete.
+    upstream.onRemove = (recordId) => {
+      upstream.records = upstream.records.filter((r) => r.recordId !== recordId);
+      return 'not_found';
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(outcomes(undone)).toEqual({ '1': 'already_removed' });
+    expect(undone.status).toBe('succeeded');
+  });
+
+  it('leaves a record alone when play-tools now lists it for a different player', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    const r1 = upstream.recordOf('1');
+    upstream.records = upstream.records.map((r) => (r.recordId === r1 ? { ...r, playerId: id('8') } : r));
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls.map((c) => c.recordId)).not.toContain(r1);
+    expect(undone.items.find((i) => i.playerId === '1')).toMatchObject({ outcome: 'failed', error: 'record_mismatch' });
+    expect(undone.status).toBe('partial');
+  });
+
+  it('sends deletes one at a time, at least the undo delay apart', async () => {
+    sessionPlayers('1', '2', '3', '4', '5');
+    const submitted = await submit();
+    sleeps = [];
+    let inFlight = 0;
+    upstream.onRemove = () => {
+      inFlight += 1;
+      expect(inFlight).toBe(1);
+      inFlight -= 1;
+    };
+
+    await undo(submitted.id);
+
+    const starts = upstream.removeCalls.map((c) => c.at);
+    expect(starts).toHaveLength(5);
+    for (let i = 1; i < starts.length; i += 1) expect(starts[i]! - starts[i - 1]!).toBeGreaterThanOrEqual(UNDO_DELAY);
+    expect(sleeps).toEqual([UNDO_DELAY, UNDO_DELAY, UNDO_DELAY, UNDO_DELAY]);
+  });
+
+  it('by default waits 1 s between deletes', async () => {
+    service = build({ defaults: true });
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    sleeps = [];
+
+    await undo(submitted.id);
+
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  it('trusts the final re-read: a record still listed after its delete is failed', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    const r2 = upstream.recordOf('2');
+    upstream.onRemove = (recordId) => (recordId === r2 ? 'removed' : undefined); // says 204, keeps it
+
+    const undone = await undo(submitted.id);
+
+    expect(outcomes(undone)).toEqual({ '1': 'removed', '2': 'failed' });
+    expect(undone.items.find((i) => i.playerId === '2')!.error).toMatch(/still in play-tools/i);
+    expect(undone.status).toBe('partial');
+  });
+
+  it('reports progress: planned, one event per delete, reconciled, then finished with the outcome', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+
+    const undone = await undo(submitted.id);
+
+    expect(service.events(L, undone.id).map((e) => [e.type, e.done, e.total])).toEqual([
+      ['planned', 0, 2],
+      ['record_removed', 1, 2],
+      ['record_removed', 2, 2],
+      ['reconciled', 2, 2],
+      ['finished', 2, 2],
+    ]);
+    expect(service.events(L, undone.id).at(-1)!.message).toMatch(/succeeded/);
+  });
+});
+
+describe('starting an undo', () => {
+  it('is refused while a submission or another undo runs for the league, before anything is created', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    let release!: () => void;
+    upstream.gate = new Promise((r) => (release = r));
+    await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    const before = countSubmissions();
+
+    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('submission_running');
+    expect(countSubmissions()).toBe(before);
+    expect(upstream.removeCalls).toEqual([]);
+    release();
+    await service.idle();
+  });
+
+  it('refuses to undo an undo, or a submission that is still running', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    const undone = await undo(submitted.id);
+    expect((await refusal(service.undo(L, undone.id, 'o'))).code).toBe('not_undoable');
+
+    sessionPlayers('2'); // the undo took 1 off the date
+    let release!: () => void;
+    upstream.gate = new Promise((r) => (release = r));
+    const { submissionId: running } = await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    expect((await refusal(service.undo(L, running, 'o'))).code).toBe('not_undoable');
+    release();
+    await service.idle();
+  });
+
+  it('has nothing to undo when the submission added nobody, or an earlier undo removed everyone it added', async () => {
+    sessionPlayers('1');
+    upstream.has('1');
+    const nobodyAdded = await submit();
+    expect((await refusal(service.undo(L, nobodyAdded.id, 'o'))).code).toBe('nothing_to_undo');
+
+    sessionPlayers('2');
+    const added = await submit();
+    await undo(added.id);
+    expect((await refusal(service.undo(L, added.id, 'o'))).code).toBe('nothing_to_undo');
+  });
+
+  it('a second undo, or a retry of a partial one, targets only what the first left behind', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    const [r1, r2] = [upstream.recordOf('1'), upstream.recordOf('2')];
+    upstream.onRemove = (recordId) => {
+      if (recordId === r2) return 'removed'; // says 204 but keeps it: failed on reconcile
+    };
+    const first = await undo(submitted.id);
+    expect(outcomes(first)).toEqual({ '1': 'removed', '2': 'failed' });
+    upstream.onRemove = undefined;
+    upstream.removeCalls = [];
+
+    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    await service.idle();
+
+    const retried = service.get(L, submissionId);
+    expect(retried).toMatchObject({ kind: 'undo', undoOf: submitted.id, retryOf: first.id, status: 'succeeded' });
+    expect(outcomes(retried)).toEqual({ '2': 'removed' });
+    expect(upstream.removeCalls.map((c) => c.recordId)).toEqual([r2]);
+    expect(upstream.removeCalls.map((c) => c.recordId)).not.toContain(r1);
+  });
+
+  it('is refused once the attendance edit window has closed, before anything is created', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    clock = new Date('2026-10-21T00:00:00Z');
+    const before = countSubmissions();
+
+    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('edit_window_closed');
+    expect(countSubmissions()).toBe(before);
+  });
+
+  it('is refused when the play session no longer exists in play-tools', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    upstream.session = { ...upstream.session, id: 'another' };
+    clock = new Date(clock.getTime() + 10 * 60_000); // past the resolver's cache
+
+    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('unknown_play_session');
+  });
+
+  it('is not_found for an unknown submission or another league, and refused once shutting down', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    expect((await refusal(service.undo(L, 999, 'o'))).code).toBe('not_found');
+    expect((await refusal(service.undo('other', submitted.id, 'o'))).code).toBe('not_found');
+
+    await service.shutdown();
+    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('shutting_down');
+  });
+
+  it('targets only added players with a known record id', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    database.sqlite.prepare("update submission_item set record_id = null where player_id = '2'").run();
+
+    const undone = await undo(submitted.id);
+
+    expect(outcomes(undone)).toEqual({ '1': 'removed' });
+    expect(upstream.ids()).toEqual(['2']);
+  });
+});
+
+describe('an undo when play-tools misbehaves', () => {
+  it('waits as long as play-tools asks after a 429, then removes the record', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    sleeps = [];
+    upstream.onRemove = (_r, call) => {
+      if (call === 1) throw new PokemonUpstreamError('rate_limited', 'Slow down.', { status: 429, retryAfterMs: 2_000 });
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(sleeps).toContain(2_000);
+    expect(outcomes(undone)).toEqual({ '1': 'removed' });
+    expect(service.events(L, undone.id).map((e) => e.type)).toContain('retrying');
+  });
+
+  it('re-reads after a 5xx and does not delete again a record that is gone', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    upstream.onRemove = (recordId, call) => {
+      if (call === 1) {
+        upstream.records = upstream.records.filter((r) => r.recordId !== recordId); // it landed anyway
+        throw new PokemonUpstreamError('unavailable', 'Pokémon answered 502.', { status: 502 });
+      }
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls).toHaveLength(1);
+    expect(outcomes(undone)).toEqual({ '1': 'removed' });
+  });
+
+  it('tries one record at most three times, fails it, and goes on with the next', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    const r1 = upstream.recordOf('1');
+    upstream.onRemove = (recordId) => {
+      if (recordId === r1) throw new PokemonUpstreamError('unavailable', 'Pokémon answered 503.', { status: 503 });
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls.filter((c) => c.recordId === r1)).toHaveLength(3);
+    expect(undone.items.find((i) => i.playerId === '1')).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/503/) });
+    expect(outcomes(undone)['2']).toBe('removed');
+    expect(undone.status).toBe('partial');
+  });
+
+  it('stops when Pokémon refuses the login: failed with the reason, the rest skipped', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    upstream.onRemove = (_r, call) => {
+      if (call === 2) throw new PokemonUpstreamError('needs_reconnect', 'Pokémon no longer accepts the saved login.');
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(undone.status).toBe('failed');
+    expect(undone.error).toMatch(/no longer accepts/);
+    expect(Object.values(outcomes(undone)).sort()).toEqual(['removed', 'skipped']);
+  });
+
+  it('stops on a 403 from play-tools (the account may not delete attendance)', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    upstream.onRemove = () => {
+      throw new PokemonUpstreamError('forbidden', 'play-tools refused the request (403).', { status: 403 });
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(undone).toMatchObject({ status: 'failed', error: expect.stringMatching(/403/) });
+    expect(outcomes(undone)).toEqual({ '1': 'skipped' });
+  });
+
+  it('sends no delete when play-tools is unreachable for the first re-read', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    upstream.onList = () => {
+      throw new PokemonUpstreamError('unavailable', 'Pokémon answered 502.', { status: 502 });
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls).toEqual([]);
+    expect(undone.status).toBe('failed');
+  });
+});
+
+describe('an undo across a crash or a shutdown', () => {
+  it('keeps each outcome as soon as its delete returns; after a crash nothing is deleted twice', async () => {
+    sessionPlayers('1', '2', '3');
+    const submitted = await submit();
+    upstream.onRemove = (_r, call) => {
+      if (call === 2) return new Promise(() => undefined) as never; // the process dies during the second delete
+    };
+    const started = await service.undo(L, submitted.id, 'o');
+    for (let i = 0; i < 20 && upstream.removeCalls.length < 2; i += 1) await Promise.resolve().then(() => new Promise((r) => setTimeout(r, 0)));
+    expect(upstream.removeCalls).toHaveLength(2);
+    const r1 = upstream.removeCalls[0]!.recordId;
+    expect(
+      database.sqlite.prepare('select outcome from submission_item where submission_id = ? and record_id = ?').get(started.submissionId, r1),
+    ).toEqual({ outcome: 'removed' });
+
+    // A new process boots on the same database.
+    service = build();
+    expect(service.recoverInterrupted()).toBe(1);
+    expect(service.get(L, started.submissionId).status).toBe('interrupted');
+    upstream.onRemove = undefined;
+    upstream.removeCalls = [];
+
+    const again = await undo(submitted.id);
+
+    expect(upstream.removeCalls.map((c) => c.recordId)).not.toContain(r1);
+    expect(again.status).toBe('succeeded');
+    expect(upstream.ids()).toEqual([]);
+  });
+
+  it('on shutdown finishes the delete in flight, starts no other, and ends interrupted', async () => {
+    sessionPlayers('1', '2', '3');
+    const submitted = await submit();
+    onSleep = async (signal) => {
+      void service.shutdown();
+      throw signal.reason;
+    };
+
+    const undone = await undo(submitted.id);
+
+    expect(upstream.removeCalls).toHaveLength(1);
+    expect(undone.status).toBe('interrupted');
+    expect(Object.values(outcomes(undone)).sort()).toEqual(['removed', 'skipped', 'skipped']);
+    expect(database.sqlite.prepare('select count(*) n from submission_lock').get()).toEqual({ n: 0 });
+  });
+});
+
+describe('an undo keeps the evidence in line with play-tools (ADR-0005)', () => {
+  const kinds = (playerId: string, date: SessionDate = TUESDAY) =>
+    sightings
+      .on(L, date)
+      .filter((x) => x.playerId === playerId)
+      .map((x) => x.kind)
+      .sort();
+  const listed = () => sessions.getSession(L, TUESDAY).players.map((p) => p.playerId);
+
+  it("clears removed players' tdf and manual sightings for the date, keeping other dates and upstream_existing", async () => {
+    sessionPlayers('1', '2');
+    sightings.record(L, TUESDAY, 'tdf', [id('1')]);
+    sightings.record(L, TUESDAY, 'upstream_existing', [id('1')]);
+    sightings.record(L, '2026-10-06' as SessionDate, 'manual', [id('1')]);
+    sightings.record(L, TUESDAY, 'tdf', [id('2')]);
+    const submitted = await submit();
+    const r2 = upstream.recordOf('2');
+    upstream.onRemove = (recordId) => (recordId === r2 ? 'removed' : undefined); // 2 stays upstream: failed
+
+    const undone = await undo(submitted.id);
+
+    expect(outcomes(undone)).toEqual({ '1': 'removed', '2': 'failed' });
+    expect(kinds('1')).toEqual(['upstream_existing']);
+    expect(kinds('1', '2026-10-06' as SessionDate)).toEqual(['manual']);
+    expect(kinds('2')).toEqual(['manual', 'tdf']);
+  });
+
+  it('takes undone session players off the date, keeps regulars as regulars, and leaves the draft status alone', async () => {
+    regulars('9');
+    sessionPlayers('1');
+    sessions.setRegularPresent(L, TUESDAY, id('9'), true);
+    sightings.record(L, TUESDAY, 'tdf', [id('9')]);
+    const submitted = await submit();
+    expect(sessions.getSession(L, TUESDAY).status).toBe('submitted');
+
+    await undo(submitted.id);
+
+    const draft = sessions.getSession(L, TUESDAY);
+    expect(draft.players).toEqual([]);
+    expect(draft.regulars).toEqual([expect.objectContaining({ playerId: '9', present: false, inTournament: false })]);
+    expect(draft.status).toBe('submitted');
+    expect(roster.getPlayers(L, [id('1'), id('9')]).map((p) => p.playerId).sort()).toEqual(['1', '9']);
+    expect(roster.regularIds(L).has(id('9'))).toBe(true);
+  });
+
+  it('does the same for a record someone already removed by hand', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    upstream.records = [];
+
+    const undone = await undo(submitted.id);
+
+    expect(outcomes(undone)).toEqual({ '1': 'already_removed' });
+    expect(listed()).toEqual([]);
+    expect(kinds('1')).toEqual([]);
+  });
+
+  it('so the next submit sends the regulars again but not the undone session players', async () => {
+    regulars('9');
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    await undo(submitted.id);
+    upstream.bulkCalls = [];
+
+    await submit();
+
+    expect(upstream.bulkCalls).toEqual([['9']]);
+  });
+
+  it('a regular who is also on the session list comes off the list and stays a regular', async () => {
+    sessionPlayers('1');
+    roster.addRegular(L, { playerId: id('1'), name: 'Player 1' });
+    const submitted = await submit();
+
+    await undo(submitted.id);
+
+    expect(listed()).toEqual([]);
+    expect(roster.regularIds(L).has(id('1'))).toBe(true);
+  });
+
+  it('touches nothing for a player whose delete failed or was skipped', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    upstream.onRemove = (_r, call) => {
+      if (call === 1) throw new PokemonUpstreamError('needs_reconnect', 'Reconnect.');
+    };
+
+    await undo(submitted.id);
+
+    expect(listed().sort()).toEqual(['1', '2']);
+    expect(kinds('1')).toEqual(['manual']);
+    expect(kinds('2')).toEqual(['manual']);
+  });
+
+  it('keeps a player still recorded for that date by another play session', async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    // An evening session the same day, submitted separately and not undone.
+    const evening = database.sqlite
+      .prepare(
+        "insert into submission (league_id, session_date, play_session_id, play_session_label, started_by, started_at, status) values ('default', ?, 'ps-evening', 'Evening', 'o', 0, 'succeeded') returning id",
+      )
+      .get(TUESDAY) as { id: number };
+    database.sqlite
+      .prepare("insert into submission_item (submission_id, player_id, origin, outcome, record_id) values (?, '1', 'session', 'added', 'ev-1')")
+      .run(evening.id);
+
+    const undone = await undo(submitted.id);
+
+    expect(outcomes(undone)).toEqual({ '1': 'removed', '2': 'removed' });
+    expect(listed()).toEqual(['1']);
+    expect(kinds('1')).toEqual(['manual']);
+    expect(kinds('2')).toEqual([]);
+  });
+
+  it('rolls the outcome, the list and the sightings back together when the local write fails', async () => {
+    sessionPlayers('1', '2');
+    sightings.record(L, TUESDAY, 'tdf', [id('1')]);
+    const submitted = await submit();
+    const failing: SightingsService = {
+      ...sightings,
+      retract: (league, date, kind, ids) => {
+        if (ids.includes(id('1'))) throw new Error('disk I/O error');
+        sightings.retract(league, date, kind, ids);
+      },
+    };
+    service = build({ sightings: failing });
+
+    const undone = await undo(submitted.id);
+
+    expect(undone.items.find((i) => i.playerId === '1')).toMatchObject({ outcome: 'failed', error: 'local_write_failed' });
+    expect(outcomes(undone)['2']).toBe('removed');
+    expect(listed()).toEqual(['1']);
+    expect(kinds('1')).toEqual(['manual', 'tdf']);
+  });
+
+  it('rolls back too when taking the player off the list fails', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    service = build({
+      sessions: {
+        ...sessions,
+        removePlayer: () => {
+          throw new Error('disk I/O error');
+        },
+      },
+    });
+
+    const undone = await undo(submitted.id);
+
+    expect(undone.items[0]).toMatchObject({ outcome: 'failed', error: 'local_write_failed' });
+    expect(listed()).toEqual(['1']);
+    expect(kinds('1')).toEqual(['manual']);
+  });
+});
+
+describe('history after an undo', () => {
+  it("shows which undo removed each record, and the undo as kind undo of the submission", async () => {
+    sessionPlayers('1', '2');
+    const submitted = await submit();
+    const r2 = upstream.recordOf('2');
+    upstream.onRemove = (recordId) => (recordId === r2 ? 'removed' : undefined);
+    const undone = await undo(submitted.id);
+
+    const view = service.get(L, submitted.id);
+    expect(view.items.find((i) => i.playerId === '1')!.removedBy).toBe(undone.id);
+    expect(view.items.find((i) => i.playerId === '2')!.removedBy).toBeNull();
+    expect(service.list(L).find((s) => s.id === undone.id)).toMatchObject({ kind: 'undo', undoOf: submitted.id });
+    expect(undone.items.every((i) => i.removedBy === null)).toBe(true);
+  });
+
+  it('says whether each submission can be undone, and why not', async () => {
+    sessionPlayers('1');
+    upstream.has('1');
+    const nothingAdded = await submit();
+    sessionPlayers('2');
+    const added = await submit();
+
+    const byId = () => new Map(service.list(L).map((s) => [s.id, s]));
+    expect(byId().get(nothingAdded.id)).toMatchObject({ undoable: false, undoBlockedReason: 'nothing_to_undo' });
+    expect(byId().get(added.id)).toMatchObject({ undoable: true, undoBlockedReason: null });
+
+    const undone = await undo(added.id);
+    expect(byId().get(added.id)).toMatchObject({ undoable: false, undoBlockedReason: 'nothing_to_undo' });
+    expect(byId().get(undone.id)).toMatchObject({ undoable: false, undoBlockedReason: 'not_undoable' });
+  });
+
+  it('stops counting an undone record in timesSubmitted', async () => {
+    regulars('9');
+    sessionPlayers('1');
+    upstream.has('9');
+    const submitted = await submit();
+    expect(service.timesSubmitted(L)).toEqual(new Map([['1', 1], ['9', 1]]));
+
+    await undo(submitted.id);
+
+    expect(service.timesSubmitted(L)).toEqual(new Map([['9', 1]]));
+  });
+});
+
+describe('undo never deletes what it did not add', () => {
+  /** mulberry32: a small seeded PRNG, so a failing case can be replayed. */
+  function rng(seed: number): () => number {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it('across 200 generated play-tools states, only records the target submission added are sent a delete', async () => {
+    for (let seed = 1; seed <= 200; seed += 1) {
+      database.close();
+      setUp();
+      const random = rng(seed);
+      const pick = (n: number) => Math.floor(random() * n);
+      const players = (from: number, count: number) => Array.from({ length: count }, (_, i) => String(from + i));
+
+      upstream.has('900', { asStaff: true }); // the organizer
+      for (const p of players(800, pick(4))) upstream.has(p); // entered in play-tools directly
+      const mine = players(100, 1 + pick(6));
+      sessionPlayers(...mine);
+      if (random() < 0.5) regulars(...players(200, 1 + pick(3)));
+      const target = await submit();
+      // Another submission for the same session adds more people afterwards.
+      sessionPlayers(...players(300, pick(4)));
+      await submit();
+
+      // play-tools changes in between: some of ours removed by hand, one reassigned.
+      const added = new Set(target.items.filter((i) => i.outcome === 'added').map((i) => i.recordId!));
+      upstream.records = upstream.records.filter((r) => !added.has(r.recordId) || random() < 0.7);
+      if (random() < 0.3 && upstream.records.length > 0) {
+        const k = pick(upstream.records.length);
+        upstream.records[k] = { ...upstream.records[k]!, playerId: id('999') };
+      }
+      const before = new Map(upstream.records.map((r) => [r.recordId, r]));
+
+      if (service.get(L, target.id).undoable) await undo(target.id);
+
+      for (const call of upstream.removeCalls) {
+        expect(added.has(call.recordId), `seed ${seed}: deleted ${call.recordId}`).toBe(true);
+        expect(before.get(call.recordId)?.playerId, `seed ${seed}: deleted a reassigned record`).not.toBe('999');
+      }
+      for (const [recordId, record] of before) {
+        if (!added.has(recordId)) expect(upstream.records, `seed ${seed}`).toContainEqual(record);
+      }
+    }
+  }, 60_000);
+});
+

@@ -1,6 +1,16 @@
 import type { SubmissionEvent, SubmissionEventType, SubmissionView } from '../../server/modules/submission/service';
 
-const TYPES: SubmissionEventType[] = ['planned', 'batch_sent', 'batch_rejected', 'retrying', 'reconciled', 'finished'];
+// A Record, so the type checker insists on every event type the server sends.
+const LISTENED: Record<SubmissionEventType, true> = {
+  planned: true,
+  batch_sent: true,
+  batch_rejected: true,
+  retrying: true,
+  reconciled: true,
+  finished: true,
+  record_removed: true,
+};
+const TYPES = Object.keys(LISTENED) as SubmissionEventType[];
 
 /**
  * Live progress of a submission (architecture §8): `EventSource` on

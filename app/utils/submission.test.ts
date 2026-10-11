@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { isSubmissionActive, progressPercent, submissionStatus, submissionSummary } from './submission';
+import type { SubmissionItemView } from '../../server/modules/submission/service';
+import {
+  historyLabel,
+  isSubmissionActive,
+  progressPercent,
+  submissionStatus,
+  submissionSummary,
+  undoBlockedText,
+  undoCandidates,
+  undoConfirmText,
+} from './submission';
 
 const zero = { added: 0, alreadyPresent: 0, failed: 0, skipped: 0, unrequested: 0 };
 
@@ -49,5 +59,56 @@ describe('progressPercent', () => {
     [5, 4, 100],
   ])('%i of %i is %i%%', (done, total, pct) => {
     expect(progressPercent(done, total)).toBe(pct);
+  });
+});
+
+describe('undo wording', () => {
+  const item = (over: Partial<SubmissionItemView>): SubmissionItemView => ({
+    playerId: '1' as SubmissionItemView['playerId'],
+    displayName: 'Misty',
+    origin: 'session',
+    outcome: 'added',
+    error: null,
+    recordId: 'rec-1',
+    asStaff: false,
+    removedBy: null,
+    ...over,
+  });
+
+  it('labels an undo in the history list with the submission it undoes', () => {
+    expect(historyLabel({ kind: 'undo', undoOf: 7 })).toBe('Undo of #7');
+    expect(historyLabel({ kind: 'submit', undoOf: null })).toBeNull();
+  });
+
+  it('lists who the undo would remove: added players with a record, not removed yet', () => {
+    const items = [
+      item({ playerId: '1' as never, displayName: 'Misty' }),
+      item({ playerId: '2' as never, displayName: 'Brock', removedBy: 9 }),
+      item({ playerId: '3' as never, displayName: 'Ash', recordId: null }),
+      item({ playerId: '4' as never, displayName: 'Gary', outcome: 'already_present' }),
+    ];
+    expect(undoCandidates(items)).toEqual({ names: ['Misty'], withoutRecord: 1 });
+  });
+
+  it('confirms what removing does, including the date list and the marks, and that regulars stay', () => {
+    expect(undoConfirmText(3)).toBe(
+      'Remove 3 players from play-tools? They will be taken off this date\'s player list and their TDF and "present" marks for that date cleared. Regulars stay regulars.',
+    );
+    expect(undoConfirmText(1)).toMatch(/^Remove 1 player from play-tools\?/);
+  });
+
+  it('says why a submission cannot be undone', () => {
+    expect(undoBlockedText({ kind: 'submit', undoBlockedReason: 'nothing_to_undo', items: [item({ removedBy: 4 })] })).toBe('Already undone');
+    expect(undoBlockedText({ kind: 'submit', undoBlockedReason: 'nothing_to_undo', items: [item({ outcome: 'already_present' })] })).toBe(
+      'Nothing to undo: this submission added nobody.',
+    );
+    expect(undoBlockedText({ kind: 'submit', undoBlockedReason: 'not_undoable', items: [] })).toBe('Only a finished submission can be undone.');
+    expect(undoBlockedText({ kind: 'undo', undoBlockedReason: 'not_undoable', items: [] })).toBe("An undo can't be undone.");
+    expect(undoBlockedText({ kind: 'submit', undoBlockedReason: null, items: [] })).toBeNull();
+  });
+
+  it('labels a running undo as removing, not sending', () => {
+    expect(submissionStatus('running', 'undo')).toEqual({ label: 'Removing…', color: 'info' });
+    expect(submissionStatus('running', 'submit')).toEqual({ label: 'Sending…', color: 'info' });
   });
 });

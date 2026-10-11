@@ -43,6 +43,13 @@
       "when": 1791689448766,
       "tag": "0005_curation_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791695064420,
+      "tag": "0006_undo",
+      "breakpoints": true
     }
   ]
 }

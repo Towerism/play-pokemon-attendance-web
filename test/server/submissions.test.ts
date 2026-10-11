@@ -23,7 +23,7 @@ beforeAll(async () => {
 afterAll(() => fake.close());
 
 type Browser = ReturnType<typeof client>;
-const ENV = { TZ: 'America/Chicago', NUXT_SUBMISSION_BATCH_DELAY_MS: '0' };
+const ENV = { TZ: 'America/Chicago', NUXT_SUBMISSION_BATCH_DELAY_MS: '0', NUXT_UNDO_DELAY_MS: '0' };
 
 async function login(server: TestServer, setup: boolean): Promise<Browser> {
   const browser = client(server.url);
@@ -88,6 +88,7 @@ describe('submission API', () => {
       ['GET', '/api/submissions/1'],
       ['GET', '/api/submissions/1/events'],
       ['POST', '/api/submissions/1/retry'],
+      ['POST', '/api/submissions/1/undo'],
     ])('%s %s is 401 without a session, before any validation or upstream call', async (method, path) => {
       const res = await client(server.url).request(path, { method, json: method === 'POST' ? {} : undefined });
       expect(res.status).toBe(401);
@@ -289,6 +290,128 @@ describe('submission API', () => {
 
     it.each(['abc', '0', '-1', '1.5'])('GET /submissions/%s is 400', async (id) => {
       expect((await api(`/submissions/${id}`)).status).toBe(400);
+    });
+  });
+
+  describe('POST /submissions/{id}/undo', () => {
+    const deletes = () => fake.requests.filter((r) => r.method === 'DELETE');
+    beforeEach(async () => {
+      await connect(browser);
+      await api('/regulars', { method: 'POST', json: { playerId: '0012345', name: 'Ash Ketchum' } });
+      await api(`/sessions/${TUESDAY}/players`, { method: 'POST', json: { playerId: '4242', name: 'Misty' } });
+    });
+
+    async function undo(id: number): Promise<number> {
+      const res = await api(`/submissions/${id}/undo`, { method: 'POST' });
+      expect(res.status).toBe(202);
+      return ((await res.json()) as { submissionId: number }).submissionId;
+    }
+
+    it('removes only the records the submission added, in the background, and takes undone session players off the date', async () => {
+      const id = await submit();
+      await finished(id);
+      fake.records.get(PS)!.push(fakeRecord('777', { guid: 'walk-in' })); // entered in play-tools directly
+      fake.requests.length = 0;
+
+      const undoId = await undo(id);
+      const view = await finished(undoId);
+
+      expect(view).toMatchObject({ kind: 'undo', undoOf: id, status: 'succeeded', undoable: false, undoBlockedReason: 'not_undoable' });
+      expect(view.items.map((i: { playerId: string; outcome: string }) => [i.playerId, i.outcome]).sort()).toEqual([
+        ['0012345', 'removed'],
+        ['4242', 'removed'],
+      ]);
+      expect(deletes()).toHaveLength(2);
+      expect(upstreamIds()).toEqual(['777', '9999991']);
+      const draft = await (await api(`/sessions/${TUESDAY}`)).json();
+      expect(draft.players).toEqual([]);
+      expect(draft.regulars).toEqual([expect.objectContaining({ playerId: '0012345', present: false })]);
+      expect(draft.status).toBe('submitted');
+
+      const original = await (await api(`/submissions/${id}`)).json();
+      expect(original).toMatchObject({ undoable: false, undoBlockedReason: 'nothing_to_undo' });
+      expect(original.items.find((i: { playerId: string }) => i.playerId === '4242').removedBy).toBe(undoId);
+      const list = (await (await api('/submissions')).json()).submissions;
+      expect(list[0]).toMatchObject({ id: undoId, kind: 'undo', undoOf: id });
+    });
+
+    it('answers 202 within 500 ms; the deletes run in the background', async () => {
+      const id = await submit();
+      await finished(id);
+
+      const startedAt = performance.now();
+      const res = await api(`/submissions/${id}/undo`, { method: 'POST' });
+      expect(res.status).toBe(202);
+      expect(performance.now() - startedAt).toBeLessThan(500);
+      await finished(((await res.json()) as { submissionId: number }).submissionId);
+    });
+
+    it('streams its progress like a submission', async () => {
+      const id = await submit();
+      await finished(id);
+      const undoId = await undo(id);
+
+      const events = parseSse(await (await api(`/submissions/${undoId}/events`)).text());
+
+      expect(events.map((e) => e.event)).toEqual(['planned', 'record_removed', 'record_removed', 'reconciled', 'finished']);
+      expect(JSON.parse(events.at(-1)!.data)).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('keeps deletes at least 500 ms apart even when NUXT_UNDO_DELAY_MS asks for less', async () => {
+      const id = await submit();
+      await finished(id);
+      fake.requests.length = 0;
+
+      await finished(await undo(id));
+
+      const [first, second] = deletes();
+      expect(second!.at! - first!.at!).toBeGreaterThanOrEqual(500);
+    });
+
+    it('is 422 nothing_to_undo the second time, and 422 not_undoable for an undo', async () => {
+      const id = await submit();
+      await finished(id);
+      const undoId = await undo(id);
+      await finished(undoId);
+
+      const again = await api(`/submissions/${id}/undo`, { method: 'POST' });
+      expect(again.status).toBe(422);
+      expect((await again.json()).data).toEqual({ code: 'nothing_to_undo' });
+      const ofUndo = await api(`/submissions/${undoId}/undo`, { method: 'POST' });
+      expect(ofUndo.status).toBe(422);
+      expect((await ofUndo.json()).data).toEqual({ code: 'not_undoable' });
+    });
+
+    it('is 409 submission_running while a job runs for the league', async () => {
+      const id = await submit();
+      await finished(id);
+      fake.bulkDelayMs = 1_000;
+      await api(`/sessions/${TUESDAY}/players`, { method: 'POST', json: { playerId: '5151', name: 'Brock' } });
+      await submit();
+
+      const res = await api(`/submissions/${id}/undo`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect((await res.json()).data).toEqual({ code: 'submission_running' });
+    });
+
+    it('is 422 edit_window_closed once play-tools no longer accepts attendance', async () => {
+      const closesAt = Date.now() + 2_000;
+      fake.playSessions = [{ ...SESSION, final_modifiable_datetime: new Date(closesAt).toISOString() }];
+      const id = await submit();
+      await finished(id);
+      await new Promise((r) => setTimeout(r, closesAt - Date.now() + 50));
+
+      const res = await api(`/submissions/${id}/undo`, { method: 'POST' });
+      expect(res.status).toBe(422);
+      expect((await res.json()).data).toEqual({ code: 'edit_window_closed' });
+      expect(deletes()).toEqual([]);
+    });
+
+    it('is 404 for an unknown submission and 400 for an id that is not one', async () => {
+      const res = await api('/submissions/999/undo', { method: 'POST' });
+      expect(res.status).toBe(404);
+      expect((await res.json()).data).toEqual({ code: 'not_found' });
+      expect((await api('/submissions/abc/undo', { method: 'POST' })).status).toBe(400);
     });
   });
 
