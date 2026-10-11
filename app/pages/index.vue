@@ -33,6 +33,8 @@ const columns: TableColumn<SessionPlayer>[] = [
   { id: 'actions' },
 ];
 
+const sessionPlayerIds = computed(() => new Set<string>(session.value?.players.map((p) => p.playerId)));
+
 const form = useTemplateRef('form');
 const adding = ref(false);
 
@@ -108,6 +110,7 @@ async function removePlayer(player: SessionPlayer) {
           </span>
         </li>
       </ul>
+      <PlayerSearch :date="date" :session-player-ids="sessionPlayerIds" @added="refresh" />
       <AddPlayerForm ref="form" submit-label="Add" :busy="adding" @submit="addPlayer" />
       <UTable :data="session?.players ?? []" :columns="columns" empty="No session players yet. Drop a TDF above, or add them by ID.">
         <template #displayName-cell="{ row }">
