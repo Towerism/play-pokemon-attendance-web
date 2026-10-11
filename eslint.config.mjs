@@ -16,7 +16,7 @@ const POKEMON_HOSTS = [
 
 // h3 / Nitro / nuxt-auth-utils / server/utils auto-imports: invisible to no-restricted-imports.
 const SERVER_AUTO_IMPORTS =
-  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts)$/;
+  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts|useRoster|useSessions|requireLeague)$/;
 
 const NO_NUXT_IN_MODULES = {
   selector: `CallExpression[callee.name=${SERVER_AUTO_IMPORTS}]`,
