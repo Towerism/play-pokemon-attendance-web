@@ -40,6 +40,16 @@ describe('a fresh install (empty /data, no env)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ needsSetup: true });
   });
+
+  it('prints the same setup code again when the setup page opens, so it is at the bottom of the log', async () => {
+    const code = setupCodeFrom(server.logs());
+    const before = server.logs().length;
+
+    await fetch(`${server.url}/api/auth/setup`);
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(setupCodeFrom(server.logs().slice(before))).toBe(code);
+  });
 });
 
 describe('restarting the container', () => {
@@ -56,6 +66,8 @@ describe('restarting the container', () => {
     try {
       expect(second.logs()).not.toMatch(/setup code/i);
       expect(await (await fetch(`${second.url}/api/auth/setup`)).json()).toEqual({ needsSetup: false });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(second.logs()).not.toMatch(/setup code/i);
 
       // Same persisted session password → the cookie from before the restart still works.
       const again = client(second.url);

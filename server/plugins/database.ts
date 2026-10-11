@@ -4,6 +4,6 @@
  */
 export default defineNitroPlugin((nitroApp) => {
   useDatabase();
-  useAccounts();
+  announceSetupCode();
   nitroApp.hooks.hook('close', () => closeDatabase());
 });
