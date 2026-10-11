@@ -21,7 +21,15 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     expect(await errors(file, `${code}\nexport { ${code.match(/{ (\w+) }/)![1]} };`)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
   });
 
-  it.each(['useRuntimeConfig()', "createError({ statusCode: 400 })", 'useDb()', 'readValidatedBody(e, f)'])(
+  it.each([
+    'useRuntimeConfig()',
+    "createError({ statusCode: 400 })",
+    'useDb()',
+    'readValidatedBody(e, f)',
+    'useRoster()',
+    'useSessions()',
+    'requireLeague(e)',
+  ])(
     'rejects the auto-imported call %s',
     async (call) => {
       expect(await errors(file, `export const x = () => ${call};`)).toEqual([

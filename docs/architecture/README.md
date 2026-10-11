@@ -105,7 +105,7 @@ flowchart LR
 | Framework        | **Nuxt 4** (Vue 3, Vite, Nitro)                                           | One project, one build and one origin for UI and API. File-based routing on both sides. End-to-end typed `$fetch`/`useFetch` from server routes. |
 | Rendering        | SSR off for app pages (`routeRules: { '/**': { ssr: false } }`), or SSR with auth middleware | Everything sits behind a login, so SEO is irrelevant. SPA mode keeps hydration and auth simple. It is a one-line switch if SSR is ever wanted. |
 | UI               | **Nuxt UI** (Tailwind-based components: `UTable`, `UFileUpload`, `UModal`, toasts) + `@nuxt/icon` | Tables, file drop, forms and toasts cover nearly every screen out of the box, and it is mobile-friendly. |
-| Client state     | `useFetch` / `useAsyncData` for server state; **Pinia** only for UI state (the current session date, the progress drawer) | Nuxt's data fetching already handles caching, refresh and dedupe, so a separate query library isn't needed. |
+| Client state     | `useFetch` / `useAsyncData` for server state; **Pinia** only for UI state (the progress drawer, M5); the session date lives in the `?date=` query | Nuxt's data fetching already handles caching, refresh and dedupe, so a separate query library isn't needed. |
 | Forms            | Nuxt UI `UForm` + Zod schemas from `shared/`                              | The same validation runs in the browser and in `readValidatedBody` on the server.                    |
 | Server           | **Nitro** (h3): `server/api/**` routes, `server/plugins` (job runner boot), `server/tasks` + `scheduledTasks` (keep-alive) | Built into Nuxt. The `node-server` preset gives a long-lived process for jobs, timers and SSE (`createEventStream`). |
 | App auth         | **`nuxt-auth-utils`** (sealed session cookies, `requireUserSession`, `hashPassword` / `verifyPassword`, WebAuthn-ready) | Official community module. Avoids hand-rolled session code.                                          |
@@ -131,7 +131,7 @@ app/                         Vue side (Nuxt 4 `app/` dir)
   components/                SessionPlayerTable, TdfDropzone, TdfPreview, SubmitDialog,
                              SubmissionProgress, PlayerMetricsTable, PokemonConnectionCard, …
   composables/               useSessionDraft(date), useSubmissionEvents(id), usePokemonConnection()
-  stores/                    ui.ts (Pinia: selected date, drawer state)
+  stores/                    ui.ts (Pinia: drawer state, M5)
   middleware/auth.global.ts  redirect to /login when there is no session
 server/                      Nitro side
   api/                       file-based routes (see §7), e.g. sessions/[date]/tdf.post.ts
@@ -287,11 +287,14 @@ erDiagram
   LEAGUE ||--|| POKEMON_CONNECTION : "authorized by"
   APP_USER }o--|| LEAGUE : manages
 
+  LEAGUE {
+    text id PK "v1: one league, seeded as 'default'"
+    text name
+  }
   PLAYER {
     text player_id PK "Pokémon Player ID (string, keeps leading zeros)"
-    text display_name
-    datetime first_seen_at
-    datetime last_seen_at
+    text display_name "'' until a name is known"
+    datetime first_seen_at "entered the system"
   }
   PLAYER_MEMBERSHIP {
     text league_id FK
@@ -358,6 +361,9 @@ Key modelling decisions:
 - **`player_id` is TEXT.** Player IDs are opaque strings (the CLI already does `String(p.userid)`), and storing them as text avoids losing leading zeros.
 - **Regular is a membership flag, not a separate list.** Promoting or demoting is one toggle, and the metrics are already in the same row.
 - **Sightings ≠ submissions.** Regulars are submitted **every week whether or not they came**, so "submitted" carries *no* information about presence. A **sighting** is evidence: the player appeared in a TDF, was added by hand, or was already recorded upstream by someone else. Curation metrics are computed from sightings, which is the core insight that makes G5 useful.
+- **One league in v1.** Migration 0001 seeds a `league` row with id `default`, and `requireLeague(event)` returns it for any logged-in organizer. Every module still takes a `leagueId`, so a second league needs no schema change. M4 binds the league to its upstream activity group.
+- **Names belong to the player.** The first non-empty name seen (typed, imported or from a TDF) sticks, and later sources never overwrite it. Only an explicit rename (`PATCH /players/{id}`) changes it. `last_seen` is not stored on `PLAYER`; it is derived from sightings (see Metrics).
+- **Manual session players are evidence.** Adding a player to a date by hand writes a `SIGHTING(kind = manual)`, and removing them retracts it. Adding a regular as a session player is refused (409), since regulars are submitted every session anyway. A removed session player stays on file as a known player.
 - **The session-player list is per date** (`SESSION_DRAFT`). Uploading two TDFs on the same night (e.g. a TCG and a VGC event) merges them, keyed by `player_id`. Re-uploading the same file (same `sha256`) is a no-op.
 - **TDF privacy.** The parser reads `userid`, `firstname`, `lastname` and tournament metadata only. Birthdates and other fields are never persisted, and the raw file is discarded after parsing.
 
@@ -459,12 +465,12 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | Method & path                                             | Purpose                                                     |
 | --------------------------------------------------------- | ----------------------------------------------------------- |
 | `POST /auth/login` · `POST /auth/logout`                  | App login (organizer accounts). On the client, `useUserSession()` from `nuxt-auth-utils` replaces a `/me` endpoint. |
-| `GET /players?filter=promote\|stale\|all&q=`              | Players with metrics                                        |
+| `GET /players?filter=promote\|stale\|all&q=`              | Players with metrics (M2: `filter=all` and `q` only; metrics and the other filters come in M6) |
 | `PATCH /players/{playerId}`                               | Rename, notes, `isRegular`                                  |
-| `GET /regulars` · `POST /regulars` · `DELETE /regulars/{playerId}` | Regular list CRUD                                   |
-| `POST /regulars/import`                                   | One-time import of the CLI's `regulars.json`                |
+| `GET /regulars` · `POST /regulars` · `DELETE /regulars/{playerId}` | Regular list CRUD. `POST` is 201 when added, 200 when already a regular; `DELETE` is 404 when not a regular |
+| `POST /regulars/import`                                   | One-time import of the CLI's `regulars.json`. The body is the file's JSON array as is (`[{ name, player_id }]`, ≤ 2,000 entries); all-or-nothing |
 | `GET /sessions/{date}`                                    | Draft for a date: session players, regulars, resolved session |
-| `POST /sessions/{date}/players` · `DELETE /sessions/{date}/players/{playerId}` | Manual session players         |
+| `POST /sessions/{date}/players` · `DELETE /sessions/{date}/players/{playerId}` | Manual session players. `POST` is 201 when added, 200 when already listed, 409 for a regular |
 | `POST /sessions/{date}/tdf` → preview · `POST /sessions/{date}/tdf/{uploadId}/commit` | TDF import          |
 | `POST /sessions/{date}/resolve`                           | Date → upstream play session candidates                     |
 | `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`)                |
@@ -477,8 +483,8 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 
 | Page (`app/pages/`) | Contents                                                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `index.vue` This week | Date picker (`?date=` query, synced to the Pinia `ui` store); TDF dropzone (`UFileUpload`) with a preview diff modal; session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks; big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer |
-| `regulars.vue`      | Sortable list with each regular's last-seen and 8-week rate; add, remove, import JSON                                          |
+| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks; big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer |
+| `regulars.vue`      | List with each regular's last-seen and 8-week rate (M6); add, remove, import JSON                                              |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**; one-click toggle regular        |
 | `history/`          | Submissions by date with per-player outcomes, Retry and Undo                                                                   |
 | `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds; batch delay; app users    |
@@ -574,7 +580,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | M0 Spikes                     | S1–S5; freeze the adapter contracts and fixtures ([status](spikes.md))                                        |
 | M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login with first-run setup, secret bootstrap, CI, Dockerfile + entrypoint, GHCR publish, Unraid template, with a test install on the Unraid box. Built; the test install on the Unraid box is still open. |
-| M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players                                        |
+| M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players. Built.                                |
 | M3 TDF                        | `shared/tdf` parser, preview → commit, sightings                                                              |
 | M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery                                                       |
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry                                        |
