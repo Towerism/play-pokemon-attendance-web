@@ -308,8 +308,10 @@ and `test/server/fake-pokemon.ts` change. See [ADR-0007](adr/0007-staff-assignme
 interface PlayToolsGateway {
   // … attendance methods above …
   listStaffableEvents(groupId: string, range: DateRange): Promise<StaffableEvent[]>;
-  // StaffableEvent = {ref: StaffEventRef, label, startsAt, editableUntil}; one per tournament on the date
-  listStaffRoles(groupId: string): Promise<StaffRole[]>;          // {code, label}; adapter-held list if upstream has none
+  // StaffableEvent = {ref: StaffEventRef, label, startsAt, editableUntil, organizerPlayerId}; one per tournament
+  //   on the date. organizerPlayerId comes from the record whose role is `organizer` (fixed by play-tools).
+  listStaffRoles(groupId: string): Promise<StaffRole[]>;          // {code, label}; never `organizer`; adapter-held list
+                                                                  // if upstream has none
   listEventRecords(ref: StaffEventRef): Promise<EventRecord[]>;   // EVERY record the event lists, players and staff,
                                                                   // every page: {recordId, playerId, role, isStaff, name}
   assignStaff(ref: StaffEventRef, a: {playerId: PlayerId; role: string}): Promise<StaffAssignResult>;
@@ -430,7 +432,7 @@ erDiagram
     int submission_id FK
     text player_id FK
     text origin "regular|session|upstream"
-    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed; staff: assigned|already_assigned|already_listed|removed|already_removed|failed|skipped"
+    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed; staff: assigned|already_assigned|already_listed|is_organizer|removed|already_removed|failed|skipped"
     text error
     text record_id "upstream record, for undo and clear (M7)"
     bool as_staff "present upstream in a staff role"
@@ -746,6 +748,8 @@ refusing the call.
   - `toRemove` = tombstoned assignments with a `record_id`.
   - A wanted player listed in the same role (set in play-tools, or by an earlier run) is `already_assigned`,
     and its record id is adopted.
+  - **The event's organizer is never staff** (ADR-0007 decision 9). Their role is `organizer`, fixed by
+    play-tools. A wanted player who is the event's `organizerPlayerId` is `is_organizer`, and nothing is sent.
   - A wanted player listed any other way (as a player, or as staff in another role) is `already_listed`.
     Nothing is sent, and History shows how they are listed.
   - Records nobody asked for are listed, never deleted.
@@ -765,7 +769,7 @@ refusing the call.
   - `edit_window_closed` and `unknown_staff_event` (re-resolved like Submit);
   - `submission_running` while the lease is held;
   - `shutting_down`;
-  - `unknown_role` for a role not in `listStaffRoles`.
+  - `unknown_role` for a role not in `listStaffRoles` (including `organizer`).
 - **Submit attendance** warns when the chosen play session has pending staff, and offers **Apply staff first**.
   This runs the staff job, then the submission.
 
@@ -798,7 +802,7 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `GET /staff?q=&limit=` (M8)                               | Staff list search: players this app has assigned as staff, `[{ playerId, name, timesStaffed, lastStaffedOn, lastRole }]`, most recent first; `q` as for `/players` |
 | `GET /staff/roles` (M8)                                   | `[{ code, label }]` from `listStaffRoles`, cached 1 h |
 | `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, events: [{ eventRef, label, editable, assignments: [{ id, playerId, name, role, state }], upstreamOnly: [{ playerId, name, role }] }] }`. Reads upstream live, like the clear preview |
-| `POST /sessions/{date}/staff` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | Add `{ eventRef, playerId, role, name? }`: 201 when added, 200 when that player is already listed for the event in that role, 409 `player_already_staffed` in another role, 422 `unknown_role`/`unknown_staff_event`. Delete: 204 (gone or tombstoned for the next apply), 404 |
+| `POST /sessions/{date}/staff` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | Add `{ eventRef, playerId, role, name? }`: 201 when added, 200 when that player is already listed for the event in that role, 409 `player_already_staffed` in another role, 422 `organizer_cannot_staff` for the event's organizer (fresh read) and `unknown_role`/`unknown_staff_event`. Delete: 204 (gone or tombstoned for the next apply), 404 |
 | `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ eventRef }` → `{ submissionId }` (§6.4) |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
@@ -806,14 +810,14 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` / `player_already_staffed` → 409,
 `cannot_submit` → 403, `unknown_play_session` / `edit_window_closed` / `nothing_to_submit` / `not_undoable` / `nothing_to_undo` /
-`confirmation_mismatch` / `nothing_to_clear` / `nothing_to_apply` / `unknown_staff_event` / `unknown_role` → 422,
+`confirmation_mismatch` / `nothing_to_clear` / `nothing_to_apply` / `unknown_staff_event` / `unknown_role` / `organizer_cannot_staff` → 422,
 `not_found` → 404, `shutting_down` → 503.
 
 ## 8. Frontend (Nuxt pages)
 
 | Page (`app/pages/`) | Contents                                                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; a **Find a known player** search (`PlayerSearch`: from 2 characters, debounced, `GET /players?q=&limit=20`; picking a player adds them by hand, picking a regular marks them present like the tick does; present regulars and players already listed show disabled with a tag); session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer; a **Staff** card (M8) per tournament on the date, with assignment rows (player, role, state) and play-tools-only staff shown read-only. Its `StaffSearch` searches `GET /staff?q=` first, then every known player, with add-by-ID for a first-time staffer; picking pre-fills their last role. Players the event already lists, or already staffed locally, show disabled with how they are listed. **Assign staff in play-tools** opens the same progress view as Submit; a **Danger zone** with **Clear session…** → `ClearSessionDialog` (session pick, preview, type the date, progress) |
+| `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; a **Find a known player** search (`PlayerSearch`: from 2 characters, debounced, `GET /players?q=&limit=20`; picking a player adds them by hand, picking a regular marks them present like the tick does; present regulars and players already listed show disabled with a tag); session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer; a **Staff** card (M8) per tournament on the date, with assignment rows (player, role, state) and play-tools-only staff shown read-only. Its `StaffSearch` searches `GET /staff?q=` first, then every known player, with add-by-ID for a first-time staffer; picking pre-fills their last role. Players the event already lists, or already staffed locally, show disabled with how they are listed; the event's organizer shows disabled as "Organizer". **Assign staff in play-tools** opens the same progress view as Submit; a **Danger zone** with **Clear session…** → `ClearSessionDialog` (session pick, preview, type the date, progress) |
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All** (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
 | `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …") |

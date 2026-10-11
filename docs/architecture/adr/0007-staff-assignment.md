@@ -29,6 +29,8 @@ What we know about upstream (spikes S3/S4, [spikes.md](../spikes.md)):
   called. No role list, no staff screen and no tournament endpoint has been captured.
 - The organizer's rule: the app must **never attempt** to assign a staff member to a
   tournament that already lists the same player id.
+- A tournament's **organizer** holds the role `organizer` by default, and nothing can
+  change it. Their player id may never be assigned as staff to that tournament.
 
 What we don't know yet is the subject of **spike S6**:
 
@@ -53,7 +55,7 @@ What we don't know yet is the subject of **spike S6**:
 
 3. **Upstream sits behind an event-neutral port.** `PlayToolsGateway` gains:
    - `listStaffableEvents`
-   - `listStaffRoles`
+   - `listStaffRoles` (never includes `organizer`)
    - `listEventRecords` (every record the event lists, players and staff)
    - `assignStaff`
    - `unassignStaff`
@@ -82,6 +84,7 @@ What we don't know yet is the subject of **spike S6**:
        and the job adopts that record id.
      - A wanted player the event lists in any other way (as a player, or as staff in
        another role) is `already_listed`. **Nothing is sent for them** (decision 8).
+     - The event's organizer is `is_organizer`, and nothing is sent (decision 9).
      - `toRemove` = staff records **this app created** whose assignment the organizer
        has since removed.
      - Staff assigned directly in play-tools are shown, and **never** deleted
@@ -90,7 +93,7 @@ What we don't know yet is the subject of **spike S6**:
      1 s, never under 500 ms). There is no bulk call: staff counts are in the single
      digits.
    - **Reconcile:** re-read upstream, then mark each item
-     `assigned`/`already_assigned`/`already_listed`/`removed`/`failed`. Record ids are written back
+     `assigned`/`already_assigned`/`already_listed`/`is_organizer`/`removed`/`failed`. Record ids are written back
      to the assignment for later removal.
 
 5. **The staff list is derived from the app's own assignments**, not curated. A staffer
@@ -129,6 +132,23 @@ What we don't know yet is the subject of **spike S6**:
      second role for the same player with 409 `player_already_staffed`. Staff search
      shows players the event already lists as disabled, with how they are listed.
    - The ids are compared exactly as text, so leading zeros count.
+
+9. **A tournament's organizer is never its staff.** The organizer's role is
+   `organizer`, set by play-tools and fixed: the app never assigns, changes or removes
+   it.
+   - **Who the organizer is** comes from the event's own listing: the record whose role
+     is `organizer` (S4's hidden creator record). The adapter exposes it as
+     `StaffableEvent.organizerPlayerId`. It is per tournament, not per league, so the
+     organizer of one tournament may still staff another.
+   - **Refused at entry:** adding the organizer's player id to that event's staff is
+     422 `organizer_cannot_staff`, checked against a fresh read of the event. If
+     play-tools can't be reached, the add fails with the usual upstream error rather
+     than skipping the check.
+   - **Refused at apply:** the job checks again in the plan and before each call
+     (decision 8's re-read). An organizer row ends `is_organizer`, and nothing is sent.
+   - **Not a role:** `organizer` is never offered by `GET /staff/roles` and is
+     `unknown_role` if submitted. Staff search shows the organizer disabled, tagged
+     "Organizer".
 
 ## Alternatives considered
 

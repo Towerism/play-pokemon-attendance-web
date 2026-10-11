@@ -167,7 +167,9 @@ about staff is built until its fixtures exist.
   4. How the event lists everyone on it, so the app can check "is this player id already listed" (players and
      staff, every page) before every assign. The app never sends such an assignment, so the capture doesn't need
      to provoke a duplicate.
-  5. Behaviour after `final_modifiable_datetime`, and which `criteria` permission gates staff edits.
+  5. How the tournament names its organizer (S4: a record with `role: "organizer"`), so the app can refuse to
+     staff them. The organizer role is fixed and never assigned.
+  6. Behaviour after `final_modifiable_datetime`, and which `criteria` permission gates staff edits.
 - **Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the
   routes to `test/server/fake-pokemon.ts`.
 
