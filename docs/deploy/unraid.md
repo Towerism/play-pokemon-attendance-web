@@ -62,6 +62,7 @@ settings* when you edit the container.
 | Litestream replica URL (*Advanced*) | `LITESTREAM_REPLICA_URL` | empty: off | You want off-box backups (see [Litestream](#optional-litestream-off-box-backup)) |
 | Litestream access key ID (*Advanced*) | `LITESTREAM_ACCESS_KEY_ID` | empty | With the replica URL |
 | Litestream secret access key (*Advanced*) | `LITESTREAM_SECRET_ACCESS_KEY` | empty | With the replica URL |
+| Trusted proxies (*Advanced*) | `NUXT_TRUSTED_PROXIES` | empty: loopback and Docker networks | Your reverse proxy runs on `br0` or another machine (see [Remote access](#remote-access)) |
 
 Unraid sets `TZ` for every container. The app uses it for "today's" session
 date and for the hourly Pokémon keep-alive, so keep Unraid's time zone right.
@@ -92,6 +93,26 @@ With an `https://` *Site URL*, login cookies are `Secure`, and a browser never
 sends them back over plain HTTP. Logging in at `http://tower:3000` then fails:
 the login page just comes back. Either use the HTTPS address, or clear *Site URL*
 for LAN-only use.
+
+Login is limited to 10 attempts per 15 minutes for each visitor (first-run setup
+to 5). Behind a proxy, the app tells visitors apart by the `X-Forwarded-For`
+header the proxy adds, and believes that header only from addresses in
+*Trusted proxies* (`NUXT_TRUSTED_PROXIES`). Left empty, that covers the server
+itself and Docker's networks (`127.0.0.0/8`, `::1` and `172.16.0.0/12`), which
+is where Caddy, SWAG or Nginx Proxy Manager sit when they run as containers on
+the same Unraid box. Set it to the proxy's exact address when:
+
+- the proxy runs on `br0` with its own LAN address, or on another machine, for
+  example `NUXT_TRUSTED_PROXIES=192.168.1.5`. Until you do, all visitors through
+  that proxy share one limit.
+- Docker hides visitors' real addresses behind its gateway (rootless Docker, or
+  the userland proxy). Then a computer on your network looks like a Docker
+  address and could fake the header, so trust only the proxy:
+  `NUXT_TRUSTED_PROXIES=172.18.0.5` (your proxy container's address).
+
+Use `none` when there is no proxy at all. Separate several entries with commas;
+ranges such as `10.0.0.0/24` work too. A value the app can't read stops the
+container at startup, and the log names the bad entry.
 
 ## Updates
 
