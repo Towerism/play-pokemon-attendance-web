@@ -59,6 +59,9 @@ jobs:
       - name: Container smoke test (entrypoint, PUID/PGID, secrets, setup, graceful stop)
         run: test/docker/smoke.sh play-pokemon-attendance:test
 
+      - name: Litestream smoke test (replicate, graceful stop, restore, fail loudly)
+        run: test/docker/litestream.sh play-pokemon-attendance:test
+
       # Pushes publish, and so do PRs from this repo, so a PR can be tried on
       # Unraid as :pr-<number>. Fork PRs get a read-only token: smoke test only.
       - name: Decide whether to publish

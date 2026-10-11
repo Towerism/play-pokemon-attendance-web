@@ -98,7 +98,7 @@ Every template field is optional. An install with no changes works on the LAN.
 | `NUXT_PUBLIC_SITE_URL`   | derived from the request        | Set it when the app sits behind a reverse proxy, so links and the cookie `Secure` flag are correct |
 | `NUXT_SESSION_PASSWORD`  | generated → `/data/secrets/`    | Override only to manage secrets yourself (masked field, *Advanced*)                          |
 | `NUXT_TOKEN_VAULT_KEY`   | generated → `/data/secrets/`    | Same (masked field, *Advanced*)                                                              |
-| `LITESTREAM_REPLICA_URL` + `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY` | unset (off) | Optional off-box backup. When set, the entrypoint runs `litestream replicate -exec "node …"` |
+| `LITESTREAM_REPLICA_URL` + `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY` | unset (off) | Optional off-box backup. When set, the entrypoint runs `litestream replicate -exec "node …"`. A missing `app.db` is restored from the replica first; a broken config or failed restore stops the container. |
 
 An environment variable always wins over a generated file. Startup fails
 loudly if a secret is malformed (wrong length or encoding), and never
