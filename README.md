@@ -20,6 +20,10 @@ Design: [`docs/architecture/`](docs/architecture/README.md).
 Everything persistent lives in `/mnt/user/appdata/play-pokemon-attendance`. Back
 up the whole folder, and always restore `secrets/` together with `app.db`.
 
+The [Unraid guide](docs/deploy/unraid.md) covers configuration, remote access,
+updates, backups (Appdata Backup, optional Litestream), restore, and a restore
+drill to run before each season.
+
 To try a pull request, set the container's *Repository* to
 `ghcr.io/towerism/play-pokemon-attendance:pr-<number>` (amd64 only; CI publishes
 it for PRs opened from this repo, and refreshes it on every push to the PR).
