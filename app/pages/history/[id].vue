@@ -119,7 +119,7 @@ async function retry() {
       </div>
       <p v-else-if="submission.kind === 'submit'" class="text-sm">{{ submissionSummary(submission.counts) }}</p>
       <UAlert v-if="submission.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="submission.error" />
-      <p class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
+      <p v-if="submission.kind === 'submit'" class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
 
       <div v-if="!liveId" class="flex flex-wrap items-center gap-2">
         <UButton v-if="submission.undoable" color="error" variant="soft" icon="i-lucide-undo-2" @click="undoOpen = true">
