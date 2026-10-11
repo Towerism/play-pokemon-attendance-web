@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '../zod';
 import type { SessionDate } from '../types/ids';
 import { playerId } from './roster';
 

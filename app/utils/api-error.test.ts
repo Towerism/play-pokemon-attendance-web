@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiErrorCode, apiErrorMessage } from './api-error';
+import { apiErrorCode, apiErrorMessage, rateLimitMessage } from './api-error';
 
 const zodIssues = (message: string) => JSON.stringify([{ code: 'invalid_format', path: ['playerId'], message }]);
 
@@ -31,6 +31,33 @@ describe('apiErrorCode', () => {
     'is undefined for %j',
     (err) => {
       expect(apiErrorCode(err)).toBeUndefined();
+    },
+  );
+});
+
+describe('rateLimitMessage', () => {
+  const limited = (retryAfter?: string) => ({
+    statusCode: 429,
+    data: { message: 'Too many attempts.', data: { code: 'rate_limited' } },
+    response: { headers: new Headers(retryAfter === undefined ? {} : { 'retry-after': retryAfter }) },
+  });
+
+  it.each([
+    ['600', 'Too many attempts. Try again in 10 minutes.'],
+    ['601', 'Too many attempts. Try again in 11 minutes.'],
+    ['59', 'Too many attempts. Try again in 1 minute.'],
+  ])('turns Retry-After %s into minutes', (retryAfter, message) => {
+    expect(rateLimitMessage(limited(retryAfter))).toBe(message);
+  });
+
+  it.each([undefined, '', 'soon'])('says "later" without a usable Retry-After (%j)', (retryAfter) => {
+    expect(rateLimitMessage(limited(retryAfter))).toBe('Too many attempts. Try again later.');
+  });
+
+  it.each([undefined, new Error('network'), { statusCode: 401, data: { message: 'Wrong username or password' } }])(
+    'is undefined for anything but a 429 (%j)',
+    (err) => {
+      expect(rateLimitMessage(err)).toBeUndefined();
     },
   );
 });

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '../zod';
 import { type PlayerId, toPlayerId } from '../types/ids';
 
 const PLAYER_ID = /^\d{1,12}$/;

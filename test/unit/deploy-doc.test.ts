@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 import { XMLParser } from 'fast-xml-parser';
 import { describe, expect, it } from 'vitest';
+import { parseTrustedProxies } from '../../server/modules/security/client-address';
 
 /**
  * docs/deploy/unraid.md is the organizer's install, backup and restore guide.
@@ -132,6 +133,29 @@ describe('Unraid deployment guide', () => {
   it('says what losing each generated secret costs', () => {
     expect(guide).toMatch(/vault key[^.]*\breconnect/i);
     expect(guide).toMatch(/session password[^.]*\blog(?:s|ged)? (?:everyone )?out/i);
+  });
+
+  describe('trusted proxies (login rate limit behind a reverse proxy)', () => {
+    const remote = section(guide, 'Remote access');
+    const examples = [...remote.matchAll(/NUXT_TRUSTED_PROXIES=([^\s`]+)/g)].map((m) => m[1]!);
+
+    it('explains NUXT_TRUSTED_PROXIES under Remote access, with its template field and the none value', () => {
+      expect(remote).toContain('NUXT_TRUSTED_PROXIES');
+      expect(remote).toMatch(/\*Trusted proxies\*/);
+      expect(remote).toMatch(/`none`/);
+    });
+
+    it('says the default already covers a proxy on the same box, and when to set an exact address', () => {
+      expect(remote).toContain('172.16.0.0/12');
+      expect(remote).toMatch(/br0/);
+      expect(remote).toMatch(/rootless/i);
+      expect(remote).toMatch(/exact address/i);
+    });
+
+    it('gives at least one example value, and every example is one the app accepts', () => {
+      expect(examples.length).toBeGreaterThan(0);
+      for (const value of examples) expect(() => parseTrustedProxies(value), value).not.toThrow();
+    });
   });
 
   describe('restore drill', () => {
