@@ -81,6 +81,12 @@ export interface SessionsService {
   setRegularPresent(leagueId: string, date: SessionDate, playerId: PlayerId, present: boolean): RegularPresence;
   /** The submission module reports the upstream play session it resolved and how the submission is going. */
   recordSubmission(leagueId: string, date: SessionDate, state: { playSessionId: string; status: SessionStatus }): void;
+  /**
+   * After a play session was cleared in play-tools: the draft goes back to
+   * `draft`, and its committed TDF imports are dropped so the same file can be
+   * imported again. A no-op when the date has no draft.
+   */
+  resetAfterClear(leagueId: string, date: SessionDate): void;
 }
 
 export function createSessionsService(deps: { db: Db; roster: RosterService; sightings: SightingsService }): SessionsService {
@@ -186,6 +192,17 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
     recordSubmission(leagueId, date, state) {
       const draft = drafts.ensure(leagueId, date);
       db.update(sessionDraft).set(state).where(eq(sessionDraft.id, draft.id)).run();
+    },
+
+    resetAfterClear(leagueId, date) {
+      db.transaction(() => {
+        const draft = drafts.find(leagueId, date);
+        if (!draft) return;
+        db.update(sessionDraft).set({ status: 'draft' }).where(eq(sessionDraft.id, draft.id)).run();
+        db.delete(tdfUpload)
+          .where(and(eq(tdfUpload.draftId, draft.id), eq(tdfUpload.status, 'committed')))
+          .run();
+      });
     },
   };
 }
