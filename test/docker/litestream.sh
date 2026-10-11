@@ -8,7 +8,7 @@
 # node run as PUID:PGID, the replica is written, a graceful stop within Docker's
 # 10 s timeout keeps the last write, an empty /data is restored from the replica,
 # an existing database is never restored over, secrets never reach the replica,
-# and a broken replica URL stops the container.
+# and a broken replica URL or an unwritable replica directory stops the container.
 set -euo pipefail
 
 IMAGE="${1:-play-pokemon-attendance:test}"
@@ -18,13 +18,15 @@ NAME="ppa-litestream-$$"
 DATA="$(mktemp -d)"
 DATA2="$(mktemp -d)"
 REPLICA="$(mktemp -d)"
+DATA3="$(mktemp -d)"
+UNWRITABLE="$(mktemp -d)"   # mode 0700, owned by the runner: PUID can't use it
 URL="file:///replica"
 FAILURES=0
 
 cleanup() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   # Files are owned by PUID; remove them from inside a container.
-  for d in "$DATA" "$DATA2" "$REPLICA"; do
+  for d in "$DATA" "$DATA2" "$DATA3" "$REPLICA" "$UNWRITABLE"; do
     docker run --rm -v "$d:/x" --entrypoint sh "$IMAGE" -c 'rm -rf /x/* /x/.[!.]*' >/dev/null 2>&1 || true
     rmdir "$d" 2>/dev/null || true
   done
@@ -66,6 +68,11 @@ api() { # api <path> <json body> → exit 0 on HTTP 200
     .then(r => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))"
 }
 
+# Like an Unraid share (nobody:users by default): the replica directory belongs to
+# PUID:PGID. The entrypoint never chowns a replica path; it is the user's mount.
+docker run --rm -v "$REPLICA:/replica" --entrypoint chown "$IMAGE" "$PUID:$PGID" /replica
+in_replica() { docker run --rm -v "$REPLICA:/replica" --entrypoint "$1" "$IMAGE" "${@:2}"; }
+
 echo "without LITESTREAM_REPLICA_URL"
 start "$DATA"
 check "no litestream process" test -z "$(process_owner litestream)"
@@ -84,7 +91,7 @@ check "node runs as PUID:PGID" test "$(process_owner node)" = "$PUID:$PGID"
 check "litestream metadata owned by PUID:PGID" \
   test "$(in_container stat -c '%u:%g' /data/.app.db-litestream)" = "$PUID:$PGID"
 
-SETUP_CODE="$(logs | grep -Eo '[A-Z2-9]{4}-[A-Z2-9]{4}' | tail -1)"
+SETUP_CODE="$(logs | grep -Eo 'setup code: [A-Z2-9]{4}-[A-Z2-9]{4}' | tail -1 | cut -d' ' -f3)"
 check "first-run setup creates the organizer" \
   api /api/auth/setup "{ setupCode: '$SETUP_CODE', username: 'organizer', password: 'correct horse' }"
 
@@ -94,7 +101,7 @@ docker stop "$NAME" >/dev/null
 check "stops within the 10 s timeout" test $(( $(date +%s) - started )) -lt 10
 check "exit code is clean (not SIGKILL)" test "$(docker inspect -f '{{.State.ExitCode}}' "$NAME")" != 137
 docker rm "$NAME" >/dev/null
-check "replica was written" test -n "$(ls -A "$REPLICA")"
+check "replica was written" test -n "$(in_replica ls -A /replica)"
 SESSION_PASSWORD="$(docker run --rm -v "$DATA:/data" --entrypoint cat "$IMAGE" /data/secrets/session-password)"
 check "no secret bytes in the replica" \
   bash -c "! docker run --rm -v '$REPLICA:/replica' --entrypoint grep '$IMAGE' -rqF '$SESSION_PASSWORD' /replica"
@@ -121,6 +128,21 @@ done
 check "container exits on its own" test "$(docker inspect -f '{{.State.Running}}' "$NAME")" = false
 check "exit code is non-zero" test "$(docker inspect -f '{{.State.ExitCode}}' "$NAME")" != 0
 check "litestream's error is in the log" grep -q 'unknown replica type' <(logs)
+docker rm "$NAME" >/dev/null
+
+# With an empty /data the startup restore hits the permission error and stops
+# the container. (With an existing database litestream starts, logs sync errors
+# and keeps the app serving, like an unreachable bucket.)
+echo "empty /data, replica directory PUID:PGID cannot read"
+docker run -d --name "$NAME" -e PUID=$PUID -e PGID=$PGID -e LITESTREAM_REPLICA_URL="$URL" \
+  -v "$DATA3:/data" -v "$UNWRITABLE:/replica" "$IMAGE" >/dev/null
+for _ in $(seq 1 20); do
+  [ "$(docker inspect -f '{{.State.Running}}' "$NAME")" = false ] && break
+  sleep 1
+done
+check "container exits on its own" test "$(docker inspect -f '{{.State.Running}}' "$NAME")" = false
+check "exit code is non-zero" test "$(docker inspect -f '{{.State.ExitCode}}' "$NAME")" != 0
+check "the permission error is in the log" grep -q 'permission denied' <(logs)
 docker rm "$NAME" >/dev/null
 
 if [ "$FAILURES" -gt 0 ]; then
