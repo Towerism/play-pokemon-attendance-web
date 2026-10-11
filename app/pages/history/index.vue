@@ -6,13 +6,15 @@ const date = computed(() => (typeof route.query.date === 'string' ? route.query.
 const { data } = await useFetch('/api/submissions', { query: { date }, key: computed(() => `submissions-${date.value ?? 'all'}`) });
 
 type Row = NonNullable<typeof data.value>['submissions'][number];
+// On a phone, Play session and Started move under the date so Status and Result stay on screen.
 const columns: TableColumn<Row>[] = [
-  { accessorKey: 'date', header: 'Date' },
-  { accessorKey: 'playSessionLabel', header: 'Play session' },
+  { accessorKey: 'date', header: 'Date', meta: { class: { td: WRAP } } },
+  { accessorKey: 'playSessionLabel', header: 'Play session', meta: { class: { th: WIDE_ONLY, td: `${WIDE_ONLY} ${WRAP}` } } },
   { accessorKey: 'status', header: 'Status' },
-  { id: 'summary', header: 'Result' },
-  { accessorKey: 'startedAt', header: 'Started' },
+  { id: 'summary', header: 'Result', meta: { class: { td: WRAP } } },
+  { accessorKey: 'startedAt', header: 'Started', meta: { class: { th: WIDE_ONLY, td: `${WIDE_ONLY} ${WRAP}` } } },
 ];
+const started = (row: Row) => `${new Date(row.startedAt).toLocaleString()} · ${row.startedBy}`;
 </script>
 
 <template>
@@ -23,7 +25,11 @@ const columns: TableColumn<Row>[] = [
     </div>
     <UTable :data="data?.submissions ?? []" :columns="columns" empty="Nothing submitted yet.">
       <template #date-cell="{ row }">
-        <NuxtLink :to="`/history/${row.original.id}`" class="underline tabular-nums">{{ row.original.date }}</NuxtLink>
+        <NuxtLink :to="`/history/${row.original.id}`" class="underline tabular-nums whitespace-nowrap">{{ row.original.date }}</NuxtLink>
+        <div class="text-xs text-muted sm:hidden">
+          <p>{{ row.original.playSessionLabel }}</p>
+          <p>{{ started(row.original) }}</p>
+        </div>
       </template>
       <template #status-cell="{ row }">
         <UBadge variant="subtle" :color="submissionStatus(row.original.status, row.original.kind).color">
@@ -35,7 +41,7 @@ const columns: TableColumn<Row>[] = [
         <span v-else class="text-sm">{{ submissionSummary(row.original.counts) }}</span>
       </template>
       <template #startedAt-cell="{ row }">
-        <span class="text-sm text-muted">{{ new Date(row.original.startedAt).toLocaleString() }} · {{ row.original.startedBy }}</span>
+        <span class="text-sm text-muted">{{ started(row.original) }}</span>
       </template>
     </UTable>
   </div>
