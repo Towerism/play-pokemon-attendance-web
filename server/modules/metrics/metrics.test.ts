@@ -181,6 +181,54 @@ describe('curated player list', () => {
     });
   });
 
+  describe('search with a limit', () => {
+    it('returns at most limit players, in the usual order', () => {
+      for (let i = 10; i < 40; i++) player(`${i}`, `Ash ${i}`);
+
+      const players = metrics.listPlayers(L, { filter: 'all', q: 'ash', limit: 20, today: TODAY });
+
+      expect(ids(players)).toEqual(Array.from({ length: 20 }, (_, i) => `${i + 10}`));
+    });
+
+    it('returns every match without a limit', () => {
+      for (let i = 10; i < 40; i++) player(`${i}`, `Ash ${i}`);
+
+      expect(metrics.listPlayers(L, { filter: 'all', q: 'ash', today: TODAY })).toHaveLength(30);
+    });
+
+    it('puts the player whose id is exactly the query first, so the limit cannot cut them', () => {
+      player('12345', 'Aaron');
+      player('1234', 'Zed');
+
+      expect(ids(metrics.listPlayers(L, { filter: 'all', q: '1234', limit: 1, today: TODAY }))).toEqual(['1234']);
+      expect(ids(metrics.listPlayers(L, { filter: 'all', q: '1234', today: TODAY }))).toEqual(['1234', '12345']);
+    });
+
+    it('matches the id exactly as text: 0042 is not an exact match for 42', () => {
+      player('0042', 'Aaron');
+      player('42', 'Zed');
+
+      expect(ids(metrics.listPlayers(L, { filter: 'all', q: '42', limit: 1, today: TODAY }))).toEqual(['42']);
+    });
+
+    it('never finds a player known only in another league, even by exact id', () => {
+      database.sqlite.prepare("insert into league (id, name) values ('other', 'Other')").run();
+      roster.ensurePlayers('other', [{ playerId: id('777'), name: 'Elsewhere' }]);
+
+      expect(metrics.listPlayers(L, { filter: 'all', q: '777', limit: 20, today: TODAY })).toEqual([]);
+    });
+
+    it('moves the exact id match ahead of the filter order too', () => {
+      metrics.setThresholds(L, { promoteMinSightings: 1, staleAfterSessions: 6 });
+      player('1234', 'Seen once');
+      player('51234', 'Seen twice');
+      see('1234', [WEDS[8]!]);
+      see('51234', [WEDS[7]!, WEDS[8]!]);
+
+      expect(ids(metrics.listPlayers(L, { filter: 'promote', q: '1234', today: TODAY }))).toEqual(['1234', '51234']);
+    });
+  });
+
   describe('promote', () => {
     it('lists non-regulars seen at least the threshold in the last 8 weeks, most seen first', () => {
       player('1', 'Ash');

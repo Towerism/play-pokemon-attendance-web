@@ -11,6 +11,8 @@ test('the login wall sends people back where they were going, and never off-site
   await expect(page).toHaveURL(/\/login\?redirect=(\/|%2F)history$/);
   await logIn(page, OWNER);
   await expect(page).toHaveURL(/\/history$/);
+  // The URL changes before the page has loaded; the layout's route (which closes the menu) follows once it has.
+  await expect(page.getByRole('heading', { name: 'History' })).toBeVisible();
 
   // Logging out (from the phone menu) ends on login, and the app is walled off again.
   await page.getByRole('button', { name: 'Open menu' }).click();

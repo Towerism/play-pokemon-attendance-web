@@ -58,7 +58,8 @@ export interface MetricsService {
    * `all` by name; `promote` most seen in the last 8 weeks first; `stale`
    * never present first, then longest absent. Ties keep name order.
    */
-  listPlayers(leagueId: string, opts: { filter: CurationFilter; q?: string; today: SessionDate }): CuratedPlayer[];
+  /** A player whose ID is exactly `q` comes first; `limit` caps the result after that. */
+  listPlayers(leagueId: string, opts: { filter: CurationFilter; q?: string; limit?: number; today: SessionDate }): CuratedPlayer[];
   /** Regulars by name, with metrics. */
   listRegulars(leagueId: string, today: SessionDate): RegularWithMetrics[];
   getThresholds(leagueId: string): Thresholds;
@@ -202,18 +203,10 @@ export function createMetricsService(deps: MetricsDeps): MetricsService {
       return { promoteMinSightings, staleAfterSessions };
     },
 
-    listPlayers(leagueId, { filter, q, today }) {
+    listPlayers(leagueId, { filter, q, limit, today }) {
       const curate = curator(leagueId, today);
       const players = roster.listPlayers(leagueId, { q }).map((p) => ({ ...p, ...curate(p) }));
-
-      // Array.prototype.sort is stable, so the roster's name order breaks ties.
-      if (filter === 'promote') {
-        return players.filter((p) => p.promotionCandidate).sort((a, b) => b.metrics!.sightings8w - a.metrics!.sightings8w);
-      }
-      if (filter === 'stale') {
-        return players.filter((p) => p.stale).sort((a, b) => compareDesc(absence(a.metrics), absence(b.metrics)));
-      }
-      return players;
+      return exactIdFirst(curated(players, filter), q).slice(0, limit);
     },
 
     listRegulars(leagueId, today) {
@@ -224,6 +217,23 @@ export function createMetricsService(deps: MetricsDeps): MetricsService {
       });
     },
   };
+}
+
+/** One tab of the Players page. Array.prototype.sort is stable, so the roster's name order breaks ties. */
+function curated(players: CuratedPlayer[], filter: CurationFilter): CuratedPlayer[] {
+  if (filter === 'promote') {
+    return players.filter((p) => p.promotionCandidate).sort((a, b) => b.metrics!.sightings8w - a.metrics!.sightings8w);
+  }
+  if (filter === 'stale') {
+    return players.filter((p) => p.stale).sort((a, b) => compareDesc(absence(a.metrics), absence(b.metrics)));
+  }
+  return players;
+}
+
+/** Moves the player whose ID is exactly the search (as text) to the front. */
+function exactIdFirst(players: CuratedPlayer[], q: string | undefined): CuratedPlayer[] {
+  const i = q ? players.findIndex((p) => p.playerId === q) : -1;
+  return i <= 0 ? players : [players[i]!, ...players.slice(0, i), ...players.slice(i + 1)];
 }
 
 /** Sessions since the player was last present; never present is forever. */
