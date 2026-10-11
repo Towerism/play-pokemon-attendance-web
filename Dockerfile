@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 #
 # One image definition for the project, one stage per role:
-#   app     (default) the Nuxt server behind docker/entrypoint.sh (ADR-0006)
+#   app     (default) the Nuxt server behind docker/entrypoint.sh (ADR-0006),
+#           with an optional Litestream supervisor (ADR-0002)
 #   spikes  M0 spike tooling with an hourly S2 token refresh (supercronic)
 
 ARG NODE_IMAGE=node:22.23.3-alpine3.23
@@ -59,6 +60,26 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY . .
 RUN pnpm run build
 
+# Optional off-box backups (ADR-0002). The release binary is static, so it is
+# fetched and verified here and only the binary is copied into the runtime.
+FROM ${NODE_IMAGE} AS litestream
+ARG TARGETARCH
+ARG LITESTREAM_VERSION=0.5.17
+ARG LITESTREAM_SHA256_amd64=cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d
+ARG LITESTREAM_SHA256_arm64=f8ca4a050095c1efbda2c4365172e61bf9d955ea0d9ac42f448b52e51819baa5
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) arch=x86_64; sha="${LITESTREAM_SHA256_amd64}" ;; \
+      arm64) arch=arm64;  sha="${LITESTREAM_SHA256_arm64}" ;; \
+      *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    tarball="litestream-${LITESTREAM_VERSION}-linux-${arch}.tar.gz"; \
+    wget -qO "/tmp/${tarball}" \
+      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/${tarball}"; \
+    echo "${sha}  /tmp/${tarball}" | sha256sum -c -; \
+    tar -xzf "/tmp/${tarball}" -C /usr/local/bin litestream; \
+    /usr/local/bin/litestream version
+
 FROM ${NODE_SLIM_IMAGE} AS app
 # gosu: drop root after fixing /data ownership. tini: PID 1 that forwards SIGTERM.
 RUN apt-get update \
@@ -68,6 +89,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=app-build /app/.output ./.output
 COPY --from=app-build /app/server/db/migrations ./server/db/migrations
+COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
+COPY docker/litestream.yml /etc/litestream.yml
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
