@@ -61,6 +61,10 @@ production code without a failing test first.
 Repeat in small steps. Don't batch several behaviors into one cycle, and don't
 write the implementation before the test "to save time".
 
+**Exception: CI/CD pipelines** (`.github/workflows/*`). No TDD and no tests for
+pipeline changes. Use the `/engineering-advanced-skills:ci-cd-pipeline-builder`
+skill when creating or editing a pipeline instead.
+
 ## Designing tests
 
 Before writing tests, load **`/engineering-skills:senior-qa`** and
