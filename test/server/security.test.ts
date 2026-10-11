@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type TestServer, client, runToExit, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, logRecords, runToExit, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 
@@ -324,6 +324,42 @@ describe('auth rate limits', () => {
   it.each(['none', '10.0.0.5, 2001:db8::/32'])('starts with NUXT_TRUSTED_PROXIES=%j', async (value) => {
     const server = await startServer({ env: { NUXT_TRUSTED_PROXIES: value } });
     await server.dispose();
+  });
+});
+
+describe('refusals keep request-scoped headers and add no logging of their own', () => {
+  it('returns the request id on a 429 and a 413, and only the http logger reports them', async () => {
+    const server = await startServer({ env: { NUXT_LOG_FORMAT: 'json', NUXT_LOG_LEVEL: 'debug', NUXT_AUTH_RATE_LIMIT_LOGIN_MAX: '1' } });
+    try {
+      const browser = client(server.url);
+      await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+
+      const loginWith = (id: string) =>
+        client(server.url).request('/api/auth/login', { method: 'POST', json: OWNER, headers: { 'x-request-id': id } });
+      expect((await loginWith('rl-first')).status).toBe(200);
+      const limited = await loginWith('rl-limited');
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('x-request-id')).toBe('rl-limited');
+      expectSecurityHeaders(limited);
+
+      const tooBig = await browser.request('/api/regulars/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-request-id': 'too-big' },
+        body: `"${'a'.repeat(2 * 1024 * 1024)}"`,
+      });
+      expect(tooBig.status).toBe(413);
+      expect(tooBig.headers.get('x-request-id')).toBe('too-big');
+      expectSecurityHeaders(tooBig);
+
+      // Wait for both request lines, then check nothing but the http logger spoke for these requests.
+      for (const id of ['rl-limited', 'too-big']) {
+        await expect.poll(() => logRecords(server.logs()).filter((r) => r.reqId === id && r.status !== undefined).length).toBe(1);
+        const scopes = new Set(logRecords(server.logs()).filter((r) => r.reqId === id).map((r) => r.scope));
+        expect(scopes, id).toEqual(new Set(['http']));
+      }
+    } finally {
+      await server.dispose();
+    }
   });
 });
 
