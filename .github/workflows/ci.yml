@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']
   pull_request:
 
 concurrency:
@@ -42,6 +41,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      # Manifest-list digest of the published image; the release job tags exactly this.
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3
@@ -77,12 +79,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
-          # latest / X.Y.Z / X.Y from release tags (ADR-0006); edge + sha from main;
-          # pr-<number> from PRs (moves with each push to the PR).
+          # edge + sha from main; pr-<number> from PRs (moves with each push to the PR).
+          # X.Y.Z / X.Y / latest come from the release job (ADR-0006).
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=edge,branch=main
             type=ref,event=pr
             type=sha,enable=${{ github.event_name == 'push' }}
@@ -97,6 +96,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish image to GHCR
+        id: push
         if: steps.publish.outputs.enabled == 'true'
         uses: docker/build-push-action@v6
         with:
@@ -109,3 +109,73 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # semantic-release from Conventional Commits (.releaserc.json). A tag pushed with
+  # GITHUB_TOKEN starts no new run, so the release happens here, on the image this run
+  # smoke-tested: dry run for the version, tag that image X.Y.Z / X.Y / latest, then the
+  # git tag and GitHub Release. Nothing is committed back to main.
+  release:
+    name: Release
+    needs: [check, image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Writes $RUNNER_TEMP/release-version only when a release is due. Skips (no file)
+      # when nothing releasable landed, or when main has moved on: the newer run releases.
+      - name: Next version (dry run)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm exec semantic-release --dry-run
+
+      - name: Decide whether to release
+        id: next
+        run: |
+          if [ -s "$RUNNER_TEMP/release-version" ]; then
+            echo "version=$(cat "$RUNNER_TEMP/release-version")" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release due."
+          fi
+
+      - uses: docker/login-action@v3
+        if: steps.next.outputs.version != ''
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Before the git tag, so a GitHub Release never exists without its image.
+      - name: Tag the image X.Y.Z, X.Y, latest
+        if: steps.next.outputs.version != ''
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          if [ -z "$DIGEST" ]; then
+            echo "::error::The image job published no digest; refusing to release $VERSION."
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "$IMAGE_NAME:$VERSION" \
+            --tag "$IMAGE_NAME:${VERSION%.*}" \
+            --tag "$IMAGE_NAME:latest" \
+            "$IMAGE_NAME@$DIGEST"
+          docker buildx imagetools inspect "$IMAGE_NAME:$VERSION"
+
+      - name: Git tag and GitHub Release
+        if: steps.next.outputs.version != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm exec semantic-release
