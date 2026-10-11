@@ -1,0 +1,35 @@
+# Play! Pokémon league attendance
+
+A web app for entering Play! Pokémon league attendance into play-tools:
+curated regulars, per-date session players, `.tdf` import and one-click,
+idempotent submission. It replaces the
+[play-pokemon-attendance CLI](https://github.com/Towerism/play-pokemon-attendance).
+
+Design: [`docs/architecture/`](docs/architecture/README.md).
+
+## Install on Unraid
+
+1. Docker tab → *Template repositories*: add
+   `https://github.com/Towerism/play-pokemon-attendance-web`. Or copy
+   [`deploy/unraid/play-pokemon-attendance.xml`](deploy/unraid/play-pokemon-attendance.xml)
+   into `/boot/config/plugins/dockerMan/templates-user/`.
+2. *Add Container* → pick **play-pokemon-attendance** → *Apply*. No field is required.
+3. Open the WebUI. Enter the setup code from the container's log
+   (Docker tab → container → *Logs*) to create the organizer account.
+
+Everything persistent lives in `/mnt/user/appdata/play-pokemon-attendance`. Back
+up the whole folder, and always restore `secrets/` together with `app.db`.
+
+Any other Docker host works too: `docker compose up -d app`, then
+`docker compose logs app` to get the setup code.
+
+## Develop
+
+```sh
+pnpm install
+pnpm dev        # http://localhost:3000
+pnpm test       # unit tests, plus the built server driven over HTTP
+pnpm lint && pnpm typecheck
+```
+
+See [CLAUDE.md](CLAUDE.md) for the full command list and the working rules (TDD, module boundaries, security).

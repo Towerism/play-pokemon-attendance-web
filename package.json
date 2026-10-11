@@ -7,8 +7,16 @@
     "node": ">=22.12"
   },
   "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build && esbuild server/bootstrap/launcher.ts --bundle --platform=node --format=esm --target=node22 --outfile=.output/launcher.mjs",
+    "start": "node .output/launcher.mjs",
+    "postinstall": "nuxt prepare",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run --project unit",
+    "test:server": "vitest run --project server",
+    "lint": "eslint .",
+    "typecheck": "nuxt typecheck",
+    "db:generate": "drizzle-kit generate",
     "spike:s1": "tsx spikes/s1-connect.ts",
     "spike:s2": "tsx spikes/s2-refresh.ts",
     "spike:s3": "tsx spikes/s3-discover.ts",
@@ -16,17 +24,48 @@
     "spike:fixtures": "tsx spikes/sanitize-fixtures.ts"
   },
   "dependencies": {
+    "@iconify-json/lucide": "^1.2.142",
+    "@nuxt/ui": "^4.11.3",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "^0.45.4",
+    "nuxt": "^4.6.1",
+    "nuxt-auth-utils": "^0.5.31",
+    "tailwindcss": "^4.3.3",
+    "vue": "^3.5.43",
+    "vue-router": "^5.4.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@nuxt/eslint": "^1.17.0",
+    "@nuxt/test-utils": "^4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.5",
+    "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
+    "fast-xml-parser": "^5.11.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "vue-tsc": "^3.3.13"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild"
-    ]
+      "better-sqlite3",
+      "esbuild",
+      "@parcel/watcher",
+      "@tailwindcss/oxide",
+      "vue-demi"
+    ],
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-86w9-cpqp-85rv",
+        "GHSA-vfj7-8cjw-p6xm",
+        "GHSA-v5rq-49vh-5v5c",
+        "GHSA-x6jw-m9v5-85vh",
+        "GHSA-g4wm-2vf7-vfgr",
+        "GHSA-858h-whjf-mvg5"
+      ]
+    }
   }
 }
