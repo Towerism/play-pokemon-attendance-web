@@ -3,6 +3,7 @@ import { InvalidSetupCodeError, SetupClosedError } from '../../modules/accounts/
 
 /** First-run setup: create the organizer account with the logged setup code, then log in. */
 export default defineEventHandler(async (event) => {
+  enforceAuthRateLimit(event, 'setup');
   const body = await readValidatedBody(event, SetupBody.parse);
   try {
     const user = await useAccounts().setup(body);
