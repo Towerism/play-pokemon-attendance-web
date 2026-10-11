@@ -63,8 +63,18 @@ async function removePlayer(player: SessionPlayer) {
       <h2 class="text-lg font-medium">
         Session players <span class="text-muted">({{ session?.players.length ?? 0 }})</span>
       </h2>
+      <TdfImport :date="date" @imported="refresh" />
+      <ul v-if="session?.imports.length" class="text-sm text-muted space-y-0.5">
+        <li v-for="upload in session.imports" :key="upload.uploadId" class="flex items-center gap-1.5">
+          <UIcon name="i-lucide-file-check" class="shrink-0" />
+          <span>
+            Imported {{ upload.tournamentName || upload.filename }}
+            <span class="tabular-nums">({{ upload.playerCount }} {{ upload.playerCount === 1 ? 'player' : 'players' }})</span>
+          </span>
+        </li>
+      </ul>
       <AddPlayerForm ref="form" submit-label="Add" :busy="adding" @submit="addPlayer" />
-      <UTable :data="session?.players ?? []" :columns="columns" empty="No session players yet. Add them by ID, or import a TDF (coming soon).">
+      <UTable :data="session?.players ?? []" :columns="columns" empty="No session players yet. Drop a TDF above, or add them by ID.">
         <template #displayName-cell="{ row }">
           <span :class="{ 'text-muted italic': !row.original.displayName }">{{ row.original.displayName || 'No name' }}</span>
         </template>

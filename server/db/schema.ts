@@ -85,6 +85,46 @@ export const sessionPlayer = sqliteTable(
   (t) => [primaryKey({ columns: [t.draftId, t.playerId] })],
 );
 
+/**
+ * A `.tdf` previewed for a session, then committed. Only the tournament's name
+ * and date are kept; the raw file is discarded after parsing (architecture §9).
+ */
+export const tdfUpload = sqliteTable(
+  'tdf_upload',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    draftId: integer('draft_id')
+      .notNull()
+      .references(() => sessionDraft.id, { onDelete: 'cascade' }),
+    filename: text('filename').notNull(),
+    /** Of the file's text; re-uploading the same file for the date is a no-op. */
+    sha256: text('sha256').notNull(),
+    tournamentName: text('tournament_name'),
+    tournamentDate: text('tournament_date'),
+    playerCount: integer('player_count').notNull(),
+    status: text('status', { enum: ['pending', 'committed'] })
+      .notNull()
+      .default('pending'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    committedAt: integer('committed_at', { mode: 'timestamp' }),
+  },
+  (t) => [unique('tdf_upload_draft_sha256_unique').on(t.draftId, t.sha256)],
+);
+
+/** The players a TDF listed (name and ID only), held between preview and commit. */
+export const tdfUploadPlayer = sqliteTable(
+  'tdf_upload_player',
+  {
+    uploadId: integer('upload_id')
+      .notNull()
+      .references(() => tdfUpload.id, { onDelete: 'cascade' }),
+    playerId: text('player_id').notNull(),
+    /** Empty when the file had no name. */
+    name: text('name').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.uploadId, t.playerId] })],
+);
+
 /** Evidence that a player attended a session; curation metrics come from these (ADR-0005). */
 export const sighting = sqliteTable(
   'sighting',

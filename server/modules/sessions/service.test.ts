@@ -36,6 +36,7 @@ describe('getSession', () => {
       playSessionId: null,
       players: [],
       regulars: [],
+      imports: [],
     });
     expect(database.sqlite.prepare('select count(*) n from session_draft').get()).toEqual({ n: 0 });
   });

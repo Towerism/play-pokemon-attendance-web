@@ -1,11 +1,14 @@
 import type { H3Event } from 'h3';
 import { DEFAULT_LEAGUE_ID } from '../modules/leagues';
-import { createSightingsService } from '../modules/metrics/sightings';
+import { type SightingsService, createSightingsService } from '../modules/metrics/sightings';
 import { type RosterService, createRosterService } from '../modules/roster/service';
 import { type SessionsService, createSessionsService } from '../modules/sessions/service';
+import { type TdfImportService, createTdfImportService } from '../modules/sessions/tdf-import';
 
 let roster: RosterService | undefined;
 let sessions: SessionsService | undefined;
+let sightings: SightingsService | undefined;
+let tdfImports: TdfImportService | undefined;
 
 export function useRoster(): RosterService {
   roster ??= createRosterService({ db: useDb() });
@@ -13,8 +16,18 @@ export function useRoster(): RosterService {
 }
 
 export function useSessions(): SessionsService {
-  sessions ??= createSessionsService({ db: useDb(), roster: useRoster(), sightings: createSightingsService({ db: useDb() }) });
+  sessions ??= createSessionsService({ db: useDb(), roster: useRoster(), sightings: useSightings() });
   return sessions;
+}
+
+export function useTdfImports(): TdfImportService {
+  tdfImports ??= createTdfImportService({ db: useDb(), roster: useRoster(), sightings: useSightings() });
+  return tdfImports;
+}
+
+function useSightings(): SightingsService {
+  sightings ??= createSightingsService({ db: useDb() });
+  return sightings;
 }
 
 /** Requires a logged-in organizer and returns their league (v1: the single seeded league). */
