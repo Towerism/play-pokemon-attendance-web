@@ -39,7 +39,7 @@ export function prepareRuntimeEnv(input: Env): { env: Env; log: string[] } {
 
   for (const name of RATE_LIMIT_VARS) {
     const value = env[name]?.trim();
-    if (!value) delete env[name];
+    if (!value) Reflect.deleteProperty(env, name);
     else if (!/^[1-9]\d*$/.test(value)) throw new InvalidConfigError(`${name} must be a whole number of at least 1 (got "${value}").`);
   }
 

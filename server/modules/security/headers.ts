@@ -63,7 +63,9 @@ export function securityHeaders(opts: { httpsSite: boolean }): Record<string, st
 
 function serializeCsp(csp: CspDirectives): string {
   return Object.entries(csp)
-    .filter(([, value]) => value !== false)
-    .map(([directive, value]) => (value === true ? directive : `${directive} ${value.join(' ')}`))
+    .flatMap(([directive, value]) => {
+      if (value === false) return [];
+      return [value === true ? directive : `${directive} ${value.join(' ')}`];
+    })
     .join('; ');
 }

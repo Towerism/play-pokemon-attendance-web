@@ -4,8 +4,8 @@
  * response, like every other security header (architecture §9). HTML errors
  * are Nuxt's error handler's job and never reach this one.
  */
-export default defineNitroErrorHandler((error, event, { defaultHandler }) => {
-  const res = defaultHandler(error, event);
+export default defineNitroErrorHandler(async (error, event, { defaultHandler }) => {
+  const res = await defaultHandler(error, event);
   const { 'content-security-policy': _nitroCsp, ...headers } = res.headers;
   setResponseHeaders(event, headers);
   setResponseStatus(event, res.status, res.statusText);
