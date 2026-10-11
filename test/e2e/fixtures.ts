@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { type Page, test as base, expect } from '@playwright/test';
-import { type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
+import { type FakePlaySession, type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from '../server/harness';
 
 export { expect };
@@ -18,6 +19,20 @@ const APP_ENV = {
 };
 
 export type Api = ReturnType<typeof client>;
+
+/** The organizer's own staff record, which play-tools lists on every session. */
+export const STAFF_ID = '9999991';
+
+/** An open play session in play-tools that still accepts attendance. */
+export function playSession(guid: string, startsAt: string): FakePlaySession {
+  const end = new Date(Date.parse(startsAt) + 3 * 3600_000).toISOString().replace('.000Z', 'Z');
+  return { guid, type: 'open_play', status: 'active', start_date: startsAt, end_date: end, final_modifiable_datetime: '2099-01-01T00:00:00Z', products: ['tcg'] };
+}
+
+/** A file under test/e2e/fixtures/. */
+export function fixtureFile(name: string): string {
+  return fileURLToPath(new URL(`fixtures/${name}`, import.meta.url));
+}
 
 interface Fixtures {
   /** A fresh fake play-tools for this test. */
