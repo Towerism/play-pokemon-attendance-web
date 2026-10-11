@@ -26,10 +26,11 @@ const OUTCOME: Record<ItemOutcome, { label: string; color: 'success' | 'neutral'
 };
 const ORIGIN = { session: 'Session player', regular: 'Regular', upstream: 'Added in play-tools' } as const;
 
+// On a phone, Player ID moves under the name so Outcome stays on screen.
 const columns: TableColumn<SubmissionItemView>[] = [
-  { accessorKey: 'displayName', header: 'Name' },
-  { accessorKey: 'playerId', header: 'Player ID' },
-  { accessorKey: 'outcome', header: 'Outcome' },
+  { accessorKey: 'displayName', header: 'Name', meta: { class: { td: WRAP } } },
+  { accessorKey: 'playerId', header: 'Player ID', meta: { class: { th: WIDE_ONLY, td: WIDE_ONLY } } },
+  { accessorKey: 'outcome', header: 'Outcome', meta: { class: { td: WRAP } } },
 ];
 // Problems first, then what was added, then the rest.
 const RANK: Record<ItemOutcome, number> = {
@@ -150,6 +151,7 @@ async function retry() {
           <div>
             <span :class="{ 'text-muted italic': !row.original.displayName }">{{ row.original.displayName || 'No name' }}</span>
             <p class="text-xs text-muted">{{ ORIGIN[row.original.origin] }}</p>
+            <p class="text-xs text-muted tabular-nums sm:hidden">{{ row.original.playerId }}</p>
           </div>
         </template>
         <template #outcome-cell="{ row }">
