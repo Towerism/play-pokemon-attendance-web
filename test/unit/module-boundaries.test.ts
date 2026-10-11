@@ -116,3 +116,20 @@ describe('server code logs through the logger, not the console', () => {
     expect(await errors(file, code)).toEqual([]);
   });
 });
+
+describe('browser-side code gets Zod from shared/zod (jitless: no eval under the CSP)', () => {
+  const direct = "import { z } from 'zod';\nexport const s = z.string();";
+
+  it.each(['shared/schemas/x.ts', 'app/utils/x.ts', 'app/pages/x.vue'])('rejects a direct zod import in %s', async (file) => {
+    const code = file.endsWith('.vue') ? "<script setup lang=\"ts\">\nimport { z } from 'zod';\nconsole.log(z.string());\n</script>" : direct;
+    expect(await errors(file, code)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+  });
+
+  it.each(['shared/zod.ts', 'server/modules/pokemon/adapters/play-tools/wire.ts'])('allows it in %s', async (file) => {
+    expect(await errors(file, direct)).toEqual([]);
+  });
+
+  it('allows importing z from shared/zod', async () => {
+    expect(await errors('shared/schemas/x.ts', "import { z } from '../zod';\nexport const s = z.string();")).toEqual([]);
+  });
+});

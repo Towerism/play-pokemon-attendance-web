@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '../zod';
 
 const count = z.number().int().min(1, 'At least 1').max(52, 'At most 52');
 
