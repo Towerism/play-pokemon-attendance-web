@@ -136,4 +136,7 @@ JSON), `tdf` sightings for every player in the file, and the dropzone and
 preview modal on This week. M4 (Pokémon connection) is built: token vault, paste-back
 connect, `TokenProvider` with persist-before-use refresh, the hourly `pokemon:keepalive` task,
 league discovery, and the Settings page with the reconnect banner. Server tests run against
-`test/server/fake-pokemon.ts` through `NUXT_POKEMON_*_URL`. Next is M5 (submission); see architecture §13.
+`test/server/fake-pokemon.ts` through `NUXT_POKEMON_*_URL`. M5 (submission) is built: date → play-session
+resolve in the league `TZ`, the plan → execute → reconcile job with a per-league lease, SSE progress,
+History with retry/resume, and boot/shutdown handling. A 5xx from `_bulk` may still land a minute later,
+so the job re-reads before resending (ADR-0004 update). Next is M6 (metrics and curation); see architecture §13.

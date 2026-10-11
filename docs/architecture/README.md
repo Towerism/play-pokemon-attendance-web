@@ -267,12 +267,20 @@ Base: `https://api.play.pokemon.com/services/` (the OP gateway). Endpoints used:
 ```ts
 interface PlayToolsGateway {
   listLeagues(): Promise<League[]>;
-  listPlaySessions(groupId: string, range: DateRange): Promise<PlaySession[]>; // {id, startsAt, endsAt, status, title}
-  listAttendance(groupId: string, sessionId: string): Promise<AttendanceRecord[]>; // {recordId, playerId}
+  listPlaySessions(groupId: string, range: DateRange, statuses?): Promise<PlaySession[]>; // {id, type, products, startsAt, endsAt, editableUntil, status}
+  listAttendance(groupId: string, sessionId: string): Promise<AttendanceRecord[]>; // {recordId, playerId, isPlayer, name}, every role
   addAttendanceBulk(groupId: string, sessionId: string, playerIds: PlayerId[]): Promise<BulkResult>;
-  removeAttendance(groupId: string, sessionId: string, recordId: string): Promise<void>;
+  // BulkResult = {status: 'added', records: [{playerId, recordId}]} | {status: 'rejected', alreadyPresent, failed}
+  removeAttendance(groupId: string, sessionId: string, recordId: string): Promise<void>; // M7 (undo)
 }
 ```
+
+As built (M5): `listAttendance` reads the **unfiltered** records list, because `?player=true` hides staff
+records and upstream refuses to add those participants again (S4). `addAttendanceBulk` mirrors S4's
+all-or-nothing semantics: a 400 maps `errors.body["<i>.participant.player_id"]` back to the player
+(`cannot_duplicate_participant` → `alreadyPresent`, anything else → `failed`; a 400 naming nobody fails
+everyone), a 201 maps record guids to players in request order, a 5xx throws `unavailable`, and an id that
+isn't digits only is refused locally before any call.
 
 The adapter is the only place that knows about Pokémon's JSON shapes,
 pagination quirks (`results` vs `data`), and headers. Responses are parsed
@@ -289,6 +297,16 @@ retried with backoff on 429/5xx only.
    1 match: auto-select and show it for confirmation.
    More than 1 (e.g. an afternoon and an evening session): the user chooses.
 4. The resolved `play_session_id` is stored on the session draft, so the history always points to the exact upstream session.
+
+As built (M5, `server/modules/submission/resolve.ts`, `local-time.ts`): the league timezone is the
+container's `TZ`. A date becomes `[local midnight, next local midnight)` as UTC instants (23 or 25 h on DST
+days); since the upstream `less_than_or_equal_to` filter is inclusive, a session starting exactly at the next
+midnight is dropped client-side. Candidates are labelled "Open play · TCG, VG · Tue 6:00 PM" and carry
+`editableUntil` (`final_modifiable_datetime`); a session past it is shown but can't be submitted
+(`edit_window_closed`). Resolving first checks the connection: `not_connected` / `needs_reconnect`, then
+`league_not_selected` (no league chosen) and `cannot_submit` (the account lacks `create_attendance`).
+Starting a submission re-resolves the date, so only one of that date's sessions can be targeted
+(`unknown_play_session`).
 
 ## 5. Domain model and data
 
@@ -355,18 +373,39 @@ erDiagram
   }
   SUBMISSION {
     int id PK
-    int draft_id FK
+    text league_id FK "with session_date: no FK to the draft (module rule)"
+    date session_date
+    text play_session_id
+    text play_session_label
     text started_by
     datetime started_at
     datetime finished_at
     text status "planned|running|succeeded|partial|failed|interrupted"
+    text error "why it stopped early"
+    int retry_of "the attempt this one retries or resumes"
   }
   SUBMISSION_ITEM {
     int submission_id FK
     text player_id FK
-    text origin "regular|session"
-    text outcome "added|already_present|failed|skipped"
+    text origin "regular|session|upstream"
+    text outcome "pending|added|already_present|failed|skipped|unrequested"
     text error
+    text record_id "upstream record, for undo (M7)"
+    bool as_staff "present upstream in a staff role"
+  }
+  SUBMISSION_EVENT {
+    int id PK "also the SSE event id"
+    int submission_id FK
+    datetime at
+    text type "planned|batch_sent|batch_rejected|retrying|reconciled|finished"
+    text message
+    int done "players dealt with"
+    int total "players to add"
+  }
+  SUBMISSION_LOCK {
+    text league_id PK
+    int submission_id
+    datetime expires_at "lease"
   }
   SIGHTING {
     text league_id FK
@@ -478,6 +517,40 @@ before?", only "what is upstream missing?".
 A per-league lock (DB row with lease) prevents two submissions for the same
 session from running concurrently.
 
+As built (M5, `server/modules/submission/`):
+
+- **Plan** (`plan.ts`, pure): staff records count as present (`already_present`, `as_staff`), and the
+  diff compares ids exactly (leading zeros matter). `existing − desired` players become `unrequested` items
+  (`origin = upstream`) and known players, named from the record. They get an `upstream_existing` sighting
+  only if their record id wasn't added by one of our own earlier submissions, so a player the organizer
+  removed locally after submitting isn't counted as evidence.
+- **Execute:** batches of `NUXT_SUBMISSION_BATCH_SIZE` (≤ 50) at least `NUXT_SUBMISSION_BATCH_DELAY_MS`
+  (15 s) apart, session players first. A 201's record ids are written to the items right away, so a run that
+  stops early still knows what it added. After an S4 rejection, the named players are dropped
+  (`alreadyPresent` → `already_present`, others → `failed` with the upstream code) and the rest is resent
+  **once**; a second rejection fails whoever is left. A 429 waits for `Retry-After`, then re-reads.
+  **A 5xx is treated as "possibly applied":** large batches can answer 502 at the gateway yet show up in
+  the records about a minute later (organizer's field report). The job re-reads every
+  `NUXT_SUBMISSION_SETTLE_POLL_MS` (15 s) for up to `NUXT_SUBMISSION_SETTLE_MS` (3 min) until the batch's
+  players appear, and resends only who is still missing. If a resend is then refused as a duplicate for a
+  player from that timed-out batch, the player counts as `added`, not `already_present`. A batch is tried at
+  most 3 times. `needs_reconnect`, `forbidden` and other non-retryable errors stop the job: `failed` with the
+  reason, unsent players `skipped`.
+- **Reconcile:** the re-read decides `added` vs `failed` ("Not recorded in play-tools after sending" when
+  upstream gave no reason). Status: `succeeded` when everyone we meant to add is there, `partial` when some
+  are, `failed` when none are. The draft's status follows (`submitting` → `submitted` / `partial` / `failed`).
+- **Retry / resume** start a **new attempt** (`retry_of` points back), so history keeps every attempt.
+  Refused while the original is still running.
+- **Lock:** a `submission_lock` row with a 2-minute lease, renewed before every bulk call and every settle
+  poll, and released when the job ends. An expired lease (a crashed process) is free.
+- **Progress events** are written to `submission_event` and then pushed to subscribers.
+  `GET /submissions/{id}/events` replays them after `Last-Event-ID`, streams live, and ends after
+  `finished`, whose data also carries the final status.
+- **Crash safety and shutdown:** on boot `server/plugins/jobs.ts` marks `planned`/`running` jobs
+  `interrupted` (unsent players `skipped`) and clears the locks. On shutdown the `database` plugin stops jobs
+  before closing SQLite: an in-flight bulk call finishes, the next one is never started, pacing sleeps are
+  aborted, and the job ends `interrupted`. New submissions get 503 `shutting_down`.
+
 ### 6.3 Undo (port of `delete.js`)
 
 From History, an organizer can open **Remove players added by this
@@ -506,14 +579,17 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `GET /sessions/{date}`                                    | Draft for a date: session players, regulars, resolved session |
 | `POST /sessions/{date}/players` · `DELETE /sessions/{date}/players/{playerId}` | Manual session players. `POST` is 201 when added, 200 when already listed, 409 for a regular |
 | `POST /sessions/{date}/tdf` → preview · `POST /sessions/{date}/tdf/{uploadId}/commit` | TDF import. The body is JSON `{ filename, content }` (the file's text). Preview: 200, 413 over 2 MB, 422 with `data.code` for a file that isn't a usable tournament. Commit: 200 (`alreadyImported` on a repeat), 404 for an upload not previewed for that date |
-| `POST /sessions/{date}/resolve`                           | Date → upstream play session candidates                     |
-| `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`)                |
-| `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` | Job status          |
+| `POST /sessions/{date}/resolve`                           | Date → upstream play session candidates `{ timeZone, candidates: [{ id, label, status, startsAt, endsAt, editableUntil, editable }] }` |
+| `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`) → `{ submissionId }` |
+| `GET /submissions?date=` · `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` → 202 | History (newest first), one submission with per-player items, progress (`Last-Event-ID` resumes), retry/resume as a new attempt |
 | `POST /submissions/{id}/undo`                             | Remove the records this submission added                    |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream` · `PUT /settings`                 | Pick activity group, timezone, thresholds, batch delay. M4: `PUT` takes `{ activityGroupId }` (422 `unknown_league` if the account lacks it) |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
+Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` → 409,
+`cannot_submit` → 403, `unknown_play_session` / `edit_window_closed` / `nothing_to_submit` → 422,
+`not_found` → 404, `shutting_down` → 503.
 
 ## 8. Frontend (Nuxt pages)
 
@@ -529,7 +605,7 @@ Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `n
 Client patterns:
 
 - **Server state:** `useFetch('/api/sessions/' + date)` with a `key` per date. Mutations call `$fetch`, then `refreshNuxtData(key)`. Optimistic updates are used only for toggling regulars.
-- **Submission progress:** the `useSubmissionEvents(id)` composable wraps `EventSource` on `/api/submissions/{id}/events`. It falls back to polling `GET /api/submissions/{id}` if SSE drops.
+- **Submission progress:** the `useSubmissionEvents(id)` composable wraps `EventSource` on `/api/submissions/{id}/events`. It falls back to polling `GET /api/submissions/{id}` if SSE drops. As built (M5), progress lives in `SubmitDialog` and on `history/[id].vue`; there is no separate drawer, so Pinia isn't needed yet.
 - **Notifications:** Nuxt UI `useToast()` for results, and a global `UBanner` in `app.vue` when the Pokémon connection is `needs_reconnect`.
 - **Layout:** mobile-first, because attendance is often taken on a phone at the store.
 
@@ -578,6 +654,8 @@ flowchart LR
   - `TZ`, which Unraid sets. It drives session dates and the keep-alive schedule.
   - `NUXT_DATABASE_PATH` (default `/data/app.db`)
   - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils) and `NUXT_TOKEN_VAULT_KEY`. Both are optional. If either is unset, it is generated once into `/data/secrets/` (mode 0600). Env wins over the file. A malformed value fails startup and is never silently regenerated.
+  - `NUXT_SUBMISSION_BATCH_SIZE` (50, capped at 50), `NUXT_SUBMISSION_BATCH_DELAY_MS` (15000),
+    `NUXT_SUBMISSION_SETTLE_MS` (180000), `NUXT_SUBMISSION_SETTLE_POLL_MS` (15000). Optional tuning, not in the template.
   - `NUXT_POKEMON_ACCESS_URL` / `NUXT_POKEMON_API_URL`. **Test doubles only**: they point the adapters at a fake upstream (`test/server/fake-pokemon.ts`). Unset means the real Pokémon hosts; never set them in the template.
   - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag and absolute links are right. The launcher sets `NUXT_SESSION_COOKIE_SECURE` from it (`https:` → Secure) unless that is set explicitly; on plain HTTP a Secure cookie would never come back and login would fail.
   - `NITRO_SHUTDOWN_TIMEOUT` (the image sets `8000` ms) keeps graceful shutdown inside Docker's 10 s stop timeout.
@@ -620,7 +698,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players. Built.                                |
 | M3 TDF                        | `shared/tdf` parser, preview → commit, sightings. Built.                                                      |
 | M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery. Built (the manual-token fallback is deferred).        |
-| M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry                                        |
+| M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds                                                                          |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, `docs/deploy/unraid.md` (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 

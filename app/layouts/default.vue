@@ -5,6 +5,7 @@ const links = [
   { to: '/', label: 'This week' },
   { to: '/regulars', label: 'Regulars' },
   { to: '/players', label: 'Players' },
+  { to: '/history', label: 'History' },
   { to: '/settings', label: 'Settings' },
 ];
 

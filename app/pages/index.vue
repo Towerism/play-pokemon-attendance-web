@@ -16,6 +16,15 @@ const { data: session, refresh } = await useFetch(() => `/api/sessions/${date.va
 });
 
 type SessionPlayer = NonNullable<typeof session.value>['players'][number];
+type DraftStatus = NonNullable<typeof session.value>['status'];
+
+const DRAFT_STATUS: Record<DraftStatus, { label: string; color: 'neutral' | 'info' | 'success' | 'warning' | 'error' }> = {
+  draft: { label: 'Not submitted', color: 'neutral' },
+  submitting: { label: 'Submitting…', color: 'info' },
+  submitted: { label: 'Submitted', color: 'success' },
+  partial: { label: 'Partly submitted', color: 'warning' },
+  failed: { label: 'Submission failed', color: 'error' },
+};
 const columns: TableColumn<SessionPlayer>[] = [
   { accessorKey: 'displayName', header: 'Name' },
   { accessorKey: 'playerId', header: 'Player ID' },
@@ -57,6 +66,13 @@ async function removePlayer(player: SessionPlayer) {
       <UFormField label="Session date">
         <UInput v-model="date" type="date" />
       </UFormField>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-3">
+      <SubmitDialog :date="date" :player-count="(session?.players.length ?? 0) + (session?.regulars.length ?? 0)" @finished="refresh" />
+      <NuxtLink v-if="session && session.status !== 'draft'" :to="`/history?date=${date}`" class="text-sm">
+        <UBadge variant="subtle" :color="DRAFT_STATUS[session.status].color">{{ DRAFT_STATUS[session.status].label }}</UBadge>
+      </NuxtLink>
     </div>
 
     <section class="space-y-3">
