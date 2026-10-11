@@ -12,9 +12,8 @@ import type { AddressInfo } from 'node:net';
 export interface FakePokemon {
   url: string;
   env: Record<string, string>;
-  /** Every request, in order: `METHOD /path` plus the form for token calls. */
-  /** Every request, with when it arrived (ms since epoch). */
-  requests: { method: string; path: string; at?: number; form?: Record<string, string> }[];
+  /** Every request, in order, with when it arrived (ms since epoch), the form for token calls and the player ids of a `_bulk`. */
+  requests: { method: string; path: string; at?: number; form?: Record<string, string>; playerIds?: string[] }[];
   /** Seconds; under 120 makes every access-token use refresh. */
   accessTtl: number;
   leagues: { guid: string; display_id: string; display_name: string; canSubmit: boolean }[];
@@ -24,6 +23,8 @@ export interface FakePokemon {
   records: Map<string, FakeRecord[]>;
   /** Milliseconds to hold each `_bulk` response (to stop the app mid-job). */
   bulkDelayMs: number;
+  /** The next `_bulk` answers 201 for everyone but doesn't store these ids (a record that never sticks); then cleared. */
+  dropOnce: Set<string>;
   /** Refuse the next refresh with `invalid_grant`. */
   revokeChain(): void;
   liveRefreshToken(): string | undefined;
@@ -82,6 +83,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     playSessions: [],
     records: new Map(),
     bulkDelayMs: 0,
+    dropOnce: new Set(),
     revokeChain: () => (live = undefined),
     liveRefreshToken: () => live,
     liveAccessToken: () => liveAccess,
@@ -150,6 +152,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     const bulkMatch = BULK_PATH.exec(url.pathname);
     if (req.method === 'POST' && bulkMatch) {
       const items = JSON.parse(await body(req)) as { participant: { player_id: string } }[];
+      entry.playerIds = items.map((i) => i.participant.player_id);
       if (fake.bulkDelayMs) await new Promise((r) => setTimeout(r, fake.bulkDelayMs));
       // S4: a malformed id fails the whole request with an HTML 500.
       if (items.some((i) => !/^\d+$/.test(i.participant.player_id))) {
@@ -168,7 +171,9 @@ export async function startFakePokemon(): Promise<FakePokemon> {
         return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.', errors: { body: dupes } });
       }
       const added = items.map((i) => fakeRecord(i.participant.player_id, { guid: `rec-${++serial}` }));
-      fake.records.set(bulkMatch[2]!, [...records, ...added]);
+      const dropped = fake.dropOnce;
+      fake.dropOnce = new Set();
+      fake.records.set(bulkMatch[2]!, [...records, ...added.filter((r) => !dropped.has(r.participant.player_id))]);
       return json(res, 201, added.map((r) => ({ guid: r.guid })));
     }
 

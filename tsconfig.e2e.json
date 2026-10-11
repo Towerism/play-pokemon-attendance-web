@@ -1,0 +1,18 @@
+{
+  // Playwright journeys (pnpm test:e2e) and the server-test helpers they share; run by Playwright, outside Nuxt.
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["playwright.config.ts", "test/e2e", "test/server/fake-pokemon.ts", "test/server/harness.ts", "test/server/global-setup.ts"]
+}

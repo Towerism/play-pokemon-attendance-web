@@ -34,6 +34,35 @@ jobs:
       - run: pnpm test
       - run: pnpm audit --prod --audit-level high
 
+  # Browser journeys (Playwright) against the production build. Runs alongside
+  # check and image; the image job doesn't wait for it (it never gates publishing).
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      # Builds .output/ first; one retry in CI, and a retried pass shows as flaky.
+      - run: pnpm test:e2e
+      - name: Upload report, traces, screenshots and server logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
   image:
     name: Image (smoke test, publish)
     needs: check

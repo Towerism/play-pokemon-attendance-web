@@ -33,6 +33,8 @@ async function openDialog() {
     chosen.value = candidates.value.length === 1 ? candidates.value[0]!.id : undefined;
   } catch (err) {
     resolveError.value = { message: apiErrorMessage(err, 'Could not reach play-tools.'), code: apiErrorCode(err) };
+    // The banner and Settings share the connection status; let them see what resolve just learned.
+    if (['needs_reconnect', 'not_connected'].includes(resolveError.value.code ?? '')) await refreshPokemonConnection();
   } finally {
     resolving.value = false;
   }

@@ -72,9 +72,10 @@ Before writing tests, load **`/engineering-skills:senior-qa`** and
 behavior that matters, not line coverage. Aim tests at the ranked quality
 attributes — correctness of submitted attendance comes first.
 
-Planned tooling (architecture §3): Vitest + `@nuxt/test-utils` for unit,
-component and server-route tests; MSW for the Pokémon APIs; Playwright for one
-happy-path E2E.
+Tooling (architecture §3): Vitest + `@nuxt/test-utils` for unit and server
+tests; the in-process HTTP fake `test/server/fake-pokemon.ts` for the Pokémon
+APIs (server and E2E tests); Playwright for the browser journeys in `test/e2e/`
+(client-side decisions only, not the server API matrix).
 
 High-value areas:
 
@@ -113,6 +114,7 @@ Node 22 (`.node-version`) with pnpm (`packageManager` in `package.json`).
 | `pnpm test`            | All Vitest projects                                                          |
 | `pnpm test:unit`       | Plain-TS tests (`app/utils`, `shared`, `server`, `test/unit`)                |
 | `pnpm test:server`     | Builds, then drives the real server over HTTP (`test/server`); `TEST_SKIP_BUILD=1` reuses `.output/` |
+| `pnpm test:e2e`        | Builds, then runs the Playwright browser journeys (`test/e2e`) against it; `TEST_SKIP_BUILD=1` reuses `.output/`. Needs Chromium once: `pnpm exec playwright install chromium` |
 | `pnpm lint`            | `@nuxt/eslint`, including the module-boundary rules                          |
 | `pnpm typecheck`       | `nuxt typecheck` (vue-tsc, incl. `tsconfig.spikes.json`)                     |
 | `pnpm db:generate`     | Drizzle migration from `server/db/schema.ts` into `server/db/migrations/`    |

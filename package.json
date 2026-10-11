@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:server": "vitest run --project server",
+    "test:e2e": "playwright test",
     "lint": "eslint .",
     "typecheck": "nuxt typecheck",
     "db:generate": "drizzle-kit generate",
@@ -42,6 +43,7 @@
   "devDependencies": {
     "@nuxt/eslint": "^1.17.0",
     "@nuxt/test-utils": "^4.3.3",
+    "@playwright/test": "^1.59.1",
     "@semantic-release/exec": "^7.1.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.5",
