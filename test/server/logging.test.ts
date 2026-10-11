@@ -239,6 +239,32 @@ describe('request ids follow the work they start', () => {
     expect(retryDone.reqId).toBe('req-retry-1');
   });
 
+  it('still logs a request the client walked away from, marked aborted', async () => {
+    fake.bulkDelayMs = 1_000;
+    await browser.request(`/api/sessions/${TUESDAY}/players`, { method: 'POST', json: { playerId: '2', name: 'B' } });
+    const started = await browser.request(`/api/sessions/${TUESDAY}/submissions`, { method: 'POST', json: { playSessionId: PS } });
+    const { submissionId } = (await started.json()) as { submissionId: number };
+
+    const abort = new AbortController();
+    const stream = await browser.request(`/api/submissions/${submissionId}/events`, {
+      headers: { 'x-request-id': 'req-aborted' },
+      signal: abort.signal,
+    });
+    expect(stream.status).toBe(200);
+    abort.abort();
+
+    const record = await waitFor(
+      () => logRecords(server.logs()).find((r) => r.reqId === 'req-aborted' && r.scope === 'http'),
+      'the aborted request line',
+    );
+    expect(record).toMatchObject({ aborted: true, path: `/api/submissions/${submissionId}/events` });
+    fake.bulkDelayMs = 0;
+    await waitFor(
+      () => logRecords(server.logs()).find((r) => r.scope === 'submission' && r.submissionId === submissionId && r.status),
+      'the job to finish',
+    );
+  });
+
   it('never mixes up the ids of concurrent requests', async () => {
     fake.bulkDelayMs = 0;
     const ids = Array.from({ length: 10 }, (_, i) => `req-concurrent-${i}`);
