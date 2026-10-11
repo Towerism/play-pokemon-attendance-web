@@ -92,7 +92,9 @@ High-value areas:
 ## Security musts
 
 - Never log, return to the browser, or commit the refresh token or access token.
-  Logs redact `authorization` and `*token*`.
+  Logs redact an exact list of keys (token, access/refresh/id token, authorization, cookie,
+  password, secret, birthdate/dob, … — architecture §10) before formatting; look-alikes like
+  `tokenCount` stay visible. Log through `useLogger` / an injected `Logger`, never `console`.
 - Secrets come from env (`NUXT_TOKEN_VAULT_KEY`, `NUXT_SESSION_PASSWORD`, …) or, when
   unset, from files generated once in `/data/secrets/` (mode 0600). Never the DB or repo.
 - Never persist TDF birthdates or raw TDF files.
