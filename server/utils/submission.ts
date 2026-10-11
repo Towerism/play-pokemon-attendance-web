@@ -62,6 +62,8 @@ const STATUS: Record<SubmissionErrorCode, number> = {
   submission_running: 409,
   shutting_down: 503,
   not_found: 404,
+  not_undoable: 422,
+  nothing_to_undo: 422,
 };
 
 /** Maps submission and Pokémon errors to HTTP; `data.code` tells the UI what to show. */

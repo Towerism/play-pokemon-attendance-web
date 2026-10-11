@@ -183,6 +183,10 @@ export const submission = sqliteTable(
     error: text('error'),
     /** The attempt this one retries or resumes. */
     retryOf: integer('retry_of'),
+    /** `undo` removes the records another submission added (M7). */
+    kind: text('kind', { enum: ['submit', 'undo'] }).notNull().default('submit'),
+    /** For an undo: the submission whose added records it removes. */
+    undoOf: integer('undo_of'),
   },
   (t) => [index('submission_league_date_idx').on(t.leagueId, t.sessionDate)],
 );
@@ -198,7 +202,10 @@ export const submissionItem = sqliteTable(
       .notNull()
       .references(() => player.playerId),
     origin: text('origin', { enum: ['session', 'regular', 'upstream'] }).notNull(),
-    outcome: text('outcome', { enum: ['pending', 'added', 'already_present', 'failed', 'skipped', 'unrequested'] }).notNull(),
+    /** `removed` and `already_removed` are an undo's outcomes. */
+    outcome: text('outcome', {
+      enum: ['pending', 'added', 'already_present', 'failed', 'skipped', 'unrequested', 'removed', 'already_removed'],
+    }).notNull(),
     error: text('error'),
     /** The upstream attendance record, once known (for undo, M7). */
     recordId: text('record_id'),

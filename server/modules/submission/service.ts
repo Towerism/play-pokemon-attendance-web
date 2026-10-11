@@ -1,5 +1,5 @@
+import { and, desc, eq, gt, inArray, ne } from 'drizzle-orm';
 import { type Logger, silentLogger } from '../../logging/types';
-import { and, countDistinct, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { submission, submissionEvent, submissionItem, submissionLock } from '../../db/schema';
@@ -10,12 +10,14 @@ import type { BulkResult, PlayToolsGateway } from '../pokemon/ports/play-tools-g
 import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
 import { SubmissionError } from './errors';
+import { forgetAttendance } from './forget';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
 import { type PlaySessionResolver, submissionTarget } from './resolve';
 
 export type SubmissionStatus = (typeof submission.$inferSelect)['status'];
 export type ItemOutcome = (typeof submissionItem.$inferSelect)['outcome'];
 export type ItemOrigin = (typeof submissionItem.$inferSelect)['origin'];
+export type SubmissionKind = (typeof submission.$inferSelect)['kind'];
 
 export interface SubmissionItemView {
   playerId: PlayerId;
@@ -25,6 +27,8 @@ export interface SubmissionItemView {
   error: string | null;
   recordId: string | null;
   asStaff: boolean;
+  /** On a submission: the undo that removed this record, if one did. */
+  removedBy: number | null;
 }
 
 export interface SubmissionCounts {
@@ -44,6 +48,12 @@ export interface SubmissionSummary {
   finishedAt: Date | null;
   status: SubmissionStatus;
   retryOf: number | null;
+  /** `undo` removes the records the submission `undoOf` added. */
+  kind: SubmissionKind;
+  undoOf: number | null;
+  /** Whether `undo` would start, as far as the database can tell (play-tools is not asked). */
+  undoable: boolean;
+  undoBlockedReason: 'not_undoable' | 'nothing_to_undo' | null;
   counts: SubmissionCounts;
 }
 
@@ -54,7 +64,7 @@ export interface SubmissionView extends SubmissionSummary {
   items: SubmissionItemView[];
 }
 
-export type SubmissionEventType = 'planned' | 'batch_sent' | 'batch_rejected' | 'retrying' | 'reconciled' | 'finished';
+export type SubmissionEventType = 'planned' | 'batch_sent' | 'batch_rejected' | 'retrying' | 'reconciled' | 'finished' | 'record_removed';
 
 /** Progress, persisted before it is pushed. `done` of `total` players to add are dealt with. */
 export interface SubmissionEvent {
@@ -83,6 +93,12 @@ export interface SubmissionService {
   get(leagueId: string, submissionId: number): SubmissionView;
   /** Newest first. */
   list(leagueId: string, filter?: { date?: SessionDate }): SubmissionSummary[];
+  /**
+   * Removes the records submission `submissionId` added, as a new `undo`
+   * attempt that runs in the background.
+   * @throws SubmissionError, PokemonUpstreamError
+   */
+  undo(leagueId: string, submissionId: number, startedBy: string): Promise<{ submissionId: number }>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -99,11 +115,11 @@ export interface SubmissionService {
 
 export interface SubmissionDeps {
   db: Db;
-  sessions: Pick<SessionsService, 'getSession' | 'recordSubmission'>;
+  sessions: Pick<SessionsService, 'getSession' | 'recordSubmission' | 'removePlayer'>;
   roster: Pick<RosterService, 'ensurePlayers' | 'getPlayers'>;
-  sightings: Pick<SightingsService, 'record'>;
+  sightings: Pick<SightingsService, 'record' | 'retract'>;
   connections: Pick<PokemonConnectionService, 'getStatus'>;
-  gateway: (leagueId: string) => Pick<PlayToolsGateway, 'listAttendance' | 'addAttendanceBulk'>;
+  gateway: (leagueId: string) => Pick<PlayToolsGateway, 'listAttendance' | 'addAttendanceBulk' | 'removeAttendance'>;
   resolver: PlaySessionResolver;
   now?: () => Date;
   /** Rejects with `signal.reason` when the signal aborts. */
@@ -120,6 +136,8 @@ export interface SubmissionDeps {
   settleMs?: number;
   /** How often to re-read while settling (default 15 s). */
   settlePollMs?: number;
+  /** Default 1 s between undo deletes, one at a time. */
+  undoDelayMs?: number;
   log?: Pick<Logger, 'warn' | 'info'>;
 }
 
@@ -131,6 +149,8 @@ const MAX_RETRIES = 2;
 /** The lock's lease, renewed before every bulk call; a crashed process's lease frees itself. */
 const LEASE_MS = 2 * 60_000;
 const ACTIVE: SubmissionStatus[] = ['planned', 'running'];
+/** An undo item whose record play-tools no longer has. */
+const GONE: ItemOutcome[] = ['removed', 'already_removed'];
 
 const DRAFT_STATUS: Record<SubmissionStatus, SessionStatus> = {
   planned: 'submitting',
@@ -147,6 +167,9 @@ class Interrupted extends Error {
     super('The app stopped while this submission was running. Resume it to finish.');
   }
 }
+
+/** How logs name a job. */
+const what = (row: { kind: SubmissionKind }) => (row.kind === 'undo' ? 'Undo' : 'Submission');
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -176,6 +199,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const batchDelayMs = deps.batchDelayMs ?? 10_000;
   const settleMs = deps.settleMs ?? 3 * 60_000;
   const settlePollMs = deps.settlePollMs ?? 15_000;
+  const undoDelayMs = deps.undoDelayMs ?? 1_000;
   const log = deps.log ?? silentLogger;
 
   const running = new Set<Promise<void>>();
@@ -239,6 +263,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .set({ status, error, ...(finished ? { finishedAt: now() } : {}) })
       .where(eq(submission.id, row.id))
       .run();
+    // An undo leaves the draft's status and play session alone.
+    if (row.kind === 'undo') return;
     deps.sessions.recordSubmission(row.leagueId, row.sessionDate as SessionDate, {
       playSessionId: row.playSessionId,
       status: DRAFT_STATUS[status],
@@ -262,6 +288,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   function summary(row: Row): SubmissionSummary {
+    const blocked = row.kind === 'undo' || ACTIVE.includes(row.status) ? 'not_undoable' : undoTargets(row).length === 0 ? 'nothing_to_undo' : null;
     return {
       id: row.id,
       date: row.sessionDate as SessionDate,
@@ -271,6 +298,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       finishedAt: row.finishedAt,
       status: row.status,
       retryOf: row.retryOf,
+      kind: row.kind,
+      undoOf: row.undoOf,
+      undoable: blocked === null,
+      undoBlockedReason: blocked,
       counts: counts(row.id),
     };
   }
@@ -454,6 +485,158 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'finished', `Submission ${status}.`, total, total);
   }
 
+  /** Undo: delete each targeted record play-tools still has, then re-read to see what is gone. */
+  async function runUndo(row: Row): Promise<void> {
+    const groupId = submissionTarget(deps.connections, row.leagueId);
+    const gateway = deps.gateway(row.leagueId);
+    setStatus(row, 'running');
+
+    const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
+    const total = items.length;
+    emit(row, 'planned', `${total} to remove.`, 0, total);
+    // Collect every page first (spike F4: deleting shifts the pages), and only delete what is still ours.
+    const listed = new Map((await gateway.listAttendance(groupId, row.playSessionId)).map((r) => [r.recordId, r]));
+    let done = 0;
+    const toDelete = [];
+    for (const item of items) {
+      const record = listed.get(item.recordId!);
+      if (!record) {
+        setOutcome(row.id, [item.playerId as PlayerId], { outcome: 'already_removed' });
+        done += 1;
+      } else if (record.playerId !== item.playerId) {
+        setOutcome(row.id, [item.playerId as PlayerId], { outcome: 'failed', error: 'record_mismatch' });
+        done += 1;
+      } else {
+        toDelete.push(item);
+      }
+    }
+
+    let lastDeleteAt: number | undefined;
+    /** Keeps deletes at least `undoDelayMs` apart, or longer when play-tools asks; stops on shutdown. */
+    async function pace(atLeastMs = 0): Promise<void> {
+      if (stop.signal.aborted) throw stop.signal.reason;
+      const spacing = lastDeleteAt === undefined ? 0 : lastDeleteAt + undoDelayMs - now().getTime();
+      const wait = Math.max(spacing, atLeastMs);
+      renewLock(row, wait);
+      if (wait > 0) await sleep(wait, stop.signal);
+    }
+
+    /** Deletes one record: tried at most `MAX_RETRIES + 1` times, re-reading first after a 5xx (it may have landed). */
+    async function remove(recordId: string): Promise<{ outcome: 'removed' | 'already_removed' } | { outcome: 'failed'; error: string }> {
+      for (let retries = 0; ; retries += 1) {
+        await pace();
+        try {
+          lastDeleteAt = now().getTime();
+          const result = await gateway.removeAttendance(groupId, row.playSessionId, recordId);
+          return { outcome: result === 'removed' ? 'removed' : 'already_removed' };
+        } catch (err) {
+          if (!(err instanceof PokemonUpstreamError) || !err.retryable) throw err;
+          if (retries >= MAX_RETRIES) return { outcome: 'failed', error: err.message };
+          emit(row, 'retrying', `${err.message} Trying that record again.`, done, total);
+          await pace(err.details.retryAfterMs);
+          if (err.code === 'unavailable') {
+            const listed = await gateway.listAttendance(groupId, row.playSessionId);
+            if (!listed.some((r) => r.recordId === recordId)) return { outcome: 'removed' };
+          }
+        }
+      }
+    }
+
+    for (const item of toDelete) {
+      const result = await remove(item.recordId!);
+      setOutcome(row.id, [item.playerId as PlayerId], { outcome: result.outcome, error: 'error' in result ? result.error : null });
+      done += 1;
+      emit(row, 'record_removed', `Removed ${done} of ${total}.`, done, total);
+    }
+
+    // Reconcile: upstream decides. A record still listed was not removed, whatever the delete said.
+    const still = new Set((await gateway.listAttendance(groupId, row.playSessionId)).map((r) => r.recordId));
+    for (const item of items) {
+      if (still.has(item.recordId!) && item.recordId !== null) {
+        db.update(submissionItem)
+          .set({ outcome: 'failed', error: 'Still in play-tools after removing.' })
+          .where(
+            and(
+              eq(submissionItem.submissionId, row.id),
+              eq(submissionItem.playerId, item.playerId),
+              inArray(submissionItem.outcome, GONE),
+            ),
+          )
+          .run();
+      }
+    }
+    finishUndo(row);
+    const removed = db
+      .select({ outcome: submissionItem.outcome })
+      .from(submissionItem)
+      .where(eq(submissionItem.submissionId, row.id))
+      .all()
+      .filter((i) => GONE.includes(i.outcome)).length;
+    emit(row, 'reconciled', `play-tools no longer has ${removed} of the ${total} records.`, total, total);
+
+    const status = removed === total ? 'succeeded' : removed > 0 ? 'partial' : 'failed';
+    setStatus(row, status);
+    emit(row, 'finished', `Undo ${status}.`, total, total);
+  }
+
+  /**
+   * Makes each removed record's outcome final together with what it means
+   * locally: the player is off the date's session players and their tdf and
+   * manual sightings are gone, unless another play session that day still has
+   * them. One transaction per player; a failed local write fails that player.
+   */
+  function finishUndo(row: Row): void {
+    const date = row.sessionDate as SessionDate;
+    const gone = db
+      .select()
+      .from(submissionItem)
+      .where(and(eq(submissionItem.submissionId, row.id), inArray(submissionItem.outcome, GONE)))
+      .all();
+    for (const item of gone) {
+      const playerId = item.playerId as PlayerId;
+      try {
+        db.transaction(() => {
+          setOutcome(row.id, [playerId], { outcome: item.outcome, error: null });
+          if (!recordedElsewhere(row, playerId)) forgetAttendance(deps, row.leagueId, date, playerId);
+        });
+      } catch (err) {
+        log.warn(`Undo #${row.id} could not update player ${playerId} locally: ${(err as Error).message}`, { submissionId: row.id, playerId });
+        setOutcome(row.id, [playerId], { outcome: 'failed', error: 'local_write_failed' });
+      }
+    }
+  }
+
+  /** Another play session on the same date still has the player (added or present there, and not undone). */
+  function recordedElsewhere(row: Row, playerId: PlayerId): boolean {
+    const others = db
+      .select({ submissionId: submissionItem.submissionId })
+      .from(submissionItem)
+      .innerJoin(submission, eq(submission.id, submissionItem.submissionId))
+      .where(
+        and(
+          eq(submission.leagueId, row.leagueId),
+          eq(submission.sessionDate, row.sessionDate),
+          eq(submission.kind, 'submit'),
+          ne(submission.playSessionId, row.playSessionId),
+          eq(submissionItem.playerId, playerId),
+          inArray(submissionItem.outcome, ['added', 'already_present']),
+        ),
+      )
+      .all();
+    return others.some((o) => removedBy(o.submissionId).get(playerId) === undefined);
+  }
+
+  /** Per player, the undo of `submissionId` that removed their record. */
+  function removedBy(submissionId: number): Map<string, number> {
+    const rows = db
+      .select({ playerId: submissionItem.playerId, undoId: submission.id })
+      .from(submissionItem)
+      .innerJoin(submission, eq(submission.id, submissionItem.submissionId))
+      .where(and(eq(submission.undoOf, submissionId), inArray(submissionItem.outcome, GONE)))
+      .all();
+    return new Map(rows.map((r) => [r.playerId, r.undoId]));
+  }
+
   function savePlan(row: Row, plan: Plan, ours: Set<string>): void {
     const date = row.sessionDate as SessionDate;
     db.transaction(() => {
@@ -488,6 +671,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .set({ outcome: 'skipped' })
       .where(and(eq(submissionItem.submissionId, row.id), eq(submissionItem.outcome, 'pending')))
       .run();
+    if (row.kind === 'undo') finishUndo(row);
     setStatus(row, status, error);
     const c = counts(row.id);
     const total = c.added + c.failed + c.skipped;
@@ -496,18 +680,18 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   function launch(row: Row): void {
     const submissionId = row.id;
-    log.info(`Submission #${submissionId} started for ${row.sessionDate}`, { submissionId, date: row.sessionDate });
-    const job = run(row)
+    log.info(`${what(row)} #${submissionId} started for ${row.sessionDate}`, { submissionId, date: row.sessionDate });
+    const job = (row.kind === 'undo' ? runUndo(row) : run(row))
       .catch((err: unknown) => {
         const interrupted = err instanceof Interrupted;
-        if (!interrupted) log.warn(`Submission #${submissionId} failed: ${(err as Error).message}`, { submissionId });
+        if (!interrupted) log.warn(`${what(row)} #${submissionId} failed: ${(err as Error).message}`, { submissionId });
         stopEarly(row, interrupted ? 'interrupted' : 'failed', (err as Error).message);
       })
       .then(() => {
         const status = load(row.leagueId, submissionId)?.status;
-        log.info(`Submission #${submissionId} ${status}`, { submissionId, status });
+        log.info(`${what(row)} #${submissionId} ${status}`, { submissionId, status });
       })
-      .catch((err: unknown) => log.warn(`Submission #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
+      .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
       .finally(() => {
         try {
           releaseLock(row);
@@ -555,6 +739,68 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return { submissionId: row.id };
   }
 
+  /** Items of `target` whose added record no undo of it has removed yet. */
+  function undoTargets(target: Row): (typeof submissionItem.$inferSelect)[] {
+    const undone = new Set(
+      db
+        .select({ recordId: submissionItem.recordId })
+        .from(submissionItem)
+        .innerJoin(submission, eq(submission.id, submissionItem.submissionId))
+        .where(and(eq(submission.undoOf, target.id), inArray(submissionItem.outcome, GONE)))
+        .all()
+        .map((r) => r.recordId),
+    );
+    return db
+      .select()
+      .from(submissionItem)
+      .where(and(eq(submissionItem.submissionId, target.id), eq(submissionItem.outcome, 'added')))
+      .all()
+      .filter((i) => i.recordId !== null && !undone.has(i.recordId));
+  }
+
+  async function beginUndo(leagueId: string, target: Row, startedBy: string, retryOf: number | null): Promise<{ submissionId: number }> {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    if (target.kind === 'undo' || ACTIVE.includes(target.status)) {
+      throw new SubmissionError('not_undoable', 'Only a finished submission can be undone.');
+    }
+    const targets = undoTargets(target);
+    if (targets.length === 0) throw new SubmissionError('nothing_to_undo', 'This submission added nobody that is still to remove.');
+    const date = target.sessionDate as SessionDate;
+    const candidate = await deps.resolver.find(leagueId, date, target.playSessionId);
+    if (!candidate.editable) {
+      throw new SubmissionError(
+        'edit_window_closed',
+        `play-tools stopped accepting attendance for this session on ${candidate.editableUntil?.toISOString()}.`,
+      );
+    }
+
+    const row = db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: target.sessionDate,
+          playSessionId: target.playSessionId,
+          playSessionLabel: target.playSessionLabel,
+          startedBy,
+          startedAt: now(),
+          status: 'planned',
+          retryOf,
+          kind: 'undo',
+          undoOf: target.id,
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      setItems(
+        targets.map((i) => ({ submissionId: created.id, playerId: i.playerId, origin: i.origin, outcome: 'pending' as const, recordId: i.recordId })),
+      );
+      return created;
+    });
+    launch(row);
+    return { submissionId: row.id };
+  }
+
   // --- the service -----------------------------------------------------------
 
   const service: SubmissionService = {
@@ -565,12 +811,16 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       if (ACTIVE.includes(row.status)) {
         throw new SubmissionError('submission_running', 'This submission is still running. Wait for it to finish.');
       }
+      if (row.kind === 'undo') return beginUndo(leagueId, mustFind(leagueId, row.undoOf!), startedBy, row.id);
       return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
     },
+
+    undo: async (leagueId, submissionId, startedBy) => beginUndo(leagueId, mustFind(leagueId, submissionId), startedBy, null),
 
     get(leagueId, submissionId) {
       const row = mustFind(leagueId, submissionId);
       const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
+      const undone = row.kind === 'submit' ? removedBy(row.id) : new Map<string, number>();
       const names = new Map(
         deps.roster.getPlayers(leagueId, items.map((i) => i.playerId as PlayerId)).map((p) => [p.playerId, p.displayName]),
       );
@@ -586,6 +836,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           error: i.error,
           recordId: i.recordId,
           asStaff: i.asStaff,
+          removedBy: undone.get(i.playerId) ?? null,
         })),
       };
     },
@@ -602,13 +853,28 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
     timesSubmitted(leagueId) {
       const rows = db
-        .select({ playerId: submissionItem.playerId, dates: countDistinct(submission.sessionDate) })
+        .select({ submissionId: submission.id, playerId: submissionItem.playerId, date: submission.sessionDate })
         .from(submissionItem)
         .innerJoin(submission, eq(submission.id, submissionItem.submissionId))
-        .where(and(eq(submission.leagueId, leagueId), inArray(submissionItem.outcome, ['added', 'already_present'])))
-        .groupBy(submissionItem.playerId)
+        .where(and(eq(submission.leagueId, leagueId), eq(submission.kind, 'submit'), inArray(submissionItem.outcome, ['added', 'already_present'])))
         .all();
-      return new Map(rows.map((r) => [r.playerId as PlayerId, r.dates]));
+      const undone = new Set(
+        db
+          .select({ undoOf: submission.undoOf, playerId: submissionItem.playerId })
+          .from(submissionItem)
+          .innerJoin(submission, eq(submission.id, submissionItem.submissionId))
+          .where(and(eq(submission.leagueId, leagueId), eq(submission.kind, 'undo'), inArray(submissionItem.outcome, GONE)))
+          .all()
+          .map((u) => `${u.undoOf}:${u.playerId}`),
+      );
+      const dates = new Map<PlayerId, Set<string>>();
+      for (const r of rows) {
+        if (undone.has(`${r.submissionId}:${r.playerId}`)) continue;
+        const seen = dates.get(r.playerId as PlayerId) ?? new Set();
+        seen.add(r.date);
+        dates.set(r.playerId as PlayerId, seen);
+      }
+      return new Map([...dates].map(([playerId, seen]) => [playerId, seen.size]));
     },
 
     events(leagueId, submissionId, afterId = 0) {
