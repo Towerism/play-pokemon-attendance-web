@@ -10,3 +10,4 @@ node_modules/
 
 # M0 spike secrets and raw (unsanitized) upstream responses. Never commit.
 spikes/.secrets/
+*.tsbuildinfo

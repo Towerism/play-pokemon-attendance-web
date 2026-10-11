@@ -97,11 +97,26 @@ High-value areas:
 
 ## Toolchain
 
-Node 22 (see `.node-version` once scaffolded) with pnpm. Lint with
-`@nuxt/eslint`, typecheck with `vue-tsc`. Add the concrete commands
-(`dev`, `test`, `lint`, `typecheck`, `build`) here when the project is scaffolded (M1).
+Node 22 (`.node-version`) with pnpm (`packageManager` in `package.json`).
+
+| Command                | What it does                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `pnpm dev`             | Nuxt dev server (DB in `.data/app.db`)                                       |
+| `pnpm build`           | `.output/` plus the production launcher `.output/launcher.mjs`               |
+| `pnpm start`           | Run the build the way the container does                                     |
+| `pnpm test`            | All Vitest projects                                                          |
+| `pnpm test:unit`       | Plain-TS tests (`app/utils`, `shared`, `server`, `test/unit`)                |
+| `pnpm test:server`     | Builds, then drives the real server over HTTP (`test/server`); `TEST_SKIP_BUILD=1` reuses `.output/` |
+| `pnpm lint`            | `@nuxt/eslint`, including the module-boundary rules                          |
+| `pnpm typecheck`       | `nuxt typecheck` (vue-tsc, incl. `tsconfig.spikes.json`)                     |
+| `pnpm db:generate`     | Drizzle migration from `server/db/schema.ts` into `server/db/migrations/`    |
+| `test/docker/smoke.sh` | Container smoke test for the `app` image (CI runs it)                        |
+
+Never edit a generated migration that has shipped; add a new one.
 
 ## Status
 
-Docs only so far. Next is M0 (spikes S1–S5) and M1 (Nuxt skeleton); see the
-delivery plan in architecture §13.
+M0 (spikes) is done. M1 (skeleton) is built: login with first-run setup code,
+secret bootstrap, migrations, image + entrypoint, CI/GHCR, Unraid template.
+The test install on the Unraid box is still open. Next is M2 (rosters); see
+architecture §13.

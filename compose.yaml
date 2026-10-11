@@ -3,6 +3,21 @@
 name: play-pokemon-attendance
 
 services:
+  # The app, as Unraid runs it (ADR-0006). `docker compose up -d app`, then
+  # `docker compose logs app` for the first-run setup code.
+  app:
+    build:
+      context: .
+      target: app
+    image: play-pokemon-attendance:local
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: ${TZ:-America/Chicago}
+    volumes:
+      - app-data:/data
+
   # M0 spike runner. Runs the hourly S2 refresh; other spikes run on demand:
   #   docker compose exec spikes pnpm spike:s3
   spikes:
@@ -17,5 +32,7 @@ services:
       - spike-secrets:/data/spike-secrets
 
 volumes:
+  app-data:
+    name: play-pokemon-attendance_app-data
   spike-secrets:
     name: play-pokemon-attendance_spike-secrets
