@@ -1,6 +1,12 @@
 interface FetchErrorLike {
   statusCode?: number;
-  data?: { statusMessage?: string; message?: string };
+  data?: { statusMessage?: string; message?: string; data?: { code?: unknown } };
+}
+
+/** The machine-readable `data.code` a route attached to its error (e.g. `needs_reconnect`), if any. */
+export function apiErrorCode(err: unknown): string | undefined {
+  const code = (err as FetchErrorLike | undefined)?.data?.data?.code;
+  return typeof code === 'string' ? code : undefined;
 }
 
 /**

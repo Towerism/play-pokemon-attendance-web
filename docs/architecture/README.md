@@ -136,7 +136,7 @@ app/                         Vue side (Nuxt 4 `app/` dir)
 server/                      Nitro side
   api/                       file-based routes (see §7), e.g. sessions/[date]/tdf.post.ts
   modules/                   domain modules (plain TS; no h3 imports)
-    roster/  sessions/  submission/  metrics/  pokemon/{ports,adapters,vault}/
+    roster/  sessions/  submission/  metrics/  pokemon/{ports,adapters,vault}/ + pokemon/connection.ts
   plugins/jobs.ts            boot job runner; mark `running` submissions `interrupted`
   tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (daily)
   db/                        drizzle schema, migrations, client
@@ -202,7 +202,8 @@ sequenceDiagram
   S->>A: POST /oauth2/token (authorization_code + code_verifier)
   A-->>S: access_token (JWT), refresh_token, id_token
   S->>S: encrypt refresh_token (AES-GCM) → pokemon_connection
-  S-->>W: connected as <PTC screen name>, league discovery next
+  S->>P: league discovery (core/users/{sub}/activity_groups/)
+  S-->>W: connected; the only league is bound, otherwise the organizer picks one
 ```
 
 After connecting, `TokenProvider.getAccessToken()`:
@@ -214,6 +215,23 @@ After connecting, `TokenProvider.getAccessToken()`:
 
 A **keep-alive job** refreshes once a day so the chain never ages out during a
 week off. The real refresh-token TTL is spike S2.
+
+As built (M4), in `server/modules/pokemon/connection.ts`:
+
+- **Connect attempts** (PKCE verifier + `state`) are held **in memory only**, bound to the app user and league,
+  for 10 minutes, and consumed by the first `complete` whether or not the exchange succeeds. A restart drops
+  pending attempts; the organizer just clicks Connect again.
+- `complete` errors carry `data.code`: `invalid_url`, `unknown_attempt`, `expired`, `code_rejected` (Hydra refused the code).
+- **Persist-before-use:** the rotated refresh token is written before the access token is cached or returned. If the
+  write fails, no token is handed out.
+- **A vault key that no longer opens the stored token** (lost or replaced key) marks the connection `needs_reconnect`.
+- **League discovery** runs right after connecting. With exactly one `league` group it is bound automatically;
+  otherwise Settings asks. A discovery failure doesn't fail the connect. Reconnecting the same account (`sub`)
+  keeps the chosen league; a different account clears it.
+- **Keep-alive** is the Nitro task `pokemon:keepalive` at 04:00 in the container's `TZ`. It refreshes only when the
+  last refresh is ≥ 12 h old, and never calls Hydra for a connection already marked `needs_reconnect`.
+- **Disconnect** revokes at `/oauth2/revoke` on a best-effort basis and always deletes the stored token.
+- The manual access-token fallback (`POST /pokemon/token`, §4.2 c) is **not built yet**, because S1 made paste-back work.
 
 ### 4.2 Capturing the authorization code
 
@@ -357,11 +375,16 @@ erDiagram
   }
   POKEMON_CONNECTION {
     text league_id PK
-    text ptc_user_id
-    text activity_group_id
-    blob refresh_token_ciphertext
+    text ptc_user_id "access-token sub (S5)"
+    blob refresh_token_ciphertext "vault: version | iv | tag | ct, AAD = league_id"
     text status "connected|needs_reconnect"
+    text status_reason "why a reconnect is needed"
+    datetime connected_at
     datetime last_refreshed_at
+    text activity_group_id "nullable until chosen"
+    text activity_group_name
+    text activity_group_display_id "e.g. L5012"
+    bool activity_group_can_submit "criteria.play_sessions.create_attendance"
   }
 ```
 
@@ -370,7 +393,7 @@ Key modelling decisions:
 - **`player_id` is TEXT.** Player IDs are opaque strings (the CLI already does `String(p.userid)`), and storing them as text avoids losing leading zeros.
 - **Regular is a membership flag, not a separate list.** Promoting or demoting is one toggle, and the metrics are already in the same row.
 - **Sightings ≠ submissions.** Regulars are submitted **every week whether or not they came**, so "submitted" carries *no* information about presence. A **sighting** is evidence: the player appeared in a TDF, was added by hand, or was already recorded upstream by someone else. Curation metrics are computed from sightings, which is the core insight that makes G5 useful.
-- **One league in v1.** Migration 0001 seeds a `league` row with id `default`, and `requireLeague(event)` returns it for any logged-in organizer. Every module still takes a `leagueId`, so a second league needs no schema change. M4 binds the league to its upstream activity group.
+- **One league in v1.** Migration 0001 seeds a `league` row with id `default`, and `requireLeague(event)` returns it for any logged-in organizer. Every module still takes a `leagueId`, so a second league needs no schema change. Its `POKEMON_CONNECTION` row binds the league to its upstream activity group.
 - **Names belong to the player.** The first non-empty name seen (typed, imported or from a TDF) sticks, and later sources never overwrite it. Only an explicit rename (`PATCH /players/{id}`) changes it. `last_seen` is not stored on `PLAYER`; it is derived from sightings (see Metrics).
 - **Manual session players are evidence.** Adding a player to a date by hand writes a `SIGHTING(kind = manual)`, and removing them retracts it. Adding a regular as a session player is refused (409), since regulars are submitted every session anyway. A removed session player stays on file as a known player.
 - **The session-player list is per date** (`SESSION_DRAFT`). Uploading two TDFs on the same night (e.g. a TCG and a VGC event) merges them, keyed by `player_id`. Re-uploading the same file (same `sha256`) is a no-op.
@@ -486,8 +509,10 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `POST /sessions/{date}/submissions` → 202                 | Start submission job (body: `playSessionId`)                |
 | `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` | Job status          |
 | `POST /submissions/{id}/undo`                             | Remove the records this submission added                    |
-| `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection |
-| `GET /leagues/upstream` · `PUT /settings`                 | Pick activity group, timezone, thresholds, batch delay      |
+| `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
+| `GET /leagues/upstream` · `PUT /settings`                 | Pick activity group, timezone, thresholds, batch delay. M4: `PUT` takes `{ activityGroupId }` (422 `unknown_league` if the account lacks it) |
+
+Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 
 ## 8. Frontend (Nuxt pages)
 
@@ -552,6 +577,7 @@ flowchart LR
   - `TZ`, which Unraid sets. It drives session dates and the keep-alive schedule.
   - `NUXT_DATABASE_PATH` (default `/data/app.db`)
   - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils) and `NUXT_TOKEN_VAULT_KEY`. Both are optional. If either is unset, it is generated once into `/data/secrets/` (mode 0600). Env wins over the file. A malformed value fails startup and is never silently regenerated.
+  - `NUXT_POKEMON_ACCESS_URL` / `NUXT_POKEMON_API_URL`. **Test doubles only**: they point the adapters at a fake upstream (`test/server/fake-pokemon.ts`). Unset means the real Pokémon hosts; never set them in the template.
   - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag and absolute links are right. The launcher sets `NUXT_SESSION_COOKIE_SECURE` from it (`https:` → Secure) unless that is set explicitly; on plain HTTP a Secure cookie would never come back and login would fail.
   - `NITRO_SHUTDOWN_TIMEOUT` (the image sets `8000` ms) keeps graceful shutdown inside Docker's 10 s stop timeout.
   - `LITESTREAM_REPLICA_URL`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY`. Optional. When set, the entrypoint runs the app under `litestream replicate -exec`.
@@ -592,7 +618,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M1 Skeleton                   | `nuxi init` (Nuxt 4) + Nuxt UI, Drizzle + SQLite + migrations plugin, `nuxt-auth-utils` login with first-run setup, secret bootstrap, CI, Dockerfile + entrypoint, GHCR publish, Unraid template, with a test install on the Unraid box. Built; the test install on the Unraid box is still open. |
 | M2 Rosters                    | Players, regulars CRUD, `regulars.json` import, manual session players. Built.                                |
 | M3 TDF                        | `shared/tdf` parser, preview → commit, sightings. Built.                                                      |
-| M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery                                                       |
+| M4 Pokémon connection         | Token vault, connect flow, keep-alive, league discovery. Built (the manual-token fallback is deferred).        |
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry                                        |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds                                                                          |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, `docs/deploy/unraid.md` (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
