@@ -102,7 +102,7 @@ describe('parseTdf: IDs and names', () => {
   });
 
   it('accepts a byte-order mark before the XML declaration', () => {
-    expect(parseTdf(`﻿${tdf([{ userid: '1', first: 'A' }])}`).players).toHaveLength(1);
+    expect(parseTdf(`\uFEFF${tdf([{ userid: '1', first: 'A' }])}`).players).toHaveLength(1);
   });
 });
 

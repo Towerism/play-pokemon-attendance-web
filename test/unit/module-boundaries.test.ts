@@ -28,6 +28,7 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'readValidatedBody(e, f)',
     'useRoster()',
     'useSessions()',
+    'useTdfImports()',
     'requireLeague(e)',
   ])(
     'rejects the auto-imported call %s',

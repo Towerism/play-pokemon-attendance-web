@@ -1,10 +1,12 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { PlayerInput } from '../../../shared/schemas/roster';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
-import { sessionDraft, sessionPlayer } from '../../db/schema';
+import type { sessionDraft} from '../../db/schema';
+import { sessionPlayer, tdfUpload } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
 import type { Regular, RosterService } from '../roster/service';
+import { createDrafts } from './drafts';
 
 export type SessionStatus = (typeof sessionDraft.$inferSelect)['status'];
 
@@ -22,6 +24,16 @@ export interface SessionView {
   players: SessionPlayer[];
   /** Submitted every session alongside `players`. */
   regulars: Regular[];
+  /** Tournament files committed for this date, oldest first. */
+  imports: SessionImport[];
+}
+
+export interface SessionImport {
+  uploadId: number;
+  filename: string;
+  tournamentName: string | null;
+  playerCount: number;
+  importedAt: Date;
 }
 
 export class AlreadyRegularError extends Error {
@@ -40,24 +52,17 @@ export interface SessionsService {
    * @throws AlreadyRegularError
    */
   addPlayer(leagueId: string, date: SessionDate, input: PlayerInput): { added: boolean; player: SessionPlayer };
-  /** Takes the player off the date and retracts the manual sighting. False when they weren't listed. */
+  /**
+   * Takes the player off the date and retracts their manual and tdf sightings:
+   * the organizer is saying they weren't there. False when they weren't listed.
+   */
   removePlayer(leagueId: string, date: SessionDate, playerId: PlayerId): boolean;
 }
 
 export function createSessionsService(deps: { db: Db; roster: RosterService; sightings: SightingsService }): SessionsService {
   const { db, roster, sightings } = deps;
 
-  const findDraft = (leagueId: string, date: SessionDate) =>
-    db
-      .select()
-      .from(sessionDraft)
-      .where(and(eq(sessionDraft.leagueId, leagueId), eq(sessionDraft.sessionDate, date)))
-      .get();
-
-  const ensureDraft = (leagueId: string, date: SessionDate) => {
-    db.insert(sessionDraft).values({ leagueId, sessionDate: date }).onConflictDoNothing().run();
-    return findDraft(leagueId, date)!;
-  };
+  const drafts = createDrafts(db);
 
   const listedPlayers = (leagueId: string, draftId: number): SessionPlayer[] => {
     const rows = db
@@ -71,15 +76,30 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
       .sort(byName);
   };
 
+  const committedImports = (draftId: number): SessionImport[] =>
+    db
+      .select({
+        uploadId: tdfUpload.id,
+        filename: tdfUpload.filename,
+        tournamentName: tdfUpload.tournamentName,
+        playerCount: tdfUpload.playerCount,
+        importedAt: tdfUpload.committedAt,
+      })
+      .from(tdfUpload)
+      .where(and(eq(tdfUpload.draftId, draftId), eq(tdfUpload.status, 'committed')))
+      .orderBy(asc(tdfUpload.committedAt), asc(tdfUpload.id))
+      .all() as SessionImport[];
+
   return {
     getSession(leagueId, date) {
-      const draft = findDraft(leagueId, date);
+      const draft = drafts.find(leagueId, date);
       return {
         date,
         status: draft?.status ?? 'draft',
         playSessionId: draft?.playSessionId ?? null,
         players: draft ? listedPlayers(leagueId, draft.id) : [],
         regulars: roster.listRegulars(leagueId),
+        imports: draft ? committedImports(draft.id) : [],
       };
     },
 
@@ -88,7 +108,7 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
         if (roster.regularIds(leagueId).has(input.playerId)) throw new AlreadyRegularError(input.playerId);
 
         roster.ensurePlayers(leagueId, [input]);
-        const draft = ensureDraft(leagueId, date);
+        const draft = drafts.ensure(leagueId, date);
         const { changes } = db
           .insert(sessionPlayer)
           .values({ draftId: draft.id, playerId: input.playerId, source: 'manual' })
@@ -103,13 +123,16 @@ export function createSessionsService(deps: { db: Db; roster: RosterService; sig
 
     removePlayer(leagueId, date, playerId) {
       return db.transaction(() => {
-        const draft = findDraft(leagueId, date);
+        const draft = drafts.find(leagueId, date);
         if (!draft) return false;
         const { changes } = db
           .delete(sessionPlayer)
           .where(and(eq(sessionPlayer.draftId, draft.id), eq(sessionPlayer.playerId, playerId)))
           .run();
-        if (changes > 0) sightings.retract(leagueId, date, 'manual', [playerId]);
+        if (changes > 0) {
+          sightings.retract(leagueId, date, 'manual', [playerId]);
+          sightings.retract(leagueId, date, 'tdf', [playerId]);
+        }
         return changes > 0;
       });
     },
