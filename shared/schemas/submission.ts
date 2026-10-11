@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from '../zod';
 import { sessionDate } from './sessions';
 
 /** `POST /api/sessions/{date}/submissions`: the play session the organizer confirmed after resolving the date. */

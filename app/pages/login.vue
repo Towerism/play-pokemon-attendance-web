@@ -22,7 +22,8 @@ async function submit(path: '/api/auth/setup' | '/api/auth/login', body: object)
   } catch (err) {
     const fetchError = err as { statusCode?: number; data?: { message?: string } };
     if (fetchError.statusCode === 409) await refreshStatus();
-    error.value = fetchError.data?.message ?? 'Something went wrong. Try again.';
+    // The form state is kept, so the username survives a rate-limit refusal.
+    error.value = rateLimitMessage(err) ?? fetchError.data?.message ?? 'Something went wrong. Try again.';
   } finally {
     busy.value = false;
   }

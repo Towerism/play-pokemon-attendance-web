@@ -117,6 +117,7 @@ Node 22 (`.node-version`) with pnpm (`packageManager` in `package.json`).
 | `pnpm typecheck`       | `nuxt typecheck` (vue-tsc, incl. `tsconfig.spikes.json`)                     |
 | `pnpm db:generate`     | Drizzle migration from `server/db/schema.ts` into `server/db/migrations/`    |
 | `test/docker/smoke.sh` | Container smoke test for the `app` image (CI runs it)                        |
+| `test/docker/restore-drill.sh` | Backup → restore drill from `docs/deploy/unraid.md` against the `app` image (CI runs it) |
 
 Never edit a generated migration that has shipped; add a new one.
 

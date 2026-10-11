@@ -241,6 +241,9 @@ describe('submission API', () => {
       const res = await api(`/submissions/${id}/events`);
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toMatch(/text\/event-stream/);
+      // Security headers ride along; nothing compresses or buffers the stream.
+      expect(res.headers.get('content-encoding')).toBeNull();
+      expect(res.headers.get('x-frame-options')).toBe('DENY');
       const events = parseSse(await res.text());
       expect(events.map((e) => e.event)).toEqual(['planned', 'batch_sent', 'reconciled', 'finished']);
       expect(JSON.parse(events.at(-1)!.data)).toMatchObject({ type: 'finished', done: 1, total: 1, status: 'succeeded' });

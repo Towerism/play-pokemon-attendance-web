@@ -83,6 +83,24 @@ export default withNuxt(
     rules: { 'no-console': 'error' },
   },
   {
+    // Browser-side code builds Zod schemas under the CSP: take `z` from shared/zod (jitless).
+    files: ['app/**/*.{ts,vue}', 'shared/**/*.ts'],
+    ignores: ['shared/zod.ts', ...TEST_FILES],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: '^zod(/.*)?$',
+              message: "Import z from shared/zod (jitless), not 'zod': the CSP forbids Zod's eval probe in the browser.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Module tests may hold Pokémon URLs as data, but stay plain TS.
     files: TEST_FILES.map((glob) => `server/modules/${glob}`),
     rules: { 'no-restricted-syntax': ['error', NO_NUXT_IN_MODULES] },
