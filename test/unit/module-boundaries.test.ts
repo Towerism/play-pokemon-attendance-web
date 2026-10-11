@@ -29,6 +29,7 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useRoster()',
     'useSessions()',
     'useTdfImports()',
+    'usePokemon()',
     'requireLeague(e)',
   ])(
     'rejects the auto-imported call %s',
@@ -69,5 +70,19 @@ describe('only pokemon adapters talk to *.pokemon.com', () => {
 
   it.each(['server/modules/pokemon/adapters/play-tools/constants.ts', 'spikes/s3-discover.ts'])('allows it in %s', async (file) => {
     expect(await errors(file, callsUpstream)).toEqual([]);
+  });
+
+  // Tests use the play-tools callback URL as data; MSW and the fake upstream keep them off the network.
+  it.each(['server/modules/pokemon/connection.test.ts', 'server/modules/pokemon/test-helpers.ts', 'shared/schemas/pokemon.test.ts', 'test/server/pokemon.test.ts'])(
+    'allows it as test data in %s',
+    async (file) => {
+      expect(await errors(file, callsUpstream)).toEqual([]);
+    },
+  );
+
+  it('still keeps h3/Nitro auto-imports out of module tests', async () => {
+    expect(await errors('server/modules/pokemon/connection.test.ts', 'export const x = () => useDb();')).toEqual([
+      expect.stringMatching(/no-restricted-syntax/),
+    ]);
   });
 });

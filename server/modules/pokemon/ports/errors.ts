@@ -9,7 +9,7 @@ export type PokemonErrorCode =
   | 'needs_reconnect'
   /** No connection configured for this league. */
   | 'not_connected'
-  /** Access token accepted by Hydra but refused by the OP API (401/403). */
+  /** Refused by Pokémon: the OP API answered 401/403, or Hydra returned an OAuth error other than `invalid_grant`. */
   | 'forbidden'
   /** Upstream throttled us (429); `retryAfterMs` set when the server said so. */
   | 'rate_limited'

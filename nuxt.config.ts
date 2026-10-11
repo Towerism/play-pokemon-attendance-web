@@ -14,6 +14,9 @@ export default defineNuxtConfig({
     migrationsDir: 'server/db/migrations',
     // Filled from env or /data/secrets/ by server/bootstrap/launcher.ts.
     tokenVaultKey: '',
+    // Empty means the real Pokémon hosts. Only test doubles set these
+    // (NUXT_POKEMON_ACCESS_URL / NUXT_POKEMON_API_URL); see test/server/fake-pokemon.ts.
+    pokemon: { accessUrl: '', apiUrl: '' },
     session: {
       // The launcher turns this on when NUXT_PUBLIC_SITE_URL is https: a Secure
       // cookie is never sent back over plain-HTTP LAN access (ADR-0006).
@@ -26,6 +29,9 @@ export default defineNuxtConfig({
 
   nitro: {
     preset: 'node-server',
+    // Daily refresh-token keep-alive (ADR-0003). Cron runs in the container's TZ.
+    experimental: { tasks: true },
+    scheduledTasks: { '0 4 * * *': ['pokemon:keepalive'] },
   },
 
   typescript: {

@@ -7,7 +7,7 @@ import type { PlayerId } from '../../../../shared/types/ids';
  * Every method may throw `PokemonUpstreamError`.
  */
 export interface PlayToolsGateway {
-  /** Activity groups (leagues) the connected organizer can manage. */
+  /** The connected organizer's leagues (activity groups of type `league`; the `personal` group is left out). */
   listLeagues(): Promise<League[]>;
 
   /**
@@ -38,7 +38,12 @@ export interface PlayToolsGateway {
 export interface League {
   /** Activity group GUID. */
   readonly id: string;
+  /** The store name (`display_name`), falling back to the display id. */
   readonly name: string;
+  /** Short public id, e.g. `L5012`. */
+  readonly displayId: string | null;
+  /** The organizer may record attendance (`criteria.play_sessions.create_attendance`). */
+  readonly canSubmit: boolean;
 }
 
 /** Upstream status values (S3): `pending` = scheduled, `complete` = finished. */
