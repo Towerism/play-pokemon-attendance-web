@@ -3,6 +3,19 @@ interface FetchErrorLike {
   data?: { statusMessage?: string; message?: string; data?: { code?: unknown } };
 }
 
+/**
+ * For a 429 from login or setup: how long to wait, from `Retry-After`.
+ * `undefined` for any other error.
+ */
+export function rateLimitMessage(err: unknown): string | undefined {
+  const e = err as (FetchErrorLike & { response?: { headers?: Headers } }) | undefined;
+  if (e?.statusCode !== 429) return undefined;
+  const seconds = Number(e.response?.headers?.get('retry-after') || NaN);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'Too many attempts. Try again later.';
+  const minutes = Math.ceil(seconds / 60);
+  return `Too many attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`;
+}
+
 /** The machine-readable `data.code` a route attached to its error (e.g. `needs_reconnect`), if any. */
 export function apiErrorCode(err: unknown): string | undefined {
   const code = (err as FetchErrorLike | undefined)?.data?.data?.code;

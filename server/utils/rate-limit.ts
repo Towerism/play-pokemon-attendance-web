@@ -30,11 +30,12 @@ export function enforceAuthRateLimit(event: H3Event, route: AuthRoute): void {
   if (result.allowed) return;
 
   const { retryAfterSeconds } = result;
+  const minutes = Math.ceil(retryAfterSeconds / 60);
   setResponseHeader(event, 'Retry-After', retryAfterSeconds);
   throw createError({
     statusCode: 429,
     statusMessage: 'Too Many Requests',
-    message: `Too many attempts. Try again in ${Math.ceil(retryAfterSeconds / 60)} minutes.`,
+    message: `Too many attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`,
     data: { code: 'rate_limited', retryAfterSeconds },
   });
 }

@@ -16,6 +16,7 @@ interface Config {
   Display: 'always' | 'advanced' | 'always-hide' | 'advanced-hide';
   Required: 'true' | 'false';
   Mask: 'true' | 'false';
+  Description: string;
   value?: string;
 }
 
@@ -69,6 +70,18 @@ describe('Unraid template', () => {
       expect(config(name).value ?? '').toBe('');
     },
   );
+
+  it('offers NUXT_TRUSTED_PROXIES as an optional, unmasked, advanced field that is blank by default', () => {
+    expect(config('NUXT_TRUSTED_PROXIES')).toMatchObject({
+      Type: 'Variable',
+      Display: 'advanced',
+      Required: 'false',
+      Mask: 'false',
+      Default: '',
+    });
+    expect(config('NUXT_TRUSTED_PROXIES').value ?? '').toBe('');
+    expect(config('NUXT_TRUSTED_PROXIES').Description).toMatch(/docs\/deploy\/unraid\.md/);
+  });
 
   it('never asks for Pokémon or organizer credentials (set up in the browser)', () => {
     const targets = container.Config.map((c) => c.Target);
