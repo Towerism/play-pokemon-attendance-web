@@ -114,6 +114,12 @@ Node 22 (`.node-version`) with pnpm (`packageManager` in `package.json`).
 
 Never edit a generated migration that has shipped; add a new one.
 
+CI runs `pnpm audit --prod --audit-level high`. `pnpm.auditConfig.ignoreGhsas` in
+`package.json` lists advisories in Nuxt's **build/dev-only** tooling
+(`@nuxt/devtools` → simple-git, the `listhen` dev server → node-forge, braces)
+that never reach `.output/` (check with `ls .output/server/node_modules`).
+Ignore an advisory only after confirming that, and drop entries once Nuxt ships the fix.
+
 ## Status
 
 M0 (spikes) is done. M1 (skeleton) is built: login with first-run setup code,
