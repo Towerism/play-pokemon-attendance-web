@@ -89,6 +89,8 @@ describe('submission API', () => {
       ['GET', '/api/submissions/1/events'],
       ['POST', '/api/submissions/1/retry'],
       ['POST', '/api/submissions/1/undo'],
+      ['GET', `/api/sessions/${TUESDAY}/clear?playSessionId=${PS}`],
+      ['POST', `/api/sessions/${TUESDAY}/clear`],
     ])('%s %s is 401 without a session, before any validation or upstream call', async (method, path) => {
       const res = await client(server.url).request(path, { method, json: method === 'POST' ? {} : undefined });
       expect(res.status).toBe(401);
@@ -412,6 +414,127 @@ describe('submission API', () => {
       expect(res.status).toBe(404);
       expect((await res.json()).data).toEqual({ code: 'not_found' });
       expect((await api('/submissions/abc/undo', { method: 'POST' })).status).toBe(400);
+    });
+  });
+
+  describe('Clear session', () => {
+    const deletes = () => fake.requests.filter((r) => r.method === 'DELETE');
+    const clearBody = (over: Record<string, unknown> = {}) => ({ playSessionId: PS, confirmDate: TUESDAY, ...over });
+    beforeEach(async () => {
+      await connect(browser);
+      await api(`/sessions/${TUESDAY}/players`, { method: 'POST', json: { playerId: '4242', name: 'Misty' } });
+    });
+
+    async function clear(): Promise<number> {
+      const res = await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: clearBody() });
+      expect(res.status).toBe(202);
+      return ((await res.json()) as { submissionId: number }).submissionId;
+    }
+
+    it('previews who would be deleted and how many staff records stay, without changing anything', async () => {
+      await finished(await submit());
+      fake.records.get(PS)!.push(fakeRecord('777', { guid: 'walk-in', first: 'Brock', last: 'Harrison' }));
+      fake.requests.length = 0;
+
+      const res = await api(`/sessions/${TUESDAY}/clear?playSessionId=${PS}`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        playSessionId: PS,
+        playSessionLabel: expect.any(String),
+        players: [
+          { playerId: '4242', name: 'Misty', addedByApp: true },
+          { playerId: '777', name: 'Brock Harrison', addedByApp: false },
+        ],
+        staffKept: 1,
+        otherSessionHasAppRecords: false,
+      });
+      expect(fake.requests.every((r) => r.method === 'GET')).toBe(true);
+      expect(upstreamIds()).toEqual(['4242', '777', '9999991']);
+    });
+
+    it('preview is 400 without a play session and 422 for one that is not on that date', async () => {
+      expect((await api(`/sessions/${TUESDAY}/clear`)).status).toBe(400);
+      const res = await api(`/sessions/${TUESDAY}/clear?playSessionId=ps-nope`);
+      expect(res.status).toBe(422);
+      expect((await res.json()).data).toEqual({ code: 'unknown_play_session' });
+    });
+
+    it('answers 202 within 500 ms, deletes every player record but the staff one, and resets the date', async () => {
+      await finished(await submit());
+      fake.records.get(PS)!.push(fakeRecord('777', { guid: 'walk-in' }));
+      fake.requests.length = 0;
+
+      const startedAt = performance.now();
+      const res = await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: clearBody() });
+      expect(res.status).toBe(202);
+      expect(performance.now() - startedAt).toBeLessThan(500);
+      const view = await finished(((await res.json()) as { submissionId: number }).submissionId);
+
+      expect(view).toMatchObject({ kind: 'clear', status: 'succeeded', undoable: false });
+      expect(deletes()).toHaveLength(2);
+      expect(upstreamIds()).toEqual(['9999991']);
+      const draft = await (await api(`/sessions/${TUESDAY}`)).json();
+      expect(draft).toMatchObject({ status: 'draft', players: [], imports: [] });
+      const list = (await (await api('/submissions')).json()).submissions;
+      expect(list[0]).toMatchObject({ id: view.id, kind: 'clear' });
+    });
+
+    it.each([
+      ['another date', { confirmDate: '2026-10-14' }],
+      ['another format', { confirmDate: '10/13/2026' }],
+    ])('is 422 confirmation_mismatch for %s, and sends nothing to play-tools', async (_what, over) => {
+      fake.records.get(PS)!.push(fakeRecord('777'));
+      fake.requests.length = 0;
+
+      const res = await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: clearBody(over) });
+
+      expect(res.status).toBe(422);
+      expect((await res.json()).data).toEqual({ code: 'confirmation_mismatch' });
+      expect(fake.requests).toEqual([]);
+    });
+
+    it('is 400 without a confirmation or a play session, and 415 for a body that is not JSON', async () => {
+      expect((await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: { playSessionId: PS } })).status).toBe(400);
+      expect((await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: { confirmDate: TUESDAY } })).status).toBe(400);
+      const text = await api(`/sessions/${TUESDAY}/clear`, {
+        method: 'POST',
+        body: `playSessionId=${PS}&confirmDate=${TUESDAY}`,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      expect(text.status).toBe(415);
+      expect(deletes()).toEqual([]);
+    });
+
+    it('is 422 nothing_to_clear when play-tools only has the staff record', async () => {
+      const res = await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: clearBody() });
+      expect(res.status).toBe(422);
+      expect((await res.json()).data).toEqual({ code: 'nothing_to_clear' });
+    });
+
+    it('is 409 submission_running while a job runs for the league', async () => {
+      fake.records.get(PS)!.push(fakeRecord('777'));
+      fake.bulkDelayMs = 1_000;
+      await submit();
+
+      const res = await api(`/sessions/${TUESDAY}/clear`, { method: 'POST', json: clearBody() });
+      expect(res.status).toBe(409);
+      expect((await res.json()).data).toEqual({ code: 'submission_running' });
+    });
+
+    it('streams its progress, and a retry starts a new clear of the same play session', async () => {
+      fake.records.get(PS)!.push(fakeRecord('777'));
+      const clearId = await clear();
+
+      const events = parseSse(await (await api(`/submissions/${clearId}/events`)).text());
+      expect(events.map((e) => e.event)).toEqual(['planned', 'record_removed', 'reconciled', 'finished']);
+
+      fake.records.get(PS)!.push(fakeRecord('778'));
+      const retry = await api(`/submissions/${clearId}/retry`, { method: 'POST', json: {} });
+      expect(retry.status).toBe(202);
+      const again = await finished(((await retry.json()) as { submissionId: number }).submissionId);
+      expect(again).toMatchObject({ kind: 'clear', retryOf: clearId, status: 'succeeded' });
+      expect(upstreamIds()).toEqual(['9999991']);
     });
   });
 
