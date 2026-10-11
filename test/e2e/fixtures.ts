@@ -142,3 +142,22 @@ export async function addSessionPlayer(api: Api, date: string, playerId: string,
   const res = await api.request(`/api/sessions/${date}/players`, { method: 'POST', json: { playerId, name } });
   expect(res.status, `add ${playerId}`).toBe(201);
 }
+
+/** Starts a submission for `date` over the API; returns its id without waiting. */
+export async function startSubmission(api: Api, date: string, playSessionId: string): Promise<number> {
+  const res = await api.request(`/api/sessions/${date}/submissions`, { method: 'POST', json: { playSessionId } });
+  expect(res.status, 'start submission').toBe(202);
+  return ((await res.json()) as { submissionId: number }).submissionId;
+}
+
+/** Waits until submission `id` is no longer planned or running; returns its final status. */
+export async function finishedStatus(api: Api, id: number): Promise<string> {
+  let status = '';
+  await expect
+    .poll(async () => {
+      status = ((await (await api.request(`/api/submissions/${id}`)).json()) as { status: string }).status;
+      return ['planned', 'running'].includes(status);
+    }, { message: `submission ${id} to finish`, timeout: 15_000 })
+    .toBe(false);
+  return status;
+}
