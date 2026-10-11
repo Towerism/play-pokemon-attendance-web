@@ -124,5 +124,7 @@ Ignore an advisory only after confirming that, and drop entries once Nuxt ships 
 
 M0 (spikes) is done. M1 (skeleton) is built: login with first-run setup code,
 secret bootstrap, migrations, image + entrypoint, CI/GHCR, Unraid template.
-The test install on the Unraid box is still open. Next is M2 (rosters); see
-architecture §13.
+The test install on the Unraid box is still open. M2 (rosters) is built:
+players, regulars CRUD, `regulars.json` import, manual session players with
+manual sightings, and the This week / Regulars / Players pages. Next is M3
+(TDF); see architecture §13.
