@@ -335,6 +335,17 @@ describe('submission API', () => {
       expect(list[0]).toMatchObject({ id: undoId, kind: 'undo', undoOf: id });
     });
 
+    it('answers 202 within 500 ms; the deletes run in the background', async () => {
+      const id = await submit();
+      await finished(id);
+
+      const startedAt = performance.now();
+      const res = await api(`/submissions/${id}/undo`, { method: 'POST' });
+      expect(res.status).toBe(202);
+      expect(performance.now() - startedAt).toBeLessThan(500);
+      await finished(((await res.json()) as { submissionId: number }).submissionId);
+    });
+
     it('streams its progress like a submission', async () => {
       const id = await submit();
       await finished(id);

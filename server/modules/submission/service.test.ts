@@ -148,7 +148,8 @@ function build(
   });
 }
 
-beforeEach(() => {
+/** A fresh database, services and fake play-tools. */
+function setUp(): void {
   database = openDatabase(':memory:');
   migrateDatabase(database.db, MIGRATIONS_DIR);
   roster = createRosterService({ db: database.db });
@@ -166,7 +167,8 @@ beforeEach(() => {
   sleeps = [];
   onSleep = undefined;
   service = build();
-});
+}
+beforeEach(setUp);
 afterEach(() => database.close());
 
 const regulars = (...ids: string[]) => ids.forEach((p) => roster.addRegular(L, { playerId: id(p), name: `Regular ${p}` }));
@@ -1321,5 +1323,56 @@ describe('history after an undo', () => {
 
     expect(service.timesSubmitted(L)).toEqual(new Map([['9', 1]]));
   });
+});
+
+describe('undo never deletes what it did not add', () => {
+  /** mulberry32: a small seeded PRNG, so a failing case can be replayed. */
+  function rng(seed: number): () => number {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it('across 200 generated play-tools states, only records the target submission added are sent a delete', async () => {
+    for (let seed = 1; seed <= 200; seed += 1) {
+      database.close();
+      setUp();
+      const random = rng(seed);
+      const pick = (n: number) => Math.floor(random() * n);
+      const players = (from: number, count: number) => Array.from({ length: count }, (_, i) => String(from + i));
+
+      upstream.has('900', { asStaff: true }); // the organizer
+      for (const p of players(800, pick(4))) upstream.has(p); // entered in play-tools directly
+      const mine = players(100, 1 + pick(6));
+      sessionPlayers(...mine);
+      if (random() < 0.5) regulars(...players(200, 1 + pick(3)));
+      const target = await submit();
+      // Another submission for the same session adds more people afterwards.
+      sessionPlayers(...players(300, pick(4)));
+      await submit();
+
+      // play-tools changes in between: some of ours removed by hand, one reassigned.
+      const added = new Set(target.items.filter((i) => i.outcome === 'added').map((i) => i.recordId!));
+      upstream.records = upstream.records.filter((r) => !added.has(r.recordId) || random() < 0.7);
+      if (random() < 0.3 && upstream.records.length > 0) {
+        const k = pick(upstream.records.length);
+        upstream.records[k] = { ...upstream.records[k]!, playerId: id('999') };
+      }
+      const before = new Map(upstream.records.map((r) => [r.recordId, r]));
+
+      if (service.get(L, target.id).undoable) await undo(target.id);
+
+      for (const call of upstream.removeCalls) {
+        expect(added.has(call.recordId), `seed ${seed}: deleted ${call.recordId}`).toBe(true);
+        expect(before.get(call.recordId)?.playerId, `seed ${seed}: deleted a reassigned record`).not.toBe('999');
+      }
+      for (const [recordId, record] of before) {
+        if (!added.has(recordId)) expect(upstream.records, `seed ${seed}`).toContainEqual(record);
+      }
+    }
+  }, 60_000);
 });
 
