@@ -3,6 +3,7 @@
 - Status: Accepted (2026-10-12, as part of M8)
 - Date: 2026-10-11 (updated with spike S6 the same day)
 - Issue: [#41](https://github.com/Towerism/play-pokemon-attendance-web/issues/41)
+- Amended by: [ADR-0009](0009-tournaments-as-their-organizer.md): tournaments are listed as every connected professor and acted on only as their organizer (#75)
 
 ## Context
 

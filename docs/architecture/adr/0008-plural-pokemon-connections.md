@@ -3,6 +3,7 @@
 - Status: Proposed (#66)
 - Date: 2026-10-12
 - Amends: [ADR-0003](0003-pokemon-auth-pkce-refresh-token.md) (one connection per league)
+- Amended by: [ADR-0009](0009-tournaments-as-their-organizer.md): only attendance calls go through the submitting professor; tournament calls go through each tournament's organizer, and the league must be one every professor shares (#75)
 
 ## Context
 
