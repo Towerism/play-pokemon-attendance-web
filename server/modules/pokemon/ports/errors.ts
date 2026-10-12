@@ -18,7 +18,9 @@ export type PokemonErrorCode =
   /** Response did not match the frozen wire contract. Raw body is logged. */
   | 'unexpected_shape'
   /** Requested resource does not exist upstream (404). */
-  | 'not_found';
+  | 'not_found'
+  /** The tournament is past its edit window (423 `cannot_modify_old_activity`); every change is refused. */
+  | 'tournament_locked';
 
 export class PokemonUpstreamError extends Error {
   override readonly name = 'PokemonUpstreamError';

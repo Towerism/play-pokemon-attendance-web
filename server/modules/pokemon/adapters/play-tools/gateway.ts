@@ -2,12 +2,28 @@ import type { z } from 'zod';
 import { type Logger, silentLogger } from '../../../../logging/types';
 import { PokemonUpstreamError } from '../../ports/errors';
 import { type PlayerId, toPlayerId } from '../../../../../shared/types/ids';
-import type { AttendanceRecord, BulkResult, League, PlaySession, PlaySessionStatus, PlayToolsGateway } from '../../ports/play-tools-gateway';
+import type {
+  AttendanceRecord,
+  BulkResult,
+  DateRange,
+  League,
+  PlaySession,
+  PlaySessionStatus,
+  PlayToolsGateway,
+  Tournament,
+  TournamentDetails as TournamentDetailsPort,
+  StaffAssignResult,
+  StaffRoleCode,
+  TournamentParticipant,
+} from '../../ports/play-tools-gateway';
 import type { TokenProvider } from '../../ports/token-provider';
 import { fetchUpstream, jsonOrUndefined, throttleOrServerError } from '../http';
-import { OP_API_BASE, OP_API_HEADERS, opPaths } from './constants';
+import { OP_API_BASE, OP_API_HEADERS, STAFF_ROLES, opPaths, tournamentPaths } from './constants';
 import {
+  ActivitiesPage,
+  type ActivityTournament,
   ActivityGroupsPage,
+  DEAD_TOURNAMENT_STATUSES,
   AttendancePage,
   BulkResponse,
   DUPLICATE_PARTICIPANT,
@@ -15,12 +31,22 @@ import {
   PLAY_SESSION_START_GTE,
   PLAY_SESSION_START_LTE,
   PlaySessionsPage,
+  STAFF_ERROR_FIELD,
+  StaffAssignResponse,
+  TournamentDetails,
+  TournamentRecordsPage,
   bulkRequestBody,
+  staffAssignBody,
 } from './wire';
 
 /** §4.4: the order statuses are tried in when resolving a date. */
 const RESOLVE_ORDER: readonly PlaySessionStatus[] = ['active', 'complete', 'pending'];
 const PAGE_SIZE = '100';
+/** The page size play-tools' own tournament list uses (S6). */
+const TOURNAMENT_PAGE_SIZE = '40';
+const DAY_MS = 86_400_000;
+/** Staff edits close 90 days after a tournament starts (S6: the UI's rule, enforced upstream with 423). */
+const STAFF_EDIT_WINDOW_MS = 90 * DAY_MS;
 
 export interface PlayToolsHttpAdapterOptions {
   tokens: TokenProvider;
@@ -34,6 +60,24 @@ export type PlayToolsHttpAdapter = PlayToolsGateway;
 
 /** Record ids are GUIDs; anything else could change the request path. */
 const RECORD_ID = /^[A-Za-z0-9-]{1,64}$/;
+
+/** A tournament GUID, refused before any call if it could change the request path. */
+function tournamentGuid(id: string): string {
+  if (!RECORD_ID.test(id)) throw new TypeError(`Not a tournament id: ${JSON.stringify(id)}`);
+  return id;
+}
+
+function recordGuid(id: string): string {
+  if (!RECORD_ID.test(id)) throw new TypeError(`Not a staff record id: ${JSON.stringify(id)}`);
+  return id;
+}
+
+/** Only the roles play-tools offers; `organizer` is fixed upstream and never sent. */
+function staffRole(role: string): StaffRoleCode {
+  const known = STAFF_ROLES.find((r) => r.code === role);
+  if (!known) throw new TypeError(`Not a staff role: ${JSON.stringify(role)}`);
+  return known.code;
+}
 
 /**
  * PlayToolsHttpAdapter (architecture §4.3). The only code that knows the OP
@@ -52,8 +96,30 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
     throw throttleOrServerError(res, what) ?? clientError(res.status, what);
   }
 
+  /** A JSON write with a fresh token; the caller reads the status. */
+  async function writeJson(method: 'POST' | 'PATCH' | 'DELETE', path: string, payload: unknown, what: string): Promise<{ res: Response; url: URL }> {
+    const token = await opts.tokens.getAccessToken(opts.leagueId);
+    const url = new URL(path, base);
+    const res = await fetchUpstream(
+      url.toString(),
+      {
+        method,
+        headers: { ...OP_API_HEADERS, authorization: `Bearer ${token.value}`, 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+      what,
+    );
+    return { res, url };
+  }
+
   /** Every page of a DRF list, following `next` only within the OP API's own origin. */
-  async function getAll<T>(path: string, schema: z.ZodType<{ items: T[]; next: string | null }>, what: string): Promise<T[]> {
+  async function getAll<T>(
+    path: string,
+    schema: z.ZodType<{ items: T[]; next: string | null }>,
+    what: string,
+    /** Stop after a page for which this holds, even if there is a next one. */
+    done: (page: T[]) => boolean = () => false,
+  ): Promise<T[]> {
     const items: T[] = [];
     let url: URL | undefined = new URL(path, base);
     while (url) {
@@ -61,7 +127,7 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
       const parsed = schema.safeParse(body);
       if (!parsed.success) throw unexpected(what, url, body, parsed.error);
       items.push(...parsed.data.items);
-      url = parsed.data.next ? sameOrigin(parsed.data.next, what) : undefined;
+      url = parsed.data.next && !done(parsed.data.items) ? sameOrigin(parsed.data.next, what) : undefined;
     }
     return items;
   }
@@ -75,6 +141,8 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
   }
 
   return {
+    listStaffRoles: () => STAFF_ROLES,
+
     async listLeagues(): Promise<League[]> {
       const { subject } = await opts.tokens.getAccessToken(opts.leagueId);
       const groups = await getAll(opPaths.userActivityGroups(subject), ActivityGroupsPage, 'League discovery');
@@ -157,6 +225,86 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
       throw throttleOrServerError(res, what) ?? clientError(res.status, what);
     },
 
+    async listTournaments(range?: DateRange): Promise<Tournament[]> {
+      // Upstream ignores date filters (S6), so page newest first and stop once a page reaches
+      // back past the range. Pages are ordered by the wall-clock start, hence a day's margin.
+      const query = new URLSearchParams({ type: 'tournament', role: 'organizer', sort_by: '-start_date', page_size: TOURNAMENT_PAGE_SIZE });
+      const stopBefore = range && range.from.getTime() - DAY_MS;
+      const rows = await getAll(`${tournamentPaths.activities()}?${query}`, ActivitiesPage, 'Tournaments', (page) =>
+        stopBefore === undefined ? false : page.some((t) => t.start_date_v2 !== null && Date.parse(t.start_date_v2) < stopBefore),
+      );
+      return rows
+        .filter((t) => t.activity_type === 'tournament' && !DEAD_TOURNAMENT_STATUSES.includes(t.status))
+        .map(toTournament)
+        .filter((t) => !range || (t.startsAt !== null && t.startsAt >= range.from && t.startsAt < range.to))
+        .sort(byStart);
+    },
+
+    async getTournament(tournamentId): Promise<TournamentDetailsPort> {
+      const what = 'Tournament';
+      const url = new URL(tournamentPaths.details(tournamentGuid(tournamentId)), base);
+      const body = await get(url, what);
+      const parsed = TournamentDetails.safeParse(body);
+      if (!parsed.success) throw unexpected(what, url, body, parsed.error);
+      const t = parsed.data;
+      return {
+        ...toTournament({ ...t, activity_type: 'tournament', start_date_v2: t.start_date_v2 ?? t.start_date_actual ?? null }),
+        organizerPlayerId: t.organizer.player_id as PlayerId,
+      };
+    },
+
+    async listTournamentParticipants(tournamentId): Promise<TournamentParticipant[]> {
+      // Unfiltered on purpose: players and staff together are "everyone the tournament lists" (ADR-0007 decision 8).
+      const query = new URLSearchParams({ page_size: PAGE_SIZE });
+      const records = await getAll(`${tournamentPaths.records(tournamentGuid(tournamentId))}?${query}`, TournamentRecordsPage, 'Tournament participants');
+      return records.map((r) => ({
+        recordId: r.guid,
+        playerId: r.participant.player_id as PlayerId,
+        role: r.role,
+        isStaff: !r.player,
+        name: [r.participant.display_first_name, r.participant.display_last_name].filter(Boolean).join(' '),
+      }));
+    },
+
+    async assignStaff(tournamentId, { playerId, role }): Promise<StaffAssignResult> {
+      const path = tournamentPaths.records(tournamentGuid(tournamentId));
+      const body = staffAssignBody(toPlayerId(playerId), staffRole(role));
+      const what = 'Assigning staff';
+      const { res, url } = await writeJson('POST', path, body, what);
+      const json = await jsonOrUndefined(res);
+
+      if (res.ok) {
+        const parsed = StaffAssignResponse.safeParse(json);
+        if (!parsed.success) throw unexpected(what, url, json, parsed.error);
+        return { status: 'assigned', recordId: parsed.data.guid };
+      }
+      if (res.status === 400) {
+        const parsed = OpErrorResponse.safeParse(json);
+        if (!parsed.success) throw unexpected(what, url, json, parsed.error);
+        return staffRefusal(parsed.data);
+      }
+      throw throttleOrServerError(res, what) ?? clientError(res.status, what);
+    },
+
+    async changeStaffRole(tournamentId, recordId, role) {
+      const path = tournamentPaths.record(tournamentGuid(tournamentId), recordGuid(recordId));
+      const what = 'Changing a staff role';
+      const { res } = await writeJson('PATCH', path, [{ op: 'replace', path: '/role', value: staffRole(role) }], what);
+      if (res.ok) return 'changed';
+      if (res.status === 404) return 'not_found';
+      throw throttleOrServerError(res, what) ?? clientError(res.status, what);
+    },
+
+    async unassignStaff(tournamentId, recordId, playerId) {
+      const path = tournamentPaths.record(tournamentGuid(tournamentId), recordGuid(recordId));
+      const what = 'Removing staff';
+      // play-tools sends the staffer's player id as `legacy_alias` (S6 fixture 06).
+      const { res } = await writeJson('DELETE', path, [{ legacy_alias: toPlayerId(playerId) }], what);
+      if (res.ok) return 'removed';
+      if (res.status === 404) return 'not_found';
+      throw throttleOrServerError(res, what) ?? clientError(res.status, what);
+    },
+
     async removeAttendance(groupId, sessionId, recordId) {
       if (!RECORD_ID.test(recordId)) throw new TypeError(`Not an attendance record id: ${JSON.stringify(recordId)}`);
 
@@ -184,6 +332,27 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
   }
 }
 
+function toTournament(t: ActivityTournament): Tournament {
+  const startsAt = t.start_date_v2 ? new Date(t.start_date_v2) : null;
+  return {
+    id: t.guid,
+    name: t.name,
+    displayId: t.display_id,
+    groupId: t.activity_group?.guid ?? null,
+    products: [t.product],
+    startsAt,
+    status: t.status,
+    editableUntil: startsAt && new Date(startsAt.getTime() + STAFF_EDIT_WINDOW_MS),
+  };
+}
+
+/** Oldest first, undated first, then by id. */
+function byStart(a: Tournament, b: Tournament): number {
+  const at = a.startsAt?.getTime() ?? -Infinity;
+  const bt = b.startsAt?.getTime() ?? -Infinity;
+  return at === bt ? a.id.localeCompare(b.id) : at - bt;
+}
+
 const BULK_ITEM_FIELD = /^(\d+)\.participant\.player_id$/;
 
 /** A 400 from `_bulk` (S4): errors keyed `<index>.participant.player_id`; the batch added nobody. */
@@ -203,7 +372,33 @@ function rejection(ids: readonly PlayerId[], error: OpErrorResponse): BulkResult
   return { status: 'rejected', alreadyPresent: alreadyPresent.sort(order), failed: failed.sort((a, b) => order(a.playerId, b.playerId)) };
 }
 
+/** An assign refusal (S6): the first error under `participant.player_id`, or none for the staffer. */
+function staffRefusal(error: OpErrorResponse): StaffAssignResult {
+  const problem = error.errors?.body?.[STAFF_ERROR_FIELD]?.[0];
+  if (!problem) return { status: 'invalid', code: shortCode(error.code) };
+  const code = shortCode(problem.code);
+  const suggested = code === 'merged_player_id' ? asPlayerId(problem.attributes?.actual_player_id) : undefined;
+  return suggested ? { status: 'refused', code, suggestedPlayerId: suggested } : { status: 'refused', code };
+}
+
+/** `op.activity_record.missing_certification` → `missing_certification`. */
+function shortCode(code: string): string {
+  return code.replace(/^op\.[^.]+\./, '');
+}
+
+function asPlayerId(value: unknown): PlayerId | undefined {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  try {
+    return toPlayerId(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function clientError(status: number, what: string): PokemonUpstreamError {
+  if (status === 423) {
+    return new PokemonUpstreamError('tournament_locked', `${what}: the tournament is past its edit window in play-tools.`, { status });
+  }
   if (status === 401 || status === 403) {
     return new PokemonUpstreamError('forbidden', `${what}: play-tools refused the request (${status}).`, { status });
   }
