@@ -1,5 +1,5 @@
 import type { SessionDate } from '../../../shared/types/ids';
-import type { PokemonConnectionService } from '../pokemon/connection';
+import type { ConnectionView, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { PlaySession, PlaySessionStatus, PlayToolsGateway } from '../pokemon/ports/play-tools-gateway';
 import { SubmissionError } from './errors';
@@ -39,8 +39,8 @@ export interface ResolverDeps {
 
 const CACHE_MS = 5 * 60_000;
 
-/** The upstream activity group a league submits to, once the connection allows it. */
-export function submissionTarget(connections: ResolverDeps['connections'], leagueId: string): string {
+/** The league's connection, once it is usable and a league is chosen. */
+export function connectedLeague(connections: ResolverDeps['connections'], leagueId: string): NonNullable<ConnectionView['league']> {
   const c = connections.getStatus(leagueId);
   if (c.status === 'not_connected') {
     throw new PokemonUpstreamError('not_connected', 'No Pokémon account is connected. Connect one in Settings.');
@@ -49,10 +49,16 @@ export function submissionTarget(connections: ResolverDeps['connections'], leagu
     throw new PokemonUpstreamError('needs_reconnect', c.reason ?? 'Reconnect the Pokémon account in Settings.');
   }
   if (!c.league) throw new SubmissionError('league_not_selected', 'Choose the league to submit to in Settings.');
-  if (!c.league.canSubmit) {
-    throw new SubmissionError('cannot_submit', `The connected Pokémon account may not record attendance for ${c.league.name}.`);
+  return c.league;
+}
+
+/** The upstream activity group a league submits to, once the connection allows it. */
+export function submissionTarget(connections: ResolverDeps['connections'], leagueId: string): string {
+  const league = connectedLeague(connections, leagueId);
+  if (!league.canSubmit) {
+    throw new SubmissionError('cannot_submit', `The connected Pokémon account may not record attendance for ${league.name}.`);
   }
-  return c.league.id;
+  return league.id;
 }
 
 /** §4.4: a date in the league timezone → that day's upstream play sessions, cached for 5 minutes. */

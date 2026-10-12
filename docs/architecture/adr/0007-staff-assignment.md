@@ -151,8 +151,10 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
    - **A one-time import**, "Import staff from play-tools" in Settings (organizer's
      answer to Q4, 2026-10-11). It is a read-only job of `kind = 'staff_import'` on the
      same rails, so it gets the lease, progress, History and crash recovery.
-     - It pages every tournament the account organizes (`core/activities`) and reads
-       each one's records, one read at a time at least `NUXT_STAFF_DELAY_MS` apart.
+     - It pages every tournament the account organizes, in any league (`core/activities`),
+       and reads each one's records one read at a time. Reads are not paced (organizer,
+       2026-10-12: reads don't need pacing); `NUXT_STAFF_DELAY_MS` paces only the staff
+       job's writes.
      - It records every staffer it finds.
      - Re-running it is harmless (rows are unique), so it doubles as "refresh".
 

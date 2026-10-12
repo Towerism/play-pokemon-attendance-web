@@ -7,6 +7,9 @@ import {
   historyLabel,
   isSubmissionActive,
   progressPercent,
+  staffImportBlocked,
+  staffImportErrorText,
+  staffImportSummary,
   submissionStatus,
   submissionSummary,
   undoBlockedText,
@@ -150,6 +153,49 @@ describe('clear session wording', () => {
       'Delete 2 players from this play session in play-tools, including anyone entered there directly. ' +
         "Another play session that day also has players from this app; this date's player list and TDF imports are reset for the whole date.",
     );
+  });
+});
+
+describe('a staff import in History and Settings', () => {
+  const result = { tournamentsTotal: 117, tournamentsRead: 117, tournamentsFailed: 0, staffersFound: 42, newPlayers: [] };
+
+  it('is labelled "Staff import" in the history list, reads while running, and cannot be undone', () => {
+    expect(historyLabel({ kind: 'staff_import', undoOf: null, playSessionLabel: 'Staff import' })).toBe('Staff import');
+    expect(submissionStatus('running', 'staff_import')).toEqual({ label: 'Reading…', color: 'info' });
+    expect(undoBlockedText({ kind: 'staff_import', undoBlockedReason: 'not_undoable', items: [] })).toBe("A staff import can't be undone.");
+  });
+
+  it('sums up what it read and found, leaving out the zeros', () => {
+    expect(staffImportSummary(result)).toBe('Read 117 of 117 tournaments · 42 staff found');
+    const newPlayers = [{ playerId: '1' as PlayerId, name: 'Jo Judge' }];
+    expect(staffImportSummary({ ...result, tournamentsRead: 115, tournamentsFailed: 2, newPlayers })).toBe(
+      'Read 115 of 117 tournaments · 2 could not be read · 42 staff found · 1 new player',
+    );
+    expect(staffImportSummary({ ...result, newPlayers: [...newPlayers, { playerId: '2' as PlayerId, name: '' }] })).toBe(
+      'Read 117 of 117 tournaments · 42 staff found · 2 new players',
+    );
+    expect(staffImportSummary({ tournamentsTotal: 0, tournamentsRead: 0, tournamentsFailed: 0, staffersFound: 0, newPlayers: [] })).toBe(
+      'No tournaments to read',
+    );
+  });
+
+  it('explains why an import stopped, in words, keeping any other message as it is', () => {
+    expect(staffImportErrorText('forbidden')).toBe('play-tools refused to show these tournaments. Check which Pokémon account is connected.');
+    expect(staffImportErrorText('needs_reconnect')).toBe('The Pokémon account needs reconnecting. Reconnect it above, then retry.');
+    expect(staffImportErrorText('unavailable')).toBe('play-tools could not be reached. Try again later.');
+    expect(staffImportErrorText('not_found')).toBe('No tournament could be read.');
+    expect(staffImportErrorText('The app stopped while this submission was running. Resume it to finish.')).toBe(
+      'The app stopped while this submission was running. Resume it to finish.',
+    );
+  });
+
+  it('can be started only with a usable Pokémon connection and a chosen league, and says why not', () => {
+    const league = { id: 'g', name: 'Card Shop', displayId: 'L5012', canSubmit: false };
+    expect(staffImportBlocked({ status: 'connected', league })).toBeNull();
+    expect(staffImportBlocked(null)).toBe('Connect a Pokémon account first.');
+    expect(staffImportBlocked({ status: 'not_connected', league: null })).toBe('Connect a Pokémon account first.');
+    expect(staffImportBlocked({ status: 'needs_reconnect', league })).toBe('Reconnect the Pokémon account first.');
+    expect(staffImportBlocked({ status: 'connected', league: null })).toBe('Choose the league first.');
   });
 });
 

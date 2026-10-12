@@ -8,5 +8,6 @@ useHead({ title: 'Settings' });
     <h1 class="text-xl font-semibold">Settings</h1>
     <PokemonConnectionCard />
     <CurationThresholdsCard />
+    <StaffImportCard />
   </div>
 </template>

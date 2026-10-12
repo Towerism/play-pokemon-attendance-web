@@ -29,6 +29,8 @@ export interface FakePokemon {
   tournaments: FakeTournament[];
   /** Everyone on each tournament (players and staff, the organizer record too), by tournament guid. */
   tournamentRecords: Map<string, FakeRecord[]>;
+  /** Milliseconds to hold each read of a tournament's records (to keep a staff import running). */
+  tournamentReadDelayMs: number;
   /** Tournament guids past their edit window: every write answers 423 `cannot_modify_old_activity`. */
   lockedTournaments: Set<string>;
   /**
@@ -137,6 +139,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     playSessions: [],
     records: new Map(),
     bulkDelayMs: 0,
+    tournamentReadDelayMs: 0,
     dropOnce: new Set(),
     tournaments: [],
     tournamentRecords: new Map(),
@@ -277,6 +280,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     if (tournamentId) {
       const records = fake.tournamentRecords.get(tournamentId) ?? [];
       if (req.method === 'GET' && tRecordsMatch) {
+        if (fake.tournamentReadDelayMs) await new Promise((r) => setTimeout(r, fake.tournamentReadDelayMs));
         const player = url.searchParams.get('player');
         const shown = player === null ? records : records.filter((r) => r.player === (player === 'true'));
         // Real records also carry the birth year (S6); the adapter must drop it.

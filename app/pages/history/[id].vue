@@ -31,6 +31,9 @@ const OUTCOME: Record<ItemOutcome, { label: string; color: 'success' | 'neutral'
   is_organizer: { label: 'Organizer', color: 'neutral' },
   role_changed: { label: 'Role changed', color: 'success' },
   ineligible: { label: 'Not eligible', color: 'error' },
+  // A staff import's: a staffer it found in play-tools.
+  found: { label: 'Already known', color: 'neutral' },
+  new_player: { label: 'New player', color: 'info' },
 };
 // A staff job's items carry a role, shown by its play-tools label.
 const { data: staffRoles, execute: loadStaffRoles } = useFetch<{ roles: StaffRole[] }>('/api/staff/roles', {
@@ -69,6 +72,9 @@ const RANK: Record<ItemOutcome, number> = {
   already_listed: 4,
   is_organizer: 4,
   unrequested: 5,
+  // A staff import lists its new players first: their names may need checking.
+  new_player: 3,
+  found: 4,
 };
 const items = computed(() =>
   [...(submission.value?.items ?? [])].sort((a, b) => RANK[a.outcome] - RANK[b.outcome] || a.displayName.localeCompare(b.displayName)),
@@ -146,7 +152,20 @@ async function retry() {
         <p class="text-sm text-muted">{{ latest?.message ?? 'Starting…' }}</p>
       </div>
       <p v-else-if="submission.kind === 'submit'" class="text-sm">{{ submissionSummary(submission.counts) }}</p>
-      <UAlert v-if="submission.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="submission.error" />
+      <template v-else-if="submission.staffImport">
+        <p class="text-sm">{{ staffImportSummary(submission.staffImport) }}</p>
+        <p v-if="submission.staffImport.newPlayers.length" class="text-xs text-muted">
+          New players are named as play-tools shows them. Check their names on
+          <NuxtLink to="/players?tab=staff" class="underline">Players → Staff</NuxtLink>.
+        </p>
+      </template>
+      <UAlert
+        v-if="submission.error"
+        color="error"
+        variant="subtle"
+        icon="i-lucide-circle-alert"
+        :title="submission.kind === 'staff_import' ? staffImportErrorText(submission.error) : submission.error"
+      />
       <p v-if="submission.kind === 'submit'" class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
 
       <div v-if="!liveId" class="flex flex-wrap items-center gap-2">
