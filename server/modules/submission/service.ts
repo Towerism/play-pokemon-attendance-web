@@ -2,7 +2,7 @@ import { and, desc, eq, gt, inArray, ne } from 'drizzle-orm';
 import { type Logger, silentLogger } from '../../logging/types';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
-import { submission, submissionEvent, submissionItem, submissionLock } from '../../db/schema';
+import { staffBatch, staffBatchItem, submission, submissionEvent, submissionItem, submissionLock } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { type PokemonErrorCode, PokemonUpstreamError } from '../pokemon/ports/errors';
@@ -16,6 +16,7 @@ import { dateIn } from './local-time';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
 import { type PlaySessionResolver, submissionTarget } from './resolve';
 import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
+import { type StaffBatchRowStatus, type StaffBatchView, batchStatus } from './staff-batch';
 
 export type SubmissionStatus = (typeof submission.$inferSelect)['status'];
 export type ItemOutcome = (typeof submissionItem.$inferSelect)['outcome'];
@@ -173,6 +174,16 @@ export interface SubmissionService {
    * @throws SubmissionError, PokemonUpstreamError
    */
   importStaff(leagueId: string, startedBy: string): Promise<{ submissionId: number }>;
+  /**
+   * Starts a staff batch (#76): the tournaments' staff jobs one after another, in the order given, each as its
+   * organizer, holding the league's lease throughout. A tournament refused at its turn is not started; the rest go on.
+   * @throws SubmissionError `submission_running`, `shutting_down`
+   */
+  applyStaffAll(leagueId: string, date: SessionDate, input: { tournamentIds: readonly string[]; startedBy: string }): Promise<{ batchId: number }>;
+  /** @throws SubmissionError `not_found` for another league's batch or none */
+  staffBatch(leagueId: string, batchId: number): StaffBatchView;
+  /** The date's latest running staff batch, if any. */
+  runningStaffBatch(leagueId: string, date: SessionDate): StaffBatchView | null;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -331,6 +342,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const log = deps.log ?? silentLogger;
 
   const running = new Set<Promise<void>>();
+  /** Per league, when its last staff write went out: the spacing holds across one batch's jobs too (#76). */
+  const lastStaffWrite = new Map<string, number>();
   const listeners = new Map<number, Set<(event: SubmissionEvent) => void>>();
   const stop = new AbortController();
 
@@ -501,14 +514,22 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     }
   }
 
-  function renewLock(row: Row, extraMs = 0): void {
+  /** Moves the league's lease from one holder to another without freeing it in between (a staff batch, #76). */
+  function handOverLock(leagueId: string, from: number, to: number): void {
+    db.update(submissionLock)
+      .set({ submissionId: to, expiresAt: new Date(now().getTime() + LEASE_MS) })
+      .where(and(eq(submissionLock.leagueId, leagueId), eq(submissionLock.submissionId, from)))
+      .run();
+  }
+
+  function renewLock(row: Pick<Row, 'leagueId' | 'id'>, extraMs = 0): void {
     db.update(submissionLock)
       .set({ expiresAt: new Date(now().getTime() + LEASE_MS + extraMs) })
       .where(and(eq(submissionLock.leagueId, row.leagueId), eq(submissionLock.submissionId, row.id)))
       .run();
   }
 
-  function releaseLock(row: Row): void {
+  function releaseLock(row: Pick<Row, 'leagueId' | 'id'>): void {
     db.delete(submissionLock)
       .where(and(eq(submissionLock.leagueId, row.leagueId), eq(submissionLock.submissionId, row.id)))
       .run();
@@ -899,10 +920,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'planned', `${toRemove.length} to remove, ${toRechange.length} role changes, ${toAssign.length} to assign.`, done, total);
 
     // 2. Execute: one write at a time, removals, then role changes, then assigns.
-    let lastWriteAt: number | undefined;
     /** Keeps writes at least `staffDelayMs` apart, or longer when play-tools asks; stops on shutdown. */
     async function pace(atLeastMs = 0): Promise<void> {
       if (stop.signal.aborted) throw stop.signal.reason;
+      const lastWriteAt = lastStaffWrite.get(leagueId);
       const spacing = lastWriteAt === undefined ? 0 : lastWriteAt + staffDelayMs - now().getTime();
       const wait = Math.max(spacing, atLeastMs);
       renewLock(row, wait);
@@ -957,7 +978,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       for (let tries = 0; !outcome; tries += 1) {
         await pace();
         try {
-          lastWriteAt = now().getTime();
+          lastStaffWrite.set(leagueId, now().getTime());
           const result = await gateway.unassignStaff(tournamentId, a.recordId!, a.playerId);
           outcome = { outcome: result === 'removed' ? 'removed' : 'already_removed' };
         } catch (err) {
@@ -991,7 +1012,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       for (let tries = 0; !outcome; tries += 1) {
         await pace();
         try {
-          lastWriteAt = now().getTime();
+          lastStaffWrite.set(leagueId, now().getTime());
           const result = await gateway.changeStaffRole(tournamentId, a.recordId!, a.role as never);
           outcome = result === 'changed' ? { outcome: 'role_changed', recordId: a.recordId } : await redecide(a);
         } catch (err) {
@@ -1032,7 +1053,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           break;
         }
         try {
-          lastWriteAt = now().getTime();
+          lastStaffWrite.set(leagueId, now().getTime());
           sent = true;
           const result = await gateway.assignStaff(tournamentId, { playerId: a.playerId, role: a.role as never });
           if (result.status === 'assigned') outcome = { outcome: 'assigned', recordId: result.recordId };
@@ -1422,10 +1443,11 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'finished', `Submission ${status}: ${error}`, c.added + c.failed, total);
   }
 
-  function launch(row: Row): void {
+  /** Runs a job to its end, recording how it ended; never rejects. Leaves the lease to the caller. */
+  function execute(row: Row): Promise<void> {
     const submissionId = row.id;
     log.info(`${what(row)} #${submissionId} started for ${row.sessionDate}`, { submissionId, date: row.sessionDate });
-    const job = (
+    return (
       row.kind === 'undo'
         ? runUndo(row)
         : row.kind === 'clear'
@@ -1447,15 +1469,18 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         const status = load(row.leagueId, submissionId)?.status;
         log.info(`${what(row)} #${submissionId} ${status}`, { submissionId, status });
       })
-      .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
-      .finally(() => {
-        try {
-          releaseLock(row);
-        } catch {
-          // The database is gone (shutdown); the lease expires on its own.
-        }
-        running.delete(job);
-      });
+      .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }));
+  }
+
+  function launch(row: Row): void {
+    const job = execute(row).finally(() => {
+      try {
+        releaseLock(row);
+      } catch {
+        // The database is gone (shutdown); the lease expires on its own.
+      }
+      running.delete(job);
+    });
     running.add(job);
   }
 
@@ -1604,29 +1629,174 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     const target = await deps.staffing.prepareApply(leagueId, date, tournamentId);
 
     const row = db.transaction(() => {
-      const created = db
-        .insert(submission)
-        .values({
-          leagueId,
-          sessionDate: date,
-          playSessionId: target.tournamentId,
-          playSessionLabel: `${STAFF_PREFIX}${target.label}`,
-          startedBy,
-          // A staff job runs as its tournament's organizer (#75), not the league's submitting professor.
-          professorPlayerId: target.professor.playerId,
-          professorName: target.professor.name,
-          startedAt: now(),
-          status: 'planned',
-          retryOf,
-          kind: 'staff',
-        })
-        .returning()
-        .get();
+      const created = insertStaffJob(leagueId, date, target, startedBy, retryOf);
       acquireLock(leagueId, created.id);
       return created;
     });
     launch(row);
     return { submissionId: row.id };
+  }
+
+  type StaffTarget = Awaited<ReturnType<StaffingService['prepareApply']>>;
+
+  /** A `staff` job's row, planned. Call inside a transaction that takes or hands over the lease. */
+  function insertStaffJob(leagueId: string, date: SessionDate, target: StaffTarget, startedBy: string, retryOf: number | null): Row {
+    return db
+      .insert(submission)
+      .values({
+        leagueId,
+        sessionDate: date,
+        playSessionId: target.tournamentId,
+        playSessionLabel: `${STAFF_PREFIX}${target.label}`,
+        startedBy,
+        // A staff job runs as its tournament's organizer (#75), not the league's submitting professor.
+        professorPlayerId: target.professor.playerId,
+        professorName: target.professor.name,
+        startedAt: now(),
+        status: 'planned',
+        retryOf,
+        kind: 'staff',
+      })
+      .returning()
+      .get();
+  }
+
+  // --- staff batches (#76) ---------------------------------------------------
+
+  /** Who holds the lease between a batch's jobs: minus its id, never a submission's. */
+  const batchHolder = (batchId: number) => -batchId;
+
+  function setBatchItem(batchId: number, position: number, set: Partial<typeof staffBatchItem.$inferInsert>): void {
+    db.update(staffBatchItem)
+      .set(set)
+      .where(and(eq(staffBatchItem.batchId, batchId), eq(staffBatchItem.position, position)))
+      .run();
+  }
+
+  /** How a batch row reads a finished job's status; a job still active when its run ended failed. */
+  const ROW_STATUS: Record<SubmissionStatus, StaffBatchRowStatus> = {
+    planned: 'failed',
+    running: 'failed',
+    succeeded: 'succeeded',
+    partial: 'partial',
+    failed: 'failed',
+    interrupted: 'interrupted',
+  };
+
+  /**
+   * Runs a batch's tournaments one at a time. The lease passes from the batch to each job and back, never
+   * freed in between. On shutdown it starts nothing more and leaves the batch for boot recovery.
+   */
+  async function runBatch(batch: typeof staffBatch.$inferSelect, items: readonly { position: number; tournamentId: string }[]) {
+    const { leagueId, id: batchId } = batch;
+    const date = batch.sessionDate as SessionDate;
+    const holder = { leagueId, id: batchHolder(batchId) };
+    const ended: StaffBatchRowStatus[] = [];
+    for (const item of items) {
+      if (stop.signal.aborted) return;
+      renewLock(holder);
+      let target: StaffTarget;
+      try {
+        target = await deps.staffing.prepareApply(leagueId, date, item.tournamentId);
+      } catch (err) {
+        const code = (err as { code?: unknown }).code;
+        setBatchItem(batchId, item.position, {
+          status: 'not_started',
+          refusalCode: typeof code === 'string' ? code : 'unexpected',
+          refusalMessage: (err as Error).message,
+        });
+        ended.push('not_started');
+        continue;
+      }
+      if (stop.signal.aborted) return;
+      const row = db.transaction(() => {
+        const created = insertStaffJob(leagueId, date, target, batch.startedBy, null);
+        handOverLock(leagueId, holder.id, created.id);
+        setBatchItem(batchId, item.position, { status: 'running', submissionId: created.id, tournamentLabel: target.label });
+        return created;
+      });
+      await execute(row);
+      handOverLock(leagueId, row.id, holder.id);
+      const status = ROW_STATUS[load(leagueId, row.id)!.status];
+      setBatchItem(batchId, item.position, { status });
+      ended.push(status);
+    }
+    db.update(staffBatch).set({ status: batchStatus(ended), finishedAt: now() }).where(eq(staffBatch.id, batchId)).run();
+    log.info(`Staff batch #${batchId} ${batchStatus(ended)}`, { batchId });
+  }
+
+  function launchBatch(batch: typeof staffBatch.$inferSelect, items: readonly { position: number; tournamentId: string }[]): void {
+    log.info(`Staff batch #${batch.id} started for ${batch.sessionDate}`, { batchId: batch.id, date: batch.sessionDate });
+    const job = runBatch(batch, items)
+      .catch((err: unknown) => {
+        log.warn(`Staff batch #${batch.id} failed: ${(err as Error).message}`, { batchId: batch.id });
+        db.update(staffBatch).set({ status: 'failed', finishedAt: now() }).where(eq(staffBatch.id, batch.id)).run();
+      })
+      .catch(() => {
+        // The database is gone (shutdown); boot recovery marks the batch.
+      })
+      .finally(() => {
+        try {
+          releaseLock({ leagueId: batch.leagueId, id: batchHolder(batch.id) });
+        } catch {
+          // The database is gone (shutdown); the lease expires on its own.
+        }
+        running.delete(job);
+      });
+    running.add(job);
+  }
+
+  async function beginStaffBatch(leagueId: string, date: SessionDate, tournamentIds: readonly string[], startedBy: string) {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    const items = tournamentIds.map((tournamentId, position) => ({ position, tournamentId }));
+    const batch = db.transaction(() => {
+      assertUnlocked(leagueId);
+      const created = db.insert(staffBatch).values({ leagueId, sessionDate: date, startedBy, startedAt: now(), status: 'running' }).returning().get();
+      for (const item of items) {
+        db.insert(staffBatchItem).values({ batchId: created.id, ...item, tournamentLabel: item.tournamentId }).run();
+      }
+      acquireLock(leagueId, batchHolder(created.id));
+      return created;
+    });
+    launchBatch(batch, items);
+    return { batchId: batch.id };
+  }
+
+  function batchView(batch: typeof staffBatch.$inferSelect): StaffBatchView {
+    const items = db
+      .select({ item: staffBatchItem, job: submission })
+      .from(staffBatchItem)
+      .leftJoin(submission, eq(submission.id, staffBatchItem.submissionId))
+      .where(eq(staffBatchItem.batchId, batch.id))
+      .orderBy(staffBatchItem.position)
+      .all();
+    return {
+      id: batch.id,
+      sessionDate: batch.sessionDate,
+      status: batch.status,
+      startedBy: batch.startedBy,
+      startedAt: batch.startedAt,
+      finishedAt: batch.finishedAt,
+      rows: items.map(({ item, job }) => {
+        const latest =
+          job && item.status === 'running'
+            ? db.select().from(submissionEvent).where(eq(submissionEvent.submissionId, job.id)).orderBy(desc(submissionEvent.id)).limit(1).get()
+            : undefined;
+        const finished = job && !ACTIVE.includes(job.status) && item.status !== 'running';
+        const c = finished ? counts(job) : null;
+        return {
+          position: item.position,
+          tournamentId: item.tournamentId,
+          label: item.tournamentLabel,
+          organizerName: job?.professorName ?? null,
+          status: item.status,
+          submissionId: item.submissionId,
+          progress: latest ? { done: latest.done, total: latest.total } : null,
+          counts: c ? { added: c.added, alreadyPresent: c.alreadyPresent, failed: c.failed, skipped: c.skipped } : null,
+          refusal: item.refusalCode === null ? null : { code: item.refusalCode, message: item.refusalMessage ?? '' },
+        };
+      }),
+    };
   }
 
   async function beginStaffImport(leagueId: string, startedBy: string, retryOf: number | null) {
@@ -1710,6 +1880,28 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     applyStaff: async (leagueId, date, input) => beginStaff(leagueId, date, input.tournamentId, input.startedBy, null),
 
     importStaff: async (leagueId, startedBy) => beginStaffImport(leagueId, startedBy, null),
+
+    applyStaffAll: async (leagueId, date, input) => beginStaffBatch(leagueId, date, input.tournamentIds, input.startedBy),
+
+    staffBatch(leagueId, batchId) {
+      const batch = db
+        .select()
+        .from(staffBatch)
+        .where(and(eq(staffBatch.id, batchId), eq(staffBatch.leagueId, leagueId)))
+        .get();
+      if (!batch) throw new SubmissionError('not_found', `Staff batch ${batchId} does not exist.`);
+      return batchView(batch);
+    },
+
+    runningStaffBatch(leagueId, date) {
+      const batch = db
+        .select()
+        .from(staffBatch)
+        .where(and(eq(staffBatch.leagueId, leagueId), eq(staffBatch.sessionDate, date), eq(staffBatch.status, 'running')))
+        .orderBy(desc(staffBatch.id))
+        .get();
+      return batch ? batchView(batch) : null;
+    },
 
     get(leagueId, submissionId) {
       const row = mustFind(leagueId, submissionId);
@@ -1799,6 +1991,15 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     recoverInterrupted() {
       const stale = db.select().from(submission).where(inArray(submission.status, ACTIVE)).all();
       for (const row of stale) stopEarly(row, 'interrupted', new Interrupted().message);
+      // A batch a crash or a restart left running: its unfinished tournaments are interrupted (#76).
+      const batches = db.select({ id: staffBatch.id }).from(staffBatch).where(eq(staffBatch.status, 'running')).all();
+      for (const b of batches) {
+        db.update(staffBatchItem)
+          .set({ status: 'interrupted' })
+          .where(and(eq(staffBatchItem.batchId, b.id), inArray(staffBatchItem.status, ['waiting', 'running'])))
+          .run();
+        db.update(staffBatch).set({ status: 'interrupted', finishedAt: now() }).where(eq(staffBatch.id, b.id)).run();
+      }
       db.delete(submissionLock).run();
       return stale.length;
     },
