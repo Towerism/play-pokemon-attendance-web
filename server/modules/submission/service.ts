@@ -195,7 +195,14 @@ export interface SubmissionDeps {
     leagueId: string,
   ) => Pick<
     PlayToolsGateway,
-    'listTournaments' | 'getTournament' | 'listTournamentParticipants' | 'listStaffRoles' | 'assignStaff' | 'changeStaffRole' | 'unassignStaff'
+    | 'listLeagues'
+    | 'listTournaments'
+    | 'getTournament'
+    | 'listTournamentParticipants'
+    | 'listStaffRoles'
+    | 'assignStaff'
+    | 'changeStaffRole'
+    | 'unassignStaff'
   >;
   staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
@@ -1234,9 +1241,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
     }
 
-    const tournaments = await read(() => gateway.listTournaments(), 'the tournaments');
+    // play-tools still lists tournaments from leagues the account has left, but refuses their records (#67).
+    const leagues = new Set((await read(() => gateway.listLeagues(), 'the leagues')).map((l) => l.id));
+    const listed = await read(() => gateway.listTournaments(), 'the tournaments');
+    const tournaments = listed.filter((t) => t.groupId === null || leagues.has(t.groupId));
+    const leftOut = listed.length - tournaments.length;
     total = tournaments.length;
-    emit(row, 'planned', `${total} tournaments to read.`, 0, total);
+    const why = leftOut ? `; ${leftOut} left out (leagues this account is no longer in)` : '';
+    emit(row, 'planned', `${total} tournaments to read${why}.`, 0, total);
     /** Every staffer found so far: once new to the league, a staffer stays `new_player` for the whole import. */
     const found = new Map<PlayerId, 'found' | 'new_player'>();
     let failed = 0;
