@@ -78,3 +78,98 @@ test('a rename on the Staff tab sticks when play-tools is read again', async ({ 
   // The Staff tab never asks for the Players list.
   expect(playerCalls).toEqual([]);
 });
+
+test('the rename guards, the staff search, and which tab asks for what', async ({ page, connected, fake }) => {
+  await staffTournament(fake, connected, [
+    { id: ASH, role: 'judge', first: 'Ash', last: 'Ketchum' },
+    { id: BROCK, role: 'scorekeeper', first: 'Brock', last: 'Harrison' },
+  ]);
+  const calls = { staff: [] as URL[], roles: 0, players: 0, patches: 0 };
+  page.on('request', (r: Request) => {
+    const url = new URL(r.url());
+    if (url.pathname === '/api/staff') calls.staff.push(url);
+    if (url.pathname === '/api/staff/roles') calls.roles++;
+    if (url.pathname === '/api/players') calls.players++;
+    if (r.method() === 'PATCH') calls.patches++;
+  });
+
+  await page.goto('/players');
+  await expect(page.getByRole('tab', { name: 'Promotion candidates' })).toHaveAttribute('aria-selected', 'true');
+  expect(calls.staff).toEqual([]);
+  await page.getByRole('tab', { name: 'Staff' }).click();
+  await expect(staffRow(page, BROCK)).toContainText('Scorekeeper');
+  await expect(staffRow(page, ASH)).toContainText('Judge');
+  // Only the threshold tabs link to their thresholds.
+  await expect(page.getByRole('link', { name: 'Change thresholds' })).toHaveCount(0);
+  await expect(page.getByText('A name from play-tools can be out of date: rename it here.')).toBeVisible();
+
+  const nameBox = (id: string) => page.getByRole('textbox', { name: `Name for ${id}` });
+
+  // Escape cancels without a request.
+  await page.getByRole('button', { name: 'Rename Ash Ketchum' }).click();
+  await nameBox(ASH).fill('Not this');
+  await nameBox(ASH).press('Escape');
+  await expect(nameBox(ASH)).toHaveCount(0);
+  await expect(staffRow(page, ASH)).toContainText('Ash Ketchum');
+
+  // One row at a time: renaming Brock drops Ash's unsaved text.
+  await page.getByRole('button', { name: 'Rename Ash Ketchum' }).click();
+  await nameBox(ASH).fill('Unsaved');
+  await page.getByRole('button', { name: 'Rename Brock Harrison' }).click();
+  await expect(nameBox(ASH)).toHaveCount(0);
+  await expect(staffRow(page, ASH)).toContainText('Ash Ketchum');
+  await expect(nameBox(BROCK)).toBeVisible();
+
+  // An empty name can't be saved; an unchanged one closes without a request.
+  await nameBox(BROCK).fill('   ');
+  await expect(staffRow(page, BROCK).getByRole('button', { name: 'Save' })).toBeDisabled();
+  await nameBox(BROCK).press('Enter');
+  await expect(nameBox(BROCK)).toBeVisible();
+  await nameBox(BROCK).fill('Brock Harrison');
+  await nameBox(BROCK).press('Enter');
+  await expect(nameBox(BROCK)).toHaveCount(0);
+  expect(calls.patches).toBe(0);
+
+  // A refused rename says why and keeps what was typed.
+  await page.route(`**/api/players/${ASH}`, (route) =>
+    route.fulfill({ status: 400, contentType: 'application/json', json: { statusCode: 400, message: 'At most 100 characters' } }),
+  );
+  await page.getByRole('button', { name: 'Rename Ash Ketchum' }).click();
+  await nameBox(ASH).fill('Too long, says the server');
+  await nameBox(ASH).press('Enter');
+  // The toast, plus the copy its live region announces.
+  await expect(page.getByText('At most 100 characters').first()).toBeVisible();
+  await expect(nameBox(ASH)).toHaveValue('Too long, says the server');
+  expect(calls.patches).toBe(1);
+  await page.unroute(`**/api/players/${ASH}`);
+  await staffRow(page, ASH).getByRole('button', { name: 'Cancel' }).click();
+
+  // The search box searches the staff list: one request once typing stops.
+  const search = page.getByPlaceholder('Search name or ID');
+  const ash = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/staff' && new URL(r.url()).searchParams.get('q') === 'ash');
+  calls.staff = [];
+  await search.pressSequentially('ash');
+  await ash;
+  await expect(staffRow(page, BROCK)).toHaveCount(0);
+  await expect(staffRow(page, ASH)).toBeVisible();
+  expect(calls.staff.map((u) => u.searchParams.get('q'))).toEqual(['ash']);
+  await search.fill('zzz');
+  await expect(page.getByText('No staff match.')).toBeVisible();
+
+  // Back on All: the players list, never the staff list; the roles were fetched once.
+  const everyone = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/staff' && !new URL(r.url()).searchParams.has('q'));
+  await search.fill('');
+  await everyone;
+  calls.staff = [];
+  const players = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/players');
+  await page.getByRole('tab', { name: 'All' }).click();
+  await players;
+  await expect(page.getByRole('link', { name: 'Change thresholds' })).toHaveCount(0);
+  expect(calls.staff).toEqual([]);
+  // Back on Staff, wait for the list to be fetched again: a second roles request would go out with it.
+  const again = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/staff');
+  await page.getByRole('tab', { name: 'Staff' }).click();
+  await again;
+  await expect(staffRow(page, BROCK)).toBeVisible();
+  expect(calls.roles).toBe(1);
+});
