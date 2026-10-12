@@ -4,6 +4,7 @@
 - Date: 2026-10-11 (updated with spike S6 the same day)
 - Issue: [#41](https://github.com/Towerism/play-pokemon-attendance-web/issues/41)
 - Amended by: [ADR-0009](0009-tournaments-as-their-organizer.md): tournaments are listed as every connected professor and acted on only as their organizer (#75)
+- Amended by (proposed): [ADR-0010](0010-tournament-templates-and-lifecycle.md): creating, cancelling and rescheduling tournaments, and uploading their results ([ADR-0011](0011-tdf-results-upload.md)), move into scope (M9)
 
 ## Context
 

@@ -11,6 +11,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 | S4 | `_bulk` semantics: response, partial failure, already-present player | ✅ done | 201 `[{guid}]` in request order. **All-or-nothing:** one rejected item adds nobody. Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record. DELETE → 204. | Diff against **all** records. Validate ids locally. Retry without the offending index. (See design changes 6–9.) |
 | S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
 | S6 | Staff (M8): tournament list, staff assign/remove calls, roles, organizer, edit window | ✅ done | One `POST core/tournaments/{guid}/records` per staffer → 201 `{guid}`; duplicate/unclaimed/uncertified → 400 keyed `participant.player_id`; past the window → 423 `cannot_modify_old_activity` (assume locked to all changes); `PATCH`/`DELETE …/records/{guid}` → 204. Unfiltered records = players + staff. Organizer in `core/tournament/{guid}`. `core/activities` lists the organizer's tournaments but **ignores date filters**. Staff tab is organizer-only (403 otherwise). | See [S6](#s6-staff-assignment-done-2026-10-11); §4.3 and ADR-0007 to be updated by #41's owner. |
+| S8 | Tournament create, cancel, reschedule and TDF upload (M9) | 🟡 part 1 done | `POST core/tournament`; cancel = `PATCH core/tournament/{guid}/ {application_state: cancelled}` (delete is admin-only); TDF upload = `POST triumph/tdf/` (validate, base64) then `PUT triumph/{upload_guid}/confirm/`. No templates or recurrence upstream. Date wire format behind a remote flag. | See [S8](#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12); ADR-0010, ADR-0011. Live capture (part 2) before any write is built. |
 
 ## Verified without a login (2026-10-10)
 
@@ -383,6 +384,97 @@ paths without a trailing slash.
 
 **Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the
 routes to `test/server/fake-pokemon.ts`. This is for #41's owner, as the ADR is still a proposal.
+
+### S8: tournament lifecycle and TDF upload (part 1 done 2026-10-12)
+
+This decides the tournament methods on `PlayToolsGateway` for M9 ([ADR-0010](adr/0010-tournament-templates-and-lifecycle.md),
+[ADR-0011](adr/0011-tdf-results-upload.md)). Nothing in M9 that writes upstream is built until part 2's fixtures exist.
+
+1. **Bundle analysis.** Done 2026-10-12, no login, same method as S6 part 1. The public play-tools SPA
+   (`assets/index-CnpuJCUp.js` and 97 lazy chunks) is still Istanbul-instrumented. The chunks that matter:
+   `TournamentService` (in `index-CnpuJCUp.js`, sha256 `0eec17da7d9f…`), `TournamentCreation` (`index-z4Jq0EdG.js`
+   and the step chunks), `TournamentConfirmation` + `toApiTournamentPayload` (`index-CYarp5OL.js`) and
+   `TournamentDetail` (`index-DmdtsX0M.js`, `index-DUXOMxqq.js`). Findings below; *(inferred)* marks claims the
+   bundle doesn't show directly.
+2. **Live capture.** Still to do, with the organizer's go-ahead (questions at the end).
+
+**Calls.** All are under `https://api.play.pokemon.com/services/`, JSON, `Authorization: Bearer …` only.
+
+| Action | Call | Body / result |
+| ------ | ---- | ------------- |
+| Create | `POST core/tournament` | See the body table. The response has at least `guid` (the UI navigates to it). |
+| Edit | `PATCH core/tournament/{guid}/` | Same body and adapter as create. |
+| Cancel | `PATCH core/tournament/{guid}/` | `{"application_state":"cancelled"}`. No reason field. |
+| Delete, un-cancel | same | `"deleted"` / `"sanctioned"`: **admins only**. An organizer can cancel, not delete. |
+| Series for a league | `GET core/users/{sub}/activity_groups/{ag}/series/` | `[{guid, name, product, category_slugs, schedule: {<country>: {start_date, end_date}}}]` |
+| Products, formats | `GET core/products?country=XX` | `results` (product codes) + `product_categories[product]` (category slugs) |
+| Venues | `GET core/v2/users/{organizerGuid}/address_book?country=&activity_group_id=` | `{guid, name, formatted_address, country, op_country, timezone, source}`; the league's own first |
+| Play cycle | `GET api/epoch/cycle` | `[{start_date, end_date, league_start_date, league_end_date}]` |
+| TDF validate | `POST triumph/tdf/` | `{"kind":"tdf","tournament_id":"<display_id>","payload":"<base64 .tdf>"}` → `{upload_guid, errors: [code]}`. Behind the `triumph-scalability` flag the file goes to a presigned URL and `POST triumph/upload/{key}/$process/` instead. |
+| TDF confirm | `PUT triumph/{upload_guid}/confirm/` | `{"tournament_id": …}`: the tournament `guid` from the TDF modal, the `display_id` from the standings tab (**the two disagree**) |
+| Upload history | `GET triumph/tournament/{display_id}/uploads/` | `kind`, `accepted`, date, `version_complete_synced` |
+
+**Create body** (`toApiTournamentPayload`): `name` (≤ 80, no emoji), `activity_group_id`, `organizer_id` (user
+guid), `product` (`tcg`/`vg`/`pgo`), `category` (e.g. `tcg_std`, `vg_mod`), `series_guid` (premier series, or
+`null` for a custom event), `address_id` (address-book guid), the start date, `contact_information {email, phone}`
+(one required), `details` (≤ 30,000), `event_website`, `third_party_registration_website`, `on_site_admission`,
+`registration_start_date_v2`/`registration_end_date_v2`, `activity_division_info` (per-division times and costs, or
+`null`). Never sent: `divisionless`, `play_template`, `status`, `display_id`.
+
+**Dates depend on a remote flag** (`play-pokemon-program-configuration`). On: `start_date_v2` is the wall-clock time
+read in the **venue's** timezone and sent as UTC (fallback `America/Los_Angeles`). Off: `start_date` is the naive
+local string, plus `on_site_registration_datetime_full` and `on_site_registration_duration` (minutes). Which one
+production uses isn't visible.
+
+**Rules the client enforces** (the server's own are unknown):
+
+- A start date may be up to 72 h in the past (the code allows 84 h). There is **no lead time** and no per-day limit.
+- The latest date is the end of the series' window for the venue's country (premier), or of the play cycle (custom).
+- A premier series limits `category` to its `category_slugs`. A professor editing can't change the league, the event
+  type or the series.
+- Edit and cancel close at `start_date_actual + 90 d` (as for staff, S6). Cancel needs `application_state` in
+  `sanctioned`, `approval-pending`, `sanctioning-error` and `activity_state` not `completed`. A tournament **can be
+  cancelled after its start** inside the window.
+- The create route has no client-side permission check. *(Inferred)* the server enforces the league-assistant roles.
+
+**Statuses.** `application_state`/`status`: `approval-pending`, `sanctioned`, `sanctioning-error`, `cancelled`,
+`deleted`, `complete`, `invalidated`. `activity_state`: `pending` → `upload_in_progress` → `completed` or
+`upload_failed`. *(Inferred)* the server decides whether a new tournament starts `approval-pending`.
+
+**Clone, not templates.** play-tools' Clone only pre-fills the create form (no call). It copies the league, admission,
+details, contacts, event type, registration type and website, and **not** the name, date, series or registration
+times. There is no template or recurrence for tournaments upstream (recurrence exists only for play sessions).
+
+**TDF upload rules** (client):
+
+- Only the organizer (or an admin) may upload, while `application_state == sanctioned`, `activity_state == pending`,
+  `status != complete`, within start + 90 d, and **only while the tournament has no player records**. There is no
+  "after the start" check.
+- An organizer can't re-upload: once players exist, only an admin purge (`DELETE core/tournament/{guid}/players`) resets it.
+- The file must match the tournament: `TDF_TOURNAMENT_ID_AND_PAYLOAD_ID_MISMATCH_ERROR`, `ORGANIZER_ID_MISMATCH`,
+  `GAMETYPE_PRODUCT_CODE_ERROR`. A TDF player already on the staff fails with `STAFF_PLAYERS_ERROR`.
+- After confirm, play-tools says "TDF Uploaded. Awaiting sync." and the tournament ends `complete` or
+  `upload_failed`. The client doesn't poll.
+- Codes the UI translates: `TDF_TOURNAMENT_ID_AND_PAYLOAD_ID_MISMATCH_ERROR`, `PLAYER_IDS_CHECK_ERROR`,
+  `INVALID_PLAYER_IDS_ERROR`, `STAFF_PLAYERS_ERROR`, `MERGED_PLAYER_IDS_ERROR`, `DUPLICATE_PLAYER_IDS_ERROR`,
+  `PLAYER_COUNT_MISMATCH_ERROR`, `MISSING_PLAYERS_FROM_STANDINGS_ERROR`, `MISSING_PLAYERS_FROM_ROSTER_ERROR`,
+  `MISSING_STANDINGS_ERROR`; dozens more are only title-cased (`INVALID_XML_ERROR`, `TOURNAMENT_NOT_SANCTIONED_ERROR`, …).
+
+**Errors on create, edit and cancel** have no translated `op.*` codes. The UI shows a generic message and the
+`x-correlation-id` header.
+
+**Open questions for part 2** (live capture):
+
+1. Is `play-pokemon-program-configuration` on (`start_date_v2` in UTC) or off (naive `start_date`)?
+2. `POST core/tournament`: status code, full body, initial status of a custom vs. a premier-series event.
+3. Does a professor's `PATCH` of the date work, or does it invalidate or re-queue the tournament? (The organizer
+   reports rescheduling means removing and re-creating; see ADR-0010 Q1.)
+4. What does the server refuse that the client doesn't (back-dating, overlaps, series quotas), and with what envelope?
+5. Cancel's status code; cancel by a non-organizer; cancel during a TDF upload.
+6. TDF: is `triumph-scalability` on; the exact `triumph/tdf/` response; the shape of `errors`; whether confirm
+   takes the `guid` or the `display_id`; the size limit; how long `upload_in_progress` lasts; whether an upload
+   before the start date is accepted; how long an unconfirmed `upload_guid` stays valid.
+7. What the league assistant roles (Enhanced, Specialist) may create, cancel and upload.
 
 ## Design changes triggered (apply in M4/M5)
 
