@@ -2,6 +2,7 @@
 
 - Status: Accepted (retroactively, 2026-10-12; implemented in M4). S1 (paste-back works, even with the play-tools page loaded) and S5 confirmed on 2026-10-10. Refresh rotation is confirmed; the S2 idle-lifetime check is pending.
 - Date: 2026-10-10
+- Amended by: [ADR-0008](0008-plural-pokemon-connections.md). Connections are plural and keyed by professor player ID; the token rules below apply per connection.
 
 ## Context
 
