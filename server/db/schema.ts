@@ -184,8 +184,12 @@ export const submission = sqliteTable(
     error: text('error'),
     /** The attempt this one retries or resumes. */
     retryOf: integer('retry_of'),
-    /** `undo` removes the records another submission added; `clear` removes every player record in the play session (M7). */
-    kind: text('kind', { enum: ['submit', 'undo', 'clear'] }).notNull().default('submit'),
+    /**
+     * `undo` removes the records another submission added; `clear` removes every player record in the play session (M7).
+     * `staff` applies a tournament's staff assignments (M8): `play_session_id` then holds the tournament GUID and
+     * `play_session_label` "Staff for <tournament>".
+     */
+    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff'] }).notNull().default('submit'),
     /** For an undo: the submission whose added records it removes. */
     undoOf: integer('undo_of'),
   },
@@ -203,15 +207,36 @@ export const submissionItem = sqliteTable(
       .notNull()
       .references(() => player.playerId),
     origin: text('origin', { enum: ['session', 'regular', 'upstream'] }).notNull(),
-    /** `removed` and `already_removed` are the outcomes of an undo or a clear. */
+    /** `removed` and `already_removed` are the outcomes of an undo, a clear or a staff job; the rest after them only a staff job's. */
     outcome: text('outcome', {
-      enum: ['pending', 'added', 'already_present', 'failed', 'skipped', 'unrequested', 'removed', 'already_removed'],
+      enum: [
+        'pending',
+        'added',
+        'already_present',
+        'failed',
+        'skipped',
+        'unrequested',
+        'removed',
+        'already_removed',
+        'assigned',
+        'already_assigned',
+        'already_listed',
+        'is_organizer',
+        'role_changed',
+        'ineligible',
+      ],
     }).notNull(),
     error: text('error'),
     /** The upstream attendance record, once known (for undo, M7). */
     recordId: text('record_id'),
     /** Present upstream in a staff role (e.g. the session's organizer), not as a player. */
     asStaff: integer('as_staff', { mode: 'boolean' }).notNull().default(false),
+    /** Staff jobs only (M8): the wanted role. */
+    role: text('role'),
+    /** Staff jobs only: why an item failed, as a code (an upstream refusal code, `tournament_locked`, `local_write_failed`…). */
+    errorCode: text('error_code'),
+    /** Staff jobs only: the id play-tools says a `merged_player_id` was merged into. A suggestion; never switched to. */
+    suggestedPlayerId: text('suggested_player_id'),
   },
   (t) => [primaryKey({ columns: [t.submissionId, t.playerId] })],
 );

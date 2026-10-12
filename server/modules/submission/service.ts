@@ -6,13 +6,15 @@ import { submission, submissionEvent, submissionItem, submissionLock } from '../
 import type { SightingsService } from '../metrics/sightings';
 import type { PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { BulkResult, PlayToolsGateway } from '../pokemon/ports/play-tools-gateway';
+import type { BulkResult, PlayToolsGateway, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
+import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
 import { type PlaySessionResolver, submissionTarget } from './resolve';
+import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
 
 export type SubmissionStatus = (typeof submission.$inferSelect)['status'];
 export type ItemOutcome = (typeof submissionItem.$inferSelect)['outcome'];
@@ -29,6 +31,12 @@ export interface SubmissionItemView {
   asStaff: boolean;
   /** On a submission: the undo that removed this record, if one did. */
   removedBy: number | null;
+  /** Staff jobs: the wanted role; null otherwise. */
+  role: string | null;
+  /** Staff jobs: why the item failed, as a code (an upstream refusal code, `tournament_locked`, `local_write_failed`…). */
+  errorCode: string | null;
+  /** Staff jobs: the id a `merged_player_id` was merged into, as a suggestion. */
+  suggestedPlayerId: PlayerId | null;
 }
 
 export interface SubmissionCounts {
@@ -54,6 +62,8 @@ export interface SubmissionSummary {
   /** Whether `undo` would start, as far as the database can tell (play-tools is not asked). */
   undoable: boolean;
   undoBlockedReason: 'not_undoable' | 'nothing_to_undo' | null;
+  /** A staff job's tournament (`playSessionLabel` without "Staff for "); null for other kinds. */
+  tournamentLabel: string | null;
   counts: SubmissionCounts;
 }
 
@@ -64,7 +74,16 @@ export interface SubmissionView extends SubmissionSummary {
   items: SubmissionItemView[];
 }
 
-export type SubmissionEventType = 'planned' | 'batch_sent' | 'batch_rejected' | 'retrying' | 'reconciled' | 'finished' | 'record_removed';
+export type SubmissionEventType =
+  | 'planned'
+  | 'batch_sent'
+  | 'batch_rejected'
+  | 'retrying'
+  | 'reconciled'
+  | 'finished'
+  | 'record_removed'
+  /** A staff job sent one write (assign, role change or removal). */
+  | 'staff_sent';
 
 /** Progress, persisted before it is pushed. `done` of `total` players to add are dealt with. */
 export interface SubmissionEvent {
@@ -119,6 +138,12 @@ export interface SubmissionService {
    * @throws SubmissionError, PokemonUpstreamError
    */
   clear(leagueId: string, date: SessionDate, playSessionId: string, startedBy: string): Promise<{ submissionId: number }>;
+  /**
+   * Applies one of the date's tournaments' staff assignments to play-tools
+   * (ADR-0007), as a new `staff` job in the background.
+   * @throws StaffingError, SubmissionError, PokemonUpstreamError
+   */
+  applyStaff(leagueId: string, date: SessionDate, input: { tournamentId: string; startedBy: string }): Promise<{ submissionId: number }>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -140,6 +165,11 @@ export interface SubmissionDeps {
   sightings: Pick<SightingsService, 'record' | 'retract'>;
   connections: Pick<PokemonConnectionService, 'getStatus'>;
   gateway: (leagueId: string) => Pick<PlayToolsGateway, 'listAttendance' | 'addAttendanceBulk' | 'removeAttendance'>;
+  /** The tournament calls a staff job makes (ADR-0007). */
+  staffGateway: (
+    leagueId: string,
+  ) => Pick<PlayToolsGateway, 'getTournament' | 'listTournamentParticipants' | 'listStaffRoles' | 'assignStaff' | 'changeStaffRole' | 'unassignStaff'>;
+  staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
   now?: () => Date;
   /** Rejects with `signal.reason` when the signal aborts. */
@@ -158,6 +188,8 @@ export interface SubmissionDeps {
   settlePollMs?: number;
   /** Default 1 s between undo deletes, one at a time. */
   undoDelayMs?: number;
+  /** Default 1 s between a staff job's writes, one at a time; never under 500 ms (NUXT_STAFF_DELAY_MS). */
+  staffDelayMs?: number;
   log?: Pick<Logger, 'warn' | 'info'>;
 }
 
@@ -171,6 +203,11 @@ const LEASE_MS = 2 * 60_000;
 const ACTIVE: SubmissionStatus[] = ['planned', 'running'];
 /** An undo or clear item whose record play-tools no longer has. */
 const GONE: ItemOutcome[] = ['removed', 'already_removed'];
+/** A staff item whose record play-tools holds in the wanted role. */
+const HELD: ItemOutcome[] = ['assigned', 'already_assigned', 'role_changed'];
+/** Staff item outcomes that mean the job did not get its way. */
+const STAFF_UNDONE: ItemOutcome[] = ['failed', 'ineligible', 'skipped'];
+const STAFF_PREFIX = 'Staff for ';
 
 const DRAFT_STATUS: Record<SubmissionStatus, SessionStatus> = {
   planned: 'submitting',
@@ -181,6 +218,19 @@ const DRAFT_STATUS: Record<SubmissionStatus, SessionStatus> = {
   interrupted: 'failed',
 };
 
+/** Stops a staff job for the whole tournament; the message is the code History shows. */
+class StaffStop extends Error {
+  override name = 'StaffStop';
+  constructor(readonly code: 'tournament_locked' | 'forbidden' | 'unknown_tournament') {
+    super(code);
+  }
+}
+
+/** Upstream errors after which a staff job sends nothing more to the tournament. */
+const STAFF_STOPS = new Set(['tournament_locked', 'forbidden']);
+/** Upstream errors that stop any job: the connection itself is gone. */
+const CONNECTION_LOST = new Set(['needs_reconnect', 'not_connected']);
+
 class Interrupted extends Error {
   override name = 'Interrupted';
   constructor() {
@@ -189,7 +239,7 @@ class Interrupted extends Error {
 }
 
 /** How logs name a job. */
-const what = (row: { kind: SubmissionKind }) => ({ submit: 'Submission', undo: 'Undo', clear: 'Clear' })[row.kind];
+const what = (row: { kind: SubmissionKind }) => ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job' })[row.kind];
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -220,6 +270,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const settleMs = deps.settleMs ?? 3 * 60_000;
   const settlePollMs = deps.settlePollMs ?? 15_000;
   const undoDelayMs = deps.undoDelayMs ?? 1_000;
+  const staffDelayMs = Math.max(500, deps.staffDelayMs ?? 1_000);
   const log = deps.log ?? silentLogger;
 
   const running = new Set<Promise<void>>();
@@ -247,7 +298,15 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         .values(item)
         .onConflictDoUpdate({
           target: [submissionItem.submissionId, submissionItem.playerId],
-          set: { outcome: item.outcome, error: item.error ?? null, recordId: item.recordId ?? null, asStaff: item.asStaff ?? false },
+          set: {
+            outcome: item.outcome,
+            error: item.error ?? null,
+            recordId: item.recordId ?? null,
+            asStaff: item.asStaff ?? false,
+            role: item.role ?? null,
+            errorCode: item.errorCode ?? null,
+            suggestedPlayerId: item.suggestedPlayerId ?? null,
+          },
         })
         .run();
     }
@@ -291,13 +350,22 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     });
   }
 
-  function counts(submissionId: number): SubmissionCounts {
+  function counts(row: Pick<Row, 'id' | 'kind'>): SubmissionCounts {
     const outcomes = db
       .select({ outcome: submissionItem.outcome })
       .from(submissionItem)
-      .where(eq(submissionItem.submissionId, submissionId))
+      .where(eq(submissionItem.submissionId, row.id))
       .all();
-    const count = (o: ItemOutcome) => outcomes.filter((i) => i.outcome === o).length;
+    const count = (...o: ItemOutcome[]) => outcomes.filter((i) => o.includes(i.outcome)).length;
+    if (row.kind === 'staff') {
+      return {
+        added: count('assigned', 'role_changed', 'removed'),
+        alreadyPresent: count('already_assigned', 'already_listed', 'is_organizer', 'already_removed'),
+        failed: count('failed', 'ineligible'),
+        skipped: count('skipped'),
+        unrequested: 0,
+      };
+    }
     return {
       added: count('added'),
       alreadyPresent: count('already_present'),
@@ -322,7 +390,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       undoOf: row.undoOf,
       undoable: blocked === null,
       undoBlockedReason: blocked,
-      counts: counts(row.id),
+      tournamentLabel: row.kind === 'staff' ? row.playSessionLabel.replace(STAFF_PREFIX, '') : null,
+      counts: counts(row),
     };
   }
 
@@ -660,6 +729,325 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'finished', `Clear ${status}.`, total, total);
   }
 
+  /** One staff item's outcome, as the job decides it. */
+  interface StaffOutcome {
+    outcome: ItemOutcome;
+    recordId?: string | null;
+    error?: string | null;
+    errorCode?: string | null;
+    suggestedPlayerId?: PlayerId | null;
+  }
+
+  /**
+   * Staff job (ADR-0007 decisions 4 and 7–12): brings one tournament's staff
+   * in play-tools in line with the organizer's assignments. Every decision
+   * rests on a fresh read: the organizer and anyone the tournament lists are
+   * never sent, and only records this app holds are re-roled or removed.
+   */
+  async function runStaff(row: Row): Promise<void> {
+    const { leagueId } = row;
+    const tournamentId = row.playSessionId;
+    const gateway = deps.staffGateway(leagueId);
+    const roles = gateway.listStaffRoles();
+    const roleLabel = (code: string) => roles.find((r) => r.code === code)?.label ?? code;
+    setStatus(row, 'running');
+
+    // 1. Plan: the tournament's organizer and everyone it lists, every page.
+    let organizerPlayerId: PlayerId;
+    let seedAs: { id: string; startsAt: Date | null; organizerPlayerId: PlayerId };
+    try {
+      const details = await gateway.getTournament(tournamentId);
+      organizerPlayerId = details.organizerPlayerId;
+      seedAs = { id: details.id, startsAt: details.startsAt, organizerPlayerId };
+    } catch (err) {
+      if (err instanceof PokemonUpstreamError && err.code === 'not_found') throw new StaffStop('unknown_tournament');
+      throw err;
+    }
+    /** Reads everyone on the tournament, and seeds the staff list from what it found. */
+    async function read(): Promise<TournamentParticipant[]> {
+      try {
+        const participants = await gateway.listTournamentParticipants(tournamentId);
+        deps.staffing.recordUpstreamStaff(leagueId, seedAs, participants);
+        return participants;
+      } catch (err) {
+        if (err instanceof PokemonUpstreamError && STAFF_STOPS.has(err.code)) throw new StaffStop(err.code as 'tournament_locked' | 'forbidden');
+        throw err;
+      }
+    }
+    const decide = (a: StaffAssignmentRecord, listed: readonly TournamentParticipant[]): StafferDecision =>
+      classifyStaffer({ playerId: a.playerId, role: a.role, recordId: a.recordId }, listed, organizerPlayerId, roles);
+    /** A decision that sends nothing, as an outcome; `sentByUs` turns an adopted record into our own landed assign. */
+    function settled(decision: Exclude<StafferDecision, { kind: 'assign' | 'rechange' }>, sentByUs = false): StaffOutcome {
+      if (decision.kind === 'already_assigned') return { outcome: sentByUs ? 'assigned' : 'already_assigned', recordId: decision.recordId };
+      if (decision.kind === 'already_listed') return { outcome: 'already_listed', error: decision.how };
+      return { outcome: 'is_organizer' };
+    }
+
+    let listed = await read();
+    const assignments = deps.staffing.assignmentsFor(leagueId, tournamentId);
+    const live = new Map(assignments.filter((a) => !a.removed).map((a) => [a.playerId, a]));
+    const tombstoned = new Map(assignments.filter((a) => a.removed && a.recordId && !live.has(a.playerId)).map((a) => [a.playerId, a]));
+
+    const toRemove: StaffAssignmentRecord[] = [];
+    const toRechange: StaffAssignmentRecord[] = [];
+    const toAssign: StaffAssignmentRecord[] = [];
+    const planned: ItemInsert[] = [];
+    const item = (a: StaffAssignmentRecord, o: StaffOutcome): ItemInsert => ({
+      submissionId: row.id,
+      playerId: a.playerId,
+      origin: 'session',
+      role: a.role,
+      recordId: o.recordId ?? null,
+      outcome: o.outcome,
+      error: o.error ?? null,
+      errorCode: o.errorCode ?? null,
+      suggestedPlayerId: o.suggestedPlayerId ?? null,
+    });
+    for (const a of tombstoned.values()) {
+      const still = listed.some((p) => p.recordId === a.recordId);
+      if (still) toRemove.push(a);
+      planned.push(item(a, { outcome: still ? 'pending' : 'already_removed', recordId: a.recordId }));
+    }
+    for (const a of live.values()) {
+      const decision = decide(a, listed);
+      if (decision.kind === 'assign') toAssign.push(a);
+      if (decision.kind === 'rechange') toRechange.push(a);
+      const pending = decision.kind === 'assign' || decision.kind === 'rechange';
+      planned.push(item(a, pending ? { outcome: 'pending', recordId: decision.kind === 'rechange' ? decision.recordId : null } : settled(decision)));
+    }
+    db.transaction(() => {
+      deps.roster.ensurePlayers(leagueId, planned.map((p) => ({ playerId: p.playerId as PlayerId })));
+      setItems(planned);
+    });
+    const total = planned.length;
+    let done = planned.filter((p) => p.outcome !== 'pending').length;
+    emit(row, 'planned', `${toRemove.length} to remove, ${toRechange.length} role changes, ${toAssign.length} to assign.`, done, total);
+
+    // 2. Execute: one write at a time, removals, then role changes, then assigns.
+    let lastWriteAt: number | undefined;
+    /** Keeps writes at least `staffDelayMs` apart, or longer when play-tools asks; stops on shutdown. */
+    async function pace(atLeastMs = 0): Promise<void> {
+      if (stop.signal.aborted) throw stop.signal.reason;
+      const spacing = lastWriteAt === undefined ? 0 : lastWriteAt + staffDelayMs - now().getTime();
+      const wait = Math.max(spacing, atLeastMs);
+      renewLock(row, wait);
+      if (wait > 0) await sleep(wait, stop.signal);
+    }
+
+    function record(a: StaffAssignmentRecord, o: StaffOutcome, message: string): void {
+      setOutcome(row.id, [a.playerId], {
+        outcome: o.outcome,
+        error: o.error ?? null,
+        errorCode: o.errorCode ?? null,
+        suggestedPlayerId: o.suggestedPlayerId ?? null,
+        ...(o.recordId !== undefined ? { recordId: o.recordId } : {}),
+      });
+      done += 1;
+      emit(row, 'staff_sent', message, done, total);
+    }
+
+    /**
+     * What a failed write means for its item: `retry` after a 429 or 5xx (it may
+     * have landed, so the caller re-reads first), the item's outcome after a
+     * refusal of just this staffer; throws when the job must stop.
+     */
+    function failure(a: StaffAssignmentRecord, err: unknown, tries: number): StaffOutcome | 'retry' {
+      if (err instanceof TypeError) return { outcome: 'failed', error: err.message, errorCode: 'invalid_input' };
+      if (!(err instanceof PokemonUpstreamError)) throw err;
+      if (STAFF_STOPS.has(err.code)) {
+        setOutcome(row.id, [a.playerId], { outcome: 'failed', error: err.message, errorCode: err.code });
+        throw new StaffStop(err.code as 'tournament_locked' | 'forbidden');
+      }
+      if (CONNECTION_LOST.has(err.code)) throw err;
+      if (!err.retryable || tries >= MAX_RETRIES) return { outcome: 'failed', error: err.message, errorCode: err.code };
+      return 'retry';
+    }
+
+    /** A fresh read for one item's decision: retried like a write; null when play-tools never answered. */
+    async function readFor(a: StaffAssignmentRecord): Promise<TournamentParticipant[] | StaffOutcome> {
+      for (let tries = 0; ; tries += 1) {
+        try {
+          return (listed = await read());
+        } catch (err) {
+          const next = failure(a, err, tries);
+          if (next !== 'retry') return next;
+          emit(row, 'retrying', `${(err as Error).message} Reading the tournament again.`, done, total);
+          await pace(Math.max(staffDelayMs, (err as PokemonUpstreamError).details.retryAfterMs ?? 0));
+        }
+      }
+    }
+
+    for (const a of toRemove) {
+      let outcome: StaffOutcome | undefined;
+      for (let tries = 0; !outcome; tries += 1) {
+        await pace();
+        try {
+          lastWriteAt = now().getTime();
+          const result = await gateway.unassignStaff(tournamentId, a.recordId!, a.playerId);
+          outcome = { outcome: result === 'removed' ? 'removed' : 'already_removed' };
+        } catch (err) {
+          const next = failure(a, err, tries);
+          if (next !== 'retry') {
+            outcome = next;
+            break;
+          }
+          emit(row, 'retrying', `${(err as Error).message} Checking whether the removal landed.`, done, total);
+          await pace((err as PokemonUpstreamError).details.retryAfterMs);
+          const fresh = await readFor(a);
+          if (!Array.isArray(fresh)) outcome = fresh;
+          else if (!fresh.some((p) => p.recordId === a.recordId)) outcome = { outcome: 'removed' };
+        }
+      }
+      record(a, outcome, `Removed ${a.playerId}.`);
+    }
+
+    /** After a role change found its record gone: decide again from a fresh read. */
+    async function redecide(a: StaffAssignmentRecord): Promise<StaffOutcome | 'assign'> {
+      const fresh = await readFor(a);
+      if (!Array.isArray(fresh)) return fresh;
+      const decision = decide({ ...a, recordId: null }, fresh);
+      if (decision.kind === 'assign') return 'assign';
+      if (decision.kind === 'rechange') return { outcome: 'already_listed', error: `Listed as ${roleLabel(a.role)}` };
+      return settled(decision);
+    }
+
+    for (const a of toRechange) {
+      let outcome: StaffOutcome | 'assign' | undefined;
+      for (let tries = 0; !outcome; tries += 1) {
+        await pace();
+        try {
+          lastWriteAt = now().getTime();
+          const result = await gateway.changeStaffRole(tournamentId, a.recordId!, a.role as never);
+          outcome = result === 'changed' ? { outcome: 'role_changed', recordId: a.recordId } : await redecide(a);
+        } catch (err) {
+          const next = failure(a, err, tries);
+          if (next !== 'retry') {
+            outcome = next;
+            break;
+          }
+          emit(row, 'retrying', `${(err as Error).message} Checking whether the role change landed.`, done, total);
+          await pace((err as PokemonUpstreamError).details.retryAfterMs);
+          const fresh = await readFor(a);
+          if (!Array.isArray(fresh)) outcome = fresh;
+          else {
+            const own = fresh.find((p) => p.recordId === a.recordId);
+            if (own?.role === a.role) outcome = { outcome: 'role_changed', recordId: a.recordId };
+            else if (!own) outcome = await redecide(a);
+          }
+        }
+      }
+      if (outcome === 'assign') toAssign.push({ ...a, recordId: null });
+      else record(a, outcome, outcome.outcome === 'role_changed' ? `Changed ${a.playerId} to ${roleLabel(a.role)}.` : `${a.playerId}: ${outcome.outcome}.`);
+    }
+
+    for (const a of toAssign) {
+      let outcome: StaffOutcome | undefined;
+      let sent = false;
+      for (let tries = 0; !outcome; tries += 1) {
+        await pace();
+        // Never send a player id the tournament lists, or its organizer: checked against play-tools right now.
+        const fresh = await readFor(a);
+        if (!Array.isArray(fresh)) {
+          outcome = fresh;
+          break;
+        }
+        const decision = decide(a, fresh);
+        if (decision.kind !== 'assign') {
+          outcome = decision.kind === 'rechange' ? { outcome: 'already_listed', error: `Listed as ${roleLabel(a.role)}` } : settled(decision, sent);
+          break;
+        }
+        try {
+          lastWriteAt = now().getTime();
+          sent = true;
+          const result = await gateway.assignStaff(tournamentId, { playerId: a.playerId, role: a.role as never });
+          if (result.status === 'assigned') outcome = { outcome: 'assigned', recordId: result.recordId };
+          else if (result.status === 'invalid') outcome = { outcome: 'failed', error: result.code, errorCode: result.code };
+          else if (result.code === 'cannot_duplicate_participant') {
+            // Someone listed them between the re-read and the call: read again, never resend.
+            const after = await readFor(a);
+            if (!Array.isArray(after)) outcome = after;
+            else {
+              const again = decide(a, after);
+              outcome = again.kind === 'assign' || again.kind === 'rechange' ? { outcome: 'already_listed', error: result.code } : settled(again);
+            }
+          } else {
+            outcome = {
+              outcome: 'ineligible',
+              error: refusalMessage(result.code, result.suggestedPlayerId),
+              errorCode: result.code,
+              suggestedPlayerId: result.suggestedPlayerId ?? null,
+            };
+          }
+        } catch (err) {
+          const next = failure(a, err, tries);
+          if (next !== 'retry') {
+            outcome = next;
+            break;
+          }
+          emit(row, 'retrying', `${(err as Error).message} Checking whether the assignment landed.`, done, total);
+          await pace((err as PokemonUpstreamError).details.retryAfterMs);
+        }
+      }
+      record(a, outcome, outcome.outcome === 'assigned' ? `Assigned ${a.playerId} as ${roleLabel(a.role)}.` : `${a.playerId}: ${outcome.outcome}.`);
+    }
+
+    // 3. Reconcile: upstream is the source of truth for who holds which record.
+    const after = await read();
+    const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
+    for (const i of items) {
+      if ((i.outcome === 'assigned' || i.outcome === 'role_changed') && !after.some((p) => p.recordId === i.recordId && p.role === i.role)) {
+        setOutcome(row.id, [i.playerId as PlayerId], { outcome: 'failed', error: 'Not in play-tools after assigning.', errorCode: null });
+      }
+      if (i.outcome === 'removed' && after.some((p) => p.recordId === i.recordId)) {
+        setOutcome(row.id, [i.playerId as PlayerId], { outcome: 'failed', error: 'Still in play-tools after removing.', errorCode: null });
+      }
+    }
+    finishStaff(row);
+    const final = db.select({ outcome: submissionItem.outcome }).from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
+    const missed = final.filter((i) => STAFF_UNDONE.includes(i.outcome)).length;
+    emit(row, 'reconciled', `play-tools matches ${total - missed} of the ${total} staff.`, total, total);
+    const status = missed === 0 ? 'succeeded' : missed < total ? 'partial' : 'failed';
+    setStatus(row, status);
+    emit(row, 'finished', `Staff job ${status}.`, total, total);
+  }
+
+  /**
+   * Writes each decided staff item back to its assignment, in one transaction
+   * with the item: held records become the assignment's (and the staff list's),
+   * removed ones drop the tombstone, failures mark it failed. A failed local
+   * write fails that item; the next apply's plan heals it.
+   */
+  function finishStaff(row: Row): void {
+    const assignments = deps.staffing.assignmentsFor(row.leagueId, row.playSessionId);
+    const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
+    for (const i of items) {
+      const live = assignments.find((a) => a.playerId === i.playerId && !a.removed);
+      const gone = assignments.find((a) => a.playerId === i.playerId && a.removed);
+      try {
+        db.transaction(() => {
+          setOutcome(row.id, [i.playerId as PlayerId], { outcome: i.outcome });
+          if (HELD.includes(i.outcome) && live && i.recordId && i.role) {
+            deps.staffing.recordApplied(row.leagueId, live.id, { recordId: i.recordId, role: i.role });
+          } else if (GONE.includes(i.outcome) && gone) {
+            deps.staffing.forgetRemoved(row.leagueId, gone.id);
+          } else if ((i.outcome === 'failed' || i.outcome === 'ineligible') && (live ?? gone)) {
+            deps.staffing.recordFailed(row.leagueId, (live ?? gone)!.id);
+          }
+        });
+      } catch (err) {
+        log.warn(`${what(row)} #${row.id} could not update staffer ${i.playerId} locally: ${(err as Error).message}`, {
+          submissionId: row.id,
+          playerId: i.playerId,
+        });
+        setOutcome(row.id, [i.playerId as PlayerId], {
+          outcome: 'failed',
+          error: `play-tools: ${i.outcome}; saving it here failed.`,
+          errorCode: 'local_write_failed',
+        });
+      }
+    }
+  }
+
   /**
    * Makes each removed record's outcome final together with what it means
    * locally: the player is off the date's session players and their tdf and
@@ -782,9 +1170,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .set({ outcome: 'skipped' })
       .where(and(eq(submissionItem.submissionId, row.id), eq(submissionItem.outcome, 'pending')))
       .run();
-    if (row.kind !== 'submit') finishRemoval(row);
+    if (row.kind === 'undo' || row.kind === 'clear') finishRemoval(row);
+    if (row.kind === 'staff') finishStaff(row);
     setStatus(row, status, error);
-    const c = counts(row.id);
+    const c = counts(row);
     const total = c.added + c.failed + c.skipped;
     emit(row, 'finished', `Submission ${status}: ${error}`, c.added + c.failed, total);
   }
@@ -792,7 +1181,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   function launch(row: Row): void {
     const submissionId = row.id;
     log.info(`${what(row)} #${submissionId} started for ${row.sessionDate}`, { submissionId, date: row.sessionDate });
-    const job = (row.kind === 'undo' ? runUndo(row) : row.kind === 'clear' ? runClear(row) : run(row))
+    const job = (row.kind === 'undo' ? runUndo(row) : row.kind === 'clear' ? runClear(row) : row.kind === 'staff' ? runStaff(row) : run(row))
       .catch((err: unknown) => {
         const interrupted = err instanceof Interrupted;
         if (!interrupted) log.warn(`${what(row)} #${submissionId} failed: ${(err as Error).message}`, { submissionId });
@@ -871,7 +1260,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   async function beginUndo(leagueId: string, target: Row, startedBy: string, retryOf: number | null): Promise<{ submissionId: number }> {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
-    if (target.kind === 'undo' || ACTIVE.includes(target.status)) {
+    if (target.kind !== 'submit' || ACTIVE.includes(target.status)) {
       throw new SubmissionError('not_undoable', 'Only a finished submission can be undone.');
     }
     const targets = undoTargets(target);
@@ -949,6 +1338,35 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return { submissionId: row.id };
   }
 
+  /** Starts a staff job for one of the date's tournaments, after the staffing module's checks (read fresh). */
+  async function beginStaff(leagueId: string, date: SessionDate, tournamentId: string, startedBy: string, retryOf: number | null) {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    assertUnlocked(leagueId);
+    const target = await deps.staffing.prepareApply(leagueId, date, tournamentId);
+
+    const row = db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: date,
+          playSessionId: target.tournamentId,
+          playSessionLabel: `${STAFF_PREFIX}${target.label}`,
+          startedBy,
+          startedAt: now(),
+          status: 'planned',
+          retryOf,
+          kind: 'staff',
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      return created;
+    });
+    launch(row);
+    return { submissionId: row.id };
+  }
+
   // --- the service -----------------------------------------------------------
 
   const service: SubmissionService = {
@@ -961,6 +1379,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
       if (row.kind === 'undo') return beginUndo(leagueId, mustFind(leagueId, row.undoOf!), startedBy, row.id);
       if (row.kind === 'clear') return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
+      if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
     },
 
@@ -988,6 +1407,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
     clear: async (leagueId, date, playSessionId, startedBy) => beginClear(leagueId, date, playSessionId, startedBy, null),
 
+    applyStaff: async (leagueId, date, input) => beginStaff(leagueId, date, input.tournamentId, input.startedBy, null),
+
     get(leagueId, submissionId) {
       const row = mustFind(leagueId, submissionId);
       const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
@@ -1008,6 +1429,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           recordId: i.recordId,
           asStaff: i.asStaff,
           removedBy: undone.get(i.playerId) ?? null,
+          role: i.role,
+          errorCode: i.errorCode,
+          suggestedPlayerId: i.suggestedPlayerId as PlayerId | null,
         })),
       };
     },
