@@ -123,7 +123,7 @@ async function retry() {
           <h1 class="text-2xl font-semibold">{{ submission.date }}</h1>
           <p class="text-muted">{{ submission.playSessionLabel }}</p>
           <p class="text-sm text-muted">
-            Started {{ new Date(submission.startedAt).toLocaleString() }} by {{ submission.startedBy }}
+            Started {{ new Date(submission.startedAt).toLocaleString() }} by {{ startedByText(submission) }}
             <template v-if="submission.retryOf">
               · retries <NuxtLink :to="`/history/${submission.retryOf}`" class="underline">#{{ submission.retryOf }}</NuxtLink>
             </template>

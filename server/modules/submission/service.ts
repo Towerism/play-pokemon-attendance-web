@@ -53,6 +53,8 @@ export interface SubmissionSummary {
   date: SessionDate;
   playSessionLabel: string;
   startedBy: string;
+  /** The professor whose Pokémon connection made the upstream calls (ADR-0008); null on attempts from before it. */
+  professor: { playerId: string; name: string | null } | null;
   startedAt: Date;
   finishedAt: Date | null;
   status: SubmissionStatus;
@@ -428,6 +430,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     };
   }
 
+  /** The league's submitting professor, stamped on each new attempt (ADR-0008). */
+  function professorOf(leagueId: string) {
+    const p = deps.connections.getStatus(leagueId).professor;
+    return { professorPlayerId: p?.playerId ?? null, professorName: p?.name ?? null };
+  }
+
   function summary(row: Row): SubmissionSummary {
     const blocked = row.kind !== 'submit' || ACTIVE.includes(row.status) ? 'not_undoable' : undoTargets(row).length === 0 ? 'nothing_to_undo' : null;
     return {
@@ -435,6 +443,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       date: row.sessionDate as SessionDate,
       playSessionLabel: row.playSessionLabel,
       startedBy: row.startedBy,
+      professor: row.professorPlayerId === null ? null : { playerId: row.professorPlayerId, name: row.professorName },
       startedAt: row.startedAt,
       finishedAt: row.finishedAt,
       status: row.status,
@@ -1419,6 +1428,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: candidate.id,
           playSessionLabel: candidate.label,
           startedBy,
+          ...professorOf(leagueId),
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -1476,6 +1486,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: target.playSessionId,
           playSessionLabel: target.playSessionLabel,
           startedBy,
+          ...professorOf(leagueId),
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -1517,6 +1528,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: candidate.id,
           playSessionLabel: candidate.label,
           startedBy,
+          ...professorOf(leagueId),
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -1546,6 +1558,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: target.tournamentId,
           playSessionLabel: `${STAFF_PREFIX}${target.label}`,
           startedBy,
+          ...professorOf(leagueId),
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -1572,6 +1585,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: '',
           playSessionLabel: STAFF_IMPORT_LABEL,
           startedBy,
+          ...professorOf(leagueId),
           startedAt: now(),
           status: 'planned',
           retryOf,

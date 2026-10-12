@@ -23,7 +23,7 @@ const tokens: TokenProvider = {
   getAccessToken: vi.fn(async () => ({ value: 'access-jwt', expiresAt: new Date(Date.now() + 3_600_000), subject: SUB })),
 };
 const log = { warn: vi.fn() };
-const gateway = () => createPlayToolsHttpAdapter({ tokens, leagueId: 'default', log });
+const gateway = () => createPlayToolsHttpAdapter({ tokens, connectionId: 1, log });
 
 async function upstreamError(promise: Promise<unknown>): Promise<PokemonUpstreamError> {
   const err = await promise.then(
@@ -45,6 +45,40 @@ const group = (guid: string, over: Record<string, unknown> = {}) => ({
 });
 const page = (results: unknown[], next: string | null = null) => ({ count: results.length, next, previous: null, results });
 
+describe("getProfessorProfile (the connected professor's own player id)", () => {
+  const personal = (owner: unknown) => ({ guid: 'p', display_id: null, group_type: 'personal', name: null, display_name: null, owner });
+
+  it("reads the personal group's owner from the recorded response, never a league owner", async () => {
+    upstream.use(http.get(GROUPS_URL, () => HttpResponse.json(RECORDED)));
+    expect(await gateway().getProfessorProfile()).toEqual({ playerId: '9999991', name: null });
+    expect(tokens.getAccessToken).toHaveBeenCalledWith(1);
+  });
+
+  it('fails with not_connected, calling nothing, when the league has no professor connection', async () => {
+    const getAccessToken = vi.fn();
+    const err = await upstreamError(createPlayToolsHttpAdapter({ tokens: { getAccessToken }, connectionId: null }).getProfessorProfile());
+    expect(err.code).toBe('not_connected');
+    expect(getAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('keeps leading zeros and accepts a numeric player id', async () => {
+    upstream.use(http.get(GROUPS_URL, () => HttpResponse.json(page([personal({ guid: 'o', player_id: '0012345' })]))));
+    expect((await gateway().getProfessorProfile()).playerId).toBe('0012345');
+    upstream.use(http.get(GROUPS_URL, () => HttpResponse.json(page([group('1'), personal({ guid: 'o', player_id: 4321 })]))));
+    expect((await gateway().getProfessorProfile()).playerId).toBe('4321');
+  });
+
+  it.each([
+    ['no personal group', page([group('1', { owner: { guid: 'o', player_id: '9999992' } })])],
+    ['a personal group without an owner', page([personal(null)])],
+    ['an owner without a player id', page([personal({ guid: 'o', player_id: null })])],
+    ['a player id that is not 1–12 digits', page([personal({ guid: 'o', player_id: '1234567890123' })])],
+  ])('fails loudly on %s', async (_case, body) => {
+    upstream.use(http.get(GROUPS_URL, () => HttpResponse.json(body)));
+    expect((await upstreamError(gateway().getProfessorProfile())).code).toBe('unexpected_shape');
+  });
+});
+
 describe('listLeagues (S5: core/users/{sub}/activity_groups/)', () => {
   it("lists the organizer's leagues from the recorded response, leaving out the personal group", async () => {
     let seen: Request | undefined;
@@ -58,7 +92,7 @@ describe('listLeagues (S5: core/users/{sub}/activity_groups/)', () => {
     expect(await gateway().listLeagues()).toEqual([
       { id: '00000000-0000-4000-8000-000000000004', name: '<redacted>', displayId: 'L5012', canSubmit: true },
     ]);
-    expect(tokens.getAccessToken).toHaveBeenCalledWith('default');
+    expect(tokens.getAccessToken).toHaveBeenCalledWith(1);
     expect(seen!.headers.get('authorization')).toBe('Bearer access-jwt');
     expect(seen!.headers.get('origin')).toBe('https://play-tools.pokemon.com');
   });
@@ -135,13 +169,13 @@ describe('listLeagues (S5: core/users/{sub}/activity_groups/)', () => {
         throw new PokemonUpstreamError('needs_reconnect', 'reconnect');
       },
     };
-    const err = await upstreamError(createPlayToolsHttpAdapter({ tokens: dead, leagueId: 'default' }).listLeagues());
+    const err = await upstreamError(createPlayToolsHttpAdapter({ tokens: dead, connectionId: 1 }).listLeagues());
     expect(err.code).toBe('needs_reconnect');
   });
 
   it('honours a base URL override (test doubles only)', async () => {
     upstream.use(http.get(`http://127.0.0.1:9/services/core/users/${SUB}/activity_groups/`, () => HttpResponse.json(page([]))));
-    expect(await createPlayToolsHttpAdapter({ tokens, leagueId: 'default', baseUrl: 'http://127.0.0.1:9/services/' }).listLeagues()).toEqual([]);
+    expect(await createPlayToolsHttpAdapter({ tokens, connectionId: 1, baseUrl: 'http://127.0.0.1:9/services/' }).listLeagues()).toEqual([]);
   });
 });
 

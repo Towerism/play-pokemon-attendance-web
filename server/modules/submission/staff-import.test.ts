@@ -165,6 +165,8 @@ beforeEach(() => {
     connectedAt: clock,
     lastRefreshedAt: clock,
     league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
+    connectionId: 1,
+    professor: { playerId: '0012345', name: 'Ash Ketchum' },
   };
   staffing = createStaffingService({
     db: database.db,
@@ -704,5 +706,11 @@ describe('retry, crash and shutdown', () => {
     expect(view.status).toBe('interrupted');
     expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
     expect(service.events(L, view.id).at(-1)).toMatchObject({ type: 'finished', done: 1, total: 2 });
+  });
+});
+
+describe('the submitting professor on a staff import (ADR-0008)', () => {
+  it("records the league's submitting professor", async () => {
+    expect((await importStaff()).professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
   });
 });

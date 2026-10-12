@@ -22,7 +22,7 @@ watch(result, (view) => {
   if (view) shown.value = view;
 });
 
-const blocked = computed(() => staffImportBlocked(connection.value));
+const blocked = computed(() => staffImportBlocked(leagueConnection(connection.value)));
 const starting = ref(false);
 async function start() {
   starting.value = true;

@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { s256Challenge } from './adapters/ptc-oauth/pkce';
-import { ConnectError, LeagueNotFoundError, type PokemonConnectionService, createPokemonConnectionService } from './connection';
+import {
+  ConnectError,
+  ConnectionNotFoundError,
+  LeagueNotFoundError,
+  type PokemonConnectionService,
+  connectionAad,
+  createPokemonConnectionService,
+} from './connection';
 import { PokemonUpstreamError } from './ports/errors';
 import type { League } from './ports/play-tools-gateway';
 import type { PtcOAuthClient, TokenGrant } from './ports/ptc-oauth';
@@ -12,35 +19,48 @@ import type { TokenProvider } from './ports/token-provider';
 import { type TokenVault, createTokenVault } from './vault/vault';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
-const SUB = '0123456789abcdef0123456789abcdef';
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const USER = 1;
 
 const STORE: League = { id: 'group-1', name: 'Card Shop', displayId: 'L5012', canSubmit: true };
-const OTHER_STORE: League = { id: 'group-2', name: 'Game Den', displayId: 'L7000', canSubmit: false };
+const OTHER_STORE: League = { id: 'group-2', name: 'Game Den', displayId: 'L7000', canSubmit: true };
+
+interface Professor {
+  sub: string;
+  playerId: string;
+  name: string | null;
+  leagues: League[] | Error;
+}
+
+const ASH: Professor = { sub: 'sub-ash', playerId: '0012345', name: 'Ash Ketchum', leagues: [STORE] };
+const BROCK: Professor = { sub: 'sub-brock', playerId: '222', name: 'Brock Harrison', leagues: [OTHER_STORE] };
 
 let database: OpenDatabase;
 let vault: TokenVault;
 let clock: Date;
 let oauth: FakeOAuth;
-let leagues: League[] | Error;
+let professors: Map<string, Professor>;
+let profileError: Error | undefined;
+let profileCalls: string[];
 let service: PokemonConnectionService;
 let log: { warn: ReturnType<typeof vi.fn> };
 
-/** Hydra as a fake: rotates the refresh token on every refresh and tracks which tokens are alive. */
+/** Hydra as a fake: one rotating chain per account (by `sub`), tracking which refresh token belongs to whom. */
 class FakeOAuth implements PtcOAuthClient {
   refreshCalls: string[] = [];
   exchanges: { code: string; verifier: string }[] = [];
   revoked: string[] = [];
   accessTtlMs = HOUR;
-  subject = SUB;
+  /** The account the next code exchange logs into. */
+  subject = ASH.sub;
   nextError: Error | undefined;
   revokeError: Error | undefined;
   omitRefreshToken = false;
   /** Holds refreshes until released, to exercise concurrency. */
   gate: Promise<void> | undefined;
   private serial = 0;
+  private owners = new Map<string, string>();
 
   authorizeUrl(challenge: string, state: string) {
     return `https://access.pokemon.com/oauth2/auth?code_challenge=${challenge}&state=${state}`;
@@ -48,13 +68,13 @@ class FakeOAuth implements PtcOAuthClient {
 
   async exchangeCode(code: string, verifier: string) {
     this.exchanges.push({ code, verifier });
-    return this.issue();
+    return this.issue(this.subject);
   }
 
   async refresh(refreshToken: string) {
     this.refreshCalls.push(refreshToken);
     await this.gate;
-    return this.issue();
+    return this.issue(this.owners.get(refreshToken) ?? 'unknown');
   }
 
   async revoke(refreshToken: string) {
@@ -62,19 +82,16 @@ class FakeOAuth implements PtcOAuthClient {
     this.revoked.push(refreshToken);
   }
 
-  private issue(): TokenGrant {
+  private issue(subject: string): TokenGrant {
     if (this.nextError) {
       const err = this.nextError;
       this.nextError = undefined;
       throw err;
     }
     this.serial += 1;
-    return {
-      accessToken: `access-${this.serial}`,
-      expiresAt: new Date(clock.getTime() + this.accessTtlMs),
-      subject: this.subject,
-      refreshToken: this.omitRefreshToken ? null : `ory_rt_${this.serial}`,
-    };
+    const refreshToken = this.omitRefreshToken ? null : `ory_rt_${this.serial}`;
+    if (refreshToken) this.owners.set(refreshToken, subject);
+    return { accessToken: `access-${this.serial}`, expiresAt: new Date(clock.getTime() + this.accessTtlMs), subject, refreshToken };
   }
 }
 
@@ -83,28 +100,58 @@ function build(): PokemonConnectionService {
     db: database.db,
     vault,
     oauth,
-    gateway: (tokens: TokenProvider, leagueId: string) => ({
-      async listLeagues() {
-        await tokens.getAccessToken(leagueId);
-        if (leagues instanceof Error) throw leagues;
-        return leagues;
-      },
-    }),
+    gateway: (tokens: TokenProvider, connectionId: number) => {
+      const who = async () => {
+        const { subject } = await tokens.getAccessToken(connectionId);
+        const p = professors.get(subject);
+        if (!p) throw new Error(`no fake professor for ${subject}`);
+        return p;
+      };
+      return {
+        async listLeagues() {
+          const p = await who();
+          if (p.leagues instanceof Error) throw p.leagues;
+          return p.leagues;
+        },
+        async getProfessorProfile() {
+          const p = await who();
+          profileCalls.push(p.playerId);
+          if (profileError) throw profileError;
+          return { playerId: p.playerId as never, name: p.name };
+        },
+      };
+    },
     now: () => clock,
     log,
   });
 }
 
 const advance = (ms: number) => (clock = new Date(clock.getTime() + ms));
-const row = () =>
-  database.sqlite.prepare('select * from pokemon_connection where league_id = ?').get(L) as
-    | { refresh_token_ciphertext: Buffer; status: string; status_reason: string | null; ptc_user_id: string; activity_group_id: string | null; last_refreshed_at: number }
-    | undefined;
-const storedRefreshToken = () => vault.decrypt(row()!.refresh_token_ciphertext, L);
 
-/** Runs the whole connect flow the way the Settings page does. */
-async function connect(svc = service, userId = USER) {
-  const { authorizeUrl } = svc.startConnect(L, userId);
+interface Row {
+  id: number;
+  professor_player_id: string | null;
+  professor_name: string | null;
+  refresh_token_ciphertext: Buffer;
+  status: string;
+  status_reason: string | null;
+  ptc_user_id: string;
+  last_refreshed_at: number;
+}
+const rows = () => database.sqlite.prepare('select * from pokemon_connection order by id').all() as Row[];
+const rowOf = (playerId: string) => rows().find((r) => r.professor_player_id === playerId);
+const storedRefreshToken = (playerId: string) => {
+  const r = rowOf(playerId)!;
+  return vault.decrypt(r.refresh_token_ciphertext, connectionAad(r.id));
+};
+const binding = () =>
+  database.sqlite.prepare('select * from league_upstream where league_id = ?').get(L) as { connection_id: number; activity_group_id: string } | undefined;
+const idOf = (p: Professor) => rowOf(p.playerId)!.id;
+
+/** Runs the whole connect flow the way the Settings page does, logging into `as`. */
+async function connect(as: Professor = ASH, svc = service, userId = USER) {
+  oauth.subject = as.sub;
+  const { authorizeUrl } = svc.startConnect(userId);
   const state = new URL(authorizeUrl).searchParams.get('state');
   return svc.completeConnect(L, userId, `https://play-tools.pokemon.com/loggedIn?code=code-${state}&state=${state}&scope=openid`);
 }
@@ -124,70 +171,118 @@ beforeEach(() => {
   vault = createTokenVault(randomBytes(32).toString('base64'));
   clock = new Date('2026-10-14T22:00:00Z');
   oauth = new FakeOAuth();
-  leagues = [STORE];
+  professors = new Map([ASH, BROCK].map((p) => [p.sub, { ...p }]));
+  profileError = undefined;
+  profileCalls = [];
   log = { warn: vi.fn() };
   service = build();
 });
 afterEach(() => database.close());
 
-describe('getStatus', () => {
+describe('getStatus (the league view submission and staffing read)', () => {
   it('is not_connected before anyone connects', () => {
-    expect(service.getStatus(L)).toEqual({ status: 'not_connected', reason: null, connectedAt: null, lastRefreshedAt: null, league: null });
+    expect(service.getStatus(L)).toEqual({
+      status: 'not_connected',
+      reason: null,
+      connectedAt: null,
+      lastRefreshedAt: null,
+      league: null,
+      connectionId: null,
+      professor: null,
+    });
   });
-});
 
-describe('connect flow (§4.1, paste-back)', () => {
-  it("starts with an authorize URL carrying an S256 challenge and state, and stores nothing", () => {
-    const url = new URL(service.startConnect(L, USER).authorizeUrl);
-    expect(url.searchParams.get('code_challenge')).toMatch(/^[\w-]{43}$/);
-    expect(url.searchParams.get('state')).toMatch(/^[\w-]{16,}$/);
-    expect(row()).toBeUndefined();
-  });
-
-  it('redeems the pasted code with the verifier behind the challenge, and stores the refresh token encrypted', async () => {
-    const { authorizeUrl } = service.startConnect(L, USER);
-    const params = new URL(authorizeUrl).searchParams;
-
-    const status = await service.completeConnect(
-      L,
-      USER,
-      `https://play-tools.pokemon.com/loggedIn?code=abc&state=${params.get('state')}`,
-    );
-
-    expect(oauth.exchanges).toHaveLength(1);
-    expect(oauth.exchanges[0]!.code).toBe('abc');
-    expect(s256Challenge(oauth.exchanges[0]!.verifier)).toBe(params.get('code_challenge'));
-    expect(status).toEqual({
+  it("describes the league's submitting professor and their league", async () => {
+    await connect(ASH);
+    expect(service.getStatus(L)).toEqual({
       status: 'connected',
       reason: null,
       connectedAt: clock,
       lastRefreshedAt: clock,
-      league: { id: 'group-1', name: 'Card Shop', displayId: 'L5012', canSubmit: true },
+      league: STORE,
+      connectionId: idOf(ASH),
+      professor: { playerId: '0012345', name: null },
     });
-    expect(row()!.ptc_user_id).toBe(SUB);
-    expect(row()!.refresh_token_ciphertext.toString('latin1')).not.toContain('ory_rt_1');
-    expect(storedRefreshToken()).toBe('ory_rt_1');
   });
 
-  it('never exposes a token in the status it returns', async () => {
-    const status = await connect();
-    expect(JSON.stringify(status)).not.toMatch(/ory_rt|access-/);
+  it('is connected with no league while professors are connected but none submits for the league', async () => {
+    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
+    await connect(ASH);
+    expect(service.getStatus(L)).toMatchObject({ status: 'connected', league: null, connectionId: null, professor: null });
+  });
+});
+
+describe('connect flow (§4.1, paste-back)', () => {
+  it('starts with an authorize URL carrying an S256 challenge and state, and stores nothing', () => {
+    const url = new URL(service.startConnect(USER).authorizeUrl);
+    expect(url.searchParams.get('code_challenge')).toMatch(/^[\w-]{43}$/);
+    expect(url.searchParams.get('state')).toMatch(/^[\w-]{16,}$/);
+    expect(rows()).toEqual([]);
   });
 
-  it('leaves the league unchosen when the organizer has several', async () => {
-    leagues = [STORE, OTHER_STORE];
-    expect((await connect()).league).toBeNull();
+  it('redeems the code with the verifier behind the challenge, identifies the professor, and stores the token encrypted', async () => {
+    const { authorizeUrl } = service.startConnect(USER);
+    const params = new URL(authorizeUrl).searchParams;
+
+    const result = await service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=abc&state=${params.get('state')}`);
+
+    expect(oauth.exchanges).toHaveLength(1);
+    expect(oauth.exchanges[0]!.code).toBe('abc');
+    expect(s256Challenge(oauth.exchanges[0]!.verifier)).toBe(params.get('code_challenge'));
+    expect(result).toEqual({
+      outcome: 'added',
+      connection: {
+        id: idOf(ASH),
+        professorPlayerId: '0012345',
+        professorName: null,
+        status: 'connected',
+        reason: null,
+        connectedAt: clock,
+        lastRefreshedAt: clock,
+        submitsForLeague: true,
+      },
+    });
+    expect(rowOf('0012345')).toMatchObject({ ptc_user_id: ASH.sub, professor_name: null });
+    expect(rowOf('0012345')!.refresh_token_ciphertext.toString('latin1')).not.toContain('ory_rt_1');
+    expect(storedRefreshToken('0012345')).toBe('ory_rt_1');
+  });
+
+  it("never takes a name from Pokémon, even when the profile carries one (Q5: names come from the organizer)", async () => {
+    expect(professors.get(ASH.sub)!.name).toBe('Ash Ketchum');
+    const { connection } = await connect(ASH);
+    expect(connection).toMatchObject({ professorPlayerId: '0012345', professorName: null });
+  });
+
+  it.each([
+    ['no player id upstream', new PokemonUpstreamError('unexpected_shape', 'no owner'), 'profile_unavailable'],
+    ['Pokémon unreachable while identifying', new PokemonUpstreamError('unavailable', 'down'), 'upstream_unavailable'],
+  ])('fails the connect on %s, storing nothing and revoking the fresh login', async (_case, error, code) => {
+    profileError = error;
+    const err = await rejection(connect(ASH));
+    expect(err).toBeInstanceOf(ConnectError);
+    expect((err as ConnectError).code).toBe(code);
+    expect(rows()).toEqual([]);
+    expect(oauth.revoked).toEqual(['ory_rt_1']);
+  });
+
+  it('never exposes a token in what it returns', async () => {
+    expect(JSON.stringify(await connect())).not.toMatch(/ory_rt|access-/);
+  });
+
+  it('leaves the league unchosen when the professor has several leagues', async () => {
+    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
+    expect((await connect()).connection.submitsForLeague).toBe(false);
+    expect(binding()).toBeUndefined();
   });
 
   it('still connects when league discovery fails; the league can be picked later', async () => {
-    leagues = new PokemonUpstreamError('unavailable', 'down');
-    const status = await connect();
-    expect(status.status).toBe('connected');
-    expect(status.league).toBeNull();
-    expect(log.warn).toHaveBeenCalledWith(
-      'League discovery after connecting failed; pick the league in Settings (down).',
-      { err: expect.any(PokemonUpstreamError) },
-    );
+    professors.get(ASH.sub)!.leagues = new PokemonUpstreamError('unavailable', 'down');
+    const { connection } = await connect();
+    expect(connection.status).toBe('connected');
+    expect(binding()).toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith('League discovery after connecting failed; pick the league in Settings (down).', {
+      err: expect.any(PokemonUpstreamError),
+    });
   });
 
   it.each([
@@ -195,126 +290,183 @@ describe('connect flow (§4.1, paste-back)', () => {
     ['another site', 'https://evil.example/loggedIn?code=a&state=b'],
     ['a login error', 'https://play-tools.pokemon.com/loggedIn?error=access_denied'],
   ])('refuses %s with invalid_url', async (_label, pasted) => {
-    service.startConnect(L, USER);
+    service.startConnect(USER);
     const err = await rejection(service.completeConnect(L, USER, pasted));
-    expect(err).toBeInstanceOf(ConnectError);
     expect((err as ConnectError).code).toBe('invalid_url');
     expect(oauth.exchanges).toEqual([]);
   });
 
   it('refuses a state it never issued', async () => {
-    service.startConnect(L, USER);
+    service.startConnect(USER);
     const err = await rejection(service.completeConnect(L, USER, 'https://play-tools.pokemon.com/loggedIn?code=a&state=forged'));
     expect((err as ConnectError).code).toBe('unknown_attempt');
     expect(oauth.exchanges).toEqual([]);
   });
 
   it("refuses a state started by another app user (bound to the starter's session)", async () => {
-    const { authorizeUrl } = service.startConnect(L, USER);
+    const { authorizeUrl } = service.startConnect(USER);
     const state = new URL(authorizeUrl).searchParams.get('state');
     const err = await rejection(service.completeConnect(L, 2, `https://play-tools.pokemon.com/loggedIn?code=a&state=${state}`));
     expect((err as ConnectError).code).toBe('unknown_attempt');
     expect(oauth.exchanges).toEqual([]);
   });
 
-  it('uses each attempt once, even when the exchange failed', async () => {
-    const { authorizeUrl } = service.startConnect(L, USER);
+  it('uses each attempt once: a replayed paste creates no second connection', async () => {
+    const { authorizeUrl } = service.startConnect(USER);
     const pasted = `https://play-tools.pokemon.com/loggedIn?code=a&state=${new URL(authorizeUrl).searchParams.get('state')}`;
-    oauth.nextError = new PokemonUpstreamError('unavailable', 'down');
-    await rejection(service.completeConnect(L, USER, pasted));
+    await service.completeConnect(L, USER, pasted);
 
     const err = await rejection(service.completeConnect(L, USER, pasted));
     expect((err as ConnectError).code).toBe('unknown_attempt');
     expect(oauth.exchanges).toHaveLength(1);
+    expect(rows()).toHaveLength(1);
   });
 
-  it('expires an attempt after 10 minutes', async () => {
-    const { authorizeUrl } = service.startConnect(L, USER);
-    const state = new URL(authorizeUrl).searchParams.get('state');
+  it('uses each attempt once, even when the exchange failed', async () => {
+    const { authorizeUrl } = service.startConnect(USER);
+    const pasted = `https://play-tools.pokemon.com/loggedIn?code=a&state=${new URL(authorizeUrl).searchParams.get('state')}`;
+    oauth.nextError = new PokemonUpstreamError('unavailable', 'down');
+    await rejection(service.completeConnect(L, USER, pasted));
+    expect(((await rejection(service.completeConnect(L, USER, pasted))) as ConnectError).code).toBe('unknown_attempt');
+  });
+
+  it('expires an attempt after 10 minutes, and accepts one at exactly 10', async () => {
+    const late = new URL(service.startConnect(USER).authorizeUrl).searchParams.get('state');
     advance(10 * MIN + 1);
-    const err = await rejection(service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${state}`));
+    const err = await rejection(service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${late}`));
     expect((err as ConnectError).code).toBe('expired');
-    expect(oauth.exchanges).toEqual([]);
-  });
 
-  it('accepts an attempt at exactly 10 minutes', async () => {
-    const { authorizeUrl } = service.startConnect(L, USER);
-    const state = new URL(authorizeUrl).searchParams.get('state');
+    const onTime = new URL(service.startConnect(USER).authorizeUrl).searchParams.get('state');
     advance(10 * MIN);
-    await expect(service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${state}`)).resolves.toMatchObject({
-      status: 'connected',
+    await expect(service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${onTime}`)).resolves.toMatchObject({
+      outcome: 'added',
     });
   });
 
-  it('reports a code Pokémon refuses (already used, too old) as code_rejected and stores nothing', async () => {
+  it('reports a code Pokémon refuses as code_rejected and stores nothing', async () => {
     oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'already used');
-    const err = await rejection(connect());
-    expect((err as ConnectError).code).toBe('code_rejected');
-    expect(row()).toBeUndefined();
+    expect(((await rejection(connect())) as ConnectError).code).toBe('code_rejected');
+    expect(rows()).toEqual([]);
   });
 
   it('fails without storing anything when Hydra grants no refresh token (offline scope missing)', async () => {
     oauth.omitRefreshToken = true;
-    const err = await rejection(connect());
-    expect((err as PokemonUpstreamError).code).toBe('unexpected_shape');
-    expect(row()).toBeUndefined();
-  });
-
-  it('reconnecting the same account clears needs_reconnect and keeps the chosen league', async () => {
-    await connect();
-    oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
-    advance(HOUR);
-    await rejection(service.getAccessToken(L));
-    expect(service.getStatus(L).status).toBe('needs_reconnect');
-
-    leagues = [STORE, OTHER_STORE]; // would leave a fresh connection unchosen
-    const status = await connect();
-
-    expect(status).toMatchObject({ status: 'connected', reason: null, league: { id: 'group-1' } });
-    expect(storedRefreshToken()).toBe('ory_rt_2');
-  });
-
-  it('connecting a different Pokémon account forgets the league chosen for the old one', async () => {
-    await connect();
-    oauth.subject = 'ffffffffffffffffffffffffffffffff';
-    leagues = [STORE, OTHER_STORE];
-    const status = await connect();
-    expect(status.league).toBeNull();
-    expect(row()!.ptc_user_id).toBe('ffffffffffffffffffffffffffffffff');
+    expect(((await rejection(connect())) as PokemonUpstreamError).code).toBe('unexpected_shape');
+    expect(rows()).toEqual([]);
   });
 });
 
-describe('getAccessToken (TokenProvider contract, ADR-0003)', () => {
-  it('throws not_connected before a connection exists', async () => {
-    const err = await rejection(service.getAccessToken(L));
-    expect((err as PokemonUpstreamError).code).toBe('not_connected');
+describe('several professors', () => {
+  it("adds a second professor without touching the first one's token, status or league", async () => {
+    await connect(ASH);
+    const before = rowOf(ASH.playerId);
+
+    const { outcome, connection } = await connect(BROCK);
+
+    expect(outcome).toBe('added');
+    expect(connection).toMatchObject({ professorPlayerId: '222', submitsForLeague: false });
+    expect(rows()).toHaveLength(2);
+    expect(rowOf(ASH.playerId)).toEqual(before);
+    expect(binding()!.connection_id).toBe(idOf(ASH));
+  });
+
+  it('reconnecting a professor replaces their token, clears needs_reconnect and keeps the league', async () => {
+    await connect(ASH);
+    oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
+    advance(HOUR);
+    await rejection(service.getAccessToken(idOf(ASH)));
+    expect(service.getStatus(L).status).toBe('needs_reconnect');
+
+    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE]; // would leave a fresh connection unchosen
+    const { outcome, connection } = await connect(ASH);
+
+    expect(outcome).toBe('reconnected');
+    expect(connection).toMatchObject({ status: 'connected', reason: null, submitsForLeague: true });
+    expect(rows()).toHaveLength(1);
+    expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_2');
+  });
+
+  it("keeps the organizer's display name across a reconnect", async () => {
+    await connect(ASH);
+    service.setProfessorName(L, ASH.playerId, 'Ash K.');
+    await connect(ASH);
+    expect(rowOf(ASH.playerId)!.professor_name).toBe('Ash K.');
+  });
+
+  it('lists the connections sorted by display name, unnamed ones by player id, marking the one that submits for the league', async () => {
+    await connect(BROCK);
+    await connect(ASH);
+    professors.set('sub-misty', { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [] });
+    await connect(professors.get('sub-misty')!);
+    service.setProfessorName(L, BROCK.playerId, 'Brock Harrison');
+    service.setProfessorName(L, ASH.playerId, 'Ash Ketchum');
+    expect(service.listConnections(L).map((c) => [c.professorName ?? c.professorPlayerId, c.submitsForLeague])).toEqual([
+      ['Ash Ketchum', false],
+      ['Brock Harrison', true],
+      ['0000444', false],
+    ]);
+  });
+
+  it('caps an install at 10 connections; a known professor can still reconnect', async () => {
+    for (let i = 1; i <= 10; i++) {
+      professors.set(`sub-${i}`, { sub: `sub-${i}`, playerId: String(1000 + i), name: `Prof ${i}`, leagues: [] });
+      await connect(professors.get(`sub-${i}`)!);
+    }
+    const err = await rejection(connect(ASH));
+    expect((err as ConnectError).code).toBe('connection_limit');
+    expect(rows()).toHaveLength(10);
+    expect(oauth.revoked).toEqual([expect.stringMatching(/^ory_rt_/)]);
+
+    await expect(connect(professors.get('sub-3')!)).resolves.toMatchObject({ outcome: 'reconnected' });
+  });
+
+  it('lets only one of two concurrent connects past the cap', async () => {
+    for (let i = 1; i <= 9; i++) {
+      professors.set(`sub-${i}`, { sub: `sub-${i}`, playerId: String(1000 + i), name: `Prof ${i}`, leagues: [] });
+      await connect(professors.get(`sub-${i}`)!);
+    }
+    const a = connect(ASH);
+    const b = connect(BROCK);
+    const settled = await Promise.allSettled([a, b]);
+    expect(settled.map((s) => s.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect(rows()).toHaveLength(10);
+  });
+
+  it('keeps one row when the same professor connects twice at once', async () => {
+    const both = await Promise.all([connect(ASH), connect(ASH)]);
+    expect(rows()).toHaveLength(1);
+    expect(both.map((r) => r.outcome).sort()).toEqual(['added', 'reconnected']);
+  });
+});
+
+describe('getAccessToken (TokenProvider contract, per connection)', () => {
+  it('throws not_connected for a connection that does not exist', async () => {
+    expect(((await rejection(service.getAccessToken(42))) as PokemonUpstreamError).code).toBe('not_connected');
   });
 
   it('serves the token from the connect while it has ≥ 2 minutes left, without refreshing', async () => {
     await connect();
     advance(HOUR - 2 * MIN);
-    expect(await service.getAccessToken(L)).toEqual({ value: 'access-1', expiresAt: new Date('2026-10-14T23:00:00Z'), subject: SUB });
+    expect(await service.getAccessToken(idOf(ASH))).toEqual({ value: 'access-1', expiresAt: new Date('2026-10-14T23:00:00Z'), subject: ASH.sub });
     expect(oauth.refreshCalls).toEqual([]);
   });
 
   it('refreshes once under 2 minutes are left, persisting the rotated refresh token before handing out the access token', async () => {
     await connect();
     advance(HOUR - 2 * MIN + 1);
-
-    const token = await service.getAccessToken(L);
-
+    const token = await service.getAccessToken(idOf(ASH));
     expect(oauth.refreshCalls).toEqual(['ory_rt_1']);
     expect(token.value).toBe('access-2');
-    expect(storedRefreshToken()).toBe('ory_rt_2');
-    expect(row()!.last_refreshed_at).toBe(Math.floor(clock.getTime() / 1000));
+    expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_2');
+    expect(rowOf(ASH.playerId)!.last_refreshed_at).toBe(Math.floor(clock.getTime() / 1000));
   });
 
   it('uses the rotated refresh token for the next refresh (never replays an old one)', async () => {
     await connect();
     advance(HOUR);
-    await service.getAccessToken(L);
+    await service.getAccessToken(idOf(ASH));
     advance(HOUR);
-    await service.getAccessToken(L);
+    await service.getAccessToken(idOf(ASH));
     expect(oauth.refreshCalls).toEqual(['ory_rt_1', 'ory_rt_2']);
   });
 
@@ -322,185 +474,403 @@ describe('getAccessToken (TokenProvider contract, ADR-0003)', () => {
     await connect();
     oauth.omitRefreshToken = true;
     advance(HOUR);
-    await service.getAccessToken(L);
-    expect(storedRefreshToken()).toBe('ory_rt_1');
+    await service.getAccessToken(idOf(ASH));
+    expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_1');
   });
 
-  it('serialises concurrent refreshes: one upstream call, everyone gets the same token', async () => {
-    await connect();
+  it('refreshes each professor once under concurrent use, and never hands one professor the other\'s token', async () => {
+    await connect(ASH);
+    await connect(BROCK);
     advance(HOUR);
     let release!: () => void;
     oauth.gate = new Promise((r) => (release = r));
 
-    const calls = Promise.all([service.getAccessToken(L), service.getAccessToken(L), service.getAccessToken(L)]);
+    const ash = [1, 2, 3].map(() => service.getAccessToken(idOf(ASH)));
+    const brock = [1, 2, 3].map(() => service.getAccessToken(idOf(BROCK)));
     release();
-    const tokens = await calls;
+    const [ashTokens, brockTokens] = await Promise.all([Promise.all(ash), Promise.all(brock)]);
 
-    expect(oauth.refreshCalls).toEqual(['ory_rt_1']);
-    expect(new Set(tokens.map((t) => t.value))).toEqual(new Set(['access-2']));
+    expect(oauth.refreshCalls.sort()).toEqual(['ory_rt_1', 'ory_rt_2']);
+    expect(new Set(ashTokens.map((t) => t.subject))).toEqual(new Set([ASH.sub]));
+    expect(new Set(brockTokens.map((t) => t.subject))).toEqual(new Set([BROCK.sub]));
+    expect(new Set(ashTokens.map((t) => t.value)).size).toBe(1);
+    expect(oauth.refreshCalls).not.toContain(storedRefreshToken(ASH.playerId));
+    expect(oauth.refreshCalls).not.toContain(storedRefreshToken(BROCK.playerId));
   });
 
   it('hands out no token when the rotated refresh token cannot be saved', async () => {
     await connect();
     advance(HOUR);
-    database.sqlite.exec(
-      "create trigger no_writes before update on pokemon_connection begin select raise(abort, 'disk I/O error'); end",
-    );
+    database.sqlite.exec("create trigger no_writes before update on pokemon_connection begin select raise(abort, 'disk I/O error'); end");
 
-    await expect(service.getAccessToken(L)).rejects.toThrow(/disk I\/O error/);
+    await expect(service.getAccessToken(idOf(ASH))).rejects.toThrow(/disk I\/O error/);
     database.sqlite.exec('drop trigger no_writes');
-    expect(storedRefreshToken()).toBe('ory_rt_1');
+    expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_1');
 
     // Nothing was cached either: the next caller goes back to Hydra.
-    await service.getAccessToken(L);
+    await service.getAccessToken(idOf(ASH));
     expect(oauth.refreshCalls).toHaveLength(2);
   });
 
-  it('marks the connection needs_reconnect on invalid_grant and stops calling Hydra', async () => {
-    await connect();
+  it("marks only that professor needs_reconnect on invalid_grant; the other keeps working", async () => {
+    await connect(ASH);
+    await connect(BROCK);
     advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'Pokémon no longer accepts this login');
 
-    const err = await rejection(service.getAccessToken(L));
-    expect((err as PokemonUpstreamError).code).toBe('needs_reconnect');
-    expect(service.getStatus(L)).toMatchObject({ status: 'needs_reconnect', reason: expect.stringMatching(/no longer accepts/) });
+    expect(((await rejection(service.getAccessToken(idOf(BROCK)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
+    expect(rowOf(BROCK.playerId)).toMatchObject({ status: 'needs_reconnect', status_reason: expect.stringMatching(/no longer accepts/) });
+    expect(rowOf(ASH.playerId)!.status).toBe('connected');
+    expect((await service.getAccessToken(idOf(ASH))).subject).toBe(ASH.sub);
 
-    const again = await rejection(service.getAccessToken(L));
-    expect((again as PokemonUpstreamError).code).toBe('needs_reconnect');
-    expect(oauth.refreshCalls).toHaveLength(1);
+    expect(((await rejection(service.getAccessToken(idOf(BROCK)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
+    expect(oauth.refreshCalls).toHaveLength(2);
+  });
+
+  it("refuses a ciphertext moved onto another professor's row", async () => {
+    await connect(ASH);
+    await connect(BROCK);
+    database.sqlite
+      .prepare('update pokemon_connection set refresh_token_ciphertext = ? where id = ?')
+      .run(rowOf(ASH.playerId)!.refresh_token_ciphertext, idOf(BROCK));
+    const restarted = build();
+
+    expect(((await rejection(restarted.getAccessToken(idOf(BROCK)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
+    expect(oauth.refreshCalls).toEqual([]);
   });
 
   it('marks needs_reconnect when the stored token no longer decrypts (vault key replaced)', async () => {
     await connect();
     vault = createTokenVault(randomBytes(32).toString('base64'));
     const restarted = build();
-
-    const err = await rejection(restarted.getAccessToken(L));
-    expect((err as PokemonUpstreamError).code).toBe('needs_reconnect');
+    expect(((await rejection(restarted.getAccessToken(idOf(ASH)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
     expect(restarted.getStatus(L)).toMatchObject({ status: 'needs_reconnect', reason: expect.stringMatching(/key/) });
-    expect(oauth.refreshCalls).toEqual([]);
   });
 
   it('passes a transient failure through, stays connected, and tries again next call', async () => {
     await connect();
     advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('unavailable', 'down');
-
-    expect(((await rejection(service.getAccessToken(L))) as PokemonUpstreamError).code).toBe('unavailable');
+    expect(((await rejection(service.getAccessToken(idOf(ASH)))) as PokemonUpstreamError).code).toBe('unavailable');
     expect(service.getStatus(L).status).toBe('connected');
-    expect((await service.getAccessToken(L)).value).toBe('access-2');
+    expect((await service.getAccessToken(idOf(ASH))).value).toBe('access-2');
   });
 
   it('refreshes from the stored token after a restart (no cached access token)', async () => {
     await connect();
     const restarted = build();
-    expect((await restarted.getAccessToken(L)).value).toBe('access-2');
+    expect((await restarted.getAccessToken(idOf(ASH))).value).toBe('access-2');
     expect(oauth.refreshCalls).toEqual(['ory_rt_1']);
+  });
+
+  it("never re-reads an identified professor's identity on a refresh, even without a display name (one call per connect)", async () => {
+    await connect(ASH);
+    expect(profileCalls).toEqual([ASH.playerId]);
+    advance(HOUR);
+    await service.getAccessToken(idOf(ASH));
+    advance(HOUR);
+    await service.keepAliveAll();
+    expect(oauth.refreshCalls).toHaveLength(2);
+    expect(profileCalls).toEqual([ASH.playerId]);
   });
 });
 
-describe('keepAlive (hourly task)', () => {
-  it('refreshes when the last refresh is ≥ 45 min old, even while the access token is still valid', async () => {
+describe('keepAliveAll (hourly task)', () => {
+  it('runs the 45-minute rule for every professor, one at a time', async () => {
     oauth.accessTtlMs = 24 * HOUR;
-    await connect();
-    advance(45 * MIN);
+    await connect(ASH);
+    advance(30 * MIN);
+    await connect(BROCK);
+    advance(20 * MIN); // Ash at 50 min, Brock at 20 min
 
-    expect(await service.keepAlive(L)).toEqual({ outcome: 'refreshed' });
-    expect(storedRefreshToken()).toBe('ory_rt_2');
+    expect(await service.keepAliveAll()).toEqual([
+      { connectionId: idOf(ASH), professorPlayerId: ASH.playerId, outcome: 'refreshed' },
+      { connectionId: idOf(BROCK), professorPlayerId: BROCK.playerId, outcome: 'skipped_recent' },
+    ]);
+    expect(oauth.refreshCalls).toEqual(['ory_rt_1']);
   });
 
-  it('skips a connection refreshed in the last 45 min', async () => {
-    await connect();
-    advance(45 * MIN - 1);
-    expect(await service.keepAlive(L)).toEqual({ outcome: 'skipped_recent' });
-    expect(oauth.refreshCalls).toEqual([]);
-  });
-
-  it('does nothing without a connection', async () => {
-    expect(await service.keepAlive(L)).toEqual({ outcome: 'not_connected' });
-  });
-
-  it('does not call Hydra for a connection that already needs a reconnect', async () => {
-    await connect();
+  it('skips a professor who needs a reconnect, without calling Hydra', async () => {
+    await connect(ASH);
     advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
-    await rejection(service.getAccessToken(L));
+    await rejection(service.getAccessToken(idOf(ASH)));
     advance(HOUR);
 
-    expect(await service.keepAlive(L)).toEqual({ outcome: 'needs_reconnect' });
+    expect(await service.keepAliveAll()).toEqual([{ connectionId: idOf(ASH), professorPlayerId: ASH.playerId, outcome: 'needs_reconnect' }]);
     expect(oauth.refreshCalls).toHaveLength(1);
   });
 
-  it('reports needs_reconnect when the refresh is refused', async () => {
-    await connect();
-    advance(HOUR);
-    oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
-    expect(await service.keepAlive(L)).toEqual({ outcome: 'needs_reconnect' });
-    expect(service.getStatus(L).status).toBe('needs_reconnect');
-  });
-
-  it('reports a transient failure without throwing', async () => {
-    await connect();
+  it("keeps going after one professor's failure", async () => {
+    await connect(ASH);
+    await connect(BROCK);
     advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('unavailable', 'Pokémon answered 503');
-    expect(await service.keepAlive(L)).toEqual({ outcome: 'failed', message: 'Pokémon answered 503' });
+
+    expect(await service.keepAliveAll()).toEqual([
+      { connectionId: idOf(ASH), professorPlayerId: ASH.playerId, outcome: 'failed', message: 'Pokémon answered 503' },
+      { connectionId: idOf(BROCK), professorPlayerId: BROCK.playerId, outcome: 'refreshed' },
+    ]);
+  });
+
+  it('reports needs_reconnect when a refresh is refused', async () => {
+    await connect(ASH);
+    advance(HOUR);
+    oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
+    expect((await service.keepAliveAll())[0]!.outcome).toBe('needs_reconnect');
+    expect(rowOf(ASH.playerId)!.status).toBe('needs_reconnect');
+  });
+
+  it('does nothing without connections', async () => {
+    expect(await service.keepAliveAll()).toEqual([]);
+  });
+
+  it("waits for a professor's in-flight refresh before a reconnect replaces their token, so the reconnect's token is the one kept", async () => {
+    await connect(ASH);
+    advance(HOUR);
+    let release!: () => void;
+    oauth.gate = new Promise((r) => (release = r));
+
+    const keepAlive = service.keepAliveAll(); // refreshing ory_rt_1, held by the gate
+    const reconnect = connect(ASH); // its exchange issues ory_rt_2
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    await Promise.all([keepAlive, reconnect]);
+
+    expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_2');
   });
 });
 
-describe('league discovery', () => {
-  it("lists the organizer's leagues and which one is chosen", async () => {
-    await connect();
-    leagues = [STORE, OTHER_STORE];
-    expect(await service.listUpstreamLeagues(L)).toEqual({ leagues: [STORE, OTHER_STORE], selectedId: 'group-1' });
+describe('league binding', () => {
+  it("lists one professor's leagues and which is chosen for the league", async () => {
+    await connect(ASH);
+    await connect(BROCK);
+    expect(await service.listUpstreamLeagues(L, ASH.playerId)).toEqual({ leagues: [STORE], selectedId: 'group-1' });
+    expect(await service.listUpstreamLeagues(L, BROCK.playerId)).toEqual({ leagues: [OTHER_STORE], selectedId: null });
   });
 
-  it('binds the chosen league', async () => {
-    leagues = [STORE, OTHER_STORE];
-    await connect();
+  it('binds the league to the chosen professor and their league', async () => {
+    await connect(ASH);
+    await connect(BROCK);
 
-    const status = await service.selectLeague(L, 'group-2');
+    const view = await service.selectLeague(L, BROCK.playerId, 'group-2');
 
-    expect(status.league).toEqual({ id: 'group-2', name: 'Game Den', displayId: 'L7000', canSubmit: false });
-    expect(service.getStatus(L).league?.id).toBe('group-2');
+    expect(view).toMatchObject({ league: OTHER_STORE, connectionId: idOf(BROCK), professor: { playerId: '222', name: null } });
+    expect(binding()).toMatchObject({ connection_id: idOf(BROCK), activity_group_id: 'group-2' });
   });
 
-  it("refuses a league the organizer doesn't have and keeps the current one", async () => {
-    await connect();
-    await expect(service.selectLeague(L, 'someone-elses')).rejects.toBeInstanceOf(LeagueNotFoundError);
-    expect(service.getStatus(L).league?.id).toBe('group-1');
+  it("refuses a league the chosen professor can't see, keeping the current binding", async () => {
+    await connect(ASH);
+    await connect(BROCK);
+    await expect(service.selectLeague(L, BROCK.playerId, 'group-1')).rejects.toBeInstanceOf(LeagueNotFoundError);
+    expect(binding()!.connection_id).toBe(idOf(ASH));
   });
 
-  it('needs a connection', async () => {
-    const err = await rejection(service.listUpstreamLeagues(L));
-    expect((err as PokemonUpstreamError).code).toBe('not_connected');
+  it('refuses an unknown professor', async () => {
+    await expect(service.listUpstreamLeagues(L, '999')).rejects.toBeInstanceOf(ConnectionNotFoundError);
+    await expect(service.selectLeague(L, '999', 'group-1')).rejects.toBeInstanceOf(ConnectionNotFoundError);
   });
 });
 
 describe('disconnect', () => {
-  it('revokes the refresh token at Hydra, forgets it, and drops the cached access token', async () => {
-    await connect();
+  it("revokes that professor's token, forgets only them, and clears the league binding they held", async () => {
+    await connect(ASH);
+    await connect(BROCK);
 
-    expect(await service.disconnect(L)).toEqual({ revoked: true });
+    expect(await service.disconnect(L, ASH.playerId)).toEqual({ revoked: true });
 
     expect(oauth.revoked).toEqual(['ory_rt_1']);
-    expect(row()).toBeUndefined();
-    expect(service.getStatus(L).status).toBe('not_connected');
-    expect(((await rejection(service.getAccessToken(L))) as PokemonUpstreamError).code).toBe('not_connected');
+    expect(rows().map((r) => r.professor_player_id)).toEqual(['222']);
+    expect(binding()).toBeUndefined();
+    expect(service.getStatus(L)).toMatchObject({ status: 'connected', league: null, connectionId: null });
+    expect(((await rejection(service.getAccessToken(1))) as PokemonUpstreamError).code).toBe('not_connected');
   });
 
   it('still forgets the token locally when Hydra cannot be reached', async () => {
     await connect();
     oauth.revokeError = new PokemonUpstreamError('unavailable', 'down');
-    expect(await service.disconnect(L)).toEqual({ revoked: false });
-    expect(row()).toBeUndefined();
-    expect(log.warn).toHaveBeenCalledWith(
-      'Could not revoke the refresh token at Pokémon; forgetting it locally anyway (down).',
-      { err: expect.any(PokemonUpstreamError) },
-    );
+    expect(await service.disconnect(L, ASH.playerId)).toEqual({ revoked: false });
+    expect(rows()).toEqual([]);
+    expect(log.warn).toHaveBeenCalledWith('Could not revoke the refresh token at Pokémon; forgetting it locally anyway (down).', {
+      err: expect.any(PokemonUpstreamError),
+    });
   });
 
-  it('is a no-op without a connection', async () => {
-    expect(await service.disconnect(L)).toEqual({ revoked: false });
+  it('refuses an unknown professor', async () => {
+    await expect(service.disconnect(L, '999')).rejects.toBeInstanceOf(ConnectionNotFoundError);
     expect(oauth.revoked).toEqual([]);
+  });
+});
+
+describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
+  /** What migration 0009 leaves behind: an unidentified row whose token is sealed with the league id. */
+  function carriedOver(opts: { status?: 'connected' | 'needs_reconnect'; boundTo?: League } = {}) {
+    const id = database.sqlite
+      .prepare(
+        `insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at)
+         values (?, ?, ?, ?, ?)`,
+      )
+      .run(ASH.sub, vault.encrypt('ory_rt_v1', L), opts.status ?? 'connected', Math.floor(clock.getTime() / 1000), Math.floor(clock.getTime() / 1000))
+      .lastInsertRowid as number;
+    if (opts.boundTo) {
+      database.sqlite
+        .prepare(
+          `insert into league_upstream (league_id, connection_id, activity_group_id, activity_group_name, activity_group_display_id, activity_group_can_submit)
+           values (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(L, id, opts.boundTo.id, opts.boundTo.name, opts.boundTo.displayId, Number(opts.boundTo.canSubmit));
+    }
+    return id;
+  }
+  /** Teaches the fake Hydra that the v1 token belongs to Ash. */
+  async function hydraKnowsV1() {
+    (oauth as unknown as { owners: Map<string, string> }).owners.set('ory_rt_v1', ASH.sub);
+  }
+
+  it('re-seals the token under its own row before anything refreshes it, then identifies the professor on the first refresh', async () => {
+    const id = carriedOver({ boundTo: STORE });
+    await hydraKnowsV1();
+
+    expect(service.resealCarriedOver(L)).toBe(1);
+    expect(vault.decrypt(rows()[0]!.refresh_token_ciphertext, connectionAad(id))).toBe('ory_rt_v1');
+    expect(() => vault.decrypt(rows()[0]!.refresh_token_ciphertext, L)).toThrow();
+
+    await service.identifyCarriedOver();
+
+    expect(oauth.refreshCalls).toEqual(['ory_rt_v1']);
+    expect(rows()[0]).toMatchObject({ id, professor_player_id: ASH.playerId, professor_name: null, status: 'connected' });
+    expect(service.getStatus(L)).toMatchObject({ league: STORE, connectionId: id, professor: { playerId: ASH.playerId } });
+  });
+
+  it('re-seals nothing twice', () => {
+    carriedOver();
+    expect(service.resealCarriedOver(L)).toBe(1);
+    expect(service.resealCarriedOver(L)).toBe(0);
+  });
+
+  it('lists an unidentified connection with no player id until it is identified', async () => {
+    carriedOver({ boundTo: STORE });
+    expect(service.listConnections(L)).toEqual([expect.objectContaining({ professorPlayerId: null, professorName: null, submitsForLeague: true })]);
+  });
+
+  it('marks it needs_reconnect when its refresh is refused, leaving it unidentified', async () => {
+    carriedOver({ boundTo: STORE });
+    await hydraKnowsV1();
+    service.resealCarriedOver(L);
+    oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
+
+    await service.identifyCarriedOver();
+
+    expect(rows()[0]).toMatchObject({ professor_player_id: null, status: 'needs_reconnect' });
+  });
+
+  it('is claimed by the next connect when it needs a reconnect, keeping the league binding', async () => {
+    const id = carriedOver({ status: 'needs_reconnect', boundTo: STORE });
+    service.resealCarriedOver(L);
+
+    const { outcome, connection } = await connect(BROCK);
+
+    expect(outcome).toBe('reconnected');
+    expect(rows()).toHaveLength(1);
+    expect(connection).toMatchObject({ id, professorPlayerId: BROCK.playerId, status: 'connected', submitsForLeague: true });
+  });
+
+  it("merges into the professor's own connection when both turn out to be the same person, keeping the league", async () => {
+    carriedOver({ boundTo: STORE });
+    await hydraKnowsV1();
+    service.resealCarriedOver(L);
+    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
+    // A fresh connect for Ash lands first, as a separate row (the old one was healthy, so it isn't claimed).
+    oauth.subject = 'sub-ash-again';
+    professors.set('sub-ash-again', { ...ASH, sub: 'sub-ash-again' });
+    await connect(professors.get('sub-ash-again')!);
+    expect(rows()).toHaveLength(2);
+
+    await service.identifyCarriedOver();
+
+    expect(rows()).toEqual([expect.objectContaining({ professor_player_id: ASH.playerId })]);
+    // The professor's own connection stays; the carried-over chain (just refreshed to ory_rt_2) is revoked.
+    expect(binding()!.connection_id).toBe(rows()[0]!.id);
+    expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_1');
+    expect(oauth.revoked).toEqual(['ory_rt_2']);
+  });
+});
+
+describe('edge cases', () => {
+  it('sets, changes and clears a display name, which shows on the league view and nowhere upstream', async () => {
+    await connect(ASH);
+    const callsBefore = oauth.refreshCalls.length + profileCalls.length;
+
+    expect(service.setProfessorName(L, ASH.playerId, 'Ash Ketchum')).toMatchObject({ professorPlayerId: ASH.playerId, professorName: 'Ash Ketchum' });
+    expect(service.getStatus(L).professor).toEqual({ playerId: ASH.playerId, name: 'Ash Ketchum' });
+    expect(service.setProfessorName(L, ASH.playerId, 'Ash K.').professorName).toBe('Ash K.');
+    expect(service.setProfessorName(L, ASH.playerId, null).professorName).toBeNull();
+
+    expect(rowOf(ASH.playerId)!.professor_name).toBeNull();
+    expect(oauth.refreshCalls.length + profileCalls.length).toBe(callsBefore);
+  });
+
+  it('lets two professors share a display name (it identifies nobody)', async () => {
+    await connect(ASH);
+    await connect(BROCK);
+    service.setProfessorName(L, ASH.playerId, 'Prof');
+    service.setProfessorName(L, BROCK.playerId, 'Prof');
+    expect(rows().map((r) => r.professor_name)).toEqual(['Prof', 'Prof']);
+  });
+
+  it('refuses to name a professor nobody connected', () => {
+    expect(() => service.setProfessorName(L, '999', 'Nobody')).toThrow(ConnectionNotFoundError);
+  });
+
+  it("keeps the professor's own display name when a carried-over twin merges into them", async () => {
+    database.sqlite
+      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .run(ASH.sub, vault.encrypt('ory_rt_v1', L), 'connected', 1, 1);
+    (oauth as unknown as { owners: Map<string, string> }).owners.set('ory_rt_v1', ASH.sub);
+    service.resealCarriedOver(L);
+    professors.set('sub-ash-again', { ...ASH, sub: 'sub-ash-again' });
+    await connect(professors.get('sub-ash-again')!);
+    service.setProfessorName(L, ASH.playerId, 'Ash Ketchum');
+
+    await service.identifyCarriedOver();
+
+    expect(rows()).toEqual([expect.objectContaining({ professor_player_id: ASH.playerId, professor_name: 'Ash Ketchum' })]);
+  });
+
+  it('still forgets a professor whose token the vault can no longer open, without revoking', async () => {
+    await connect(ASH);
+    vault = createTokenVault(randomBytes(32).toString('base64'));
+    const restarted = build();
+    expect(await restarted.disconnect(L, ASH.playerId)).toEqual({ revoked: false });
+    expect(rows()).toEqual([]);
+    expect(oauth.revoked).toEqual([]);
+  });
+
+  it('identifies a carried-over connection on a later refresh when Pokémon could not say who it was the first time', async () => {
+    const id = database.sqlite
+      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .run(ASH.sub, vault.encrypt('ory_rt_v1', L), 'connected', 1, 1).lastInsertRowid as number;
+    (oauth as unknown as { owners: Map<string, string> }).owners.set('ory_rt_v1', ASH.sub);
+    service.resealCarriedOver(L);
+    profileError = new PokemonUpstreamError('unavailable', 'down');
+
+    await service.identifyCarriedOver();
+    expect(rows()[0]).toMatchObject({ id, professor_player_id: null, status: 'connected' });
+    expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/trying again on the next refresh/), { err: expect.any(PokemonUpstreamError) });
+
+    profileError = undefined;
+    advance(HOUR);
+    await service.getAccessToken(id);
+    expect(rows()[0]).toMatchObject({ id, professor_player_id: ASH.playerId });
+  });
+
+  it('leaves a ciphertext that opens under neither key for its first use to mark needs_reconnect', async () => {
+    database.sqlite
+      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .run(ASH.sub, createTokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L), 'connected', 1, 1);
+    expect(service.resealCarriedOver(L)).toBe(0);
+    await service.identifyCarriedOver();
+    expect(rows()[0]).toMatchObject({ status: 'needs_reconnect', status_reason: expect.stringMatching(/key/) });
+    expect(oauth.refreshCalls).toEqual([]);
   });
 });

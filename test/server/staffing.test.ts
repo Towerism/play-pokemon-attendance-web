@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
+import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
@@ -247,7 +247,7 @@ describe('staffing API', () => {
     it('is 409 league_not_selected when the account has several leagues and none is chosen', async () => {
       fake.leagues.push({ guid: 'group-2', display_id: 'L7000', display_name: 'Game Den', canSubmit: true });
       try {
-        await api('/pokemon/connection', { method: 'DELETE' });
+        await api(`/pokemon/connections/${FAKE_PLAYER_ID}`, { method: 'DELETE' });
         await connect(browser);
         const res = await api(`/sessions/${WED}/staff`);
         expect(res.status).toBe(409);

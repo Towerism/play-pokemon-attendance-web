@@ -25,7 +25,8 @@
     "spike:s6": "tsx spikes/s6-har.ts",
     "spike:s6-live": "tsx spikes/s6-live.ts",
     "spike:s6-cert": "tsx spikes/s6-cert.ts",
-    "spike:fixtures": "tsx spikes/sanitize-fixtures.ts"
+    "spike:s7": "tsx spikes/s7-professor-name.ts",
+    "spike:fixtures":"tsx spikes/sanitize-fixtures.ts"
   },
   "dependencies": {
     "@iconify-json/lucide": "^1.2.142",

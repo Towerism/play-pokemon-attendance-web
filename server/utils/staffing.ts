@@ -1,4 +1,3 @@
-import { createPlayToolsHttpAdapter } from '../modules/pokemon/adapters/play-tools/gateway';
 import { StaffingError, type StaffingErrorCode } from '../modules/staffing/errors';
 import { type StaffingService, createStaffingService } from '../modules/staffing/service';
 
@@ -10,13 +9,7 @@ export function useStaffing(): StaffingService {
     db: useDb(),
     roster: useRoster(),
     connections: usePokemon(),
-    gateway: (leagueId) =>
-      createPlayToolsHttpAdapter({
-        tokens: usePokemon(),
-        leagueId,
-        baseUrl: useRuntimeConfig().pokemon.apiUrl,
-        log: useLogger('pokemon'),
-      }),
+    gateway: leagueGateway,
     timeZone: leagueTimeZone(),
   });
   return staffing;

@@ -29,7 +29,9 @@ Key points (details in the docs):
   TDF parser in `shared/`.
 - **SQLite (WAL) + Drizzle**, Litestream backups (ADR-0002). Avoid SQLite-only SQL outside metrics views.
 - **Pokémon auth:** one-time PKCE connect, refresh token stored AES-256-GCM encrypted;
-  persist the rotated refresh token before anything else (ADR-0003).
+  persist the rotated refresh token before anything else (ADR-0003). One connection per
+  professor, keyed by player ID; the league names the submitting professor, and every upstream
+  call for it is made as them (ADR-0008).
 - **Submission is plan → execute → reconcile**, diffed against upstream; never
   auto-delete upstream records (ADR-0004).
 - **Metrics come from sightings, not submissions** (ADR-0005).
@@ -162,4 +164,4 @@ History with retry/resume, and boot/shutdown handling. A 5xx from `_bulk` may st
 so the job re-reads before resending (ADR-0004 update). M6 (metrics and curation) is built: metrics
 computed on read from sightings in one SQL query, the Players page tabs (promotion candidates, stale
 regulars, all), metrics on Regulars, thresholds in Settings (`curation_settings`), and "present" ticks
-for regulars on This week. Next is M7 (hardening); see architecture §13. M8 (assign staff, #41) is designed in ADR-0007 (accepted); the gateway's tournament and staff methods (#45), the `staffing` module with its tables and staff routes (#46), the staff job that applies assignments to play-tools (#47), the Players → Staff tab with its inline rename (#50), the This week Staff card with its staff search and **Assign staff in play-tools** (#49), and Import staff from play-tools on Settings (#48, a read-only, unpaced `staff_import` job) are built. Spike S6 is done (fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`) and its findings are in §4.3, §6.4 and ADR-0007.
+for regulars on This week. Next is M7 (hardening); see architecture §13. M8 (assign staff, #41) is designed in ADR-0007 (accepted); the gateway's tournament and staff methods (#45), the `staffing` module with its tables and staff routes (#46), the staff job that applies assignments to play-tools (#47), the Players → Staff tab with its inline rename (#50), the This week Staff card with its staff search and **Assign staff in play-tools** (#49), and Import staff from play-tools on Settings (#48, a read-only, unpaced `staff_import` job) are built. Spike S6 is done (fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`) and its findings are in §4.3, §6.4 and ADR-0007. Multiple organizer logins (#66, ADR-0008) are built: one Pokémon connection per professor (player ID, with an optional display name set in Settings), each kept refreshed, the submitting professor chosen in Settings, recorded on every submission; migration 0009 carries the v1 connection over.

@@ -14,7 +14,7 @@ const columns: TableColumn<Row>[] = [
   { id: 'summary', header: 'Result', meta: { class: { td: WRAP } } },
   { accessorKey: 'startedAt', header: 'Started', meta: { class: { th: WIDE_ONLY, td: `${WIDE_ONLY} ${WRAP}` } } },
 ];
-const started = (row: Row) => `${new Date(row.startedAt).toLocaleString()} · ${row.startedBy}`;
+const started = (row: Row) => `${new Date(row.startedAt).toLocaleString()} · ${startedByText(row)}`;
 </script>
 
 <template>

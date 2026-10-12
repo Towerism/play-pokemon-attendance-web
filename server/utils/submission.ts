@@ -1,4 +1,3 @@
-import { createPlayToolsHttpAdapter } from '../modules/pokemon/adapters/play-tools/gateway';
 import { StaffingError } from '../modules/staffing/errors';
 import { SubmissionError, type SubmissionErrorCode } from '../modules/submission/errors';
 import { dateIn } from '../modules/submission/local-time';
@@ -14,14 +13,8 @@ export const leagueTimeZone = () => Intl.DateTimeFormat().resolvedOptions().time
 /** Today's session date in the league timezone; curation metrics are as of this date. */
 export const leagueToday = () => dateIn(new Date(), leagueTimeZone());
 
-function gateway(leagueId: string) {
-  return createPlayToolsHttpAdapter({
-    tokens: usePokemon(),
-    leagueId,
-    baseUrl: useRuntimeConfig().pokemon.apiUrl,
-    log: useLogger('pokemon'),
-  });
-}
+/** Every upstream call for the league is made as its submitting professor (ADR-0008). */
+const gateway = (leagueId: string) => leagueGateway(leagueId);
 
 export function usePlaySessionResolver(): PlaySessionResolver {
   resolver ??= createPlaySessionResolver({ connections: usePokemon(), gateway, timeZone: leagueTimeZone() });

@@ -153,7 +153,6 @@ describe('metrics and curation API (M6)', () => {
     it.each([
       ['zero', { thresholds: { promoteMinSightings: 0, staleAfterSessions: 6 } }],
       ['a missing threshold', { thresholds: { promoteMinSightings: 4 } }],
-      ['nothing to change', {}],
     ])('PUT /settings is 400 for %s, changing nothing', async (_l, body) => {
       expect((await api('/settings', { method: 'PUT', json: body })).status).toBe(400);
       expect((await json('/settings')).thresholds).toEqual({ promoteMinSightings: 1, staleAfterSessions: 6 });

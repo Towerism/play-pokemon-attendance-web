@@ -37,7 +37,7 @@ Pain points that remain with the CLI:
 ### Non-goals (v1)
 
 - Replacing any other play-tools feature (creating or running tournaments, reporting). Staff *assignment* moved into scope as G6 (ADR-0007).
-- Real-time multi-user editing. One or two organizers per league is the expected load.
+- Real-time multi-user editing. One or two organizers per league is the expected load. (Several professors' Pokémon accounts can be connected at once, ADR-0008; the app itself still has one organizer login.)
 - Storing Pokémon Trainer Club **passwords** (see [ADR-0003](adr/0003-pokemon-auth-pkce-refresh-token.md)).
 - Storing minors' birthdates or other PII from the TDF beyond name and player ID.
 
@@ -205,9 +205,10 @@ sequenceDiagram
   S->>S: verify state
   S->>A: POST /oauth2/token (authorization_code + code_verifier)
   A-->>S: access_token (JWT), refresh_token, id_token
-  S->>S: encrypt refresh_token (AES-GCM) → pokemon_connection
+  S->>P: identity: personal group owner.player_id (core/users/{sub}/activity_groups/)
+  S->>S: encrypt refresh_token (AES-GCM) → that professor's pokemon_connection row
   S->>P: league discovery (core/users/{sub}/activity_groups/)
-  S-->>W: connected; the only league is bound, otherwise the organizer picks one
+  S-->>W: professor added or reconnected; a league with no submitting professor binds their only league, otherwise the organizer picks
 ```
 
 After connecting, `TokenProvider.getAccessToken()`:
@@ -237,6 +238,29 @@ As built (M4), in `server/modules/pokemon/connection.ts`:
   marked `needs_reconnect`.
 - **Disconnect** revokes at `/oauth2/revoke` on a best-effort basis and always deletes the stored token.
 - The manual access-token fallback (`POST /pokemon/token`, §4.2 c) is **not built yet**, because S1 made paste-back work.
+
+As built (#66, [ADR-0008](adr/0008-plural-pokemon-connections.md)): **one connection per professor**, up to 10.
+
+- **Identity at connect:** after the code exchange, the gateway's `getProfessorProfile()` reads the `personal`
+  activity group's `owner.player_id` (never a league's owner, who is the store owner). Pokémon has no name for the
+  professor (S7); the organizer may give one in Settings, for display only ("Professor <player id>" otherwise). No player id fails the connect (`profile_unavailable`) and stores nothing;
+  Pokémon down at that moment is `upstream_unavailable`. Either way the fresh login is revoked. Nothing has rotated yet, so
+  reading the identity with the new access token before storing the chain can't revoke it.
+- **Add or reconnect:** a known player id is a reconnect (token, status and name replaced, league binding kept); a new one
+  is added, or refused `connection_limit` at the cap (checked in the same transaction as the insert). Attempts are bound to
+  the app user only, since the professor isn't known until the exchange.
+- **Per connection:** sealed refresh token (AAD `pokemon_connection:<id>`), access-token cache, refresh mutex and status.
+  `TokenProvider.getAccessToken(connectionId)`. One professor's `invalid_grant` marks only them `needs_reconnect`.
+- **The league names its submitting professor** (`league_upstream`). Every upstream call for the league (submissions of every
+  kind, staff jobs, staffing reads, the play-session resolver) goes through a gateway built for that connection
+  (`leagueGateway(leagueId)`); with none chosen each call fails `not_connected`. A job keeps the connection it started with
+  and never falls back to another professor. Each submission records the professor it ran under.
+- **Keep-alive** runs the 45-minute rule for every connection, one at a time, logging one outcome per player id.
+- **Upgrade from v1:** migration 0009 copies the league-keyed row into an unidentified connection and its binding into
+  `league_upstream`. The `pokemon` boot plugin re-seals its token under the new AAD before anything can refresh it, then
+  refreshes it in the background; the first refresh fills in the professor. If that professor is already connected under
+  another row, the rows merge (their own row and the league binding stay; the carried-over chain is revoked). An
+  unidentified connection that needs a reconnect is claimed by the next connect.
 
 ### 4.2 Capturing the authorization code
 
@@ -395,7 +419,8 @@ erDiagram
   SESSION_DRAFT ||--o{ SUBMISSION : "submitted by"
   SUBMISSION ||--o{ SUBMISSION_ITEM : contains
   PLAYER ||--o{ SIGHTING : "evidence of attendance"
-  LEAGUE ||--|| POKEMON_CONNECTION : "authorized by"
+  LEAGUE ||--o| LEAGUE_UPSTREAM : "submits through"
+  POKEMON_CONNECTION ||--o{ LEAGUE_UPSTREAM : "submits for"
   LEAGUE ||--o| CURATION_SETTINGS : "curated with"
   LEAGUE ||--o{ STAFF_ASSIGNMENT : "staffs tournaments with"
   PLAYER ||--o{ STAFF_ASSIGNMENT : "staffs as"
@@ -497,14 +522,20 @@ erDiagram
     text kind "tdf|manual|upstream_existing"
   }
   POKEMON_CONNECTION {
-    text league_id PK
+    int id PK "ADR-0008: one row per professor, at most 10"
+    text professor_player_id UK "null only for a v1 row not yet identified"
+    text professor_name "organizer's optional display name; never from Pokémon"
     text ptc_user_id "access-token sub (S5)"
-    blob refresh_token_ciphertext "vault: version | iv | tag | ct, AAD = league_id"
+    blob refresh_token_ciphertext "vault: version | iv | tag | ct, AAD = pokemon_connection:<id>"
     text status "connected|needs_reconnect"
     text status_reason "why a reconnect is needed"
     datetime connected_at
     datetime last_refreshed_at
-    text activity_group_id "nullable until chosen"
+  }
+  LEAGUE_UPSTREAM {
+    text league_id PK
+    int connection_id FK "the submitting professor; deleting the connection forgets the binding"
+    text activity_group_id
     text activity_group_name
     text activity_group_display_id "e.g. L5012"
     bool activity_group_can_submit "criteria.play_sessions.create_attendance"
@@ -546,7 +577,7 @@ Key modelling decisions:
 - **`player_id` is TEXT.** Player IDs are opaque strings (the CLI already does `String(p.userid)`), and storing them as text avoids losing leading zeros.
 - **Regular is a membership flag, not a separate list.** Promoting or demoting is one toggle, and the metrics are already in the same row.
 - **Sightings ≠ submissions.** Regulars are submitted **every week whether or not they came**, so "submitted" carries *no* information about presence. A **sighting** is evidence: the player appeared in a TDF, was added by hand, or was already recorded upstream by someone else. Curation metrics are computed from sightings, which is the core insight that makes G5 useful.
-- **One league in v1.** Migration 0001 seeds a `league` row with id `default`, and `requireLeague(event)` returns it for any logged-in organizer. Every module still takes a `leagueId`, so a second league needs no schema change. Its `POKEMON_CONNECTION` row binds the league to its upstream activity group.
+- **One league in v1.** Migration 0001 seeds a `league` row with id `default`, and `requireLeague(event)` returns it for any logged-in organizer. Every module still takes a `leagueId`, so a second league needs no schema change. Its `LEAGUE_UPSTREAM` row binds the league to its submitting professor's `POKEMON_CONNECTION` and the upstream activity group (ADR-0008); `SUBMISSION.professor_player_id`/`professor_name` record who each attempt ran as.
 - **Names belong to the player.** The first non-empty name seen (typed, imported or from a TDF) sticks, and later sources never overwrite it. Only an explicit rename (`PATCH /players/{id}`) changes it. `last_seen` is not stored on `PLAYER`; it is derived from sightings (see Metrics).
 - **Manual session players are evidence.** Adding a player to a date by hand writes a `SIGHTING(kind = manual)`, and removing them retracts it. Adding a regular as a session player is refused (409), since regulars are submitted every session anyway. A removed session player stays on file as a known player.
 - **The session-player list is per date** (`SESSION_DRAFT`). Uploading two TDFs on the same night (e.g. a TCG and a VGC event) merges them, keyed by `player_id`. Re-uploading the same file (same `sha256`) is a no-op.
@@ -932,8 +963,8 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `POST /sessions/{date}/staff` (M8)                        | Add `{ tournamentId, playerId, role, name? }`: 201 when added (or a tombstoned assignment revived), 200 when that player is already wanted there in that role (no upstream call), 409 `player_already_staffed` in another role, 409 `already_listed` (`data.how`: `player` \| `staff`) when play-tools already lists them, 422 `organizer_cannot_staff` for the tournament's organizer (fresh read), `unknown_role`, `unknown_tournament` (not this league's on that date) and `tournament_locked`. 400 for a malformed body, before any upstream call |
 | `PATCH /sessions/{date}/staff/{assignmentId}` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | `PATCH { role }` → 200 `{ assignment }`; for an applied assignment `appliedRole` keeps the upstream role until the staff job sends the change. `DELETE` → 204: gone at once if it never reached play-tools, otherwise tombstoned for the next apply. Both 404 for an unknown or removed assignment or another date, 422 `unknown_role`/`tournament_locked` (applied assignments on a tournament past its window), and send nothing upstream |
 | `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ tournamentId }` → `{ submissionId }` (§6.4); follow it like a submission (`/submissions/{id}`, its events, retry). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`/`not_connected`, 422 `nothing_to_apply`/`unknown_tournament`/`tournament_locked`/`unknown_role`, 503 `shutting_down`. A staff job's items carry `role`, `errorCode` and `suggestedPlayerId` (null for other kinds), its summary `tournamentLabel` (null for other kinds) |
-| `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
-| `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
+| `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name }` sets or clears the display name (≤ 60 characters, `''`/null clears; display only, never sent to Pokémon) and answers the connection. `POST /pokemon/token` is not built yet |
+| `GET /leagues/upstream?professor=` · `GET /settings` · `PUT /settings` | Pick the submitting professor and their activity group, timezone, thresholds, batch delay. As built: `GET /leagues/upstream` lists that professor's leagues and `selectedId`; `GET /settings` is `{ thresholds }`; `PUT` takes `{ professorPlayerId?, activityGroupId?, thresholds? }` (the professor and league together; `{}` changes nothing; 404 `connection_not_found` or `league_not_found`) and answers with what it changed, `{ connection?, thresholds? }` |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` / `player_already_staffed` → 409,
@@ -949,7 +980,7 @@ Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submi
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**, **Staff** (M8, #50: the staff list from `GET /staff` with times staffed, last staffed, and the last role's label from `GET /staff/roles` (fetched once); the page's search box searches it; an inline rename (`PATCH /players/{id}`, one row at a time) since a seeded play-tools name can be a dead name. The Staff tab never calls `/players`, and the other tabs never call `/staff`) (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
 | `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …", "Staff import") |
-| `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; **Import staff from play-tools** (`StaffImportCard`, M8: disabled with the reason until the connection is usable and a league is chosen; live progress, then the latest import's result with its new players and a link to History); app users |
+| `settings.vue`      | Pokémon accounts (`PokemonConnectionCard`, ADR-0008): one row per professor, "Display name (player id)" or "Professor <player id>", status, last refreshed, "Submits attendance", Rename, Reconnect and Disconnect named for the professor, and Add Pokémon account; the league picker chooses the professor, then their league. The global banner names the submitting professor (display name alone) and shows only when they need a reconnect; the submit dialog says "Submitting as …"; History shows who each attempt ran as; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; **Import staff from play-tools** (`StaffImportCard`, M8: disabled with the reason until the connection is usable and a league is chosen; live progress, then the latest import's result with its new players and a link to History); app users |
 | `login.vue`         | App login (the only page outside `auth.global.ts` middleware)                                                                  |
 
 Client patterns:
@@ -964,7 +995,7 @@ Client patterns:
 
 | Threat                                                 | Control                                                                                                                                |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Theft of the refresh token (acts as the organizer in play-tools) | AES-256-GCM at rest. The key is never stored in the DB: it comes from `NUXT_TOKEN_VAULT_KEY` if that is set, otherwise from `/data/secrets/token-vault.key`, generated on first boot with mode 0600. Litestream replicas and copies of `app.db` stay unreadable without the key. The token is never sent to the browser or logged. Disconnect revokes it at Hydra (`/oauth2/revoke`) and deletes the ciphertext. Trade-offs are in [ADR-0006](adr/0006-docker-on-unraid.md). |
+| Theft of a refresh token (acts as that professor in play-tools; one per connected professor, ADR-0008) | AES-256-GCM at rest, each token bound to its own row (AAD `pokemon_connection:<id>`), so a ciphertext moved to another row doesn't open. The key is never stored in the DB: it comes from `NUXT_TOKEN_VAULT_KEY` if that is set, otherwise from `/data/secrets/token-vault.key`, generated on first boot with mode 0600. Litestream replicas and copies of `app.db` stay unreadable without the key. The token is never sent to the browser or logged. Disconnect revokes it at Hydra (`/oauth2/revoke`) and deletes the ciphertext. Trade-offs are in [ADR-0006](adr/0006-docker-on-unraid.md). |
 | Unauthorized use of the app                            | `nuxt-auth-utils`: scrypt-hashed passwords (`hashPassword`), with WebAuthn/passkeys available later. Sealed httpOnly, SameSite=Lax cookies (`NUXT_SESSION_PASSWORD`, or a generated `/data/secrets/session-password`). Cookies are `Secure` when served over HTTPS. `requireUserSession` in every handler. Login (10) and first-run setup (5) are rate-limited per client per 15 minutes by a small in-memory limiter (`server/utils/rate-limit.ts`), checked before the body is read, so a refused attempt costs no scrypt work: `429` with `Retry-After`. The client is the TCP peer; `X-Forwarded-For` is believed only from a trusted proxy (`NUXT_TRUSTED_PROXIES`, default loopback plus Docker's `172.16.0.0/12` pool, so Caddy on the same Unraid box works), and then its rightmost untrusted entry, the one the proxy appended, is the client. A direct LAN client can't dodge the limit by forging the header. Plain HTTP is for the LAN only. Remote access goes through an HTTPS reverse proxy or Tailscale. |
 | Hijacking first-run setup on the LAN                   | The organizer account can only be created while no users exist, and only with a one-time setup code printed to the container log on boot |
 | CSRF on state-changing routes                          | SameSite=Lax plus required `Content-Type: application/json` (`server/middleware/json-only.ts`: an `/api` POST/PUT/PATCH/DELETE whose body isn't JSON gets 415). The TDF upload is JSON too (the file's text in the body), so the same guard covers it and no CSRF token module is needed. |
@@ -1018,7 +1049,7 @@ flowchart LR
     collector). Optional, not in the template. Both are read straight from env, so the launcher logs the same way.
   - `LITESTREAM_REPLICA_URL`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY`. Optional. When set, the entrypoint runs the app under `litestream replicate -exec` (config in the image at `/etc/litestream.yml`; only `app.db` is replicated, never `secrets/`).
     If `app.db` is missing, it is first restored from the replica (an empty replica means a normal first run). A broken Litestream config or a failed restore exits the container non-zero instead of running without backups.
-- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect, and a lost session password logs everyone out. No attendance data is lost in either case. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
+- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect per professor, and a lost session password logs everyone out. No attendance data is lost in either case. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
 - **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (they resume on boot), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
 - **Updates:** releases are automatic. On every push to `main` that passes CI, semantic-release reads the Conventional Commits since the last `vX.Y.Z` tag; when a `fix`, `feat` or breaking change landed, it tags the image that run tested `X.Y.Z`, `X.Y` and `latest`, then pushes the git tag and a GitHub Release with generated notes. `edge` is the unreleased tip of `main`. Unraid shows "update ready" and migrations run on boot.
 - **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
@@ -1094,3 +1125,4 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 - [ADR-0005](adr/0005-sightings-based-metrics.md) Curation metrics from sightings, not submissions
 - [ADR-0006](adr/0006-docker-on-unraid.md) Production deployment as a Docker container on Unraid
 - [ADR-0007](adr/0007-staff-assignment.md) Assign staff to events as desired state, applied by a reconcile job (M8)
+- [ADR-0008](adr/0008-plural-pokemon-connections.md) Plural Pokémon connections, keyed by professor player ID (#66)

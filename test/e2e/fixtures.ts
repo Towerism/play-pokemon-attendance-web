@@ -132,9 +132,9 @@ export async function connectOverApi(api: Api): Promise<void> {
   expect(res.status, 'connect').toBe(200);
 }
 
-/** The play-tools address the organizer pastes back after logging in at Pokémon. */
-export function loggedInUrl(state: string): string {
-  return `https://play-tools.pokemon.com/loggedIn?code=e2e&state=${state}`;
+/** The play-tools address the organizer pastes back after logging in at Pokémon; `code` picks the fake account (default: the first). */
+export function loggedInUrl(state: string, code = 'e2e'): string {
+  return `https://play-tools.pokemon.com/loggedIn?code=${code}&state=${state}`;
 }
 
 /** Fill and submit the login form on /login. */
