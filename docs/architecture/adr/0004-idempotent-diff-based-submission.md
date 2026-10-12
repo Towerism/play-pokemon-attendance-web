@@ -1,6 +1,6 @@
 # ADR-0004: Idempotent diff-based submission (plan → execute → reconcile)
 
-- Status: Proposed
+- Status: Accepted (retroactively, 2026-10-12; implemented in M5 and M7)
 - Date: 2026-10-10
 
 ## Context
