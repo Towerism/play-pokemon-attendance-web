@@ -1,6 +1,6 @@
 # ADR-0005: Curation metrics from sightings, not submissions
 
-- Status: Proposed
+- Status: Accepted (retroactively, 2026-10-12; implemented in M6)
 - Date: 2026-10-10
 
 ## Context
