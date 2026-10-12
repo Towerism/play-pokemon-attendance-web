@@ -1270,8 +1270,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         if (!(err instanceof PokemonUpstreamError) || !(err.retryable || skipsTournament(err))) throw err;
         failed += 1;
         lastFailure = err.code;
-        log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, { submissionId: row.id, tournamentId: t.id, code: err.code });
-        emit(row, 'tournament_failed', `Could not read a tournament (${err.code}).`, done + failed, total);
+        log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, {
+          submissionId: row.id,
+          tournamentId: t.id,
+          code: err.code,
+          status: err.details.status,
+        });
+        const when = t.startsAt ? dateIn(t.startsAt, timeZone) : 'undated';
+        emit(row, 'tournament_failed', `Could not read tournament ${t.displayId ?? t.id} (${when}): ${err.code}.`, done + failed, total);
         continue;
       }
       db.transaction(() => seedFrom(row, t, participants, found));

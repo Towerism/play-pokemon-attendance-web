@@ -542,6 +542,56 @@ describe('reading tournaments', () => {
     expect(view).toMatchObject({ status: 'failed', error: 'unavailable' });
     expect(history()).toEqual([]);
   });
+
+  it.each([
+    ['forbidden', ['leagues'], () => refused(403)],
+    ['unavailable', ['leagues', 'leagues', 'leagues'], down],
+  ])('ends failed with %s before listing any tournament when the leagues cannot be read', async (code, calls, error) => {
+    upstream.onLeagues = () => {
+      throw error();
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(calls);
+    expect(view).toMatchObject({ status: 'failed', error: code });
+    expect(history()).toEqual([]);
+  });
+
+  it('names a tournament it could not read by display id (else its id) and its date in the league time zone, or undated', async () => {
+    // 03:30 UTC on the 5th is still the 4th in Chicago.
+    upstream.tournaments[1] = tournament('t-2', { displayId: '26-10-000002', startsAt: new Date('2026-10-05T03:30:00Z') });
+    upstream.add(tournament('t-4', { displayId: '26-10-000004', startsAt: null }));
+    upstream.add(tournament('t-5', { displayId: null }));
+    upstream.onRead = (t) => {
+      if (t !== 't-1' && t !== 't-3') throw refused(403);
+    };
+
+    const view = await importStaff();
+
+    const failures = service
+      .events(L, view.id)
+      .filter((e) => e.type === 'tournament_failed')
+      .map((e) => e.message);
+    expect(failures).toEqual([
+      'Could not read tournament 26-10-000002 (2026-10-04): forbidden.',
+      'Could not read tournament 26-10-000004 (undated): forbidden.',
+      'Could not read tournament t-5 (2026-10-14): forbidden.',
+    ]);
+  });
+
+  it('logs a refused tournament with its id, code and status, never a name', async () => {
+    upstream.add(tournament('t-4', { name: 'Brock Cup' }), staffer('400', 'judge', 'Brock Stone'));
+    upstream.onRead = (t) => {
+      if (t === 't-4') throw refused(403);
+    };
+
+    await importStaff();
+
+    const warning = logs.find((l) => l.level === 'warn' && l.message.includes('t-4'));
+    expect(warning?.fields).toMatchObject({ tournamentId: 't-4', code: 'forbidden', status: 403 });
+    expect(JSON.stringify(logs)).not.toMatch(/Brock/);
+  });
 });
 
 describe('an account that organizes no tournaments', () => {
