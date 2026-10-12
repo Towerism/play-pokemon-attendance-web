@@ -401,6 +401,31 @@ describe('reading tournaments', () => {
     expect(history().map((h) => (h as { tournament_id: string }).tournament_id)).not.toContain('t-former');
   });
 
+  it('still reads a tournament play-tools gives no league, and an undated one', async () => {
+    upstream.add(tournament('t-nogroup', { groupId: null }), staffer('400', 'judge'));
+    upstream.add(tournament('t-undated', { startsAt: null }), staffer('500', 'scorekeeper'));
+
+    await importStaff();
+
+    expect(history()).toEqual(
+      expect.arrayContaining([
+        { tournament_id: 't-nogroup', player_id: '400', role: 'judge', source: 'upstream' },
+        { tournament_id: 't-undated', player_id: '500', role: 'scorekeeper', source: 'upstream' },
+      ]),
+    );
+  });
+
+  it('succeeds with nothing to read when every tournament is in a league the account has left', async () => {
+    upstream.leagues = [];
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list']);
+    expect(view.status).toBe('succeeded');
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 0, tournamentsRead: 0, tournamentsFailed: 0 });
+    expect(service.events(L, view.id)[0]?.message).toBe('0 tournaments to read; 3 left out (leagues this account is no longer in).');
+  });
+
   it('reads a tournament again after a 503, and succeeds', async () => {
     upstream.onRead = (t, n) => {
       if (t === 't-2' && n === 2) throw down();
