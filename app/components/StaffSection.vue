@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import type { SessionStaff } from '../../server/modules/staffing/service';
-import type { StaffRole } from '~/utils/staff';
+import { type StaffRole, staffSectionView } from '~/utils/staff';
 
 const props = defineProps<{ date: string }>();
 const toast = useToast();
+
+// The date the last answered read was for, taken from the request itself so
+// another date's tournaments never show under the selected one (#81).
+let answeredDate: string | null = null;
 
 // Read live from play-tools, so only in the browser and never holding up the
 // rest of This week (session, regulars, Submit) while it loads or fails.
@@ -18,7 +22,24 @@ const {
   lazy: true,
   // Each read goes to play-tools; a failure is shown with Try again, never resent on its own.
   retry: false,
+  onResponse: ({ request }) => {
+    answeredDate = sessionDateOf(request);
+  },
+  onRequestError: ({ request }) => {
+    answeredDate = sessionDateOf(request);
+  },
 });
+
+const resultDate = ref<string | null>(null);
+watch(status, (s) => {
+  if (s === 'success' || s === 'error') resultDate.value = answeredDate;
+});
+const view = computed(() => staffSectionView({ selectedDate: props.date, resultDate: resultDate.value, failed: !!error.value }));
+
+function sessionDateOf(request: RequestInfo): string | null {
+  const url = typeof request === 'string' ? request : request.url;
+  return /\/api\/sessions\/([^/]+)\/staff$/.exec(new URL(url, 'http://x').pathname)?.[1] ?? null;
+}
 const { data: roleList, error: rolesError } = useFetch<{ roles: StaffRole[] }>('/api/staff/roles', { key: 'staff-roles', server: false, lazy: true });
 const roles = computed(() => roleList.value?.roles);
 
@@ -45,8 +66,12 @@ watch(rolesError, (err) => {
   <section aria-labelledby="staff-heading" class="space-y-3">
     <h2 id="staff-heading" class="text-lg font-medium">Staff</h2>
 
+    <div v-if="view === 'loading'" role="status" class="flex items-center gap-2 text-sm text-muted">
+      <UIcon name="i-lucide-loader-circle" class="animate-spin" /> Reading the tournaments from play-tools…
+    </div>
+
     <UAlert
-      v-if="error"
+      v-else-if="view === 'error'"
       color="error"
       variant="subtle"
       icon="i-lucide-circle-alert"
@@ -62,11 +87,7 @@ watch(rolesError, (err) => {
       </template>
     </UAlert>
 
-    <div v-else-if="!staff" class="flex items-center gap-2 text-sm text-muted">
-      <UIcon name="i-lucide-loader-circle" class="animate-spin" /> Reading the tournaments from play-tools…
-    </div>
-
-    <template v-else>
+    <template v-else-if="staff">
       <UAlert
         v-for="u in staff.unread"
         :key="u.professor.playerId ?? 'unidentified'"
