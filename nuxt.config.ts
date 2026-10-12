@@ -50,6 +50,8 @@ export default defineNuxtConfig({
     submission: { batchSize: 20, batchDelayMs: 10_000, settleMs: 180_000, settlePollMs: 15_000 },
     // Undo deletes one record at a time, at least this far apart (never under 500 ms). NUXT_UNDO_DELAY_MS.
     undo: { delayMs: 1_000 },
+    // A staff job sends one write at a time, at least this far apart (never under 500 ms). NUXT_STAFF_DELAY_MS.
+    staff: { delayMs: 1_000 },
     // Per-client limits on login and first-run setup (architecture §9).
     // NUXT_AUTH_RATE_LIMIT_*: optional tuning, validated by the launcher; not in the template.
     authRateLimit: {

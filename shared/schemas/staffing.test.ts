@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AddStaffBody, ChangeStaffRoleBody, StaffAssignmentParams, StaffQuery } from './staffing';
+import { AddStaffBody, ApplyStaffBody, ChangeStaffRoleBody, StaffAssignmentParams, StaffQuery } from './staffing';
 
 describe('AddStaffBody', () => {
   const valid = { tournamentId: 'b2c4e6f8-1a3c-4e5f-9a7b-0123456789ab', playerId: '00123', role: 'judge' };
@@ -61,4 +61,19 @@ describe('StaffQuery', () => {
   it('refuses a search over 100 characters', () => {
     expect(StaffQuery.safeParse({ q: 'x'.repeat(101) }).success).toBe(false);
   });
+});
+
+describe('ApplyStaffBody', () => {
+  it('takes the tournament to apply', () => {
+    expect(ApplyStaffBody.parse({ tournamentId: 'b2c4e6f8-1a3c-4e5f-9a7b-0123456789ab' })).toEqual({
+      tournamentId: 'b2c4e6f8-1a3c-4e5f-9a7b-0123456789ab',
+    });
+  });
+
+  it.each([{}, { tournamentId: '' }, { tournamentId: '../x' }, { tournamentId: 'x'.repeat(65) }, { tournamentId: 42 }])(
+    'refuses %j',
+    (body) => {
+      expect(ApplyStaffBody.safeParse(body).success).toBe(false);
+    },
+  );
 });
