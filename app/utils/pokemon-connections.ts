@@ -69,8 +69,19 @@ export function submitAsText(r: Maybe<ConnectionsResponse>): string | null {
   return submitting ? `Submitting as ${professorLabel(submitting)}` : null;
 }
 
-/** Who started a History entry, and as which professor when that was recorded. */
-export function startedByText(s: { startedBy: string; professor: { playerId: string; name: string | null } | null }): string {
-  if (!s.professor) return s.startedBy;
+/** Who started a History entry, and as which professor when that was recorded; a staff import reads as every one (#75). */
+export function startedByText(s: { startedBy: string; professor: { playerId: string; name: string | null } | null; kind?: string }): string {
+  if (!s.professor) return s.kind === 'staff_import' ? `${s.startedBy}, as every connected professor` : s.startedBy;
   return `${s.startedBy}, as ${professorLabel({ professorPlayerId: s.professor.playerId, professorName: s.professor.name })}`;
 }
+
+/** Under the league picker: who the shared leagues leave out because their login needs a reconnect (#75). */
+export function excludedText(excluded: readonly { playerId: string | null; name: string | null }[]): string | null {
+  if (!excluded.length) return null;
+  const names = excluded.map((p) => professorShortLabel({ professorPlayerId: p.playerId, professorName: p.name }));
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  return `${list} ${names.length === 1 ? "isn't" : "aren't"} included until reconnected.`;
+}
+
+/** The league picker when the connected professors share no league in play-tools (#75). */
+export const NO_SHARED_LEAGUE = "These professors share no league in play-tools. Disconnect the one who isn't in your league.";

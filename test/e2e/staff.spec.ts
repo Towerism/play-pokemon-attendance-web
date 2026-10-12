@@ -1,6 +1,6 @@
 import type { Locator, Page, Request } from '@playwright/test';
 import { type FakePokemon, fakeRecord, fakeTournament } from '../server/fake-pokemon';
-import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, connectOverApi, expect, finishedStatus, test } from './fixtures';
+import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, connectOverApi, expect, finishedStatus, loggedInUrl, test } from './fixtures';
 
 // This week → Staff (ADR-0007): one card per tournament the league runs on the
 // date. The client must never offer someone the app may not assign (the
@@ -20,6 +20,10 @@ const ASH_PLAYER = '6000012'; // a known player who never staffed
 const ASH_UPSTREAM = '6000013'; // staff on the tournament, added in play-tools
 const ASH_PLAYING = '6000014'; // playing in the tournament
 const ASH_LOCAL = '6000015'; // already wanted as staff here
+
+const BROCK = '0000222';
+const BROCK_CUP = 'brock-cup';
+const BROCK_CUP_LABEL = `League Challenge ${BROCK_CUP} · 26-10-${BROCK_CUP}`;
 
 const staffCard = (page: Page, label = CUP_LABEL) => page.getByRole('region', { name: label });
 const searchBox = (card: Locator, label = CUP_LABEL) => card.getByRole('combobox', { name: `Find staff for ${label}` });
@@ -69,6 +73,15 @@ function spyStaffReads(page: Page): string[] {
     if (r.method() === 'GET' && /^\/api\/sessions\/[^/]+\/staff$/.test(new URL(r.url()).pathname)) reads.push(r.url());
   });
   return reads;
+}
+
+/** Connects another professor in the default league and names them, as Settings would (#75). */
+async function connectProfessor(api: Api, fake: FakePokemon, playerId: string, name: string) {
+  const account = fake.addAccount({ playerId, name, leagues: fake.leagues });
+  const start = await api.request('/api/pokemon/connect/start', { method: 'POST', json: {} });
+  const state = new URL(((await start.json()) as { authorizeUrl: string }).authorizeUrl).searchParams.get('state')!;
+  expect((await api.request('/api/pokemon/connect/complete', { method: 'POST', json: { url: loggedInUrl(state, account.code) } })).status).toBe(200);
+  expect((await api.request(`/api/pokemon/connections/${playerId}`, { method: 'PATCH', json: { name } })).status).toBe(200);
 }
 
 async function pickRole(page: Page, select: Locator, label: string) {
@@ -241,14 +254,54 @@ test('when play-tools fails, This week still works and Try again brings the staf
   await expect(page.getByRole('combobox', { name: /Find staff for/ })).toHaveCount(0);
 });
 
-test('when Pokémon needs reconnecting, the Staff section links to Settings', async ({ page, api, fake }) => {
+test("another professor's refused login hides only their tournaments: the Staff section names them and links to Settings, with no banner", async ({ page, api, fake }) => {
   cupTonight(fake);
-  // Short-lived access tokens, so the app must refresh on its next use; then the login is refused.
+  // Short-lived access tokens, so the app must refresh on its next use; then Brock's login is refused.
   fake.accessTtl = 60;
   await connectOverApi(api);
-  fake.revokeChain();
+  await connectProfessor(api, fake, BROCK, 'Brock Harrison');
+  fake.revokeChain(BROCK);
   await page.goto(`/?date=${TUESDAY}`);
-  await expect(page.getByRole('region', { name: 'Staff', exact: true }).getByRole('link', { name: 'Open Settings' })).toBeVisible();
+
+  const staff = page.getByRole('region', { name: 'Staff', exact: true });
+  await expect(staff.getByText('Reconnect Brock Harrison in Settings to see their tournaments.')).toBeVisible();
+  await expect(staff.getByRole('link', { name: 'Open Settings' })).toBeVisible();
+  await expect(staffCard(page).getByText('Organized by Professor 9999991')).toBeVisible();
+  // Brock doesn't submit attendance, so the global banner stays down (#66).
+  await expect(page.getByText(/no longer accepts/)).toHaveCount(0);
+});
+
+test("every professor's tournaments load on This week, each staffed as its organizer", async ({ page, connected, fake }) => {
+  cupTonight(fake);
+  await connectProfessor(connected, fake, BROCK, 'Brock Harrison');
+  // Brock runs an earlier tournament the same evening; his listing fails once, then works.
+  fake.tournaments.push(fakeTournament(BROCK_CUP, { startsAt: '2026-10-13T23:00:00Z', organizer: BROCK }));
+  fake.tournamentRecords.set(BROCK_CUP, [fakeRecord(BROCK, { role: 'organizer' })]);
+  fake.failOnce.set(`/services/core/activities@${BROCK}`, 502);
+  await page.goto(`/?date=${TUESDAY}`);
+
+  const staff = page.getByRole('region', { name: 'Staff', exact: true });
+  await expect(staffCard(page).getByText('Organized by Professor 9999991')).toBeVisible();
+  const warning = staff.getByText("Couldn't read Brock Harrison's tournaments from play-tools.");
+  await expect(warning).toBeVisible();
+  const reread = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/sessions/${TUESDAY}/staff`);
+  await staff.getByRole('button', { name: 'Try again' }).click();
+  await reread;
+  await expect(warning).toHaveCount(0);
+  const brocks = staffCard(page, BROCK_CUP_LABEL);
+  await expect(brocks.getByText('Organized by Brock Harrison')).toBeVisible();
+
+  // Staff on Brock's tournament goes out as Brock, and the dialog says so.
+  const res = await connected.request(`/api/sessions/${TUESDAY}/staff`, { method: 'POST', json: { tournamentId: BROCK_CUP, playerId: ASH_PLAYER, role: 'judge', name: 'Ash Player' } });
+  expect(res.status).toBe(201);
+  await page.reload();
+  await staffCard(page, BROCK_CUP_LABEL).getByRole('button', { name: 'Assign staff in play-tools' }).click();
+  const dialog = page.getByRole('dialog', { name: `Staff for ${BROCK_CUP_LABEL}` });
+  await expect(dialog.getByTestId('staff-runs-as')).toHaveText('Assigned as Brock Harrison (0000222), who organizes this tournament.');
+  await expect(dialog).toContainText('1 assigned', { timeout: 20_000 });
+  const writes = fake.requests.filter((r) => r.method === 'POST' && r.path === `/services/core/tournaments/${BROCK_CUP}/records`);
+  expect(writes.map((r) => r.as)).toEqual([BROCK]);
+  expect(fake.tournamentRecords.get(BROCK_CUP)!.map((r) => r.participant.player_id)).toContain(ASH_PLAYER);
 });
 
 test('a tournament past its window, or gone from play-tools, offers no staff actions', async ({ page, connected, fake }) => {

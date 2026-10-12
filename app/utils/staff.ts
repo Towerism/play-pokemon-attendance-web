@@ -1,4 +1,6 @@
+import type { OrganizerView, UnreadProfessor } from '../../server/modules/staffing/service';
 import type { ItemOutcome } from '../../server/modules/submission/service';
+import { professorLabel } from './pokemon-connections';
 
 /** A staff role as `GET /staff/roles` lists it. */
 export interface StaffRole {
@@ -174,4 +176,48 @@ export function alreadyListedText(who: { name: string; playerId: string }, how: 
 /** A 200 on add: they were already wanted here in that role. */
 export function alreadyStaffingText(who: { name: string; playerId: string; role: string }, roles: readonly StaffRole[] | undefined): string {
   return `${who.name || who.playerId} is already staffing as ${roleLabel(who.role, roles)}.`;
+}
+
+/** "Brock Harrison" with a display name, else "Professor <player id>". */
+const organizerName = (o: Pick<OrganizerView, 'playerId' | 'name'>) => o.name ?? `Professor ${o.playerId}`;
+
+/** The card's organizer line (#75): only they may log its staff. */
+export function organizerText(organizer: OrganizerView | null): string | null {
+  return organizer ? `Organized by ${organizerName(organizer)}` : null;
+}
+
+/** Why a card offers no staff actions, if it doesn't; `settings` when connecting a professor would fix it. */
+export function readOnlyNote(card: {
+  editable: boolean;
+  missing?: true;
+  unavailable?: true;
+  organizer: OrganizerView | null;
+}): { text: string; settings: boolean; warning: boolean } | null {
+  if (card.missing) return { text: 'No longer listed in play-tools, for example cancelled. Shown so nothing here is lost.', settings: false, warning: true };
+  if (card.unavailable) {
+    return { text: "Couldn't check play-tools for this tournament, so it can't change now. Shown so nothing here is lost.", settings: false, warning: true };
+  }
+  const o = card.organizer;
+  if (o?.needsReconnect) return { text: `Reconnect ${organizerName(o)} in Settings to log staff here.`, settings: true, warning: true };
+  if (o && !o.connected) {
+    return {
+      text: `Only its organizer may log its staff. Connect Professor ${o.playerId}'s Pokémon account in Settings to log staff here.`,
+      settings: true,
+      warning: false,
+    };
+  }
+  if (!card.editable) return { text: 'Read-only: more than 90 days past its start.', settings: false, warning: false };
+  return null;
+}
+
+/** The Staff section's warning for a professor whose tournaments couldn't be read: reconnect, or Try again. */
+export function unreadWarning(u: UnreadProfessor): { text: string; settings: boolean; retry: boolean } {
+  const who = u.professor.playerId ? (u.professor.name ?? `Professor ${u.professor.playerId}`) : 'a Pokémon account';
+  if (u.code === 'needs_reconnect') return { text: `Reconnect ${who} in Settings to see their tournaments.`, settings: true, retry: false };
+  return { text: `Couldn't read ${who}'s tournaments from play-tools.`, settings: false, retry: true };
+}
+
+/** The Apply dialog's line on who the staff job runs as: always the tournament's organizer. */
+export function runsAsText(organizer: Pick<OrganizerView, 'playerId' | 'name'>): string {
+  return `Assigned as ${professorLabel({ professorPlayerId: organizer.playerId, professorName: organizer.name })}, who organizes this tournament.`;
 }

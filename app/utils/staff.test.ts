@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { PlayerId } from '../../shared/types/ids';
 import type { StaffOutcome } from './staff';
 import {
   alreadyListedText,
@@ -7,12 +8,16 @@ import {
   defaultRole,
   lastStaffedLabel,
   needsAttention,
+  organizerText,
+  readOnlyNote,
   renameDecision,
+  runsAsText,
   roleLabel,
   staffOutcomeText,
   staffSummary,
   staffTag,
   toStaffResults,
+  unreadWarning,
 } from './staff';
 
 const ROLES = [
@@ -229,5 +234,78 @@ describe('add refusals', () => {
 
   it('says someone is already staffing in the role picked', () => {
     expect(alreadyStaffingText({ name: 'Ash Judge', playerId: '6000011', role: 'headjudge' }, roles)).toBe('Ash Judge is already staffing as Head Judge.');
+  });
+});
+
+/** A professor's player id, as the server types it. */
+const BROCK_ID = '0000222' as PlayerId;
+
+describe('organizerText (#75)', () => {
+  it('names the organizer by display name, else as Professor <player id>, and nothing for a card without one', () => {
+    expect(organizerText({ playerId: BROCK_ID, name: 'Brock Harrison', connected: true, needsReconnect: false })).toBe('Organized by Brock Harrison');
+    expect(organizerText({ playerId: BROCK_ID, name: null, connected: false, needsReconnect: false })).toBe('Organized by Professor 0000222');
+    expect(organizerText(null)).toBeNull();
+  });
+});
+
+describe('readOnlyNote (#75)', () => {
+  const organizer = { playerId: BROCK_ID, name: 'Brock Harrison', connected: true, needsReconnect: false };
+  const card = { editable: true, organizer };
+
+  it('says nothing for a card that can be staffed', () => {
+    expect(readOnlyNote(card)).toBeNull();
+  });
+
+  it('tells why a card is read-only, linking to Settings when connecting the organizer would fix it', () => {
+    expect(readOnlyNote({ ...card, editable: false, missing: true, organizer: null })).toEqual({
+      text: 'No longer listed in play-tools, for example cancelled. Shown so nothing here is lost.',
+      settings: false,
+      warning: true,
+    });
+    expect(readOnlyNote({ ...card, editable: false, unavailable: true, organizer: null })).toEqual({
+      text: "Couldn't check play-tools for this tournament, so it can't change now. Shown so nothing here is lost.",
+      settings: false,
+      warning: true,
+    });
+    expect(readOnlyNote({ editable: false, organizer: { ...organizer, name: null, connected: false } })).toEqual({
+      text: "Only its organizer may log its staff. Connect Professor 0000222's Pokémon account in Settings to log staff here.",
+      settings: true,
+      warning: false,
+    });
+    expect(readOnlyNote({ editable: false, organizer: { ...organizer, connected: false, needsReconnect: true } })).toEqual({
+      text: 'Reconnect Brock Harrison in Settings to log staff here.',
+      settings: true,
+      warning: true,
+    });
+    expect(readOnlyNote({ ...card, editable: false })).toEqual({ text: 'Read-only: more than 90 days past its start.', settings: false, warning: false });
+  });
+});
+
+describe('unreadWarning (#75)', () => {
+  it('asks for a reconnect in Settings for a refused login, and offers Try again for anything else', () => {
+    expect(unreadWarning({ professor: { playerId: BROCK_ID, name: 'Brock Harrison' }, code: 'needs_reconnect', message: 'x' })).toEqual({
+      text: 'Reconnect Brock Harrison in Settings to see their tournaments.',
+      settings: true,
+      retry: false,
+    });
+    expect(unreadWarning({ professor: { playerId: BROCK_ID, name: null }, code: 'unavailable', message: 'x' })).toEqual({
+      text: "Couldn't read Professor 0000222's tournaments from play-tools.",
+      settings: false,
+      retry: true,
+    });
+    expect(unreadWarning({ professor: { playerId: null, name: null }, code: 'rate_limited', message: 'x' }).text).toBe(
+      "Couldn't read a Pokémon account's tournaments from play-tools.",
+    );
+  });
+});
+
+describe('runsAsText (#75)', () => {
+  it("says the staff job runs as the tournament's organizer", () => {
+    expect(runsAsText({ playerId: BROCK_ID, name: 'Brock Harrison' })).toBe(
+      'Assigned as Brock Harrison (0000222), who organizes this tournament.',
+    );
+    expect(runsAsText({ playerId: BROCK_ID, name: null })).toBe(
+      'Assigned as Professor 0000222, who organizes this tournament.',
+    );
   });
 });

@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import type { OrganizerView } from '../../server/modules/staffing/service';
 import type { StaffOutcome } from '~/utils/staff';
 
-const props = defineProps<{ date: string; tournamentId: string; label: string }>();
+const props = defineProps<{ date: string; tournamentId: string; label: string; organizer: OrganizerView | null }>();
 const emit = defineEmits<{ finished: [] }>();
 const toast = useToast();
 
@@ -12,7 +13,7 @@ const submissionId = ref<number | null>(null);
 
 const { latest, result } = useSubmissionEvents(submissionId);
 
-const SETTINGS_CODES = ['not_connected', 'needs_reconnect', 'league_not_selected'];
+const SETTINGS_CODES = ['not_connected', 'needs_reconnect', 'league_not_selected', 'organizer_not_connected'];
 const staffItems = computed(() => (result.value?.items ?? []).map((i) => ({ ...i, outcome: i.outcome as StaffOutcome })));
 const attention = computed(() => staffItems.value.filter(needsAttention));
 
@@ -49,6 +50,7 @@ watch(result, (view) => {
 
     <UModal v-model:open="open" :title="`Staff for ${label}`" :description="`Tournament on ${date}`" :dismissible="!submissionId || !!result">
       <template #body>
+        <p v-if="organizer" class="mb-3 text-sm text-muted" data-testid="staff-runs-as">{{ runsAsText(organizer) }}</p>
         <div v-if="starting" class="flex items-center gap-2 text-sm text-muted">
           <UIcon name="i-lucide-loader-circle" class="animate-spin" /> Starting…
         </div>
