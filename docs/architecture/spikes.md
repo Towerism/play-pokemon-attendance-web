@@ -10,6 +10,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 | S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ✅ done | UTC `start_date`/`end_date`. Statuses are `active`/`pending`/`complete`. DRF pagination. Server-side date filters exist. No title field. Attendance locks at `final_modifiable_datetime` (= start + 7 d). | §4.4 and the submission flow change ([below](#design-changes-triggered-apply-in-m4m5)). |
 | S4 | `_bulk` semantics: response, partial failure, already-present player | ✅ done | 201 `[{guid}]` in request order. **All-or-nothing:** one rejected item adds nobody. Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record. DELETE → 204. | Diff against **all** records. Validate ids locally. Retry without the offending index. (See design changes 6–9.) |
 | S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
+| S6 | Staff (M8): tournament list, staff assign/remove calls, roles, organizer, edit window | ✅ done | One `POST core/tournaments/{guid}/records` per staffer → 201 `{guid}`; duplicate/unclaimed/uncertified → 400 keyed `participant.player_id`; past the window → 423 `cannot_modify_old_activity` (assume locked to all changes); `PATCH`/`DELETE …/records/{guid}` → 204. Unfiltered records = players + staff. Organizer in `core/tournament/{guid}`. `core/activities` lists the organizer's tournaments but **ignores date filters**. Staff tab is organizer-only (403 otherwise). | See [S6](#s6-staff-assignment-done-2026-10-11); §4.3 and ADR-0007 to be updated by #41's owner. |
 
 ## Verified without a login (2026-10-10)
 
@@ -145,6 +146,233 @@ Plan (changed 2026-10-10 at the organizer's request): refresh **hourly** from th
   - `guid`, `display_id`, `group_type`, `name` (null), `display_name` (the store name), `organization_id`, `owner {guid, player_id}`, `address`, `store_owner_terms_accepted` and `level`;
   - `criteria`: the caller's **permissions** per resource, e.g. `play_sessions.create_attendance`.
 - `https://me.pokemon.com/me` → 200 with `guid`, `consent_age`, `mailing_address`, `meta` and `organized_play`. Not needed.
+
+### S6: staff assignment (done 2026-10-11)
+
+This decides the staff methods on `PlayToolsGateway` ([ADR-0007](adr/0007-staff-assignment.md), issue #41). Nothing
+about staff is built until its fixtures exist.
+
+S6 runs in two parts:
+
+1. **Bundle analysis.** Done 2026-10-11, no login (findings below).
+2. **Live capture.** Done 2026-10-11 with `pnpm spike:s6-live` instead of a HAR ([part 2](#part-2-live-capture-2026-10-11)).
+   It confirms the bundle's claims with fixtures, and corrects one of them: date filters on `core/activities`.
+
+#### Part 1: what the public play-tools bundle shows (2026-10-11)
+
+The play-tools SPA bundle (`https://play-tools.pokemon.com/assets/index-*.js` and its chunks) is
+Istanbul-instrumented, so every module carries its source path (e.g.
+`src/components/TournamentsView/TournamentDetail/Tabs/StaffTab/StaffHeading`). Nothing was called. The answers
+below are what the client *sends* and *expects*. Claims marked *(inferred)* need the HAR.
+
+**Transport.**
+
+- The base URL is `https://api.play.pokemon.com/services`, the same gateway as play sessions.
+- Requests carry only `Authorization: Bearer …`, `Content-Type` and `Accept: application/json`.
+- Paths are built without a trailing slash (`core/tournaments/{guid}/records`).
+- The client has no rate-limit or throttle logic of its own.
+
+**Q1. Assign, change and remove** (`TournamentService`, Staff tab). `{t}` is the tournament `guid` (not its
+`display_id`), and `{r}` is the staff record's `guid`.
+
+| Action | Call | Body |
+| ------ | ---- | ---- |
+| Assign | `POST core/tournaments/{t}/records` | **One object**, not a list: `{"role":"judge","player":false,"participant":{"player_id":"…"},"origin":"manual"}` |
+| Assign, role needs a certification the person lacks | same | **400**, same envelope, code `op.activity_record.missing_certification` ("The given user lacks the appropriate certificate for the given role.") |
+| Assign, tournament past its edit window | same | **423** `{"code":"op.activity.cannot_modify_old_activity","message":"The given activity is no longer modifiable."}`. There is **no `errors.body`**: the whole tournament is locked, not one staffer. |
+| Change role | `PATCH core/tournaments/{t}/records/{r}` | JSON-Patch array: `[{"op":"replace","path":"/role","value":"scorekeeper"}]` |
+| Remove | `DELETE core/tournaments/{t}/records/{r}` | `[{"legacy_alias":"<the staffer's player_id>"}]` |
+
+- **Assign has no lookup step.** The UI is a plain *Player ID* field and a role select, and it posts straight away.
+- **A tournament has no invite or consent step.** Invites exist only for *league* staff, a different feature.
+- **Assign errors:**
+  - 403 → "User is not authorized to add staff to this tournament".
+  - Otherwise `errors.body["participant.player_id"]` holds a list of `{code, attributes}`.
+- **Codes the UI translates** (*which ones the assign endpoint really returns is inferred*):
+
+  | Code | Meaning |
+  | ---- | ------- |
+  | `op.activity_record.cannot_duplicate_participant` | Already listed |
+  | `op.activity_record.missing_certification` | No certification for this role |
+  | `op.activity_record.player_id_must_be_claimed` | Player id not claimed |
+  | `op.player.no_user` | No user |
+  | `op.player.below_age` | Below age |
+  | `op.player.disciplined` | Disciplined |
+  | `op.player.merged_player_id` | Merged id; attributes carry `provided_player_id` → `actual_player_id` |
+  | `op.value.unknown_reference` | Invalid player id |
+
+  With no code, the UI falls back to "Player ID … is not a Professor". The UI also has strings for "was a
+  participant and cannot also be on staff" and "has already been added to this event".
+- **Change-role errors** come back per item as `errors.role[]`. Code `cannot.change.player.info` means the person
+  is a participant.
+- The assign response body is not used by the UI. *Its shape is inferred* (probably the created record).
+
+**Q2. Listing tournaments.**
+
+- "My tournaments" calls `GET core/activities` with `type=tournament`, `role=organizer`, `activity_group_id`,
+  `product`, `sort_by`, `page_size=40` (or `days=90` / `year`). It follows the DRF `next` URL.
+- `type` tells the two kinds apart: `tournament` vs `play_session`. Play sessions are activities too, so this is
+  the same resource family seen through another endpoint.
+- **Row fields:** `guid`, `name`, `display_id` (the tournament id people see), `start_date` / `start_date_v2` +
+  `start_date_timezone`, `status`, `activity_state` and `activity_group`.
+- **Status values:**
+  - `status`: `sanctioned`, `complete`, `cancelled`, `deleted`, `approval-pending`, `sanctioning-error`, `invalidated`.
+  - `activity_state`: `pending`, `upload_in_progress`, `upload_failed`, `completed`.
+- **Date filters** use the S3 syntax: `start_date_v2:greater_than_or_equal_to` / `…:less_than_or_equal_to`.
+  The bundle shows them on `core/users/{guid}/activities` (staffing history). *Whether `core/activities`
+  accepts them is inferred.* **Part 2: it ignores them.**
+- Details come from `GET core/tournament/{guid}`, singular.
+
+**Q3. Roles are a bundle constant, not an endpoint.**
+
+| Wire value | Label |
+| ---------- | ----- |
+| `judge` | Judge (the default) |
+| `headjudge` | Head Judge |
+| `scorekeeper` | Scorekeeper |
+| `administration` | Support Staff |
+| `translator` | Translator |
+
+- `organizer` is fixed. It renders as a disabled select with no delete.
+- `generic-staff` appears only as a play-session filter value.
+- The client has no per-role checks. The server enforces certification.
+
+**Q4. Everyone on the event** is `GET core/tournaments/{t}/records`, DRF-paged (`count`, `next`, `results`):
+
+- **Staff:** `player=false`, `role:null=false`, `page_size=500`. The Staff tab reads one page only.
+- **Players:** `player=true`, `status=active`, `page`, `page_size`. `useGetAllRecords` follows `next` to the end.
+- **Fields:** `guid`, `role`, `participant.player_id` and `participant.display_first_name` / `display_last_name`.
+
+The "already listed" check needs both lists, every page. One unfiltered pass would do if the server allows it
+(*HAR*).
+
+**Q5. The organizer.**
+
+- Tournament details carry `organizer: {player_id, first_name, last_name}`.
+- The records list also holds a `role: "organizer"` record, as in S4.
+- The UI decides "is organizer" by comparing the user's player id with `organizer.player_id`.
+
+**Q6. Edit window and permissions.**
+
+- The UI enables *adding* staff until **90 days after the tournament's start** (`start_date_actual + 90 d`).
+  After that, adding needs the admin permission `activities.modify_participant_staff`.
+- The add section shows for the organizer, or for that admin permission. The tab shows with
+  `view_participants` or `modify_participant_staff`.
+- Change-role and remove are not gated by date or status in the UI. *What the server does after the window is
+  unknown.*
+- The play-session `final_modifiable_datetime` (start + 7 d) does not apply to tournaments.
+
+**What this changes in ADR-0007** (for the ADR's owner to apply after the HAR):
+
+- The assign body is a single object, so assign is **one call per staffer**. There is no `_bulk`. Batch spacing
+  becomes per-call spacing.
+- Remove needs the record `guid` *and* the player id (`legacy_alias`). The app should store the record `guid` from
+  the assign response, or re-read the records list.
+- Eligibility is server-side: certification, claimed id, age and discipline. Map its codes to per-staffer outcomes.
+  `op.player.merged_player_id` is a "use this id instead" outcome, not a plain failure.
+- The organizer check can use `organizer.player_id` from `GET core/tournament/{guid}`. No records scan is needed.
+- The edit window is start + 90 d, not `final_modifiable_datetime`.
+
+#### Part 2: live capture (2026-10-11)
+
+This ran with `pnpm spike:s6-live` against the organizer's league (L5012), on a tournament held the same day, with
+the organizer's go-ahead. The probe:
+
+- removed the judge (one of two non-organizer staff);
+- re-added them as judge in the very next write;
+- probed a duplicate add, a role change and change back, and an unclaimed id;
+- then checked the staff list. **It ended as it started:** organizer, judge, scorekeeper.
+
+The 13 calls are sanitized fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/` (`NN.METHOD.path.json`).
+Fixture 12's id is pseudonymised. It was really `0`.
+
+**Write contract (confirmed).** All paths are under `https://api.play.pokemon.com/services/`. Upstream accepts
+paths without a trailing slash.
+
+| Call | Request | Response |
+| ---- | ------- | -------- |
+| Assign | `POST core/tournaments/{t}/records` `{"role","player":false,"participant":{"player_id"},"origin":"manual"}` | **201 `{"guid": <new record guid>}`**. A re-added staffer gets a new record guid. |
+| Assign, already listed | same | **400** `{"code":"op.generic.bad_request","message":"Invalid request.","errors":{"body":{"participant.player_id":[{"code":"op.activity_record.cannot_duplicate_participant","message":…}]}}}` |
+| Assign, unclaimed or non-existent id (`0`) | same | **400**, same envelope, code `op.activity_record.player_id_must_be_claimed` (not `unknown_reference`) |
+| Change role | `PATCH core/tournaments/{t}/records/{r}` `[{"op":"replace","path":"/role","value":…}]` | **204**, empty |
+| Remove | `DELETE core/tournaments/{t}/records/{r}` `[{"legacy_alias":"<player_id>"}]` | **204**, empty |
+
+- The error key is the dotted string `"participant.player_id"`, not an index like `_bulk`'s `"0.participant.player_id"`.
+  One call carries one staffer, so there is nothing to index.
+- `judge` → `administration` → `judge` was accepted for a certified judge.
+- **The edit window is enforced upstream** (`pnpm spike:s6-cert`, fixtures 19–22). Adding a TCG-certified person
+  as `judge` to a TCG tournament 117 days after its start → **423 `cannot_modify_old_activity`**. Nothing was
+  added, and the staff list matched its snapshot.
+  - The exact cut-off wasn't probed. The UI uses start + 90 d, and a tournament 25 days old was still editable.
+  - The app should treat 423 as "this tournament is locked": stop the job for that tournament, and offer only
+    tournaments inside start + 90 d.
+  - Removing or re-roling staff on a locked tournament was **deliberately not tried**. If only adds were locked,
+    a removal couldn't have been undone.
+  - **Assumption (organizer, 2026-10-11): a tournament past its window is locked to every change.** Add, role
+    change and remove are all refused. The app treats it as read-only, offers no staff actions on it, and expects
+    423 from any write.
+- **Certification is per product, and upstream enforces it** (`pnpm spike:s6-cert`, fixtures 14–18).
+  - The person tested is TCG-certified only, chosen by the organizer.
+  - Adding them to a VGC (`product: "vg"`) tournament as `judge` → 400 `missing_certification`, and as
+    `headjudge` → the same.
+  - Nothing was added, and the staff list matched its snapshot afterwards.
+  - The app needs no certification rules of its own. It reports this code per staffer, for example "not certified
+    for this role at a VGC event".
+
+**Reads (confirmed).**
+
+- **`GET core/tournaments/{t}/records`** is DRF-paged. The envelope is `count`, `next`, `previous`,
+  `standings_upper_bound` and `player_count`.
+  - **Unfiltered**, it returns players *and* staff together: 4 players + organizer + judge + scorekeeper = 7, paged
+    by `next`. One unfiltered pass over every page is therefore the "is this id already listed" check (ADR-0007).
+  - `player=true` gives players (`role: null`). `player=false&role:null=false` gives staff.
+  - **Record:** `guid`, `role`, `player`, `participant {guid, player_id, display_first_name, display_last_name,
+    year_of_birth, user {guid, country}}`, `division`, `actual_division`, `result`, `match_results`, `origin`
+    and `status`.
+- **`GET core/tournament/{t}`** (singular) gives `organizer {guid, player_id, first_name, last_name, country,
+  display_name}`. That is the organizer check.
+  - It also has `start_date_actual` (UTC), `report_date`, `status`, `activity_state` and `category` (e.g. `pgo_std`).
+  - Its `player_count` is per division (`{"all": 4, "unknown": 11}`).
+- **`GET core/activities?type=tournament&role=organizer&sort_by=-start_date`** pages through the organizer's
+  tournaments (117 here), newest first, including upcoming ones.
+  - **It ignores `start_date_v2:*` filters.** With a one-day filter it still returned `count=117`, oldest first.
+    The app must page through and filter by date itself, or stop paging once `start_date_v2` drops below the date.
+  - **Row keys:** `guid`, `activity_type`, `name`, `display_id`, `product`, `start_date`, `start_date_v2`,
+    `address`, `activity_group`, `activity_state`, `application_state` and `status`.
+  - `status` was `sanctioned` for upcoming events, `complete` for finished ones and `cancelled` for cancelled ones.
+- **`start_date` is local wall-clock time stamped `Z`.** A 2:30 PM CDT start is `14:30:00Z`, while `start_date_v2`
+  is the true UTC (`19:30:00Z`). Always use `start_date_v2` (or `start_date_actual`).
+- **Staffing a tournament grants no access to its staff list.** The first connect used the wrong account by
+  mistake. That account was head judge on one of the organizer's tournaments:
+  - its `GET core/tournament/{t}` → 200;
+  - its `GET core/tournaments/{t}/records?player=false` → **403**;
+  - its `core/activities` held only the tournaments it organizes, whether or not `type`/`role` was sent.
+
+  Staff management is organizer-only. The app should offer only tournaments from `core/activities`.
+- `core/users/{sub}/activities` (the staffing history) lists every tournament the caller is on, in any role,
+  with `record.role`, and it *does* honour the `start_date_v2` filters. The app doesn't need it.
+
+**Answers to the S6 questions.**
+
+1. **Calls:** see the write contract table.
+2. **Tournament list:** `core/activities` (organizer's own, client-side date filter on `start_date_v2`).
+3. **Roles:** the bundle constant `judge`, `headjudge`, `scorekeeper`, `administration` (Support Staff) and
+   `translator`.
+4. **Already listed:** an unfiltered records pass, every page, before each assign. Upstream refuses a duplicate
+   anyway (`cannot_duplicate_participant`).
+5. **Organizer:** `organizer.player_id` in the tournament details.
+6. **Edit window:** the UI allows adding until start + 90 d. Upstream refuses an add on a 117-day-old tournament
+   with 423 `cannot_modify_old_activity`.
+   Certification is enforced upstream per product (`missing_certification`). Map any 400 code to a per-staffer failure.
+
+**Still open (low risk):**
+
+- the exact cut-off (the UI says start + 90 d). `PATCH`/`DELETE` on a locked tournament are *assumed* refused, by
+  the organizer's call; not tried.
+- whether `DELETE` without the `legacy_alias` body works.
+
+**Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the
+routes to `test/server/fake-pokemon.ts`. This is for #41's owner, as the ADR is still a proposal.
 
 ## Design changes triggered (apply in M4/M5)
 

@@ -1,0 +1,86 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000089/records",
+  "query": {
+    "player": "false",
+    "role:null": "false",
+    "page_size": "500"
+  },
+  "status": 200,
+  "request": null,
+  "response": {
+    "count": 3,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000119",
+        "role": "headjudge",
+        "player": false,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000120",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000121",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999912"
+        },
+        "division": "unknown",
+        "actual_division": "masters",
+        "result": 11,
+        "match_results": null,
+        "origin": "manual",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000122",
+        "role": "organizer",
+        "player": false,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000018",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000002",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999991"
+        },
+        "division": "unknown",
+        "actual_division": "masters",
+        "result": 11,
+        "match_results": null,
+        "origin": "unknown",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000123",
+        "role": "judge",
+        "player": false,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000124",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000125",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999913"
+        },
+        "division": "unknown",
+        "actual_division": "masters",
+        "result": 11,
+        "match_results": null,
+        "origin": "manual",
+        "status": "active"
+      }
+    ],
+    "standings_upper_bound": 3,
+    "player_count": 11
+  }
+}

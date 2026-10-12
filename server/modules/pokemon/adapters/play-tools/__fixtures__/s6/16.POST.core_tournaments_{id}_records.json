@@ -1,0 +1,28 @@
+{
+  "method": "POST",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000089/records",
+  "query": {},
+  "status": 400,
+  "request": {
+    "role": "judge",
+    "player": false,
+    "participant": {
+      "player_id": "9999914"
+    },
+    "origin": "manual"
+  },
+  "response": {
+    "code": "op.generic.bad_request",
+    "message": "Invalid request.",
+    "errors": {
+      "body": {
+        "participant.player_id": [
+          {
+            "code": "op.activity_record.missing_certification",
+            "message": "The given user lacks the appropriate certificate for the given role."
+          }
+        ]
+      }
+    }
+  }
+}

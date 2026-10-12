@@ -41,6 +41,19 @@ export class Sanitizer {
     return value.replace(EMAIL, 'user@example.invalid').replace(GUID, (g) => this.fakeGuid(g));
   }
 
+  /**
+   * Replaces every player id this sanitizer has seen wherever it appears in
+   * free text (URL paths, error messages). Run it after `sanitize` has seen
+   * all the bodies, so an id that appears before its key is still caught.
+   */
+  replaceKnownIds(text: string): string {
+    let out = text;
+    for (const [original, fake] of this.playerIds) {
+      out = out.replace(new RegExp(`(?<!\\d)${original}(?!\\d)`, 'g'), fake);
+    }
+    return out;
+  }
+
   private fakeGuid(original: string): string {
     const k = original.toLowerCase();
     let fake = this.guids.get(k);

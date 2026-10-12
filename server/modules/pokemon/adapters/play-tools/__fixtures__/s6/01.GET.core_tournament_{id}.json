@@ -1,0 +1,244 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournament/00000000-0000-4000-8000-000000000001",
+  "query": {},
+  "status": 200,
+  "request": null,
+  "response": {
+    "guid": "00000000-0000-4000-8000-000000000001",
+    "display_id": "26-10-900001",
+    "name": "<redacted>",
+    "organizer": {
+      "guid": "00000000-0000-4000-8000-000000000002",
+      "first_name": "<redacted>",
+      "last_name": "<redacted>",
+      "country": "US",
+      "display_name": null,
+      "player_id": "9999991"
+    },
+    "play_template": null,
+    "divisionless": false,
+    "product": "pgo",
+    "series": {
+      "id": 1248927,
+      "name": "<redacted>",
+      "guid": "5b099da4be26f5d468491dc83244370e",
+      "product": "pgo",
+      "tags": [
+        "championship_series",
+        "league_challenge"
+      ],
+      "category_slugs": [
+        "pgo_std"
+      ],
+      "cycle": {
+        "name": "<redacted>",
+        "start_date": "2026-09-01",
+        "end_date": "2027-08-31",
+        "league_start_date": "2026-09-01",
+        "league_end_date": "2027-08-31",
+        "age_division_year": 2025
+      },
+      "actual_cycle": "2027",
+      "translations": {},
+      "supported_types": [
+        "tournament"
+      ],
+      "is_enabled": true,
+      "min_attendance_needed": 11,
+      "play_points_value": 1,
+      "schedule": {
+        "US": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "CA": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "AR": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "AU": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "AT": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "BE": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "BR": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "CL": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "CO": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "CZ": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "DK": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "FI": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "FR": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "DE": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "GR": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "GG": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "IE": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "IM": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "IT": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "JE": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "LU": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "MX": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "NL": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "NZ": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "NO": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "PE": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "PL": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "PT": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "ZA": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "ES": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "SE": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "CH": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "GB": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "BG": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        },
+        "RO": {
+          "start_date": "2026-10-01",
+          "end_date": "2026-10-31"
+        }
+      },
+      "play_template": null
+    },
+    "activity_group": {
+      "guid": "00000000-0000-4000-8000-000000000003",
+      "display_id": "L5012",
+      "group_type": "league",
+      "name": null,
+      "display_name": "<redacted>",
+      "owner": {
+        "guid": "00000000-0000-4000-8000-000000000004",
+        "player_id": "9999992"
+      }
+    },
+    "start_date": "2026-10-11T14:30:00Z",
+    "start_date_v2": "2026-10-11T19:30:00Z",
+    "start_date_actual": "2026-10-11T19:30:00Z",
+    "created": "2026-09-27T21:06:09.381210Z",
+    "activity_state": "completed",
+    "application_state": "sanctioned",
+    "status": "complete",
+    "category": "pgo_std",
+    "address": "<redacted>",
+    "event_website": "<redacted>",
+    "on_site_registration_datetime_full": "2026-10-11T14:00:00Z",
+    "on_site_registration_duration": 30,
+    "registration_start_date_v2": "2026-10-11T19:00:00Z",
+    "registration_end_date_v2": "2026-10-11T19:30:00Z",
+    "details": "<redacted>",
+    "third_party_registration_website": null,
+    "contact_information": {
+      "email": "<redacted>",
+      "phone": "<redacted>"
+    },
+    "on_site_admission": "FREE",
+    "activity_division_info": {
+      "juniors": null,
+      "masters": null,
+      "seniors": null,
+      "all": null
+    },
+    "allowed_age_divisions": [
+      "all"
+    ],
+    "player_count": {
+      "all": 4,
+      "unknown": 11
+    },
+    "version": 9,
+    "version_complete": 7,
+    "version_complete_synced": null,
+    "report_date": "2026-10-11"
+  }
+}

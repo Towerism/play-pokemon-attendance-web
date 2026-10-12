@@ -145,6 +145,42 @@ checks whether the current one still works. That shows whether Hydra revokes
 the whole chain on reuse, which is why refresh must be serialized. Run it last,
 because you may have to run S1 again afterwards.
 
+### S6: staff assignment HAR capture. `pnpm spike:s6 <file.har>`
+
+**Live route (used for S6).** Connect with S1 (`pnpm spike:s1 --no-wait`, then `pnpm spike:s1 resume '<url>'`), then:
+
+```sh
+pnpm spike:s6-live discover                     # read-only: picks the most recent started tournament with 2+ staff
+pnpm spike:s6-live probe --confirm <code>       # WRITES: remove one non-organizer staffer, re-add with the same role, probe, restore
+pnpm spike:s6 spikes/.secrets/raw/s6-live.json  # sanitise into fixtures
+```
+
+The probe refuses to run outside the tournament's 90-day add window. It re-adds the staffer as its very next
+write, never touches other staff, and ends by checking the staff list against its snapshot (`✓ RESTORED`), or
+says exactly what to re-add by hand.
+
+**HAR route.** This needs no tokens from here. You work in your own logged-in browser, and the script only
+scrubs the recording. It takes about 10 minutes and needs one **consenting** person with Professor certification
+(or yourself, on a tournament someone else organizes).
+
+1. Open play-tools and DevTools → **Network**. Tick **Preserve log** and filter on `api.play.pokemon.com`.
+2. Open **Tournaments → My tournaments**. If there's a date or year filter, use it once.
+3. Open an upcoming tournament (inside its 90-day window). Open the **Players** tab, then the **Staff** tab.
+4. Add a made-up id (e.g. `1`) as Judge. That records one error body.
+5. Add the consenting person as **Judge**, change their role to **Scorekeeper**, then **remove** them.
+6. Right-click the request list → **Save all as HAR (with content)**. Save it outside the repo, e.g. `~/Downloads/s6.har`.
+7. `pnpm spike:s6 ~/Downloads/s6.har`. It prints each call it kept.
+8. Then **delete the HAR**, because it contains a live bearer token:
+
+   ```sh
+   rm ~/Downloads/s6.har
+   ```
+
+The script never reads headers or cookies. It pseudonymises GUIDs, player ids (in bodies, paths and messages),
+names and search terms, and writes nothing if an original id survives. Check the files under
+`server/modules/pokemon/adapters/play-tools/__fixtures__/s6/` for anything personal before committing, and
+record the answers in `spikes.md` (S6, part 2).
+
 ### Fixtures: `pnpm spike:fixtures`
 
 Copies `.secrets/raw/<kind>.<label>.json` into

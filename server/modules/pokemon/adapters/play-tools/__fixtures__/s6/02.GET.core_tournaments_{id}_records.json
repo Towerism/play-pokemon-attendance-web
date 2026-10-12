@@ -1,0 +1,124 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000001/records",
+  "query": {
+    "player": "true",
+    "page": "1",
+    "page_size": "5"
+  },
+  "status": 200,
+  "request": null,
+  "response": {
+    "count": 4,
+    "next": null,
+    "previous": null,
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000005",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000006",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000007",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999993"
+        },
+        "division": "all",
+        "actual_division": "all",
+        "result": 4,
+        "match_results": {
+          "wins": 11,
+          "losses": 3,
+          "ties": 11
+        },
+        "origin": "unknown",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000008",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000009",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000010",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999994"
+        },
+        "division": "all",
+        "actual_division": "all",
+        "result": 3,
+        "match_results": {
+          "wins": 1,
+          "losses": 2,
+          "ties": 11
+        },
+        "origin": "unknown",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000011",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000012",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000013",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999995"
+        },
+        "division": "all",
+        "actual_division": "all",
+        "result": 1,
+        "match_results": {
+          "wins": 3,
+          "losses": 11,
+          "ties": 11
+        },
+        "origin": "unknown",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000014",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000015",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000016",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999996"
+        },
+        "division": "all",
+        "actual_division": "all",
+        "result": 2,
+        "match_results": {
+          "wins": 2,
+          "losses": 1,
+          "ties": 11
+        },
+        "origin": "unknown",
+        "status": "active"
+      }
+    ],
+    "standings_upper_bound": 4,
+    "player_count": 4
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "method": "POST",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000109/records",
+  "query": {},
+  "status": 423,
+  "request": {
+    "role": "judge",
+    "player": false,
+    "participant": {
+      "player_id": "9999914"
+    },
+    "origin": "manual"
+  },
+  "response": {
+    "code": "op.activity.cannot_modify_old_activity",
+    "message": "The given activity is no longer modifiable."
+  }
+}

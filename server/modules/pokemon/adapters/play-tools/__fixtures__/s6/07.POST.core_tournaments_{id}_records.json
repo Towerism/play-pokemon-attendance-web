@@ -1,0 +1,17 @@
+{
+  "method": "POST",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000001/records",
+  "query": {},
+  "status": 201,
+  "request": {
+    "role": "judge",
+    "player": false,
+    "participant": {
+      "player_id": "9999997"
+    },
+    "origin": "manual"
+  },
+  "response": {
+    "guid": "00000000-0000-4000-8000-000000000079"
+  }
+}

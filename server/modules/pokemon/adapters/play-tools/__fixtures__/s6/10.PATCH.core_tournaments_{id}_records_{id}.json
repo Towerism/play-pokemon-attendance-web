@@ -1,0 +1,14 @@
+{
+  "method": "PATCH",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000001/records/00000000-0000-4000-8000-000000000079",
+  "query": {},
+  "status": 204,
+  "request": [
+    {
+      "op": "replace",
+      "path": "/role",
+      "value": "administration"
+    }
+  ],
+  "response": null
+}
