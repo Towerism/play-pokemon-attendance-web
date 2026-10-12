@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui';
 import type { ItemOutcome, SubmissionItemView, SubmissionView } from '../../../server/modules/submission/service';
+import type { StaffRole } from '~/utils/staff';
 
 const route = useRoute();
 const router = useRouter();
@@ -34,6 +35,19 @@ const OUTCOME: Record<ItemOutcome, { label: string; color: 'success' | 'neutral'
   found: { label: 'Already known', color: 'neutral' },
   new_player: { label: 'New player', color: 'info' },
 };
+// A staff job's items carry a role, shown by its play-tools label.
+const { data: staffRoles, execute: loadStaffRoles } = useFetch<{ roles: StaffRole[] }>('/api/staff/roles', {
+  key: 'staff-roles',
+  server: false,
+  immediate: false,
+});
+watch(
+  () => submission.value?.kind,
+  (kind) => {
+    if (kind === 'staff' && !staffRoles.value) void loadStaffRoles();
+  },
+  { immediate: true },
+);
 const ORIGIN = { session: 'Session player', regular: 'Regular', upstream: 'Added in play-tools' } as const;
 
 // On a phone, Player ID moves under the name so Outcome stays on screen.
@@ -182,7 +196,8 @@ async function retry() {
         <template #displayName-cell="{ row }">
           <div>
             <span :class="{ 'text-muted italic': !row.original.displayName }">{{ row.original.displayName || 'No name' }}</span>
-            <p class="text-xs text-muted">{{ ORIGIN[row.original.origin] }}</p>
+            <p v-if="row.original.role" class="text-xs text-muted">{{ roleLabel(row.original.role, staffRoles?.roles) }}</p>
+            <p v-else class="text-xs text-muted">{{ ORIGIN[row.original.origin] }}</p>
             <p class="text-xs text-muted tabular-nums sm:hidden">{{ row.original.playerId }}</p>
           </div>
         </template>

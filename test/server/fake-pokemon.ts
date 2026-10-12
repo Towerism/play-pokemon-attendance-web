@@ -33,8 +33,13 @@ export interface FakePokemon {
   tournamentReadDelayMs: number;
   /** Tournament guids past their edit window: every write answers 423 `cannot_modify_old_activity`. */
   lockedTournaments: Set<string>;
-  /** Player id → the upstream code a staff assign for them is refused with (400), e.g. `op.activity_record.missing_certification`. */
-  refuseStaff: Map<string, string>;
+  /**
+   * Player id → the upstream code a staff assign for them is refused with (400), e.g. `op.activity_record.missing_certification`,
+   * or the code with its attributes (`merged_player_id` names `actual_player_id`).
+   */
+  refuseStaff: Map<string, string | { code: string; attributes: Record<string, string> }>;
+  /** Milliseconds to hold each staff assign (`POST …/records`) before answering (to stop a staff job mid-run). */
+  staffPostDelayMs: number;
   /** Path → status: the next request for that path answers it (e.g. 503), then the entry is cleared. */
   failOnce: Map<string, number>;
   /** Refuse the next refresh with `invalid_grant`. */
@@ -140,6 +145,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     tournamentRecords: new Map(),
     lockedTournaments: new Set(),
     refuseStaff: new Map(),
+    staffPostDelayMs: 0,
     failOnce: new Map(),
     revokeChain: () => (live = undefined),
     liveRefreshToken: () => live,
@@ -292,8 +298,10 @@ export async function startFakePokemon(): Promise<FakePokemon> {
         const refusal = records.some((r) => r.participant.player_id === participant.player_id)
           ? 'op.activity_record.cannot_duplicate_participant'
           : fake.refuseStaff.get(participant.player_id);
+        if (fake.staffPostDelayMs) await new Promise((r) => setTimeout(r, fake.staffPostDelayMs));
         if (refusal) {
-          return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.', errors: { body: { 'participant.player_id': [{ code: refusal }] } } });
+          const problem = typeof refusal === 'string' ? { code: refusal } : refusal;
+          return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.', errors: { body: { 'participant.player_id': [problem] } } });
         }
         const record = { ...fakeRecord(participant.player_id, { role, guid: `staff-${++serial}` }), origin: 'manual' };
         fake.tournamentRecords.set(tournamentId, [...records, record]);

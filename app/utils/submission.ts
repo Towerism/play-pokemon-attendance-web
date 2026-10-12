@@ -34,13 +34,18 @@ const STATUS: Record<SubmissionStatus, { label: string; color: BadgeColor }> = {
 
 export function submissionStatus(status: SubmissionStatus, kind: SubmissionKind = 'submit'): { label: string; color: BadgeColor } {
   if (kind === 'staff_import' && status === 'running') return { label: 'Reading…', color: 'info' };
+  if (kind === 'staff' && status === 'running') return { label: 'Assigning…', color: 'info' };
   if (kind !== 'submit' && status === 'running') return { label: 'Removing…', color: 'info' };
   return STATUS[status];
 }
 
-/** "Undo of #7" for an undo, "Cleared session …" for a clear, "Staff import" for one; null for a submission. */
-export function historyLabel(s: Pick<SubmissionSummary, 'kind' | 'undoOf' | 'playSessionLabel'>): string | null {
+/** "Undo of #7" for an undo, "Cleared session …" for a clear, "Staff for …" for a staff job, "Staff import" for one; null for a submission. */
+export function historyLabel(
+  s: Pick<SubmissionSummary, 'kind' | 'undoOf' | 'playSessionLabel'> & Partial<Pick<SubmissionSummary, 'tournamentLabel'>>,
+): string | null {
   if (s.kind === 'undo') return `Undo of #${s.undoOf}`;
+  // The server labels a staff job "Staff for <tournament>" already.
+  if (s.kind === 'staff') return s.tournamentLabel ? `Staff for ${s.tournamentLabel}` : s.playSessionLabel;
   if (s.kind === 'clear') return `Cleared session ${s.playSessionLabel}`;
   if (s.kind === 'staff_import') return 'Staff import';
   return null;
@@ -68,6 +73,7 @@ export function undoBlockedText(
 ): string | null {
   if (s.kind === 'undo') return "An undo can't be undone.";
   if (s.kind === 'clear') return "A cleared session can't be undone.";
+  if (s.kind === 'staff') return 'Staff are changed from This week, not undone.';
   if (s.kind === 'staff_import') return "A staff import can't be undone.";
   if (s.undoBlockedReason === 'not_undoable') return 'Only a finished submission can be undone.';
   if (s.undoBlockedReason === 'nothing_to_undo') {
