@@ -195,7 +195,14 @@ export interface SubmissionDeps {
     leagueId: string,
   ) => Pick<
     PlayToolsGateway,
-    'listTournaments' | 'getTournament' | 'listTournamentParticipants' | 'listStaffRoles' | 'assignStaff' | 'changeStaffRole' | 'unassignStaff'
+    | 'listLeagues'
+    | 'listTournaments'
+    | 'getTournament'
+    | 'listTournamentParticipants'
+    | 'listStaffRoles'
+    | 'assignStaff'
+    | 'changeStaffRole'
+    | 'unassignStaff'
   >;
   staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
@@ -242,6 +249,14 @@ const STAFF_PREFIX = 'Staff for ';
 const IMPORT_TRIES = 3;
 /** Read errors after which a staff import gives up on that tournament only, without trying again. */
 const SKIPPED_TOURNAMENT: PokemonErrorCode[] = ['not_found', 'unexpected_shape'];
+
+/**
+ * Whether a staff import gives up on one tournament and goes on: gone, unreadable, or
+ * refused with a 403 (that tournament's league, #67). A 401 is the token, so it stops.
+ */
+function skipsTournament(err: PokemonUpstreamError): boolean {
+  return SKIPPED_TOURNAMENT.includes(err.code) || (err.code === 'forbidden' && err.details.status === 403);
+}
 /** A staff import's `play_session_label`; it has no play session or tournament of its own. */
 const STAFF_IMPORT_LABEL = 'Staff import';
 
@@ -1234,9 +1249,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
     }
 
-    const tournaments = await read(() => gateway.listTournaments(), 'the tournaments');
+    // play-tools still lists tournaments from leagues the account has left, but refuses their records (#67).
+    const leagues = new Set((await read(() => gateway.listLeagues(), 'the leagues')).map((l) => l.id));
+    const listed = await read(() => gateway.listTournaments(), 'the tournaments');
+    const tournaments = listed.filter((t) => t.groupId === null || leagues.has(t.groupId));
+    const leftOut = listed.length - tournaments.length;
     total = tournaments.length;
-    emit(row, 'planned', `${total} tournaments to read.`, 0, total);
+    const why = leftOut ? `; ${leftOut} left out (leagues this account is no longer in)` : '';
+    emit(row, 'planned', `${total} tournaments to read${why}.`, 0, total);
     /** Every staffer found so far: once new to the league, a staffer stays `new_player` for the whole import. */
     const found = new Map<PlayerId, 'found' | 'new_player'>();
     let failed = 0;
@@ -1246,12 +1266,18 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       try {
         participants = await read(() => gateway.listTournamentParticipants(t.id), 'that tournament');
       } catch (err) {
-        // Gone, unreadable, or still down after 3 tries: this tournament only. Anything else stops the import.
-        if (!(err instanceof PokemonUpstreamError) || !(err.retryable || SKIPPED_TOURNAMENT.includes(err.code))) throw err;
+        // Gone, unreadable, refused (403), or still down after 3 tries: this tournament only. Anything else stops the import.
+        if (!(err instanceof PokemonUpstreamError) || !(err.retryable || skipsTournament(err))) throw err;
         failed += 1;
         lastFailure = err.code;
-        log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, { submissionId: row.id, tournamentId: t.id, code: err.code });
-        emit(row, 'tournament_failed', `Could not read a tournament (${err.code}).`, done + failed, total);
+        log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, {
+          submissionId: row.id,
+          tournamentId: t.id,
+          code: err.code,
+          status: err.details.status,
+        });
+        const when = t.startsAt ? dateIn(t.startsAt, timeZone) : 'undated';
+        emit(row, 'tournament_failed', `Could not read tournament ${t.displayId ?? t.id} (${when}): ${err.code}.`, done + failed, total);
         continue;
       }
       db.transaction(() => seedFrom(row, t, participants, found));

@@ -151,8 +151,9 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
    - **A one-time import**, "Import staff from play-tools" in Settings (organizer's
      answer to Q4, 2026-10-11). It is a read-only job of `kind = 'staff_import'` on the
      same rails, so it gets the lease, progress, History and crash recovery.
-     - It pages every tournament the account organizes, in any league (`core/activities`),
-       and reads each one's records one read at a time. Reads are not paced (organizer,
+     - It pages every tournament the account organizes (`core/activities`), leaves out
+       those in leagues the account is no longer in (update #67), and reads each other
+       one's records one read at a time. Reads are not paced (organizer,
        2026-10-12: reads don't need pacing); `NUXT_STAFF_DELAY_MS` paces only the staff
        job's writes.
      - It records every staffer it finds.
@@ -268,6 +269,20 @@ record's `guid` on the assignment. Removing or re-roling that assignment later s
 `DELETE` or `PATCH` naming that record, as for a record the app created. Decisions 4, 8
 and 12 say so. Records no assignment holds (staff added in play-tools that nobody asked
 the app for, the organizer's record, players) are still never changed or deleted.
+
+### Update (#67, 2026-10-12): the import reads only the account's current leagues
+
+The organizer's first import stopped at "Read 0 of 102". A spike on #67 found why:
+`core/activities?role=organizer` still lists tournaments the account ran under leagues
+it has since left, but play-tools refuses their records with 403
+`op.activity_group.criteria_failure`. In the organizer's account, 37 of 117 tournaments
+were in two former leagues, and every one was refused. All 80 in the current league
+were readable. So the import now reads the account's leagues once (`listLeagues()`) and
+leaves out any tournament whose activity group isn't one of them, without requesting it.
+History's `planned` event counts what was left out. A tournament with no activity group
+is still read. Any other 403 on one tournament is skipped (`tournament_failed`), while a
+401 (the token refused) still stops the import. Decision 5 says so. Staff from former
+leagues' tournaments can't be imported, because play-tools won't show them.
 
 ## Alternatives considered
 

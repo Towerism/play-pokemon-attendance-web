@@ -5,7 +5,7 @@ import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/clien
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
 import type { ConnectionView } from '../pokemon/connection';
-import type { DateRange, Tournament, TournamentDetails, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
+import type { DateRange, League, Tournament, TournamentDetails, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import { type RosterService, createRosterService } from '../roster/service';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import { type SessionsService, createSessionsService } from '../sessions/service';
@@ -28,14 +28,18 @@ const id = (s: string) => s as PlayerId;
 class FakeTournaments {
   tournaments: TournamentDetails[] = [];
   participants = new Map<string, TournamentParticipant[]>();
-  /** Every call, in order: `list` or `read <tournament>`. */
+  /** The leagues the account is in today (`listLeagues`). */
+  leagues: League[] = [{ id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true }];
+  /** Every call, in order: `leagues`, `list` or `read <tournament>`. */
   calls: string[] = [];
+  onLeagues: ((n: number) => unknown) | undefined;
   onList: ((n: number) => unknown) | undefined;
   onRead: ((tournamentId: string, n: number) => unknown) | undefined;
   /** While set, every call waits for it: holds an import mid-run. */
   gate: Promise<void> | undefined;
   private inFlight = 0;
   maxInFlight = 0;
+  private leagueReads = 0;
   private lists = 0;
   private reads = 0;
 
@@ -57,6 +61,14 @@ class FakeTournaments {
     } finally {
       this.inFlight -= 1;
     }
+  }
+
+  listLeagues(): Promise<League[]> {
+    this.calls.push('leagues');
+    return this.call(() => {
+      this.onLeagues?.(++this.leagueReads);
+      return [...this.leagues];
+    });
   }
 
   listTournaments(range?: DateRange): Promise<Tournament[]> {
@@ -175,6 +187,9 @@ async function importStaff(): Promise<SubmissionView> {
   await service.idle();
   return service.get(L, submissionId);
 }
+
+/** play-tools refusing a tournament's records: 403 for a league the account isn't in (#67), 401 for the token. */
+const refused = (status: 401 | 403) => new PokemonUpstreamError('forbidden', `Tournament participants: play-tools refused the request (${status}).`, { status });
 
 const history = () =>
   database.sqlite
@@ -371,24 +386,47 @@ describe('reading tournaments', () => {
   it('lists once with no range, then reads each tournament once, one call at a time and never sleeping between them', async () => {
     const view = await importStaff();
 
-    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2', 'read t-3']);
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2', 'read t-3']);
     expect(upstream.maxInFlight).toBe(1);
     expect(sleeps).toEqual([]);
     expect(view.status).toBe('succeeded');
   });
 
-  it("includes another league's tournaments and undated ones", async () => {
-    upstream.add(tournament('t-other', { groupId: 'another-store' }), staffer('400', 'judge'));
-    upstream.add(tournament('t-old', { startsAt: null }), staffer('500', 'scorekeeper'));
+  it('leaves out, without reading them, tournaments in a league the account is no longer in', async () => {
+    upstream.add(tournament('t-former', { groupId: 'former-store' }), staffer('400', 'judge'));
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2', 'read t-3']);
+    expect(view.status).toBe('succeeded');
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 3, tournamentsRead: 3, tournamentsFailed: 0 });
+    expect(service.events(L, view.id)[0]?.message).toBe('3 tournaments to read; 1 left out (leagues this account is no longer in).');
+    expect(history().map((h) => (h as { tournament_id: string }).tournament_id)).not.toContain('t-former');
+  });
+
+  it('still reads a tournament play-tools gives no league, and an undated one', async () => {
+    upstream.add(tournament('t-nogroup', { groupId: null }), staffer('400', 'judge'));
+    upstream.add(tournament('t-undated', { startsAt: null }), staffer('500', 'scorekeeper'));
 
     await importStaff();
 
     expect(history()).toEqual(
       expect.arrayContaining([
-        { tournament_id: 't-other', player_id: '400', role: 'judge', source: 'upstream' },
-        { tournament_id: 't-old', player_id: '500', role: 'scorekeeper', source: 'upstream' },
+        { tournament_id: 't-nogroup', player_id: '400', role: 'judge', source: 'upstream' },
+        { tournament_id: 't-undated', player_id: '500', role: 'scorekeeper', source: 'upstream' },
       ]),
     );
+  });
+
+  it('succeeds with nothing to read when every tournament is in a league the account has left', async () => {
+    upstream.leagues = [];
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list']);
+    expect(view.status).toBe('succeeded');
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 0, tournamentsRead: 0, tournamentsFailed: 0 });
+    expect(service.events(L, view.id)[0]?.message).toBe('0 tournaments to read; 3 left out (leagues this account is no longer in).');
   });
 
   it('reads a tournament again after a 503, and succeeds', async () => {
@@ -398,7 +436,7 @@ describe('reading tournaments', () => {
 
     const view = await importStaff();
 
-    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2', 'read t-2', 'read t-3']);
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2', 'read t-2', 'read t-3']);
     expect(view.status).toBe('succeeded');
     expect(view.staffImport).toMatchObject({ tournamentsRead: 3, tournamentsFailed: 0 });
   });
@@ -425,7 +463,7 @@ describe('reading tournaments', () => {
     const view = await importStaff();
 
     expect(sleeps).toEqual([7_000]);
-    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-1', 'read t-2', 'read t-3']);
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-1', 'read t-2', 'read t-3']);
     expect(view.status).toBe('succeeded');
   });
 
@@ -452,17 +490,42 @@ describe('reading tournaments', () => {
     expect((await importStaff()).status).toBe('failed');
   });
 
+  it('skips a tournament play-tools refuses (403) without reading it again, goes on, and ends partial', async () => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw refused(403);
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2', 'read t-3']);
+    expect(events(view.id).filter((e) => e === 'tournament_failed')).toHaveLength(1);
+    expect(view.status).toBe('partial');
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 3, tournamentsRead: 2, tournamentsFailed: 1 });
+    expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100', '300']);
+  });
+
+  it('ends failed with forbidden when play-tools refuses every tournament, reading each once', async () => {
+    upstream.onRead = () => {
+      throw refused(403);
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2', 'read t-3']);
+    expect(view).toMatchObject({ status: 'failed', error: 'forbidden' });
+  });
+
   it.each([
-    ['forbidden', new PokemonUpstreamError('forbidden', 'play-tools refused the request (403).', { status: 403 })],
-    ['needs_reconnect', new PokemonUpstreamError('needs_reconnect', 'Reconnect the Pokémon account in Settings.')],
-  ])('stops failed with %s, sends nothing more, and keeps what it recorded', async (code, error) => {
+    ['forbidden', 'a 401 (the token refused)', refused(401)],
+    ['needs_reconnect', 'needs_reconnect', new PokemonUpstreamError('needs_reconnect', 'Reconnect the Pokémon account in Settings.')],
+  ])('stops failed with %s on %s, sends nothing more, and keeps what it recorded', async (code, _, error) => {
     upstream.onRead = (t) => {
       if (t === 't-2') throw error;
     };
 
     const view = await importStaff();
 
-    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2']);
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2']);
     expect(view).toMatchObject({ status: 'failed', error: code });
     expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
     expect(events(view.id).at(-1)).toBe('finished');
@@ -475,9 +538,59 @@ describe('reading tournaments', () => {
 
     const view = await importStaff();
 
-    expect(upstream.calls).toEqual(['list', 'list', 'list']);
+    expect(upstream.calls).toEqual(['leagues', 'list', 'list', 'list']);
     expect(view).toMatchObject({ status: 'failed', error: 'unavailable' });
     expect(history()).toEqual([]);
+  });
+
+  it.each([
+    ['forbidden', ['leagues'], () => refused(403)],
+    ['unavailable', ['leagues', 'leagues', 'leagues'], down],
+  ])('ends failed with %s before listing any tournament when the leagues cannot be read', async (code, calls, error) => {
+    upstream.onLeagues = () => {
+      throw error();
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(calls);
+    expect(view).toMatchObject({ status: 'failed', error: code });
+    expect(history()).toEqual([]);
+  });
+
+  it('names a tournament it could not read by display id (else its id) and its date in the league time zone, or undated', async () => {
+    // 03:30 UTC on the 5th is still the 4th in Chicago.
+    upstream.tournaments[1] = tournament('t-2', { displayId: '26-10-000002', startsAt: new Date('2026-10-05T03:30:00Z') });
+    upstream.add(tournament('t-4', { displayId: '26-10-000004', startsAt: null }));
+    upstream.add(tournament('t-5', { displayId: null }));
+    upstream.onRead = (t) => {
+      if (t !== 't-1' && t !== 't-3') throw refused(403);
+    };
+
+    const view = await importStaff();
+
+    const failures = service
+      .events(L, view.id)
+      .filter((e) => e.type === 'tournament_failed')
+      .map((e) => e.message);
+    expect(failures).toEqual([
+      'Could not read tournament 26-10-000002 (2026-10-04): forbidden.',
+      'Could not read tournament 26-10-000004 (undated): forbidden.',
+      'Could not read tournament t-5 (2026-10-14): forbidden.',
+    ]);
+  });
+
+  it('logs a refused tournament with its id, code and status, never a name', async () => {
+    upstream.add(tournament('t-4', { name: 'Brock Cup' }), staffer('400', 'judge', 'Brock Stone'));
+    upstream.onRead = (t) => {
+      if (t === 't-4') throw refused(403);
+    };
+
+    await importStaff();
+
+    const warning = logs.find((l) => l.level === 'warn' && l.message.includes('t-4'));
+    expect(warning?.fields).toMatchObject({ tournamentId: 't-4', code: 'forbidden', status: 403 });
+    expect(JSON.stringify(logs)).not.toMatch(/Brock/);
   });
 });
 
@@ -555,7 +668,7 @@ describe('retry, crash and shutdown', () => {
 
     expect(first.status).toBe('partial');
     expect(second).toMatchObject({ kind: 'staff_import', retryOf: first.id, status: 'succeeded' });
-    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2']);
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2']);
     expect(history()).toHaveLength(2);
     expect(Object.fromEntries(second.items.map((i) => [i.playerId, i.outcome]))).toEqual({ '100': 'found', '200': 'new_player' });
   });
@@ -587,7 +700,7 @@ describe('retry, crash and shutdown', () => {
 
     const view = await importStaff();
 
-    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2']);
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2']);
     expect(view.status).toBe('interrupted');
     expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
     expect(service.events(L, view.id).at(-1)).toMatchObject({ type: 'finished', done: 1, total: 2 });

@@ -122,13 +122,15 @@ describe('staff import API (POST /staff/import)', () => {
       fake.requests.length = 0;
     });
 
-    it("reads every tournament the account organizes, any league or date, into the staff list", async () => {
+    it("reads every tournament the account organizes in its leagues, of any date, into the staff list, and never asks for a former league's", async () => {
       const view = await imported();
 
       expect(view).toMatchObject({ kind: 'staff_import', status: 'succeeded', playSessionLabel: 'Staff import', undoable: false });
+      // play-tools would refuse it (403 criteria_failure); the import never asks.
+      expect(tournamentCalls().filter((r) => r.path.includes('/tournaments/elsewhere'))).toEqual([]);
       expect(view.staffImport).toEqual({
-        tournamentsTotal: 3,
-        tournamentsRead: 3,
+        tournamentsTotal: 2,
+        tournamentsRead: 2,
         tournamentsFailed: 0,
         staffersFound: 2,
         newPlayers: [
@@ -141,7 +143,7 @@ describe('staff import API (POST /staff/import)', () => {
       const staff = (await (await api('/staff')).json()) as { playerId: string; timesStaffed: number }[];
       expect(staff.map((s) => [s.playerId, s.timesStaffed])).toEqual(
         expect.arrayContaining([
-          ['00555', 2],
+          ['00555', 1],
           ['00777', 1],
         ]),
       );

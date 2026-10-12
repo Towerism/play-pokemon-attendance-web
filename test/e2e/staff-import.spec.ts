@@ -23,14 +23,14 @@ test('importing staff shows progress, then what it found, and the import in Hist
   expect(connected).toBeTruthy();
   fake.tournaments.push(
     fakeTournament('this-league', { startsAt: '2026-10-14T00:30:00Z', organizer: STAFF_ID }),
-    fakeTournament('other-store', { startsAt: '2026-09-02T00:30:00Z', groupId: 'another-store', organizer: STAFF_ID }),
+    fakeTournament('last-month', { startsAt: '2026-09-02T00:30:00Z', organizer: STAFF_ID }),
   );
   fake.tournamentRecords.set('this-league', [
     fakeRecord(STAFF_ID, { role: 'organizer', first: 'Olive', last: 'Organizer' }),
     fakeRecord(JO, { role: 'judge', first: 'Jo', last: 'Judge' }),
     fakeRecord('6000099', { first: 'Pat', last: 'Player' }),
   ]);
-  fake.tournamentRecords.set('other-store', [
+  fake.tournamentRecords.set('last-month', [
     fakeRecord(STAFF_ID, { role: 'organizer' }),
     fakeRecord(DEAD_NAME, { role: 'scorekeeper', first: 'Dead', last: 'Name' }),
   ]);

@@ -401,9 +401,24 @@ describe('listTournamentParticipants (S6: core/tournaments/{t}/records, unfilter
     expect(logged).not.toContain('Brock');
     expect(logged).not.toContain('9999997');
   });
+
+  it('is forbidden with status 403 for a tournament in a league the account has left (spike #67)', async () => {
+    upstream.use(
+      http.get(RECORDS_URL, () =>
+        HttpResponse.json(
+          { code: 'op.activity_group.criteria_failure', message: 'The requested action could not be performed due to insufficient access.' },
+          { status: 403 },
+        ),
+      ),
+    );
+
+    const err = await upstreamError(gateway().listTournamentParticipants(T));
+
+    expect(err).toMatchObject({ code: 'forbidden', retryable: false, details: { status: 403 } });
+  });
 });
 
-const R = '00000000-0000-4000-8000-000000000079';
+const R ='00000000-0000-4000-8000-000000000079';
 const replay = (n: string) => {
   const r = recording(n);
   return () => (r.response === null ? new HttpResponse(null, { status: r.status }) : HttpResponse.json(r.response, { status: r.status }));
