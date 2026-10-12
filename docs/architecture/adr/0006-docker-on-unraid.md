@@ -61,7 +61,7 @@ what we design, document and test for.
 ### Image
 
 - Published to **GHCR** by CI as `ghcr.io/<owner>/play-pokemon-attendance`,
-  multi-arch (`linux/amd64`, `linux/arm64`). Tags: `latest` (stable),
+  `linux/amd64` only (see the update below). Tags: `latest` (stable),
   `X.Y.Z`, `X.Y`, cut automatically by semantic-release from the
   Conventional Commits on `main`; `edge` is the unreleased tip of `main`.
 - Multi-stage build. pnpm builds `.output/`, and the runtime stage is
@@ -166,3 +166,15 @@ silently regenerates one.
   container smoke test in CI.
 - (−) Fly.io and similar hosts drop from "primary" to "should work". They aren't
   tested in CI.
+
+## Update (M7, 2026-10-11)
+
+**The image is `linux/amd64` only.** CI no longer builds `linux/arm64`. Unraid runs on x86-64 and is
+the only target, nobody ran the arm64 image, and the container smoke tests only ever ran the amd64 one.
+The arm64 build was emulated under QEMU on every push to `main`, the slowest step in the image job.
+
+- (+) Faster `main` runs, and every published image is one the smoke tests ran.
+- (−) `docker pull` on an arm64 host fails with "no matching manifest". Tags published before this change
+  stay multi-arch in GHCR.
+- The Dockerfile keeps its per-arch checksums for supercronic and Litestream, so a local `docker build` on
+  an arm64 machine still works. CI simply never asks for arm64.
