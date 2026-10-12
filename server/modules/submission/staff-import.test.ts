@@ -250,6 +250,24 @@ describe('importing staff from play-tools (ADR-0007 decision 5)', () => {
     expect(view.staffImport?.staffersFound).toBe(3);
   });
 
+  it('has one item for a staffer listed twice on a tournament, and keeps a role the app does not offer', async () => {
+    upstream.add(
+      tournament('t-1'),
+      staffer('100', 'judge', '', 'rec-a'),
+      staffer('100', 'judge', '', 'rec-b'),
+      staffer('200', 'streamer', 'Nurse Joy'),
+    );
+
+    const view = await importStaff();
+
+    expect(view.status).toBe('succeeded');
+    expect(view.items.map((i) => i.playerId).sort()).toEqual(['100', '200']);
+    expect(history()).toEqual([
+      { tournament_id: 't-1', player_id: '100', role: 'judge', source: 'upstream' },
+      { tournament_id: 't-1', player_id: '200', role: 'streamer', source: 'upstream' },
+    ]);
+  });
+
   it('keeps the local name: a play-tools name only names a player the app could not name (seed-only)', async () => {
     roster.ensurePlayers(L, [{ playerId: id('100'), name: 'Ash K.' }, { playerId: id('200') }]);
     upstream.add(tournament('t-1'), staffer('100', 'judge', 'Ashley Ketchum'), staffer('200', 'judge', 'Brock Stone'));
