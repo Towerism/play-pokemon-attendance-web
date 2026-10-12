@@ -270,7 +270,34 @@ The "already listed" check needs both lists, every page. One unfiltered pass wou
 - The organizer check can use `organizer.player_id` from `GET core/tournament/{guid}`. No records scan is needed.
 - The edit window is start + 90 d, not `final_modifiable_datetime`.
 
-#### Part 2: HAR capture (pending, needs the organizer)
+#### Part 2a: live reads (2026-10-11, organizer's own token, read-only)
+
+- **`core/activities` only lists tournaments the caller organizes.** The organizer got `count=7` with or without
+  `type`/`role`, the latest on 2026-07-21. **It silently ignores `start_date_v2:greater_than_or_equal_to`**: it
+  returned July rows for "≥ September". Part 1's guess about date filters there is wrong. Filter and sort on the
+  client, and page through `next`.
+  - **Row keys:** `guid`, `activity_type`, `name`, `display_id`, `product`, `start_date`, `start_date_v2`,
+    `address`, `activity_group`, `activity_state`, `application_state` and `status`.
+- **`core/users/{sub}/activities` lists every tournament the caller is on, in any role, and honours the
+  `start_date_v2` filters.**
+  - **Row keys:** `guid`, `name`, `display_id`, `start_date`, `start_date_v2`, `address`, `record` (with the
+    caller's `role`, e.g. `headjudge`), `series`, `activity_state`, `application_state`, `status` and
+    `display_name`.
+- **`start_date` is local wall-clock time stamped `Z`.** For example, `18:30Z` for a 6:30 PM CDT start, while
+  `start_date_v2` is the true UTC (`23:30Z`). Always use `start_date_v2`.
+- **Being on staff grants nothing.** On a tournament where the organizer was only head judge,
+  `GET core/tournament/{guid}` → 200, but `GET core/tournaments/{guid}/records?player=false` → **403**. The
+  details carry `organizer.player_id` (another person's) and no permission fields. Staff management really is
+  organizer-only, so the app can only staff tournaments that `core/activities` returns.
+- **Tournament details keys:** `guid`, `display_id`, `name`, `organizer`, `play_template`, `divisionless`,
+  `product`, `series`, `activity_group`, `start_date`, `start_date_v2`, `start_date_actual`, `created`,
+  `activity_state`, `application_state`, `status`, `category`, `address`, `contact_information`,
+  `activity_division_info`, `allowed_age_divisions`, `player_count`, `version`, … and `report_date`.
+- **On the organizer's own 7 tournaments, the staff list holds only the organizer record.** No tournament the
+  organizer can edit has a second staffer to remove and restore, so the write probe (`pnpm spike:s6-live probe`)
+  has not run.
+
+#### Part 2b: write capture (pending, needs the organizer)
 
 Steps are in [`spikes/README.md`](../../spikes/README.md#s6-staff-assignment-har-capture-pnpm-spikes6). They are
 done in the organizer's own logged-in browser, because there is no headless login. `pnpm spike:s6 <file.har>` keeps

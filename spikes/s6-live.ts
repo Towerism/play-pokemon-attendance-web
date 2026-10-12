@@ -89,11 +89,19 @@ async function discover(): Promise<void> {
   const res = await call('GET', 'core/activities', {
     query: { type: 'tournament', role: 'organizer', sort_by: '-start_date', page_size: 20 },
   });
+  writeSecretJson(RECORDING, recorded); // kept even if discover stops, so the raw rows can be inspected
   if (res.status !== 200) fail(`core/activities → HTTP ${res.status}`);
-  const items = ((res.body as { results?: Record<string, unknown>[] }).results ?? [])
+  const body = res.body as { count?: unknown; next?: unknown; results?: Record<string, unknown>[] };
+  const rows = body.results ?? [];
+  console.log(`  count=${String(body.count)} next=${body.next ? 'yes' : 'no'} rows=${rows.length}`);
+  for (const a of rows) {
+    const raw = (v: unknown) => JSON.stringify(v ?? null).slice(0, 60);
+    console.log(`    ${a.display_id} · start_date=${raw(a.start_date)} · start_date_v2=${raw(a.start_date_v2)} · ${a.status}/${a.activity_state}`);
+  }
+  const items = rows
     .filter((a) => Date.parse(startOf(a)) <= Date.now())
     .sort((a, b) => Date.parse(startOf(b)) - Date.parse(startOf(a)));
-  console.log(`  ${items.length} tournament(s) already started; item keys: ${Object.keys(items[0] ?? {}).join(', ')}`);
+  console.log(`  ${items.length} tournament(s) already started`);
 
   for (const a of items.slice(0, 5)) {
     const guid = String(a.guid ?? a.id);
@@ -111,6 +119,7 @@ async function discover(): Promise<void> {
     console.log(`Run the probe with: pnpm spike:s6-live probe --confirm ${guid.slice(-6)}`);
     return;
   }
+  writeSecretJson(RECORDING, recorded);
   fail('None of the 5 most recent tournaments has 2+ staff including a non-organizer with an assignable role.');
 }
 
