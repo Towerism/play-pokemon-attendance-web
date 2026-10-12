@@ -82,5 +82,27 @@ export function sanitizeCalls(calls: readonly ApiCall[]): { calls: ApiCall[]; le
     request: JSON.parse(s.replaceKnownIds(JSON.stringify(c.request))) as unknown,
     response: JSON.parse(s.replaceKnownIds(JSON.stringify(c.response))) as unknown,
   }));
-  return { calls: out, leaks: findLeaks(JSON.stringify(out), s.originals) };
+  const events = pseudonymiseEvents(out);
+  return { calls: events.calls, leaks: findLeaks(JSON.stringify(events.calls), [...s.originals, ...events.originals]) };
+}
+
+/** Event free text and store websites identify a place and its people. */
+const EVENT_TEXT_KEY = /^(details|event_website|website|third_party_registration_website|admin_notes)$/i;
+/** A public tournament id ("26-10-010393") leads straight to the real event. */
+const TOURNAMENT_DISPLAY_ID = /\b(\d{2}-\d{2}-)(\d{6})\b/g;
+
+function pseudonymiseEvents(calls: ApiCall[]): { calls: ApiCall[]; originals: string[] } {
+  const fakes = new Map<string, string>();
+  const redact = (v: unknown, key = ''): unknown => {
+    if (EVENT_TEXT_KEY.test(key) && typeof v === 'string') return '<redacted>';
+    if (Array.isArray(v)) return v.map((x) => redact(x, key));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redact(x, k)]));
+    return v;
+  };
+  const json = JSON.stringify(redact(calls)).replace(TOURNAMENT_DISPLAY_ID, (id: string, prefix: string) => {
+    let fake = fakes.get(id);
+    if (!fake) fakes.set(id, (fake = `${prefix}${900001 + fakes.size}`));
+    return fake;
+  });
+  return { calls: JSON.parse(json) as ApiCall[], originals: [...fakes.keys()] };
 }

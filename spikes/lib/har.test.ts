@@ -116,6 +116,22 @@ describe('sanitizeCalls', () => {
     expect(remove?.path).toBe(`/services/core/tournaments/${add?.path.split('/')[4]}/records/${fakeRecord}/`);
   });
 
+  it('pseudonymises tournament display ids consistently and redacts event free text and websites', () => {
+    const { calls, leaks } = sanitizeCalls(
+      apiCalls(
+        har(
+          entry('GET', `${API}/core/tournament/${TOURNAMENT}`, {
+            res: { display_id: '26-10-010393', details: 'Ask for Brock at the desk', event_website: 'https://store.example', status: 'complete' },
+          }),
+          entry('GET', `${API}/core/activities`, { res: { results: [{ display_id: '26-10-010393' }, { display_id: '24-11-004912' }] } }),
+        ),
+      ),
+    );
+    expect(leaks).toEqual([]);
+    expect(calls[0]?.response).toEqual({ display_id: '26-10-900001', details: '<redacted>', event_website: '<redacted>', status: 'complete' });
+    expect(calls[1]?.response).toEqual({ results: [{ display_id: '26-10-900001' }, { display_id: '24-11-900002' }] });
+  });
+
   it('redacts free-text search and name parameters', () => {
     const { calls } = sanitizeCalls(raw);
     expect(calls[0]?.query).toEqual({ search: '<redacted>', name: '<redacted>' });

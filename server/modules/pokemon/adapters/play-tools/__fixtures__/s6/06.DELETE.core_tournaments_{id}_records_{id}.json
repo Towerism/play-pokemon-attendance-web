@@ -1,0 +1,12 @@
+{
+  "method": "DELETE",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000001/records/00000000-0000-4000-8000-000000000019",
+  "query": {},
+  "status": 204,
+  "request": [
+    {
+      "legacy_alias": "9999997"
+    }
+  ],
+  "response": null
+}

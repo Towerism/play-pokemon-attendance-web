@@ -1,0 +1,141 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000001/records",
+  "query": {
+    "page": "1",
+    "page_size": "5"
+  },
+  "status": 200,
+  "request": null,
+  "response": {
+    "count": 7,
+    "next": "https://api.play.pokemon.com/services/core/tournaments/00000000-0000-4000-8000-000000000001/records?page=2&page_size=5",
+    "previous": null,
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000017",
+        "role": "organizer",
+        "player": false,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000018",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000002",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999991"
+        },
+        "division": "unknown",
+        "actual_division": "all",
+        "result": 11,
+        "match_results": null,
+        "origin": "unknown",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000019",
+        "role": "judge",
+        "player": false,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000020",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000021",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999997"
+        },
+        "division": "unknown",
+        "actual_division": "all",
+        "result": 11,
+        "match_results": null,
+        "origin": "manual",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000005",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000006",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000007",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999993"
+        },
+        "division": "all",
+        "actual_division": "all",
+        "result": 4,
+        "match_results": {
+          "wins": 11,
+          "losses": 3,
+          "ties": 11
+        },
+        "origin": "unknown",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000008",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000009",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000010",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999994"
+        },
+        "division": "all",
+        "actual_division": "all",
+        "result": 3,
+        "match_results": {
+          "wins": 1,
+          "losses": 2,
+          "ties": 11
+        },
+        "origin": "unknown",
+        "status": "active"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000011",
+        "role": null,
+        "player": true,
+        "participant": {
+          "guid": "00000000-0000-4000-8000-000000000012",
+          "display_first_name": "<redacted>",
+          "display_last_name": "<redacted>",
+          "user": {
+            "guid": "00000000-0000-4000-8000-000000000013",
+            "country": "US"
+          },
+          "year_of_birth": "<redacted>",
+          "player_id": "9999995"
+        },
+        "division": "all",
+        "actual_division": "all",
+        "result": 1,
+        "match_results": {
+          "wins": 3,
+          "losses": 11,
+          "ties": 11
+        },
+        "origin": "unknown",
+        "status": "active"
+      }
+    ],
+    "standings_upper_bound": 7,
+    "player_count": 4
+  }
+}
