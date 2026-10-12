@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test';
 import { fakeRecord, fakeTournament } from '../server/fake-pokemon';
 import { STAFF_ID, expect, test } from './fixtures';
 
@@ -67,4 +68,51 @@ test('importing staff shows progress, then what it found, and the import in Hist
 
   await page.goto('/history');
   await expect(page.getByRole('row').filter({ hasText: 'Staff import' })).toContainText('Done');
+});
+
+test.describe('on a phone (360 px)', () => {
+  test.use({ viewport: { width: 360, height: 780 } });
+
+  // One unbroken 60-character word: it must wrap inside the card, not widen the page.
+  const LONG_NAME = 'Wolfeschlegelsteinhausenbergerdorffvoralternwarengewissenhaf';
+
+  /** The page never scrolls sideways, and the card sits fully between the screen's edges. */
+  async function expectFitsScreen(card: Locator): Promise<void> {
+    const page = card.page();
+    const widths = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: window.innerWidth }));
+    expect(widths.scroll, 'page scrolls sideways').toBeLessThanOrEqual(widths.client);
+    const box = (await card.boundingBox())!;
+    expect(box.x, 'card starts off the left edge').toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, 'card runs off the right edge').toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+
+  test('the Staff list card fits, announces progress and the result as text, with a named button', async ({ page, connected, fake }) => {
+    expect(connected).toBeTruthy();
+    fake.tournaments.push(fakeTournament('this-league', { startsAt: '2026-10-14T00:30:00Z', organizer: STAFF_ID }));
+    fake.tournamentRecords.set('this-league', [
+      fakeRecord(STAFF_ID, { role: 'organizer' }),
+      fakeRecord(JO, { role: 'judge', first: LONG_NAME, last: 'Judge' }),
+    ]);
+    fake.tournamentReadDelayMs = 600;
+
+    await page.goto('/settings');
+    const card = page.getByRole('region', { name: 'Staff list' });
+    const live = card.locator('[aria-live="polite"]');
+    await expect(live).toHaveCount(1);
+    const button = card.getByRole('button', { name: 'Import staff from play-tools' });
+    await expectFitsScreen(card);
+
+    await button.click();
+    // While it runs, the progress is text inside the live region.
+    await expect(live).toContainText(/Read 0 of 1 tournaments|Starting…/);
+    await expectFitsScreen(card);
+
+    // The result is text too, not only a colour, and still in the live region.
+    await expect(live).toContainText('Read 1 of 1 tournaments · 1 staff found · 1 new player', { timeout: 15_000 });
+    await expect(live).toContainText('Done');
+    await expect(live.getByRole('listitem')).toHaveText(`${LONG_NAME} Judge · ${JO}`);
+    await expectFitsScreen(card);
+    const item = (await live.getByRole('listitem').boundingBox())!;
+    expect(item.x + item.width, 'new player runs off the right edge').toBeLessThanOrEqual(360);
+  });
 });
