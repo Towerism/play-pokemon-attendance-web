@@ -175,7 +175,7 @@ test('the rename guards, the staff search, and which tab asks for what', async (
 });
 
 test('with no staff yet, the Staff tab points to the import in Settings', async ({ page, api }) => {
-  void api;
+  void api; // the fixture logs the organizer in; the staff list needs no Pokémon connection
   await page.goto('/players?tab=staff');
   await expect(page.getByText('No staff yet.')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Import staff from play-tools in Settings' })).toHaveAttribute('href', '/settings');
