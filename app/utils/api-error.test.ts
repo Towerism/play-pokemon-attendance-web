@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiErrorCode, apiErrorMessage, rateLimitMessage } from './api-error';
+import { apiErrorCode, apiErrorHow, apiErrorMessage, rateLimitMessage } from './api-error';
 
 const zodIssues = (message: string) => JSON.stringify([{ code: 'invalid_format', path: ['playerId'], message }]);
 
@@ -60,4 +60,17 @@ describe('rateLimitMessage', () => {
       expect(rateLimitMessage(err)).toBeUndefined();
     },
   );
+});
+
+describe('apiErrorHow', () => {
+  it("reads how play-tools already lists a player from an `already_listed` refusal", () => {
+    expect(apiErrorHow({ data: { data: { code: 'already_listed', how: 'player' } } })).toBe('player');
+    expect(apiErrorHow({ data: { data: { code: 'already_listed', how: 'staff' } } })).toBe('staff');
+  });
+
+  it('is undefined for any other error', () => {
+    expect(apiErrorHow({ data: { data: { code: 'player_already_staffed' } } })).toBeUndefined();
+    expect(apiErrorHow({ data: { data: { how: 'sideways' } } })).toBeUndefined();
+    expect(apiErrorHow(new Error('network'))).toBeUndefined();
+  });
 });
