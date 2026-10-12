@@ -432,3 +432,76 @@ test.describe('on a phone', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
   });
 });
+
+test.describe('assign staff for all tournaments (#76)', () => {
+  /** Tonight's cup (the organizer's) and Brock's earlier one, each wanting one judge. */
+  async function twoTournamentsWantingStaff(api: Api, fake: FakePokemon) {
+    cupTonight(fake);
+    await connectProfessor(api, fake, BROCK, 'Brock Harrison');
+    fake.tournaments.push(fakeTournament(BROCK_CUP, { startsAt: '2026-10-13T23:00:00Z', organizer: BROCK }));
+    fake.tournamentRecords.set(BROCK_CUP, [fakeRecord(BROCK, { role: 'organizer' })]);
+    await wantStaff(api, ASH_PLAYER, 'judge', 'Ash Player');
+    const res = await api.request(`/api/sessions/${TUESDAY}/staff`, { method: 'POST', json: { tournamentId: BROCK_CUP, playerId: ASH_JUDGE, role: 'judge', name: 'Ash Judge' } });
+    expect(res.status).toBe(201);
+  }
+  const staffWrites = (fake: FakePokemon) =>
+    fake.requests.filter((r) => r.method === 'POST' && /^\/services\/core\/tournaments\/[^/]+\/records$/.test(r.path)).map((r) => [r.path.split('/')[4], r.as]);
+  const rows = (page: Page) => page.getByRole('dialog', { name: 'Staff for all tournaments' }).getByTestId('staff-batch-row');
+
+  test.describe('on a phone', () => {
+    test.use({ viewport: { width: 360, height: 780 } });
+
+    test("runs every tournament's staff in turn, each as its organizer, and refreshes every card", async ({ page, connected, fake }) => {
+      await twoTournamentsWantingStaff(connected, fake);
+      // Slow writes keep the batch running long enough to try dismissing, closing and reopening it.
+      fake.staffPostDelayMs = 3_000;
+      await page.goto(`/?date=${TUESDAY}`);
+
+      await page.getByRole('button', { name: 'Assign staff for all tournaments' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Staff for all tournaments' });
+      await expect(dialog).toContainText('it keeps going');
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+      // Close leaves it running, and the section offers it again.
+      await dialog.getByRole('button', { name: 'Close' }).last().click();
+      await expect(dialog).toBeHidden();
+      await page.getByRole('button', { name: 'Assigning staff for all tournaments… Show' }).click();
+      await expect(dialog).toBeVisible();
+
+      await expect(dialog.getByTestId('staff-batch-status')).toHaveText('Done', { timeout: 30_000 });
+      await expect(rows(page).nth(0)).toContainText(BROCK_CUP_LABEL);
+      await expect(rows(page).nth(0)).toContainText('As Brock Harrison');
+      await expect(rows(page).nth(1)).toContainText(CUP_LABEL);
+      await expect(rows(page)).toContainText(['Done', 'Done']);
+      await expect(page.getByText('Staff for all tournaments: Done', { exact: true })).toBeVisible();
+      expect(staffWrites(fake)).toEqual([
+        [BROCK_CUP, BROCK],
+        [CUP, STAFF_ID],
+      ]);
+
+      await dialog.getByRole('button', { name: 'Close' }).last().click();
+      await expect(wantedRow(staffCard(page), ASH_PLAYER)).toContainText('In play-tools');
+      await expect(wantedRow(staffCard(page, BROCK_CUP_LABEL), ASH_JUDGE)).toContainText('In play-tools');
+    });
+  });
+
+  test('a failed tournament leaves the batch partly done, and Retry failed runs only it again', async ({ page, connected, fake }) => {
+    await twoTournamentsWantingStaff(connected, fake);
+    fake.lockedTournaments = new Set([CUP]);
+    await page.goto(`/?date=${TUESDAY}`);
+
+    await page.getByRole('button', { name: 'Assign staff for all tournaments' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Staff for all tournaments' });
+    await expect(dialog.getByTestId('staff-batch-status')).toHaveText('Partly done', { timeout: 30_000 });
+    await expect(rows(page)).toContainText(['Done', 'Failed']);
+
+    fake.lockedTournaments = new Set();
+    const retried = page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === `/api/sessions/${TUESDAY}/staff/apply-all`);
+    await dialog.getByRole('button', { name: 'Retry failed' }).click();
+    expect((await retried).postDataJSON()).toEqual({ tournamentIds: [CUP] });
+    await expect(dialog.getByTestId('staff-batch-status')).toHaveText('Done', { timeout: 30_000 });
+    await expect(rows(page)).toHaveCount(1);
+    expect(staffWrites(fake).filter(([t]) => t === BROCK_CUP)).toHaveLength(1);
+  });
+});
