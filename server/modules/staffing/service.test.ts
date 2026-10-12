@@ -471,3 +471,111 @@ describe('addAssignment', () => {
     });
   });
 });
+
+describe('changing and removing an assignment', () => {
+  const WED = '2026-10-14' as never;
+  const add = async (playerId: string, role = 'judge') =>
+    (await staffing.addAssignment(L, WED, { tournamentId: 't-1', playerId: id(playerId), role }, 'organizer')).assignment.id;
+  const applyAs = (assignmentId: number, recordId = 'rec-ours') =>
+    database.sqlite.prepare("update staff_assignment set state = 'assigned', record_id = ? where id = ?").run(recordId, assignmentId);
+  const row = (assignmentId: number) =>
+    database.sqlite.prepare('select role, applied_role, state, removed_at from staff_assignment where id = ?').get(assignmentId);
+  const lock = () => (upstream.state.tournaments = [tournament('t-1', { editableUntil: new Date('2026-10-01T00:00:00Z') })]);
+
+  beforeEach(() => {
+    upstream.state.tournaments = [tournament('t-1')];
+  });
+
+  describe('changeRole', () => {
+    it('changes the role of an assignment that never reached play-tools, without calling it', async () => {
+      const a = await add('00999');
+      upstream.state.calls.length = 0;
+      expect(await staffing.changeRole(L, WED, a, 'scorekeeper')).toMatchObject({ role: 'scorekeeper', appliedRole: null, state: 'pending' });
+      expect(upstream.state.calls).toEqual([]);
+    });
+
+    it('remembers the role play-tools holds for an applied assignment, and forgets it when changed back', async () => {
+      const a = await add('00999');
+      applyAs(a);
+      expect(await staffing.changeRole(L, WED, a, 'scorekeeper')).toMatchObject({ role: 'scorekeeper', appliedRole: 'judge' });
+      expect(await staffing.changeRole(L, WED, a, 'headjudge')).toMatchObject({ role: 'headjudge', appliedRole: 'judge' });
+      expect(await staffing.changeRole(L, WED, a, 'judge')).toMatchObject({ role: 'judge', appliedRole: null });
+      expect(upstream.state.calls.filter((c) => !c.startsWith('listTournaments') && !c.startsWith('getTournament') && !c.startsWith('listTournamentParticipants'))).toEqual([]);
+    });
+
+    it('answers the same role with the assignment unchanged', async () => {
+      const a = await add('00999');
+      expect(await staffing.changeRole(L, WED, a, 'judge')).toMatchObject({ id: a, role: 'judge' });
+    });
+
+    it('refuses a role play-tools does not offer', async () => {
+      const a = await add('00999');
+      await expect(staffing.changeRole(L, WED, a, 'organizer')).rejects.toEqual(expect.objectContaining({ code: 'unknown_role' }));
+    });
+
+    it('refuses to change an applied assignment on a locked tournament', async () => {
+      const a = await add('00999');
+      applyAs(a);
+      lock();
+      await expect(staffing.changeRole(L, WED, a, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
+      expect(row(a)).toMatchObject({ role: 'judge' });
+    });
+
+    it('is not_found for an unknown id, another date, or a removed assignment', async () => {
+      const a = await add('00999');
+      await expect(staffing.changeRole(L, WED, a + 100, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+      await expect(staffing.changeRole(L, '2026-10-21' as never, a, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+      applyAs(a);
+      await staffing.removeAssignment(L, WED, a);
+      await expect(staffing.changeRole(L, WED, a, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+    });
+  });
+
+  describe('removeAssignment', () => {
+    it('deletes an assignment that never reached play-tools, without calling it', async () => {
+      const a = await add('00999');
+      upstream.state.calls.length = 0;
+      await staffing.removeAssignment(L, WED, a);
+      expect(row(a)).toBeUndefined();
+      expect(upstream.state.calls).toEqual([]);
+      await expect(staffing.removeAssignment(L, WED, a)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+    });
+
+    it('tombstones an applied assignment for the staff job to delete upstream, sending nothing itself', async () => {
+      const a = await add('00999');
+      applyAs(a);
+      await staffing.removeAssignment(L, WED, a);
+      expect(row(a)).toMatchObject({ state: 'removing', removed_at: expect.any(Number) });
+      expect((await staffing.sessionStaff(L, WED)).tournaments[0]!.assignments).toEqual([expect.objectContaining({ id: a, state: 'removing' })]);
+    });
+
+    it('refuses to remove an applied assignment on a locked tournament', async () => {
+      const a = await add('00999');
+      applyAs(a);
+      lock();
+      await expect(staffing.removeAssignment(L, WED, a)).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
+      expect(row(a)).toMatchObject({ removed_at: null });
+    });
+
+    it('still tombstones an applied assignment whose tournament play-tools no longer lists', async () => {
+      const a = await add('00999');
+      applyAs(a);
+      upstream.state.tournaments = [];
+      await staffing.removeAssignment(L, WED, a);
+      expect(row(a)).toMatchObject({ state: 'removing' });
+    });
+
+    it('is not_found for an assignment of another date', async () => {
+      const a = await add('00999');
+      await expect(staffing.removeAssignment(L, '2026-10-21' as never, a)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+    });
+  });
+});
+
+describe('listRoles', () => {
+  it("offers play-tools' staff roles in its order, judge first, never organizer, without calling it", () => {
+    const roles = staffing.listRoles(L);
+    expect(roles.map((r) => r.code)).toEqual(['judge', 'headjudge', 'scorekeeper', 'administration', 'translator']);
+    expect(upstream.state.calls).toEqual([]);
+  });
+});

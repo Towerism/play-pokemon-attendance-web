@@ -85,6 +85,20 @@ export interface AddStaff {
 }
 
 export interface StaffingService {
+  /** The roles play-tools offers staff, judge first; never `organizer`. No upstream call. */
+  listRoles(leagueId: string): readonly { code: string; label: string }[];
+  /**
+   * Changes the wanted role. For an assignment play-tools already holds, the
+   * staff job sends the change; until then `appliedRole` keeps the old role.
+   * @throws StaffingError `not_found`, `unknown_role`, `tournament_locked`
+   */
+  changeRole(leagueId: string, date: SessionDate, assignmentId: number, role: string): Promise<StaffAssignmentView>;
+  /**
+   * Deletes an assignment that never reached play-tools; tombstones one that
+   * did, for the staff job to delete upstream.
+   * @throws StaffingError `not_found`, `tournament_locked`
+   */
+  removeAssignment(leagueId: string, date: SessionDate, assignmentId: number): Promise<void>;
   /**
    * Adds (or revives) the wanted staffer for one of the date's tournaments.
    * `created` is false when they were already wanted there in that role.
@@ -289,7 +303,69 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
     return { created: false, assignment: viewOf(leagueId, row) };
   }
 
+  function liveOn(leagueId: string, date: SessionDate, assignmentId: number): AssignmentRow {
+    const row = db
+      .select()
+      .from(staffAssignment)
+      .where(
+        and(
+          eq(staffAssignment.id, assignmentId),
+          eq(staffAssignment.leagueId, leagueId),
+          eq(staffAssignment.sessionDate, date),
+          isNull(staffAssignment.removedAt),
+        ),
+      )
+      .get();
+    if (!row) throw new StaffingError('not_found', `No staff assignment ${assignmentId} on ${date}.`);
+    return row;
+  }
+
+  /** An applied change needs the tournament still open upstream; `orMissing` also accepts one play-tools no longer lists. */
+  async function assertStillEditable(leagueId: string, date: SessionDate, tournamentId: string, orMissing: boolean) {
+    const tournament = (await tournamentsOn(leagueId, date)).find((t) => t.id === tournamentId);
+    if (!tournament && orMissing) return;
+    if (!tournament) {
+      throw new StaffingError('tournament_locked', 'Play-tools no longer lists this tournament; its staff can no longer change.');
+    }
+    assertEditable(tournament);
+  }
+
   return {
+    listRoles: (leagueId) => deps.gateway(leagueId).listStaffRoles(),
+
+    async changeRole(leagueId, date, assignmentId, role) {
+      const row = liveOn(leagueId, date, assignmentId);
+      assertRole(leagueId, role);
+      if (row.role === role) return viewOf(leagueId, row);
+      let appliedRole: string | null = null;
+      if (row.recordId) {
+        await assertStillEditable(leagueId, date, row.tournamentId, false);
+        const heldUpstream = row.appliedRole ?? row.role;
+        appliedRole = heldUpstream === role ? null : heldUpstream;
+      }
+      const updated = db
+        .update(staffAssignment)
+        .set({ role, appliedRole })
+        .where(and(eq(staffAssignment.id, row.id), isNull(staffAssignment.removedAt)))
+        .returning()
+        .get();
+      if (!updated) throw new StaffingError('not_found', `No staff assignment ${assignmentId} on ${date}.`);
+      return viewOf(leagueId, updated);
+    },
+
+    async removeAssignment(leagueId, date, assignmentId) {
+      const row = liveOn(leagueId, date, assignmentId);
+      if (!row.recordId) {
+        db.delete(staffAssignment).where(eq(staffAssignment.id, row.id)).run();
+        return;
+      }
+      await assertStillEditable(leagueId, date, row.tournamentId, true);
+      db.update(staffAssignment)
+        .set({ removedAt: now(), state: 'removing' })
+        .where(and(eq(staffAssignment.id, row.id), isNull(staffAssignment.removedAt)))
+        .run();
+    },
+
     async addAssignment(leagueId, date, input, by) {
       assertRole(leagueId, input.role);
       const live = liveAssignment(leagueId, input.tournamentId, input.playerId);
