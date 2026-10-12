@@ -875,6 +875,9 @@ For example, `POST /sessions/{date}/tdf` lives in
 
 Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, so the client gets them with no codegen.
 
+Any other `/api` path (`/api` itself included), for any method and with or without a session, is a JSON 404
+from the catch-all `server/api/[...].ts`. Without it the SPA route rule would answer 200 with the HTML shell.
+
 | Method & path                                             | Purpose                                                     |
 | --------------------------------------------------------- | ----------------------------------------------------------- |
 | `POST /auth/login` · `POST /auth/logout`                  | App login (organizer accounts). On the client, `useUserSession()` from `nuxt-auth-utils` replaces a `/me` endpoint. |
