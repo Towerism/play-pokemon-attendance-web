@@ -1746,8 +1746,16 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     running.add(job);
   }
 
+  /** Staff batches need the league chosen in Settings; their tournaments are the league's. */
+  function assertLeagueChosen(leagueId: string): void {
+    if (!deps.connections.getStatus(leagueId).league) {
+      throw new SubmissionError('league_not_selected', 'Choose the league to submit to in Settings.');
+    }
+  }
+
   async function beginStaffBatch(leagueId: string, date: SessionDate, tournamentIds: readonly string[], startedBy: string) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    assertLeagueChosen(leagueId);
     const items = tournamentIds.map((tournamentId, position) => ({ position, tournamentId }));
     const batch = db.transaction(() => {
       assertUnlocked(leagueId);
@@ -1884,6 +1892,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     applyStaffAll: async (leagueId, date, input) => beginStaffBatch(leagueId, date, input.tournamentIds, input.startedBy),
 
     staffBatch(leagueId, batchId) {
+      assertLeagueChosen(leagueId);
       const batch = db
         .select()
         .from(staffBatch)
@@ -1894,6 +1903,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     },
 
     runningStaffBatch(leagueId, date) {
+      assertLeagueChosen(leagueId);
       const batch = db
         .select()
         .from(staffBatch)
