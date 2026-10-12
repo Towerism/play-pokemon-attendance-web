@@ -788,3 +788,49 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
     expect(oauth.revoked).toEqual(['ory_rt_2']);
   });
 });
+
+describe('edge cases', () => {
+  it("keeps the stored name when a later connect's profile has none", async () => {
+    await connect(ASH);
+    professors.get(ASH.sub)!.name = null;
+    await connect(ASH);
+    expect(rowOf(ASH.playerId)!.professor_name).toBe('Ash Ketchum');
+  });
+
+  it('still forgets a professor whose token the vault can no longer open, without revoking', async () => {
+    await connect(ASH);
+    vault = createTokenVault(randomBytes(32).toString('base64'));
+    const restarted = build();
+    expect(await restarted.disconnect(L, ASH.playerId)).toEqual({ revoked: false });
+    expect(rows()).toEqual([]);
+    expect(oauth.revoked).toEqual([]);
+  });
+
+  it('identifies a carried-over connection on a later refresh when Pokémon could not say who it was the first time', async () => {
+    const id = database.sqlite
+      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .run(ASH.sub, vault.encrypt('ory_rt_v1', L), 'connected', 1, 1).lastInsertRowid as number;
+    (oauth as unknown as { owners: Map<string, string> }).owners.set('ory_rt_v1', ASH.sub);
+    service.resealCarriedOver(L);
+    profileError = new PokemonUpstreamError('unavailable', 'down');
+
+    await service.identifyCarriedOver();
+    expect(rows()[0]).toMatchObject({ id, professor_player_id: null, status: 'connected' });
+    expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/trying again on the next refresh/), { err: expect.any(PokemonUpstreamError) });
+
+    profileError = undefined;
+    advance(HOUR);
+    await service.getAccessToken(id);
+    expect(rows()[0]).toMatchObject({ id, professor_player_id: ASH.playerId });
+  });
+
+  it('leaves a ciphertext that opens under neither key for its first use to mark needs_reconnect', async () => {
+    database.sqlite
+      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .run(ASH.sub, createTokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L), 'connected', 1, 1);
+    expect(service.resealCarriedOver(L)).toBe(0);
+    await service.identifyCarriedOver();
+    expect(rows()[0]).toMatchObject({ status: 'needs_reconnect', status_reason: expect.stringMatching(/key/) });
+    expect(oauth.refreshCalls).toEqual([]);
+  });
+});
