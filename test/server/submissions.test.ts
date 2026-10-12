@@ -369,8 +369,11 @@ describe('submission API', () => {
 
       await finished(await undo(id));
 
+      // The app spaces deletes on its own clock, but the fake stamps them on arrival: uneven delivery and
+      // timers firing a millisecond early can shave a few ms off. Without the floor they'd arrive ~0 ms apart.
+      const JITTER_MS = 50;
       const [first, second] = deletes();
-      expect(second!.at! - first!.at!).toBeGreaterThanOrEqual(500);
+      expect(second!.at! - first!.at!).toBeGreaterThanOrEqual(500 - JITTER_MS);
     });
 
     it('is 422 nothing_to_undo the second time, and 422 not_undoable for an undo', async () => {
