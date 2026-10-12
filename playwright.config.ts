@@ -6,6 +6,8 @@ const CI = !!process.env.CI;
  * Browser journeys against the production build (`pnpm test:e2e`). Each test
  * starts its own app and fake play-tools (`test/e2e/fixtures.ts`), so nothing
  * leaves 127.0.0.1. Chromium at a phone size: attendance is taken on a phone.
+ *
+ * Suite budget: ≤ 105 s per run with `TEST_SKIP_BUILD=1`.
  */
 export default defineConfig({
   testDir: 'test/e2e',
