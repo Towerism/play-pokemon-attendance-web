@@ -181,6 +181,15 @@ names and search terms, and writes nothing if an original id survives. Check the
 `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/` for anything personal before committing, and
 record the answers in `spikes.md` (S6, part 2).
 
+### S7: where does the professor's name live? (read-only) `pnpm spike:s7`
+
+For multiple Pokémon connections (#66). Needs a connected spike login (S1). The script prints
+the shape of the id_token claims and of `https://me.pokemon.com/me`, plus whether the personal
+activity group has `owner.player_id`.
+
+The output is paths and types only. Name-like fields show their first letter and length, so it
+is safe to paste into the issue. The raw `/me` response goes to `.secrets/raw/misc.userinfo.json`.
+
 ### Fixtures: `pnpm spike:fixtures`
 
 Copies `.secrets/raw/<kind>.<label>.json` into
