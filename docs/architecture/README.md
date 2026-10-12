@@ -1,6 +1,6 @@
 # Play! Pokémon League Attendance — System Architecture
 
-Status: **Proposed** · Date: 2026-10-10 · Author: Martin Fracker, Jr.
+Status: **Accepted** (retroactively, 2026-10-12) · Date: 2026-10-10 · Author: Martin Fracker, Jr.
 
 ## 1. Context
 
@@ -1066,7 +1066,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
-| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47), the Players → Staff tab (#50) and the This week Staff card with `StaffSearch` (#49) are built. Next: import (#48) ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
+| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47), the Players → Staff tab (#50) and the This week Staff card with `StaffSearch` (#49) are built. Next: import (#48) ([ADR-0007](adr/0007-staff-assignment.md), #41). Accepted |
 
 ## 14. Architecture Decision Records
 
@@ -1076,4 +1076,4 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 - [ADR-0004](adr/0004-idempotent-diff-based-submission.md) Idempotent diff-based submission (plan → execute → reconcile)
 - [ADR-0005](adr/0005-sightings-based-metrics.md) Curation metrics from sightings, not submissions
 - [ADR-0006](adr/0006-docker-on-unraid.md) Production deployment as a Docker container on Unraid
-- [ADR-0007](adr/0007-staff-assignment.md) Assign staff to events as desired state, applied by a reconcile job (proposed, M8)
+- [ADR-0007](adr/0007-staff-assignment.md) Assign staff to events as desired state, applied by a reconcile job (M8)

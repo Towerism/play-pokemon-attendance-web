@@ -1,6 +1,6 @@
 # ADR-0007: Assign staff to tournaments as desired state, applied by a reconcile job
 
-- Status: Proposed
+- Status: Accepted (2026-10-12, as part of M8)
 - Date: 2026-10-11 (updated with spike S6 the same day)
 - Issue: [#41](https://github.com/Towerism/play-pokemon-attendance-web/issues/41)
 

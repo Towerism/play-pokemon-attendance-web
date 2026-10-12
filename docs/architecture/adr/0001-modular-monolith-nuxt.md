@@ -1,6 +1,6 @@
 # ADR-0001: Modular monolith on Nuxt 4 (Vue + Nitro)
 
-- Status: Proposed
+- Status: Accepted (retroactively, 2026-10-12; implemented in M1–M8)
 - Date: 2026-10-10
 - Revision: replaces an earlier draft that proposed Fastify + a React SPA. The owner prefers the Nuxt ecosystem.
 

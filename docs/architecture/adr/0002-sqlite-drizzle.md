@@ -1,6 +1,6 @@
 # ADR-0002: SQLite + Drizzle ORM, with Litestream backups
 
-- Status: Proposed
+- Status: Accepted (retroactively, 2026-10-12; implemented in M1 and M7)
 - Date: 2026-10-10
 
 ## Context
