@@ -6,7 +6,8 @@ import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, expect, finishedStatus, 
 // play-tools, including ones entered there directly, and never a staff
 // record. On a date with two play sessions the organizer must clear exactly
 // the one the dialog previewed, only after typing the date, and This week and
-// History must show the end state.
+// History must show the end state. It is only offered once the app has
+// submitted to a play session that date, never from play-tools' sessions alone.
 
 const EVENING = 'ps-evening';
 const AFTERNOON = 'ps-afternoon';
@@ -38,10 +39,40 @@ test('clear session deletes exactly the previewed session’s players, after typ
   fake,
   connected: api,
 }) => {
-  await test.step('setup: Q1 on the afternoon session, R, A and T on the evening one', async () => {
-    fake.playSessions = [playSession(AFTERNOON, '2026-10-13T19:00:00Z'), playSession(EVENING, '2026-10-13T23:00:00Z')];
-    fake.records = new Map([[EVENING, [fakeRecord(STAFF_ID, { role: 'organizer' }), fakeRecord(X, { first: 'Xan', last: 'Extra' })]]]);
+  const dialog = page.getByRole('dialog', { name: 'Clear session' });
+  const clearButton = dialog.getByRole('button', { name: 'Clear session', exact: true });
+  const openClear = page.getByRole('button', { name: 'Clear session…' });
+  const dangerZone = page.getByRole('heading', { name: 'Danger zone' });
+  const confirmField = dialog.getByLabel(`Type ${TUESDAY} to confirm`);
+  const players = dialog.getByRole('listitem');
+  const sessionTable = page.getByRole('table').first();
+  const presentR = page.getByRole('checkbox', { name: NAMES[R] });
+  const submittedBadge = page.getByText('Submitted', { exact: true });
+  const tdfPreview = page.getByRole('dialog', { name: 'Tuesday Clear Night' });
+  const alreadyImported = tdfPreview.getByText('This file was already imported for this date.');
 
+  fake.playSessions = [playSession(AFTERNOON, '2026-10-13T19:00:00Z'), playSession(EVENING, '2026-10-13T23:00:00Z')];
+  fake.records = new Map([[EVENING, [fakeRecord(STAFF_ID, { role: 'organizer' }), fakeRecord(X, { first: 'Xan', last: 'Extra' })]]]);
+
+  await test.step('nothing submitted for the date: no danger zone, even though play-tools has sessions with records', async () => {
+    const clearOrResolve: string[] = [];
+    const watch = (req: { url: () => string }) => {
+      const path = new URL(req.url()).pathname;
+      if (path.endsWith('/resolve') || path.endsWith('/clear')) clearOrResolve.push(path);
+    };
+    page.on('request', watch);
+    for (const date of [TUESDAY, NO_SESSION_DATE]) {
+      await page.goto(`/?date=${date}`);
+      await expect(page.getByRole('heading', { name: 'This week' })).toBeVisible();
+      await expect(page.getByRole('heading', { name: /Session players/ })).toBeVisible();
+      await expect(openClear).toHaveCount(0);
+      await expect(dangerZone).toHaveCount(0);
+    }
+    page.off('request', watch);
+    expect(clearOrResolve).toEqual([]);
+  });
+
+  await test.step('setup: Q1 on the afternoon session, R, A and T on the evening one', async () => {
     // A submission sends everyone listed for the date, so Q1 goes first and alone.
     await addSessionPlayer(api, TUESDAY, Q1, NAMES[Q1]!);
     expect(await finishedStatus(api, await startSubmission(api, TUESDAY, AFTERNOON))).toBe('succeeded');
@@ -62,28 +93,18 @@ test('clear session deletes exactly the previewed session’s players, after typ
   page.on('request', (req) => {
     if (req.method() === 'POST' && new URL(req.url()).pathname.endsWith('/clear')) clearRequests.push(req.postDataJSON());
   });
-  const dialog = page.getByRole('dialog', { name: 'Clear session' });
-  const clearButton = dialog.getByRole('button', { name: 'Clear session', exact: true });
-  const confirmField = dialog.getByLabel(`Type ${TUESDAY} to confirm`);
-  const players = dialog.getByRole('listitem');
-  const sessionTable = page.getByRole('table').first();
-  const presentR = page.getByRole('checkbox', { name: NAMES[R] });
-  const submittedBadge = page.getByText('Submitted', { exact: true });
-  const tdfPreview = page.getByRole('dialog', { name: 'Tuesday Clear Night' });
-  const alreadyImported = tdfPreview.getByText('This file was already imported for this date.');
-
-  await test.step('a date with no play session has nothing to clear', async () => {
-    await page.goto(`/?date=${NO_SESSION_DATE}`);
-    await page.getByRole('button', { name: 'Clear session…' }).click();
-    await expect(page.getByRole('dialog', { name: 'Clear session' }).getByText(`No play session exists on ${NO_SESSION_DATE} in play-tools.`)).toBeVisible();
-    await expect(players).toHaveCount(0);
-    await expect(clearButton).toBeDisabled();
-    await dialog.getByRole('button', { name: 'Cancel' }).click();
-    await expect(dialog).toBeHidden();
+  await test.step('once submitted the danger zone shows, and follows the date picker', async () => {
+    await page.goto(`/?date=${TUESDAY}`);
+    await expect(dangerZone).toBeVisible();
+    await page.getByLabel('Session date').fill(NO_SESSION_DATE);
+    await expect(page).toHaveURL(new RegExp(`date=${NO_SESSION_DATE}`));
+    await expect(openClear).toHaveCount(0);
+    await expect(dangerZone).toHaveCount(0);
+    await page.getByLabel('Session date').fill(TUESDAY);
+    await expect(openClear).toBeVisible();
   });
 
   await test.step('before the clear: submitted, R present, the file already imported', async () => {
-    await page.goto(`/?date=${TUESDAY}`);
     await expect(submittedBadge).toBeVisible();
     await page.getByRole('button', { name: /^Regulars \(1\)/ }).click();
     await expect(presentR).toBeChecked();
@@ -145,6 +166,7 @@ test('clear session deletes exactly the previewed session’s players, after typ
     await expect(sessionTable.getByRole('row').filter({ hasText: Q1 })).toHaveCount(1);
     await expect(presentR).not.toBeChecked();
     await expect(submittedBadge).toHaveCount(0);
+    await expect(openClear).toBeVisible();
   });
 
   await test.step('History: a cleared-session row, and every player removed', async () => {
