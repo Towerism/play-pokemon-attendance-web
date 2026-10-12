@@ -286,6 +286,18 @@ describe('assigning staff for every tournament on a date', () => {
     expect(view.status).toBe('partial');
   });
 
+  it('records an unexpected error at a tournament’s turn as not started, and goes on', async () => {
+    await wantOnEach(FIRST, SECOND);
+    stub.state.before = (call, as) => {
+      if (call.startsWith('listTournaments') && as === BROCK.id) throw new Error('disk full');
+    };
+
+    const view = await runAll([SECOND, FIRST]);
+
+    expect(view.rows[0]).toMatchObject({ tournamentId: SECOND, status: 'not_started', refusal: { code: 'unexpected', message: 'disk full' } });
+    expect(view.rows[1]).toMatchObject({ tournamentId: FIRST, status: 'succeeded' });
+  });
+
   it('fails the batch, sending nothing, when no tournament can start', async () => {
     await wantOnEach(FIRST);
     stub.addProfessor({ ...OLIVE, status: 'needs_reconnect' });
@@ -359,6 +371,22 @@ describe('shutdown and boot recovery', () => {
     expect(view.rows[1]).toMatchObject({ tournamentId: SECOND, status: 'interrupted' });
     await expect(next.applyStaffAll(L, DATE, { tournamentIds: [SECOND], startedBy: 'organizer' })).resolves.toBeTruthy();
     await next.idle();
+  });
+});
+
+describe('shutdown between a tournament’s checks and its job', () => {
+  it('starts no job once shutdown begins while the next tournament is being checked', async () => {
+    await wantOnEach(FIRST, SECOND);
+    const check = gate((call) => call.startsWith('getTournament') && stub.state.writes.length === 1);
+    await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], startedBy: 'organizer' });
+    await check.reached;
+
+    const stopping = service.shutdown();
+    check.open();
+    await stopping;
+
+    expect(staffJobs().map((j) => j.play_session_id)).toEqual([FIRST]);
+    expect(stub.state.writes).toHaveLength(1);
   });
 });
 
