@@ -41,6 +41,7 @@ export function useSubmissions(): SubmissionService {
       staffGateway: gateway,
       staffing: useStaffing(),
       resolver: usePlaySessionResolver(),
+      timeZone: leagueTimeZone(),
       batchSize: Math.min(50, Number(config.batchSize)),
       batchDelayMs: Number(config.batchDelayMs),
       settleMs: Number(config.settleMs),

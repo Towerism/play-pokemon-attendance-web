@@ -115,6 +115,18 @@ describe('fake play-tools: tournaments and staff', () => {
   });
 });
 
+describe('fake play-tools: slow tournament reads', () => {
+  it("holds each read of a tournament's records for tournamentReadDelayMs (to keep an import running)", async () => {
+    fake.tournamentReadDelayMs = 150;
+
+    const began = Date.now();
+    const everyone = await gateway.listTournamentParticipants(T);
+
+    expect(Date.now() - began).toBeGreaterThanOrEqual(140);
+    expect(everyone.map((p) => p.playerId)).toEqual([ORGANIZER, '1111']);
+  });
+});
+
 describe('fake play-tools: failing once', () => {
   it('answers the next request for a path with the given status, then serves it normally', async () => {
     fake.failOnce.set(`/services/core/tournament/${T}`, 503);
