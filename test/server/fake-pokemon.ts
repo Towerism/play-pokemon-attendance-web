@@ -6,17 +6,31 @@ import type { AddressInfo } from 'node:net';
  * process. The app under test reaches it through `NUXT_POKEMON_ACCESS_URL` and
  * `NUXT_POKEMON_API_URL`, so server tests make no real network calls.
  *
- * Like Hydra, it rotates the refresh token on every refresh and refuses any
- * token but the latest with `invalid_grant`.
+ * It holds one Pokémon account per professor (`accounts`; the first is the
+ * default). Like Hydra, each account's refresh token rotates on every refresh,
+ * any token but the latest gets `invalid_grant`, and reusing a rotated token
+ * revokes that account's chain.
  */
 export interface FakePokemon {
   url: string;
   env: Record<string, string>;
-  /** Every request, in order, with when it arrived (ms since epoch), the form for token calls and the player ids of a `_bulk`. */
-  requests: { method: string; path: string; at?: number; form?: Record<string, string>; playerIds?: string[]; body?: unknown }[];
+  /**
+   * Every request, in order, with when it arrived (ms since epoch), the form for token calls, the player ids of a
+   * `_bulk`, and the player id of the account that authorised an OP API call (`as`).
+   */
+  requests: { method: string; path: string; at?: number; form?: Record<string, string>; playerIds?: string[]; body?: unknown; as?: string }[];
+  /** The professors' accounts; `accounts[0]` is the default one, and any code no other account claims logs into it. */
+  accounts: FakeAccount[];
+  /** Adds a professor's account; log in as it by exchanging its `code`. */
+  addAccount(opts: { playerId: string; name: string; leagues?: FakeLeague[] }): FakeAccount;
+  /** Player ids whose chain was revoked because a rotated refresh token was reused (must stay empty). */
+  reuseRevocations: string[];
+  /** Every access and refresh token issued, for secret sweeps. */
+  issuedTokens(): string[];
   /** Seconds; under 120 makes every access-token use refresh. */
   accessTtl: number;
-  leagues: { guid: string; display_id: string; display_name: string; canSubmit: boolean }[];
+  /** The default account's leagues. */
+  leagues: FakeLeague[];
   /** Play sessions of every league, in the S3 wire shape; filtered by the status and start-date query. */
   playSessions: FakePlaySession[];
   /** Attendance records per play session, in the S3 wire shape. */
@@ -42,15 +56,40 @@ export interface FakePokemon {
   staffPostDelayMs: number;
   /** Path → status: the next request for that path answers it (e.g. 503), then the entry is cleared. */
   failOnce: Map<string, number>;
-  /** Refuse the next refresh with `invalid_grant`. */
-  revokeChain(): void;
-  liveRefreshToken(): string | undefined;
-  /** The access token issued last (to prove it never reaches the app's log). */
-  liveAccessToken(): string | undefined;
+  /** Refuse the account's next refresh with `invalid_grant` (default account when no player id is given). */
+  revokeChain(playerId?: string): void;
+  liveRefreshToken(playerId?: string): string | undefined;
+  /** The account's access token issued last (to prove it never reaches the app's log). */
+  liveAccessToken(playerId?: string): string | undefined;
   close(): Promise<void>;
 }
 
 export const FAKE_SUB = '0123456789abcdef0123456789abcdef';
+/** The default account's player id: the personal-group owner in the recorded S5 fixture. */
+export const FAKE_PLAYER_ID = '9999991';
+
+export interface FakeLeague {
+  guid: string;
+  display_id: string;
+  display_name: string;
+  canSubmit: boolean;
+}
+
+export interface FakeAccount {
+  sub: string;
+  playerId: string;
+  name: string;
+  /** The authorization code that logs into this account. */
+  code: string;
+  leagues: FakeLeague[];
+}
+
+interface AccountState extends FakeAccount {
+  live?: string;
+  liveAccess?: string;
+  /** Refresh tokens this account has rotated away from; reusing one revokes the chain. */
+  rotated: Set<string>;
+}
 
 export interface FakePlaySession {
   guid: string;
@@ -129,11 +168,20 @@ const T_RECORD_PATH = /^\/services\/core\/tournaments\/([^/]+)\/records\/([^/]+)
 
 export async function startFakePokemon(): Promise<FakePokemon> {
   let serial = 0;
-  let live: string | undefined;
-  let liveAccess: string | undefined;
+  const issued: string[] = [];
+  const accounts: AccountState[] = [];
+  const account = (playerId?: string) => (playerId === undefined ? accounts[0] : accounts.find((a) => a.playerId === playerId));
 
   const fake: Omit<FakePokemon, 'url' | 'env' | 'close'> = {
     requests: [],
+    accounts,
+    addAccount: ({ playerId, name, leagues = [] }) => {
+      const added: AccountState = { sub: `sub-${playerId}`, playerId, name, code: `code-${playerId}`, leagues, rotated: new Set() };
+      accounts.push(added);
+      return added;
+    },
+    reuseRevocations: [],
+    issuedTokens: () => [...issued],
     accessTtl: 3599,
     leagues: [{ guid: 'group-1', display_id: 'L5012', display_name: 'Card Shop', canSubmit: true }],
     playSessions: [],
@@ -147,18 +195,36 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     refuseStaff: new Map(),
     staffPostDelayMs: 0,
     failOnce: new Map(),
-    revokeChain: () => (live = undefined),
-    liveRefreshToken: () => live,
-    liveAccessToken: () => liveAccess,
+    revokeChain: (playerId) => {
+      const a = account(playerId);
+      if (a) a.live = undefined;
+    },
+    liveRefreshToken: (playerId) => account(playerId)?.live,
+    liveAccessToken: (playerId) => account(playerId)?.liveAccess,
   };
+  // The default account: its leagues are `fake.leagues`, which tests replace wholesale.
+  accounts.push({
+    sub: FAKE_SUB,
+    playerId: FAKE_PLAYER_ID,
+    name: 'Olive Organizer',
+    code: '',
+    get leagues() {
+      return fake.leagues;
+    },
+    set leagues(value) {
+      fake.leagues = value;
+    },
+    rotated: new Set(),
+  });
 
-  function issue(res: ServerResponse) {
+  function issue(res: ServerResponse, a: AccountState) {
     serial += 1;
-    live = `ory_rt_${serial}`;
+    a.live = `ory_rt_${serial}`;
     const exp = Math.floor(Date.now() / 1000) + fake.accessTtl;
     const enc = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
-    liveAccess = `${enc({ alg: 'RS256' })}.${enc({ sub: FAKE_SUB, exp, jti: String(serial) })}.sig`;
-    json(res, 200, { access_token: liveAccess, token_type: 'bearer', expires_in: fake.accessTtl, refresh_token: live, scope: 'openid organized_play offline' });
+    a.liveAccess = `${enc({ alg: 'RS256' })}.${enc({ sub: a.sub, exp, jti: String(serial) })}.sig`;
+    issued.push(a.live, a.liveAccess);
+    json(res, 200, { access_token: a.liveAccess, token_type: 'bearer', expires_in: fake.accessTtl, refresh_token: a.live, scope: 'openid organized_play offline' });
   }
 
   const server = createServer(async (req, res) => {
@@ -179,24 +245,42 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       if (form.grant_type === 'authorization_code') {
         if (!form.code || !form.code_verifier) return json(res, 400, { error: 'invalid_request' });
         if (form.code === 'used') return json(res, 400, { error: 'invalid_grant', error_description: 'The authorization code has already been used.' });
-        return issue(res);
+        return issue(res, accounts.find((a) => a.code && a.code === form.code) ?? accounts[0]!);
       }
       if (form.grant_type === 'refresh_token') {
-        if (!live || form.refresh_token !== live) return json(res, 400, { error: 'invalid_grant', error_description: 'The refresh token is not valid.' });
-        return issue(res);
+        const owner = accounts.find((a) => a.live && a.live === form.refresh_token);
+        if (owner) {
+          owner.rotated.add(owner.live!);
+          return issue(res, owner);
+        }
+        const reused = accounts.find((a) => a.rotated.has(form.refresh_token ?? ''));
+        if (reused) {
+          reused.live = undefined;
+          reused.liveAccess = undefined;
+          fake.reuseRevocations.push(reused.playerId);
+        }
+        return json(res, 400, { error: 'invalid_grant', error_description: 'The refresh token is not valid.' });
       }
       return json(res, 400, { error: 'unsupported_grant_type' });
     }
 
     if (req.method === 'POST' && url.pathname === '/oauth2/revoke') {
       entry.form = Object.fromEntries(new URLSearchParams(await body(req)));
-      if (entry.form.token === live) live = undefined;
+      const owner = accounts.find((a) => a.live && a.live === entry.form!.token);
+      if (owner) owner.live = undefined;
       res.writeHead(200).end();
       return;
     }
 
-    if (url.pathname.startsWith('/services/') && (!liveAccess || req.headers.authorization !== `Bearer ${liveAccess}`)) {
-      return json(res, 401, { code: 'op.generic.unauthorized', message: 'Request is not authenticated for the request.' });
+    const caller = accounts.find((a) => a.liveAccess && req.headers.authorization === `Bearer ${a.liveAccess}`);
+    if (url.pathname.startsWith('/services/')) {
+      if (!caller) return json(res, 401, { code: 'op.generic.unauthorized', message: 'Request is not authenticated for the request.' });
+      entry.as = caller.playerId;
+      // Play sessions belong to a league; only its staff may touch them.
+      const group = /^\/services\/core\/activity_groups\/([^/]+)\//.exec(url.pathname)?.[1];
+      if (group && !caller.leagues.some((l) => l.guid === group)) {
+        return json(res, 403, { code: 'op.generic.permission_denied', message: 'You do not have permission to perform this action.' });
+      }
     }
 
     const sessionsMatch = SESSIONS_PATH.exec(url.pathname);
@@ -321,10 +405,17 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       }
     }
 
-    if (req.method === 'GET' && url.pathname === `/services/core/users/${FAKE_SUB}/activity_groups/`) {
+    if (req.method === 'GET' && caller && url.pathname === `/services/core/users/${caller.sub}/activity_groups/`) {
       const results = [
-        { guid: 'personal-1', display_id: null, group_type: 'personal', name: null, display_name: null },
-        ...fake.leagues.map((l) => ({
+        {
+          guid: `personal-${caller.playerId}`,
+          display_id: null,
+          group_type: 'personal',
+          name: null,
+          display_name: null,
+          owner: { guid: `owner-${caller.playerId}`, player_id: caller.playerId },
+        },
+        ...caller.leagues.map((l) => ({
           guid: l.guid,
           display_id: l.display_id,
           group_type: 'league',
