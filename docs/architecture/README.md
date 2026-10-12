@@ -117,7 +117,7 @@ flowchart LR
 | Backups          | Unraid *Appdata Backup* of `/data`, plus optional Litestream → S3-compatible bucket (Backblaze B2 / R2) | One folder to back up. Litestream adds continuous, point-in-time restore when it is configured. |
 | XML              | `fast-xml-parser` (entities disabled)                                     | Same parser the CLI uses, with the TDF shape already proven.                                         |
 | Crypto           | Node `crypto` AES-256-GCM (refresh-token vault)                           | No extra service is needed.                                                                          |
-| Packaging        | Single multi-arch Docker image on GHCR running `node .output/server/index.mjs`, built by pnpm, plus an Unraid template | **Production runs on Unraid** ([ADR-0006](adr/0006-docker-on-unraid.md)). The same image runs on any Docker host. |
+| Packaging        | Single `linux/amd64` Docker image on GHCR running `node .output/server/index.mjs`, built by pnpm, plus an Unraid template | **Production runs on Unraid** ([ADR-0006](adr/0006-docker-on-unraid.md)). The same image runs on any Docker host. |
 | Testing          | Vitest + `@nuxt/test-utils` (unit tests; server tests drive the built app over HTTP), an in-process HTTP fake of the Pokémon APIs (`test/server/fake-pokemon.ts`, reached through `NUXT_POKEMON_*_URL`) for the server and E2E tests, Playwright for the browser journeys (`test/e2e/`, Chromium at phone size) |                                                     |
 | Quality          | `@nuxt/eslint`, `vue-tsc` typecheck in CI                                  |                                                                                                      |
 
@@ -984,7 +984,7 @@ that includes the play-tools credential. See
 
 ```mermaid
 flowchart LR
-  GH["GitHub Actions<br/>lint · typecheck · test · build multi-arch image · semantic-release"] --> REG[(GHCR)]
+  GH["GitHub Actions<br/>lint · typecheck · test · build amd64 image · semantic-release"] --> REG[(GHCR)]
   REG -- "Docker tab: update ready" --> HOST["Unraid server<br/>container from deploy/unraid template<br/>:3000, PUID 99 / PGID 100"]
   HOST --- VOL[("/mnt/user/appdata/play-pokemon-attendance → /data<br/>app.db · secrets/")]
   VOL -. "Appdata Backup plugin" .-> AB[("Unraid backup share")]

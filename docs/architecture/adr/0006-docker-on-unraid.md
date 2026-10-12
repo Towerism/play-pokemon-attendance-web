@@ -37,7 +37,7 @@ Unraid-specific facts that shape the design:
 
 ## Options considered
 
-1. **Unraid Docker template + a published multi-arch image on GHCR, with zero
+1. **Unraid Docker template + a published image on GHCR, with zero
    required settings.** Secrets are generated on first boot and persisted in
    appdata. The organizer account and the Pokémon connection are set up in the
    web UI.
@@ -169,11 +169,11 @@ silently regenerates one.
 
 ## Update (M7, 2026-10-11)
 
-**The image is `linux/amd64` only.** CI no longer builds `linux/arm64`. Unraid runs on x86-64 and is
-the only target, nobody ran the arm64 image, and the container smoke tests only ever ran the amd64 one.
-The arm64 build was emulated under QEMU on every push to `main`, the slowest step in the image job.
+**The image is `linux/amd64` only.** CI no longer builds `linux/arm64`. Unraid (x86-64) is the only
+target: the organizer never runs the app on a Raspberry Pi or any other arm64 host, and the arm64 build,
+emulated under QEMU on every push to `main`, more than doubled the image build time.
 
-- (+) Faster `main` runs, and every published image is one the smoke tests ran.
+- (+) The image job on `main` takes less than half as long.
 - (−) `docker pull` on an arm64 host fails with "no matching manifest". Tags published before this change
   stay multi-arch in GHCR.
 - The Dockerfile keeps its per-arch checksums for supercronic and Litestream, so a local `docker build` on
