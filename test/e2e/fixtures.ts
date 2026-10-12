@@ -16,6 +16,8 @@ const APP_ENV = {
   NUXT_SUBMISSION_BATCH_DELAY_MS: '0',
   // The smallest undo pacing the app accepts.
   NUXT_UNDO_DELAY_MS: '500',
+  // The smallest staff pacing the app accepts (`runtimeConfig.staff.delayMs`).
+  NUXT_STAFF_DELAY_MS: '500',
 };
 
 export type Api = ReturnType<typeof client>;

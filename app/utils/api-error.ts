@@ -1,6 +1,6 @@
 interface FetchErrorLike {
   statusCode?: number;
-  data?: { statusMessage?: string; message?: string; data?: { code?: unknown } };
+  data?: { statusMessage?: string; message?: string; data?: { code?: unknown; how?: unknown } };
 }
 
 /**
@@ -20,6 +20,12 @@ export function rateLimitMessage(err: unknown): string | undefined {
 export function apiErrorCode(err: unknown): string | undefined {
   const code = (err as FetchErrorLike | undefined)?.data?.data?.code;
   return typeof code === 'string' ? code : undefined;
+}
+
+/** For an `already_listed` refusal: whether play-tools lists the player as a player or as staff. */
+export function apiErrorHow(err: unknown): 'player' | 'staff' | undefined {
+  const how = (err as FetchErrorLike | undefined)?.data?.data?.how;
+  return how === 'player' || how === 'staff' ? how : undefined;
 }
 
 /**

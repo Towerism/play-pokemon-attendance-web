@@ -98,6 +98,22 @@ describe('fake play-tools: tournaments and staff', () => {
     expect((await gateway.listTournamentParticipants(T)).map((p) => p.playerId)).not.toContain('3333');
   });
 
+  it('refuses a merged player id with the id it was merged into, as a suggestion', async () => {
+    fake.refuseStaff.set('3333', { code: 'op.activity_record.merged_player_id', attributes: { actual_player_id: '7000001' } });
+    expect(await gateway.assignStaff(T, { playerId: pid('3333'), role: 'judge' })).toEqual({
+      status: 'refused',
+      code: 'merged_player_id',
+      suggestedPlayerId: '7000001',
+    });
+  });
+
+  it('holds each staff assign for the set time, to stop a staff job mid-run', async () => {
+    fake.staffPostDelayMs = 300;
+    const started = Date.now();
+    await gateway.assignStaff(T, { playerId: pid('2222'), role: 'judge' });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(280);
+  });
+
   it('locks every write to a tournament past its window with 423', async () => {
     const assigned = (await gateway.assignStaff(T, { playerId: pid('2222'), role: 'judge' })) as { recordId: string };
     fake.lockedTournaments.add(T);
