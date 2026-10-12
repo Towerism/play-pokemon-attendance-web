@@ -532,8 +532,8 @@ erDiagram
     text league_id FK
     text tournament_id "upstream guid; unique with league_id and player_id"
     text player_id FK
-    date tournament_date "start_date_v2 in the league TZ"
-    text role "never organizer"
+    date tournament_date "start_date_v2 in the league TZ; null when play-tools has none"
+    text role "upstream role as text (may be one the app does not offer); never organizer"
     text source "app|upstream"
     datetime recorded_at
   }
@@ -552,15 +552,24 @@ Key modelling decisions:
 - **Staff assignments are desired state** (M8, [ADR-0007](adr/0007-staff-assignment.md)), owned by the `staffing`
   module. One row per wanted (tournament, player), with a role, unique on `(league_id, tournament_id, player_id)` while
   not removed: one person, one role per tournament. Several people may share a role. Removing a row that never reached play-tools deletes it.
-  Removing one that did sets `removed_at`, and the next staff job deletes only that `record_id`. Staff
-  assigned directly in play-tools are never stored or touched.
+  Removing one that did sets `removed_at`, and the next staff job deletes only that `record_id`. Adding the same
+  player back before that job runs revives the tombstoned row (same id), with `applied_role` holding the role
+  play-tools still has if it differs. A role change on an applied row keeps the upstream role in `applied_role`
+  until the staff job sends it; changes and removals of applied rows are refused (`tournament_locked`) once the
+  tournament is past its edit window. Staff assigned directly in play-tools are never stored or touched.
+- **A date's staff is this league's tournaments only** (organizer, 2026-10-12). `listTournaments` returns every
+  activity group's tournaments; the staffing module keeps those whose `groupId` is the league selected in Settings
+  (`league_not_selected` without one). Adding a staffer reads the tournament fresh and refuses its organizer and
+  anyone it already lists, as a player or as staff (`already_listed`), so the wanted list never asks for a call
+  the staff job would skip.
 - **The staff list is `STAFF_HISTORY`, seeded from play-tools** (ADR-0007 decisions 5 and 13). It has one row per
   (tournament, player), written from three places:
   - our own applied assignments (`source = app`);
   - every staff record the app reads on a tournament it organizes (`source = upstream`, `organizer` excluded);
   - the one-time **Import staff from play-tools** job.
 
-  Search ranks by latest `tournament_date`, then by count, with the last role used. Staff are `PLAYER` rows
+  Search ranks by latest `tournament_date` (undated last), then by count, then by name, with the role of the
+  latest row as the last role. Staff are `PLAYER` rows
   (made known through `RosterService`, name and ID only) but are **not** sightings (ADR-0005).
 - **Play-tools names only seed.** A play-tools name can be a dead name. It names a `PLAYER` only when the app has
   no name yet, and it never overwrites one. The organizer renames with `PATCH /players/{id}`, and the rename is
@@ -882,11 +891,12 @@ Nitro generates typed responses for `$fetch` and `useFetch` from the handlers, s
 | `GET /submissions?date=` · `GET /submissions/{id}` · `GET /submissions/{id}/events` (SSE) · `POST /submissions/{id}/retry` → 202 | History (newest first), one submission with per-player items, progress (`Last-Event-ID` resumes), retry/resume as a new attempt |
 | `POST /submissions/{id}/undo` → 202                       | Remove the records this submission added, as a new undo attempt → `{ submissionId }` (§6.3). Summaries carry `kind`, `undoOf`, `undoable`, `undoBlockedReason`; items carry `removedBy` |
 | `GET /sessions/{date}/clear?playSessionId=` · `POST /sessions/{date}/clear` → 202 | Clear session (§6.3). `GET` previews `{ playSessionId, playSessionLabel, players: [{ playerId, name, addedByApp }], staffKept, otherSessionHasAppRecords }`. `POST` takes `{ playSessionId, confirmDate }` and starts a `kind = 'clear'` job → `{ submissionId }` |
-| `GET /staff?q=&limit=` (M8)                               | Staff list search over `STAFF_HISTORY` (seeded from play-tools): `[{ playerId, name, timesStaffed, lastStaffedOn, lastRole }]`, most recent first; `q` as for `/players`. `name` is always the local name |
+| `GET /staff?q=&limit=` (M8)                               | Staff list search over `STAFF_HISTORY` (seeded from play-tools): a bare array `[{ playerId, name, timesStaffed, lastStaffedOn, lastRole }]`, most recent first (`lastStaffedOn` null and last when no tournament has a date; `lastRole` is upstream text); `q` and `limit` (1–100, absent = every match) as for `/players`. `name` is always the local name. Needs no Pokémon connection |
 | `POST /staff/import` → 202 (M8)                           | Start the read-only `kind = 'staff_import'` job: every tournament the account organizes, records read one at a time ≥ `NUXT_STAFF_DELAY_MS` apart → `{ submissionId }`. Result: tournaments read, staffers found, players newly added (to check names). Re-running is harmless |
-| `GET /staff/roles` (M8)                                   | `[{ code, label }]` from `listStaffRoles` (the S6 constant; `judge` first as the default) |
-| `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, tournaments: [{ tournamentId, label, editable, assignments: [{ id, playerId, name, role, state }], upstreamOnly: [{ playerId, name, role }] }] }`. Reads upstream live, like the clear preview |
-| `POST /sessions/{date}/staff` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | Add `{ tournamentId, playerId, role, name? }`: 201 when added, 200 when that player is already listed for the tournament in that role, 409 `player_already_staffed` in another role, 422 `organizer_cannot_staff` for the tournament's organizer (fresh read) and `unknown_role`/`unknown_tournament`. Delete: 204 (gone or tombstoned for the next apply), 404 |
+| `GET /staff/roles` (M8)                                   | `{ roles: [{ code, label }] }` from `listStaffRoles` (the S6 constant; `judge` first as the default). No upstream call |
+| `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, tournaments: [{ tournamentId, label, startsAt, editable, missing?, organizer: { playerId } \| null, assignments: [{ id, playerId, name, role, appliedRole, state }], upstreamOnly: [{ playerId, name, role }], players: [{ playerId }] }] }`: this league's tournaments that start on the date (league TZ), in start order. Reads upstream live (one call at a time) and seeds the staff list. An assignment whose tournament play-tools no longer lists shows under a `missing: true` entry (`startsAt` and `organizer` null, not editable). 409 `league_not_selected`/`not_connected`/`needs_reconnect` |
+| `POST /sessions/{date}/staff` (M8)                        | Add `{ tournamentId, playerId, role, name? }`: 201 when added (or a tombstoned assignment revived), 200 when that player is already wanted there in that role (no upstream call), 409 `player_already_staffed` in another role, 409 `already_listed` (`data.how`: `player` \| `staff`) when play-tools already lists them, 422 `organizer_cannot_staff` for the tournament's organizer (fresh read), `unknown_role`, `unknown_tournament` (not this league's on that date) and `tournament_locked`. 400 for a malformed body, before any upstream call |
+| `PATCH /sessions/{date}/staff/{assignmentId}` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | `PATCH { role }` → 200 `{ assignment }`; for an applied assignment `appliedRole` keeps the upstream role until the staff job sends the change. `DELETE` → 204: gone at once if it never reached play-tools, otherwise tombstoned for the next apply. Both 404 for an unknown or removed assignment or another date, 422 `unknown_role`/`tournament_locked` (applied assignments on a tournament past its window), and send nothing upstream |
 | `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ tournamentId }` → `{ submissionId }` (§6.4) |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
@@ -1038,7 +1048,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
-| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Next: the `staffing` module, gateway tournament and staff methods + contract tests + fake routes, staff job kind, routes, Staff card and `StaffSearch` ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
+| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45) and the `staffing` module with its tables and staff routes (#46) are built. Next: staff job kind (#47), import (#48), Staff card and `StaffSearch` (#49), Staff tab (#50) ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
 
 ## 14. Architecture Decision Records
 

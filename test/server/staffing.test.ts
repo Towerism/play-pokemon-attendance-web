@@ -95,7 +95,8 @@ describe('staffing API', () => {
           { code: 'translator', label: 'Translator' },
         ],
       });
-      expect(fake.requests).toEqual([]);
+      const apiCalls = fake.requests.filter((r) => r.path.startsWith('/services/'));
+      expect(apiCalls, JSON.stringify(fake.requests)).toEqual([]);
     });
   });
 
