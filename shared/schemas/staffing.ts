@@ -26,6 +26,9 @@ export type AddStaffBody = z.infer<typeof AddStaffBody>;
 
 export const ChangeStaffRoleBody = z.object({ role });
 
+/** Apply one tournament's staff assignments to play-tools (`POST /sessions/{date}/staff/apply`). */
+export const ApplyStaffBody = z.object({ tournamentId });
+
 export const StaffAssignmentParams = z.object({
   date: sessionDate,
   assignmentId: z

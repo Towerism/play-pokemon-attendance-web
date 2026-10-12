@@ -105,6 +105,7 @@ describe('security headers', () => {
     it.each([
       ['GET', '/healthz', 200],
       ['GET', '/api/players', 401],
+      ['GET', '/api/does-not-exist', 404],
       ['POST', '/api/auth/login', 400],
     ])('puts the same headers on %s %s (%i)', async (method, path, status) => {
       const res = await fetch(`${server.url}${path}`, { method, headers: { 'content-type': 'application/json' }, body: method === 'POST' ? '{}' : undefined });
