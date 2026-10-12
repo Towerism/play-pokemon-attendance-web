@@ -281,6 +281,14 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       const records = fake.tournamentRecords.get(tournamentId) ?? [];
       if (req.method === 'GET' && tRecordsMatch) {
         if (fake.tournamentReadDelayMs) await new Promise((r) => setTimeout(r, fake.tournamentReadDelayMs));
+        // Spike #67: play-tools lists a tournament from a league the account has left, but refuses its records.
+        const group = fake.tournaments.find((x) => x.guid === tournamentId)?.activity_group?.guid;
+        if (group && !fake.leagues.some((l) => l.guid === group)) {
+          return json(res, 403, {
+            code: 'op.activity_group.criteria_failure',
+            message: 'The requested action could not be performed due to insufficient access.',
+          });
+        }
         const player = url.searchParams.get('player');
         const shown = player === null ? records : records.filter((r) => r.player === (player === 'true'));
         // Real records also carry the birth year (S6); the adapter must drop it.
