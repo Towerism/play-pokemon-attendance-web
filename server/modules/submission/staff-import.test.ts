@@ -339,3 +339,239 @@ describe('starting an import', () => {
     expect(jobs().n).toBe(0);
   });
 });
+
+const down = () => new PokemonUpstreamError('unavailable', 'play-tools answered 503.', { status: 503 });
+const events = (submissionId: number) => service.events(L, submissionId).map((e) => e.type);
+
+describe('reading tournaments', () => {
+  beforeEach(() => {
+    upstream.add(tournament('t-1'), staffer('100', 'judge'));
+    upstream.add(tournament('t-2'), staffer('200', 'judge'));
+    upstream.add(tournament('t-3'), staffer('300', 'judge'));
+  });
+
+  it('lists once with no range, then reads each tournament once, one call at a time and never sleeping between them', async () => {
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2', 'read t-3']);
+    expect(upstream.maxInFlight).toBe(1);
+    expect(sleeps).toEqual([]);
+    expect(view.status).toBe('succeeded');
+  });
+
+  it("includes another league's tournaments and undated ones", async () => {
+    upstream.add(tournament('t-other', { groupId: 'another-store' }), staffer('400', 'judge'));
+    upstream.add(tournament('t-old', { startsAt: null }), staffer('500', 'scorekeeper'));
+
+    await importStaff();
+
+    expect(history()).toEqual(
+      expect.arrayContaining([
+        { tournament_id: 't-other', player_id: '400', role: 'judge', source: 'upstream' },
+        { tournament_id: 't-old', player_id: '500', role: 'scorekeeper', source: 'upstream' },
+      ]),
+    );
+  });
+
+  it('reads a tournament again after a 503, and succeeds', async () => {
+    upstream.onRead = (t, n) => {
+      if (t === 't-2' && n === 2) throw down();
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2', 'read t-2', 'read t-3']);
+    expect(view.status).toBe('succeeded');
+    expect(view.staffImport).toMatchObject({ tournamentsRead: 3, tournamentsFailed: 0 });
+  });
+
+  it('gives up on a tournament after 3 tries, goes on with the rest, and ends partial', async () => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw down();
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls.filter((c) => c === 'read t-2')).toHaveLength(3);
+    expect(events(view.id).filter((e) => e === 'tournament_failed')).toHaveLength(1);
+    expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100', '300']);
+    expect(view.status).toBe('partial');
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 3, tournamentsRead: 2, tournamentsFailed: 1 });
+  });
+
+  it('waits out a 429 for as long as play-tools asks, then reads that tournament again', async () => {
+    upstream.onRead = (t, n) => {
+      if (t === 't-1' && n === 1) throw new PokemonUpstreamError('rate_limited', 'Slow down.', { status: 429, retryAfterMs: 7_000 });
+    };
+
+    const view = await importStaff();
+
+    expect(sleeps).toEqual([7_000]);
+    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-1', 'read t-2', 'read t-3']);
+    expect(view.status).toBe('succeeded');
+  });
+
+  it.each([
+    ['not_found', new PokemonUpstreamError('not_found', 'Gone.', { status: 404 })],
+    ['unexpected_shape', new PokemonUpstreamError('unexpected_shape', 'Odd body.')],
+  ])('marks a tournament failed on %s without reading it again, and goes on', async (_, error) => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw error;
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls.filter((c) => c === 'read t-2')).toHaveLength(1);
+    expect(view.status).toBe('partial');
+    expect(view.staffImport).toMatchObject({ tournamentsRead: 2, tournamentsFailed: 1 });
+  });
+
+  it('ends failed when no tournament could be read', async () => {
+    upstream.onRead = () => {
+      throw new PokemonUpstreamError('not_found', 'Gone.', { status: 404 });
+    };
+
+    expect((await importStaff()).status).toBe('failed');
+  });
+
+  it.each([
+    ['forbidden', new PokemonUpstreamError('forbidden', 'play-tools refused the request (403).', { status: 403 })],
+    ['needs_reconnect', new PokemonUpstreamError('needs_reconnect', 'Reconnect the Pokémon account in Settings.')],
+  ])('stops failed with %s, sends nothing more, and keeps what it recorded', async (code, error) => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw error;
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2']);
+    expect(view).toMatchObject({ status: 'failed', error: code });
+    expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
+    expect(events(view.id).at(-1)).toBe('finished');
+  });
+
+  it('ends failed with unavailable when the tournaments cannot be listed after 3 tries', async () => {
+    upstream.onList = () => {
+      throw down();
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['list', 'list', 'list']);
+    expect(view).toMatchObject({ status: 'failed', error: 'unavailable' });
+    expect(history()).toEqual([]);
+  });
+});
+
+describe('an account that organizes no tournaments', () => {
+  it('succeeds with nothing to count', async () => {
+    const view = await importStaff();
+
+    expect(view.status).toBe('succeeded');
+    expect(view.staffImport).toEqual({ tournamentsTotal: 0, tournamentsRead: 0, tournamentsFailed: 0, staffersFound: 0, newPlayers: [] });
+  });
+});
+
+describe('progress and history', () => {
+  beforeEach(() => {
+    upstream.add(tournament('t-1'), staffer('100', 'judge'));
+    upstream.add(tournament('t-2'), staffer('200', 'judge'));
+  });
+
+  it('streams planned, one tournament_read per tournament, then finished with the status', async () => {
+    const seen: { type: string; done: number; total: number }[] = [];
+    const { submissionId } = await service.importStaff(L, 'organizer');
+    service.subscribe(submissionId, (e) => seen.push({ type: e.type, done: e.done, total: e.total }));
+    await service.idle();
+
+    expect(seen).toEqual([
+      { type: 'planned', done: 0, total: 2 },
+      { type: 'tournament_read', done: 1, total: 2 },
+      { type: 'tournament_read', done: 2, total: 2 },
+      { type: 'finished', done: 2, total: 2 },
+    ]);
+    expect(service.events(L, submissionId).at(-1)?.message).toMatch(/succeeded/);
+  });
+
+  it('is listed as a staff_import that cannot be undone', async () => {
+    const view = await importStaff();
+
+    expect(service.list(L)).toEqual([expect.objectContaining({ id: view.id, kind: 'staff_import', playSessionLabel: 'Staff import' })]);
+    expect(view).toMatchObject({ undoable: false, undoBlockedReason: 'not_undoable' });
+    expect((await refusal(service.undo(L, view.id, 'organizer'))).code).toBe('not_undoable');
+  });
+
+  it('logs ids and counts, never a name', async () => {
+    upstream.add(tournament('t-3'), staffer('300', 'judge', 'Brock Stone'));
+    upstream.onRead = (t) => {
+      if (t === 't-3') throw new PokemonUpstreamError('not_found', 'Gone.', { status: 404 });
+    };
+    roster.ensurePlayers(L, [{ playerId: id('100'), name: 'Ash K.' }]);
+    upstream.participants.set('t-1', [staffer('100', 'judge', 'Ashley Ketchum')]);
+
+    await importStaff();
+
+    const logged = JSON.stringify(logs);
+    expect(logged).toContain('t-3');
+    expect(logged).not.toMatch(/Ash|Brock|Olive/);
+  });
+});
+
+describe('retry, crash and shutdown', () => {
+  beforeEach(() => {
+    upstream.add(tournament('t-1'), staffer('100', 'judge'));
+    upstream.add(tournament('t-2'), staffer('200', 'judge'));
+  });
+
+  it('retries a partial import as a new attempt that reads everything again and duplicates nothing', async () => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw down();
+    };
+    const first = await importStaff();
+    upstream.onRead = undefined;
+    upstream.calls = [];
+
+    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    await service.idle();
+    const second = service.get(L, submissionId);
+
+    expect(first.status).toBe('partial');
+    expect(second).toMatchObject({ kind: 'staff_import', retryOf: first.id, status: 'succeeded' });
+    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2']);
+    expect(history()).toHaveLength(2);
+    expect(Object.fromEntries(second.items.map((i) => [i.playerId, i.outcome]))).toEqual({ '100': 'found', '200': 'new_player' });
+  });
+
+  it('a running import found on boot becomes interrupted, and its lease is freed', async () => {
+    let release!: () => void;
+    upstream.gate = new Promise((r) => (release = r));
+    const { submissionId } = await service.importStaff(L, 'organizer');
+
+    // A new process: the old job's promise is abandoned.
+    const rebooted = build();
+    expect(rebooted.recoverInterrupted()).toBe(1);
+
+    expect(rebooted.get(L, submissionId).status).toBe('interrupted');
+    expect(database.sqlite.prepare('select count(*) n from submission_lock').get()).toEqual({ n: 0 });
+    release();
+    await service.idle();
+  });
+
+  it('stops while waiting out a 429 on shutdown: no further call, interrupted, what it read stays', async () => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw new PokemonUpstreamError('rate_limited', 'Slow down.', { status: 429, retryAfterMs: 30_000 });
+    };
+    onSleep = async (signal) => {
+      void service.shutdown();
+      expect(signal.aborted).toBe(true);
+      throw signal.reason;
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['list', 'read t-1', 'read t-2']);
+    expect(view.status).toBe('interrupted');
+    expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
+    expect(service.events(L, view.id).at(-1)).toMatchObject({ type: 'finished', done: 1, total: 2 });
+  });
+});

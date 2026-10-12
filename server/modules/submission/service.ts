@@ -5,7 +5,7 @@ import type { Db } from '../../db/client';
 import { submission, submissionEvent, submissionItem, submissionLock } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
 import type { PokemonConnectionService } from '../pokemon/connection';
-import { PokemonUpstreamError } from '../pokemon/ports/errors';
+import { type PokemonErrorCode, PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { BulkResult, PlayToolsGateway, Tournament, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
@@ -238,6 +238,10 @@ const HELD: ItemOutcome[] = ['assigned', 'already_assigned', 'role_changed'];
 /** Staff item outcomes that mean the job did not get its way. */
 const STAFF_UNDONE: ItemOutcome[] = ['failed', 'ineligible', 'skipped'];
 const STAFF_PREFIX = 'Staff for ';
+/** Tries of one staff import read after a 429 or a 5xx, before giving up on it. */
+const IMPORT_TRIES = 3;
+/** Read errors after which a staff import gives up on that tournament only, without trying again. */
+const SKIPPED_TOURNAMENT: PokemonErrorCode[] = ['not_found', 'unexpected_shape'];
 /** A staff import's `play_session_label`; it has no play session or tournament of its own. */
 const STAFF_IMPORT_LABEL = 'Staff import';
 
@@ -1208,20 +1212,55 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     const { leagueId } = row;
     const gateway = deps.staffGateway(leagueId);
     setStatus(row, 'running');
-    const tournaments = await gateway.listTournaments();
-    const total = tournaments.length;
+    let total = 0;
+    let done = 0;
+
+    /** One read, tried at most `IMPORT_TRIES` times after a 429 or a 5xx; waits only when play-tools asks; stops on shutdown. */
+    async function read<T>(call: () => Promise<T>, what: string): Promise<T> {
+      for (let tries = 1; ; tries += 1) {
+        if (stop.signal.aborted) throw stop.signal.reason;
+        renewLock(row);
+        try {
+          return await call();
+        } catch (err) {
+          if (!(err instanceof PokemonUpstreamError) || !err.retryable || tries >= IMPORT_TRIES) throw err;
+          emit(row, 'retrying', `${err.message} Reading ${what} again.`, done, total);
+          const wait = err.details.retryAfterMs ?? 0;
+          if (wait > 0) {
+            renewLock(row, wait);
+            await sleep(wait, stop.signal);
+          }
+        }
+      }
+    }
+
+    const tournaments = await read(() => gateway.listTournaments(), 'the tournaments');
+    total = tournaments.length;
     emit(row, 'planned', `${total} tournaments to read.`, 0, total);
     /** Every staffer found so far: once new to the league, a staffer stays `new_player` for the whole import. */
     const found = new Map<PlayerId, 'found' | 'new_player'>();
-    let done = 0;
+    let failed = 0;
+    let lastFailure: string | null = null;
     for (const t of tournaments) {
-      const participants = await gateway.listTournamentParticipants(t.id);
+      let participants: TournamentParticipant[];
+      try {
+        participants = await read(() => gateway.listTournamentParticipants(t.id), 'that tournament');
+      } catch (err) {
+        // Gone, unreadable, or still down after 3 tries: this tournament only. Anything else stops the import.
+        if (!(err instanceof PokemonUpstreamError) || !(err.retryable || SKIPPED_TOURNAMENT.includes(err.code))) throw err;
+        failed += 1;
+        lastFailure = err.code;
+        log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, { submissionId: row.id, tournamentId: t.id, code: err.code });
+        emit(row, 'tournament_failed', `Could not read a tournament (${err.code}).`, done + failed, total);
+        continue;
+      }
       db.transaction(() => seedFrom(row, t, participants, found));
       done += 1;
-      emit(row, 'tournament_read', `Read ${done} of ${total} tournaments.`, done, total);
+      emit(row, 'tournament_read', `Read ${done} of ${total} tournaments.`, done + failed, total);
     }
-    setStatus(row, 'succeeded');
-    emit(row, 'finished', 'Staff import succeeded.', done, total);
+    const status = failed === 0 ? 'succeeded' : done > 0 ? 'partial' : 'failed';
+    setStatus(row, status, status === 'failed' ? lastFailure : null);
+    emit(row, 'finished', `Staff import ${status}: read ${done} of ${total} tournaments, found ${found.size} staff.`, done + failed, total);
   }
 
   /**
@@ -1252,20 +1291,27 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     );
   }
 
-  /** A staff import's counts, from its events and items. */
-  function staffImportResult(row: Row, items: readonly { playerId: string; outcome: ItemOutcome }[], names: Map<PlayerId, string>): StaffImportResult {
-    const events = db.select({ type: submissionEvent.type, total: submissionEvent.total }).from(submissionEvent).where(eq(submissionEvent.submissionId, row.id)).all();
-    const newPlayers = items
-      .filter((i) => i.outcome === 'new_player')
-      .map((i) => ({ playerId: i.playerId as PlayerId, name: names.get(i.playerId as PlayerId) ?? '' }))
-      .sort((a, b) => a.name.localeCompare(b.name) || a.playerId.localeCompare(b.playerId));
+  /** A staff import's tournaments: planned, read and given up on, from its events. */
+  function importProgress(row: Pick<Row, 'id'>): Pick<StaffImportResult, 'tournamentsTotal' | 'tournamentsRead' | 'tournamentsFailed'> {
+    const events = db
+      .select({ type: submissionEvent.type, total: submissionEvent.total })
+      .from(submissionEvent)
+      .where(eq(submissionEvent.submissionId, row.id))
+      .all();
     return {
       tournamentsTotal: events.find((e) => e.type === 'planned')?.total ?? 0,
       tournamentsRead: events.filter((e) => e.type === 'tournament_read').length,
       tournamentsFailed: events.filter((e) => e.type === 'tournament_failed').length,
-      staffersFound: items.length,
-      newPlayers,
     };
+  }
+
+  /** A staff import's result: its progress, and the staffers its items hold. */
+  function staffImportResult(row: Row, items: readonly { playerId: string; outcome: ItemOutcome }[], names: Map<PlayerId, string>): StaffImportResult {
+    const newPlayers = items
+      .filter((i) => i.outcome === 'new_player')
+      .map((i) => ({ playerId: i.playerId as PlayerId, name: names.get(i.playerId as PlayerId) ?? '' }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.playerId.localeCompare(b.playerId));
+    return { ...importProgress(row), staffersFound: items.length, newPlayers };
   }
 
   /** A job that stops early: whoever was not sent yet is skipped. */
@@ -1277,6 +1323,11 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     if (row.kind === 'undo' || row.kind === 'clear') finishRemoval(row);
     if (row.kind === 'staff') finishStaff(row);
     setStatus(row, status, error);
+    if (row.kind === 'staff_import') {
+      const r = importProgress(row);
+      emit(row, 'finished', `Staff import ${status}: ${error}`, r.tournamentsRead + r.tournamentsFailed, r.tournamentsTotal);
+      return;
+    }
     const c = counts(row);
     const total = c.added + c.failed + c.skipped;
     emit(row, 'finished', `Submission ${status}: ${error}`, c.added + c.failed, total);
@@ -1299,7 +1350,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .catch((err: unknown) => {
         const interrupted = err instanceof Interrupted;
         if (!interrupted) log.warn(`${what(row)} #${submissionId} failed: ${(err as Error).message}`, { submissionId });
-        stopEarly(row, interrupted ? 'interrupted' : 'failed', (err as Error).message);
+        // History shows a staff import's upstream stop as its code (forbidden, needs_reconnect, unavailable…).
+        const reason = row.kind === 'staff_import' && err instanceof PokemonUpstreamError ? err.code : (err as Error).message;
+        stopEarly(row, interrupted ? 'interrupted' : 'failed', reason);
       })
       .then(() => {
         const status = load(row.leagueId, submissionId)?.status;
