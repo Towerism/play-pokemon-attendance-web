@@ -254,6 +254,41 @@ test('when play-tools fails, This week still works and Try again brings the staf
   await expect(page.getByRole('combobox', { name: /Find staff for/ })).toHaveCount(0);
 });
 
+/** Holds every response matching `url` until the returned function is called, so that read stays loading. */
+async function holdResponses(page: Page, url: string): Promise<() => void> {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route(url, async (route) => {
+    await released;
+    await route.continue();
+  });
+  return release;
+}
+
+test("changing the date shows the tournaments loading, never the previous date's cards", async ({ page, connected: _connected, fake }) => {
+  cupTonight(fake);
+  const NEXT_WEEK = '2026-10-20';
+  const staff = page.getByRole('region', { name: 'Staff', exact: true });
+  const loading = staff.getByRole('status');
+  const releaseTuesday = await holdResponses(page, `**/api/sessions/${TUESDAY}/staff`);
+  await page.goto(`/?date=${TUESDAY}`);
+
+  await expect(loading).toHaveText('Reading the tournaments from play-tools…');
+  releaseTuesday();
+  await expect(staffCard(page).getByRole('heading', { name: CUP_LABEL })).toBeVisible();
+  await expect(loading).toHaveCount(0);
+
+  const releaseNextWeek = await holdResponses(page, `**/api/sessions/${NEXT_WEEK}/staff`);
+  await page.getByLabel('Session date').fill(NEXT_WEEK);
+  await expect(loading).toHaveText('Reading the tournaments from play-tools…');
+  await expect(staffCard(page)).toHaveCount(0);
+  await expect(staff.getByText(/Times are in/)).toHaveCount(0);
+
+  releaseNextWeek();
+  await expect(staff.getByText(`No tournament in this league on ${NEXT_WEEK} in play-tools.`)).toBeVisible();
+  await expect(loading).toHaveCount(0);
+});
+
 test("another professor's refused login hides only their tournaments: the Staff section names them and links to Settings, with no banner", async ({ page, api, fake }) => {
   cupTonight(fake);
   // Short-lived access tokens, so the app must refresh on its next use; then Brock's login is refused.

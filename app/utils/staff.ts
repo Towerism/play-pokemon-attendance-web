@@ -221,3 +221,24 @@ export function unreadWarning(u: UnreadProfessor): { text: string; settings: boo
 export function runsAsText(organizer: Pick<OrganizerView, 'playerId' | 'name'>): string {
   return `Assigned as ${professorLabel({ professorPlayerId: organizer.playerId, professorName: organizer.name })}, who organizes this tournament.`;
 }
+
+export type StaffSectionView = 'loading' | 'error' | 'content';
+
+export interface StaffReadState {
+  /** The session date on screen. */
+  selectedDate: string;
+  /** The date the held result (data or error) was read for; null before any read settles. */
+  resultDate: string | null;
+  /** Whether the held result is an error rather than data. */
+  failed: boolean;
+}
+
+/**
+ * What the Staff section shows (#81): only the selected date's tournaments or
+ * error, never another date's while its read is in flight. A re-read of the
+ * same date keeps what is shown.
+ */
+export function staffSectionView({ selectedDate, resultDate, failed }: StaffReadState): StaffSectionView {
+  if (resultDate !== selectedDate) return 'loading';
+  return failed ? 'error' : 'content';
+}

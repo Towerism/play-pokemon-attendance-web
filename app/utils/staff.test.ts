@@ -14,6 +14,7 @@ import {
   runsAsText,
   roleLabel,
   staffOutcomeText,
+  staffSectionView,
   staffSummary,
   staffTag,
   toStaffResults,
@@ -307,5 +308,44 @@ describe('runsAsText (#75)', () => {
     expect(runsAsText({ playerId: BROCK_ID, name: null })).toBe(
       'Assigned as Professor 0000222, who organizes this tournament.',
     );
+  });
+});
+
+describe('staffSectionView', () => {
+  const TUESDAY = '2026-10-13';
+  const NEXT_WEEK = '2026-10-20';
+  const state = (over: Partial<Parameters<typeof staffSectionView>[0]> = {}) => ({
+    selectedDate: TUESDAY,
+    resultDate: TUESDAY,
+    failed: false,
+    ...over,
+  });
+
+  it('loads until the first read settles', () => {
+    expect(staffSectionView(state({ resultDate: null }))).toBe('loading');
+    expect(staffSectionView(state({ resultDate: null, failed: true }))).toBe('loading');
+  });
+
+  it("shows the selected date's tournaments once they are read", () => {
+    expect(staffSectionView(state())).toBe('content');
+  });
+
+  it("shows the selected date's error once its read fails", () => {
+    expect(staffSectionView(state({ failed: true }))).toBe('error');
+  });
+
+  it("loads after a date change instead of showing the previous date's tournaments", () => {
+    expect(staffSectionView(state({ selectedDate: NEXT_WEEK }))).toBe('loading');
+  });
+
+  it("loads after a date change instead of showing the previous date's error", () => {
+    expect(staffSectionView(state({ selectedDate: NEXT_WEEK, failed: true }))).toBe('loading');
+  });
+
+  it('keeps loading when a date left behind answers late, and shows the selected date once it answers', () => {
+    const later = '2026-10-27';
+    expect(staffSectionView(state({ selectedDate: later, resultDate: NEXT_WEEK }))).toBe('loading');
+    expect(staffSectionView(state({ selectedDate: later, resultDate: later }))).toBe('content');
+    expect(staffSectionView(state({ selectedDate: later, resultDate: later, failed: true }))).toBe('error');
   });
 });
