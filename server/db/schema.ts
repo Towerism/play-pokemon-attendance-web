@@ -1,4 +1,5 @@
-import { blob, index, integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { blob, index, integer, primaryKey, sqliteTable, text, unique, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Organizer accounts for the app itself (not Pokémon accounts). */
 export const appUser = sqliteTable('app_user', {
@@ -266,3 +267,78 @@ export const pokemonConnection = sqliteTable('pokemon_connection', {
   /** `criteria.play_sessions.create_attendance` when the group was chosen. */
   activityGroupCanSubmit: integer('activity_group_can_submit', { mode: 'boolean' }),
 });
+
+/**
+ * Staff the organizer wants on a tournament (ADR-0007): desired state, applied
+ * upstream by a staff job. Owned by the staffing module. One live row per
+ * (league, tournament, player): one person, one role per tournament.
+ */
+export const staffAssignment = sqliteTable(
+  'staff_assignment',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** `YYYY-MM-DD` in the league timezone. */
+    sessionDate: text('session_date').notNull(),
+    /** Upstream tournament GUID. */
+    tournamentId: text('tournament_id').notNull(),
+    /** `name · display id` when the assignment was added. */
+    tournamentLabel: text('tournament_label').notNull(),
+    playerId: text('player_id')
+      .notNull()
+      .references(() => player.playerId),
+    /** The wanted role: a play-tools staff role code, never `organizer`. */
+    role: text('role').notNull(),
+    state: text('state', { enum: ['pending', 'assigned', 'failed', 'removing'] })
+      .notNull()
+      .default('pending'),
+    /** The upstream staff record, once the assignment reached play-tools (or was found there). */
+    recordId: text('record_id'),
+    /** The role play-tools holds, while it differs from `role`. */
+    appliedRole: text('applied_role'),
+    /** When the assignment first reached play-tools. */
+    assignedAt: integer('assigned_at', { mode: 'timestamp' }),
+    /** Tombstone: the organizer removed it; the next staff job deletes `record_id`. */
+    removedAt: integer('removed_at', { mode: 'timestamp' }),
+    /** Organizer username. */
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('staff_assignment_live_unique')
+      .on(t.leagueId, t.tournamentId, t.playerId)
+      .where(sql`${t.removedAt} is null`),
+    index('staff_assignment_league_date_idx').on(t.leagueId, t.sessionDate),
+  ],
+);
+
+/**
+ * Who has staffed the league's tournaments (ADR-0007 decision 5): the staff
+ * list. Seeded from every read of a tournament's staff and from applied
+ * assignments. Not attendance evidence (ADR-0005). Owned by the staffing module.
+ */
+export const staffHistory = sqliteTable(
+  'staff_history',
+  {
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    tournamentId: text('tournament_id').notNull(),
+    playerId: text('player_id')
+      .notNull()
+      .references(() => player.playerId),
+    /** The tournament's start as a league-timezone date; null when play-tools has none. */
+    tournamentDate: text('tournament_date'),
+    /** The upstream role as text, possibly one the app doesn't offer; never `organizer`. */
+    role: text('role').notNull(),
+    /** `app` once this app applied or adopted the assignment; it never goes back to `upstream`. */
+    source: text('source', { enum: ['app', 'upstream'] }).notNull(),
+    recordedAt: integer('recorded_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.leagueId, t.tournamentId, t.playerId] }),
+    index('staff_history_league_player_idx').on(t.leagueId, t.playerId),
+  ],
+);
