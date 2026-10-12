@@ -124,7 +124,7 @@ container at startup, and the log names the bad entry.
 - `:latest` follows releases. To choose when you upgrade, set the container's
   *Repository* to a version tag instead: `X.Y` (gets fixes) or `X.Y.Z` (fixed).
 - To try a pull request, set *Repository* to
-  `ghcr.io/towerism/play-pokemon-attendance:pr-<number>` (amd64 only). A PR can
+  `ghcr.io/towerism/play-pokemon-attendance:pr-<number>`. A PR can
   add migrations that no release has yet, so only try it in a second container on
   a **copy** of appdata (set it up like the [restore drill](#restore-drill)), and
   never on your live folder.
