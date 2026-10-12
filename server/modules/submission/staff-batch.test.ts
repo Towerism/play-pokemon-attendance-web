@@ -313,6 +313,17 @@ describe('starting a batch', () => {
     await service.idle();
   });
 
+  it('refuses to start or show batches until a league is chosen, creating nothing', async () => {
+    await wantOnEach(FIRST);
+    const view = await runAll([FIRST]);
+    stub.state.connection = { ...stub.state.connection, league: null };
+
+    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [FIRST], startedBy: 'organizer' }))).toBe('league_not_selected');
+    expect(() => service.staffBatch(L, view.id)).toThrow(expect.objectContaining({ code: 'league_not_selected' }));
+    expect(() => service.runningStaffBatch(L, DATE)).toThrow(expect.objectContaining({ code: 'league_not_selected' }));
+    expect(staffJobs()).toHaveLength(1);
+  });
+
   it('refuses once shutting down', async () => {
     await service.shutdown();
 
