@@ -145,6 +145,14 @@ describe('fake accounts (one per professor)', () => {
     expect(fake.liveRefreshToken()).toBeUndefined();
   });
 
+  it('failOnce can let some requests for a path through before failing one', async () => {
+    const path = `/services/core/users/${subOf(token)}/activity_groups/`;
+    fake.failOnce.set(path, { status: 503, after: 1 });
+    expect((await fetch(`${fake.url}${path}`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+    expect((await fetch(`${fake.url}${path}`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(503);
+    expect((await fetch(`${fake.url}${path}`, { headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+  });
+
   it('lists every token it issued, for secret sweeps', async () => {
     const brock = fake.addAccount({ playerId: '222', name: 'Brock Harrison' });
     const b = (await exchange(brock.code)).body;

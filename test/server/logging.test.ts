@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type FakePlaySession, type FakePokemon, fakeRecord, startFakePokemon } from './fake-pokemon';
+import { FAKE_PLAYER_ID, FAKE_SUB, type FakePlaySession, type FakePokemon, fakeRecord, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, logRecords, runToExit, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse battery' };
@@ -170,11 +170,13 @@ describe('request ids follow the work they start', () => {
   beforeAll(async () => {
     fake.playSessions = [SESSION];
     fake.records.set(PS, []);
-    // Discovery fails on a shape this version does not understand: a 5xx, logged with the request's id.
-    fake.leagues = [{ guid: 'group-1', display_id: 12345 as never, display_name: 'Card Shop', canSubmit: true }];
     server = await startServer({ env: { ...fake.env, ...ENV, NUXT_LOG_FORMAT: 'json' } });
     browser = await signUp(server);
+    // The connect identifies the professor, then discovers leagues; discovery fails and is logged with the request's id.
+    fake.failOnce.set(`/services/core/users/${FAKE_SUB}/activity_groups/`, { status: 503, after: 1 });
     await connect(browser, { 'x-request-id': 'req-module-1' });
+    // From here on discovery meets a shape this version does not understand: a 5xx.
+    fake.leagues = [{ guid: 'group-1', display_id: 12345 as never, display_name: 'Card Shop', canSubmit: true }];
   });
   afterAll(async () => {
     fake.leagues = [{ guid: 'group-1', display_id: 'L5012', display_name: 'Card Shop', canSubmit: true }];
@@ -186,23 +188,24 @@ describe('request ids follow the work they start', () => {
     const tagged = logRecords(server.logs()).filter((r) => r.reqId === 'req-module-1');
     expect(tagged.map((r) => r.scope)).toEqual(expect.arrayContaining(['pokemon', 'http']));
     expect(tagged.find((r) => r.scope === 'pokemon' && /League discovery/.test(String(r.msg)))).toMatchObject({ level: 40 });
-    expect(tagged.find((r) => r.scope === 'pokemon' && /wire contract/.test(String(r.msg)))).toMatchObject({ keys: expect.any(Array) });
   });
 
-  it('logs an unhandled 5xx as an error with its stack', async () => {
-    const res = await browser.request('/api/leagues/upstream', { headers: { 'x-request-id': 'req-502' } });
+  it('logs an unhandled 5xx as an error with its stack, and the adapter outline under the same id', async () => {
+    const res = await browser.request(`/api/leagues/upstream?professor=${FAKE_PLAYER_ID}`, { headers: { 'x-request-id': 'req-502' } });
     expect(res.status).toBe(502);
     expect(res.headers.get('x-request-id')).toBe('req-502');
     const record = await waitFor(
       () => logRecords(server.logs()).find((r) => r.reqId === 'req-502' && r.scope === 'http' && r.level === 50),
       'the 5xx error record',
     );
-    expect(record).toMatchObject({ path: '/api/leagues/upstream', statusCode: 502, err: { stack: expect.any(String) } });
+    expect(record).toMatchObject({ path: expect.stringMatching(/^\/api\/leagues\/upstream/), statusCode: 502, err: { stack: expect.any(String) } });
+    const outline = logRecords(server.logs()).find((r) => r.reqId === 'req-502' && r.scope === 'pokemon' && /wire contract/.test(String(r.msg)));
+    expect(outline).toMatchObject({ keys: expect.any(Array) });
   });
 
   it('keeps the request id on a submission job after the response, and on a retry, and returns it on the SSE stream', async () => {
     fake.leagues = [{ guid: 'group-1', display_id: 'L5012', display_name: 'Card Shop', canSubmit: true }];
-    await browser.request('/api/settings', { method: 'PUT', json: { activityGroupId: 'group-1' } });
+    await browser.request('/api/settings', { method: 'PUT', json: { professorPlayerId: FAKE_PLAYER_ID, activityGroupId: 'group-1' } });
     await browser.request(`/api/sessions/${TUESDAY}/players`, { method: 'POST', json: { playerId: '1', name: 'A' } });
 
     const started = await browser.request(`/api/sessions/${TUESDAY}/submissions`, {
@@ -268,7 +271,7 @@ describe('request ids follow the work they start', () => {
   it('never mixes up the ids of concurrent requests', async () => {
     fake.bulkDelayMs = 0;
     const ids = Array.from({ length: 10 }, (_, i) => `req-concurrent-${i}`);
-    await Promise.all(ids.map((id) => browser.request('/api/leagues/upstream', { headers: { 'x-request-id': id } })));
+    await Promise.all(ids.map((id) => browser.request(`/api/leagues/upstream?professor=${FAKE_PLAYER_ID}`, { headers: { 'x-request-id': id } })));
     await new Promise((r) => setTimeout(r, 200));
     for (const id of ids) {
       const mine = logRecords(server.logs()).filter((r) => r.reqId === id);

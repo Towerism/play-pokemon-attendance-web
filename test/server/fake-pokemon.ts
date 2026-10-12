@@ -54,8 +54,11 @@ export interface FakePokemon {
   refuseStaff: Map<string, string | { code: string; attributes: Record<string, string> }>;
   /** Milliseconds to hold each staff assign (`POST …/records`) before answering (to stop a staff job mid-run). */
   staffPostDelayMs: number;
-  /** Path → status: the next request for that path answers it (e.g. 503), then the entry is cleared. */
-  failOnce: Map<string, number>;
+  /**
+   * Path → status: the next request for that path answers it (e.g. 503), then the entry is cleared. With
+   * `{ status, after }`, the first `after` requests go through and the one after them fails.
+   */
+  failOnce: Map<string, number | { status: number; after: number }>;
   /** Refuse the account's next refresh with `invalid_grant` (default account when no player id is given). */
   revokeChain(playerId?: string): void;
   liveRefreshToken(playerId?: string): string | undefined;
@@ -233,9 +236,11 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     fake.requests.push(entry);
 
     const failure = fake.failOnce.get(url.pathname);
-    if (failure) {
+    if (typeof failure === 'object' && failure.after > 0) {
+      fake.failOnce.set(url.pathname, { ...failure, after: failure.after - 1 });
+    } else if (failure) {
       fake.failOnce.delete(url.pathname);
-      return json(res, failure, { code: 'op.generic.unavailable' });
+      return json(res, typeof failure === 'object' ? failure.status : failure, { code: 'op.generic.unavailable' });
     }
 
     if (req.method === 'POST' && url.pathname === '/oauth2/token') {

@@ -82,7 +82,7 @@ describe('Pokémon connections API', () => {
     const res = await browser.request(`/api${path}`, init);
     const text = await res.text();
     bodies.push(text);
-    return { status: res.status, text, json: () => JSON.parse(text) as Record<string, any> };
+    return { status: res.status, text, json: () => JSON.parse(text) as Record<string, unknown> };
   }
   const connections = async () => ConnectionsResponse.parse((await api('/pokemon/connections')).json());
 
@@ -210,9 +210,9 @@ describe('Pokémon connections API', () => {
       expect((await api('/pokemon/connect/complete', { method: 'POST', json })).status).toBe(400);
     });
 
-    it('is 400 for a body that is not JSON', async () => {
+    it('is 415 for a body that is not JSON, like every JSON route', async () => {
       const res = await browser.request('/api/pokemon/connect/complete', { method: 'POST', body: 'url=x', headers: { 'content-type': 'text/plain' } });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(415);
     });
 
     it('is 400 invalid_url for something that is not the play-tools address', async () => {

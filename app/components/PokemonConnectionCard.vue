@@ -60,7 +60,13 @@ async function completeConnect() {
 // The league binding: which professor submits, and to which of their play-tools leagues.
 const picking = ref(false);
 const professorId = ref<string | undefined>();
-const leagues = ref<{ activityGroupId: string; displayName: string; displayId: string | null; canSubmit: boolean }[] | null>(null);
+interface UpstreamLeague {
+  activityGroupId: string;
+  displayName: string;
+  displayId: string | null;
+  canSubmit: boolean;
+}
+const leagues = ref<UpstreamLeague[] | null>(null);
 const chosenId = ref<string | undefined>();
 const professorItems = computed(() =>
   connections.value
@@ -84,7 +90,7 @@ async function loadLeagues() {
   if (!professorId.value) return;
   busy.value = true;
   try {
-    const result = await $fetch<{ leagues: NonNullable<typeof leagues.value>; selectedId: string | null }>('/api/leagues/upstream', {
+    const result = await $fetch<{ leagues: UpstreamLeague[]; selectedId: string | null }>('/api/leagues/upstream', {
       query: { professor: professorId.value },
     });
     leagues.value = result.leagues;
