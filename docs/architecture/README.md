@@ -468,7 +468,7 @@ erDiagram
     int submission_id FK
     text player_id FK
     text origin "regular|session|upstream"
-    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed; staff: assigned|already_assigned|already_listed|is_organizer|role_changed|ineligible|removed|already_removed|failed|skipped"
+    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed; staff: assigned|already_assigned|already_listed|is_organizer|role_changed|ineligible|removed|already_removed|failed|skipped; staff_import: found|new_player"
     text error
     text record_id "upstream record, for undo and clear (M7)"
     bool as_staff "present upstream in a staff role"
@@ -480,7 +480,7 @@ erDiagram
     int id PK "also the SSE event id"
     int submission_id FK
     datetime at
-    text type "planned|batch_sent|batch_rejected|retrying|reconciled|finished|record_removed|staff_sent (M8)"
+    text type "planned|batch_sent|batch_rejected|retrying|reconciled|finished|record_removed|staff_sent|tournament_read|tournament_failed (M8)"
     text message
     int done "players dealt with"
     int total "players to add"
@@ -814,11 +814,25 @@ recovery, shutdown, retry that re-reads, and History ("Staff for <tournament>").
 **Seeding the staff list.** Every read of a tournament's participants (the Staff card, a plan, a reconcile)
 records each staff record found, excluding `organizer`, in `STAFF_HISTORY` (`source = upstream`). It does so
 through `RosterService`, which uses the play-tools name only for a player the app can't name yet. The one-time
-**Import staff from play-tools** (`kind = 'staff_import'`) does the same for every tournament the account has
-organized:
-- It is read-only and paced one read at a time.
-- It is resumable after a crash, and re-running it is harmless.
-- Its result lists the players it added, so their names can be checked and corrected on Players → Staff.
+**Import staff from play-tools** (`kind = 'staff_import'`, #48) does the same for every tournament the account has
+organized, in any league, dated or not. As built (`runStaffImport` in `server/modules/submission/service.ts`):
+- **Read-only and unpaced.** One `listTournaments()` with no range, then one `listTournamentParticipants` per
+  tournament, one call at a time with no delay between them (organizer, 2026-10-12: reads don't need pacing;
+  `NUXT_STAFF_DELAY_MS` paces only the staff job's writes). The organizer's id comes from their own `organizer`
+  record, so it makes no `getTournament` read.
+- **Seeding** goes through `StaffingService.recordUpstreamStaff`, whose return value (the players it newly made
+  known) decides each staffer's item: one per distinct staffer, `origin = upstream`, `new_player` or `found`.
+- **Errors:** a 429 waits for `Retry-After`, and a 429 or 5xx is tried at most 3 times. A tournament that is still
+  down, gone (`not_found`) or unreadable (`unexpected_shape`) is a `tournament_failed` event, and the import goes
+  on: `succeeded` when every tournament was read, `partial` when some were, `failed` when none were. `forbidden`,
+  `needs_reconnect` or anything else stops it `failed`, with the code as its `error`.
+- **The row:** `play_session_id = ''`, `play_session_label = 'Staff import'`, and `session_date` the day it started
+  in the league `TZ`. It is never undoable. Retry and Resume read everything again, which is harmless (rows are
+  unique), and boot recovery and shutdown work as for every job.
+- **Result:** `GET /submissions/{id}` carries `staffImport: { tournamentsTotal, tournamentsRead, tournamentsFailed,
+  staffersFound, newPlayers: [{ playerId, name }] }` (local names), counted from the `planned`, `tournament_read`
+  and `tournament_failed` events and the items. Settings and History list the new players, so their names can be
+  checked and corrected on Players → Staff.
 
 **Rules** ([ADR-0007](adr/0007-staff-assignment.md) decisions 8 and 9):
 
@@ -910,7 +924,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `POST /submissions/{id}/undo` → 202                       | Remove the records this submission added, as a new undo attempt → `{ submissionId }` (§6.3). Summaries carry `kind`, `undoOf`, `undoable`, `undoBlockedReason`; items carry `removedBy` |
 | `GET /sessions/{date}/clear?playSessionId=` · `POST /sessions/{date}/clear` → 202 | Clear session (§6.3). `GET` previews `{ playSessionId, playSessionLabel, players: [{ playerId, name, addedByApp }], staffKept, otherSessionHasAppRecords }`. `POST` takes `{ playSessionId, confirmDate }` and starts a `kind = 'clear'` job → `{ submissionId }` |
 | `GET /staff?q=&limit=` (M8)                               | Staff list search over `STAFF_HISTORY` (seeded from play-tools): a bare array `[{ playerId, name, timesStaffed, lastStaffedOn, lastRole }]`, most recent first (`lastStaffedOn` null and last when no tournament has a date; `lastRole` is upstream text); `q` and `limit` (1–100, absent = every match) as for `/players`. `name` is always the local name. Needs no Pokémon connection |
-| `POST /staff/import` → 202 (M8)                           | Start the read-only `kind = 'staff_import'` job: every tournament the account organizes, records read one at a time ≥ `NUXT_STAFF_DELAY_MS` apart → `{ submissionId }`. Result: tournaments read, staffers found, players newly added (to check names). Re-running is harmless |
+| `POST /staff/import` → 202 (M8)                           | No body. Start the read-only `kind = 'staff_import'` job: every tournament the account organizes, in any league, read one at a time and unpaced → `{ submissionId }`; 409 `submission_running` / `league_not_selected` / `not_connected` / `needs_reconnect`, 503 `shutting_down`. `GET /submissions/{id}` then carries the `staffImport` result: tournaments total, read and failed, staffers found, and the new players (to check names). Re-running is harmless |
 | `GET /staff/roles` (M8)                                   | `{ roles: [{ code, label }] }` from `listStaffRoles` (the S6 constant; `judge` first as the default). No upstream call |
 | `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, tournaments: [{ tournamentId, label, startsAt, editable, missing?, organizer: { playerId } \| null, assignments: [{ id, playerId, name, role, appliedRole, state }], upstreamOnly: [{ playerId, name, role }], players: [{ playerId }] }] }`: this league's tournaments that start on the date (league TZ), in start order. Reads upstream live (one call at a time) and seeds the staff list. An assignment whose tournament play-tools no longer lists shows under a `missing: true` entry (`startsAt` and `organizer` null, not editable). 409 `league_not_selected`/`not_connected`/`needs_reconnect` |
 | `POST /sessions/{date}/staff` (M8)                        | Add `{ tournamentId, playerId, role, name? }`: 201 when added (or a tombstoned assignment revived), 200 when that player is already wanted there in that role (no upstream call), 409 `player_already_staffed` in another role, 409 `already_listed` (`data.how`: `player` \| `staff`) when play-tools already lists them, 422 `organizer_cannot_staff` for the tournament's organizer (fresh read), `unknown_role`, `unknown_tournament` (not this league's on that date) and `tournament_locked`. 400 for a malformed body, before any upstream call |
@@ -933,7 +947,7 @@ Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submi
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**, **Staff** (M8, #50: the staff list from `GET /staff` with times staffed, last staffed, and the last role's label from `GET /staff/roles` (fetched once); the page's search box searches it; an inline rename (`PATCH /players/{id}`, one row at a time) since a seeded play-tools name can be a dead name. The Staff tab never calls `/players`, and the other tabs never call `/staff`) (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
 | `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …", "Staff import") |
-| `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; **Import staff from play-tools** (M8); app users |
+| `settings.vue`      | Pokémon connection status (connected as X, last refreshed, Reconnect); league; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; **Import staff from play-tools** (`StaffImportCard`, M8: disabled with the reason until the connection is usable and a league is chosen; live progress, then the latest import's result with its new players and a link to History); app users |
 | `login.vue`         | App login (the only page outside `auth.global.ts` middleware)                                                                  |
 
 Client patterns:
@@ -1066,7 +1080,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
-| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47) and the Players → Staff tab (#50) are built. Next: import (#48), Staff card and `StaffSearch` (#49) ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
+| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47) and the Players → Staff tab (#50) are built. The staff import (#48) is built. Next: Staff card and `StaffSearch` (#49) ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
 
 ## 14. Architecture Decision Records
 
