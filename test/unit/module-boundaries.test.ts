@@ -34,6 +34,7 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useSubmissions()',
     'useMetrics()',
     'usePlaySessionResolver()',
+    'useStaffing()',
     'requireLeague(e)',
     "useLogger('x')",
   ])(

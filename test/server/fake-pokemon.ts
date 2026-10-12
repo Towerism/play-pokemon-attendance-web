@@ -33,6 +33,8 @@ export interface FakePokemon {
   lockedTournaments: Set<string>;
   /** Player id → the upstream code a staff assign for them is refused with (400), e.g. `op.activity_record.missing_certification`. */
   refuseStaff: Map<string, string>;
+  /** Path → status: the next request for that path answers it (e.g. 503), then the entry is cleared. */
+  failOnce: Map<string, number>;
   /** Refuse the next refresh with `invalid_grant`. */
   revokeChain(): void;
   liveRefreshToken(): string | undefined;
@@ -135,6 +137,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     tournamentRecords: new Map(),
     lockedTournaments: new Set(),
     refuseStaff: new Map(),
+    failOnce: new Map(),
     revokeChain: () => (live = undefined),
     liveRefreshToken: () => live,
     liveAccessToken: () => liveAccess,
@@ -153,6 +156,12 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     const url = new URL(req.url ?? '/', 'http://fake');
     const entry: FakePokemon['requests'][number] = { method: req.method ?? '', path: url.pathname, at: Date.now() };
     fake.requests.push(entry);
+
+    const failure = fake.failOnce.get(url.pathname);
+    if (failure) {
+      fake.failOnce.delete(url.pathname);
+      return json(res, failure, { code: 'op.generic.unavailable' });
+    }
 
     if (req.method === 'POST' && url.pathname === '/oauth2/token') {
       const form = Object.fromEntries(new URLSearchParams(await body(req)));

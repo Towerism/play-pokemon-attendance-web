@@ -114,3 +114,11 @@ describe('fake play-tools: tournaments and staff', () => {
     expect((await gateway.listTournamentParticipants(T)).map((p) => [p.playerId, p.role])).toContainEqual(['2222', 'judge']);
   });
 });
+
+describe('fake play-tools: failing once', () => {
+  it('answers the next request for a path with the given status, then serves it normally', async () => {
+    fake.failOnce.set(`/services/core/tournament/${T}`, 503);
+    await expect(gateway.getTournament(T)).rejects.toEqual(expect.objectContaining({ code: 'unavailable' }));
+    await expect(gateway.getTournament(T)).resolves.toMatchObject({ id: T });
+  });
+});
