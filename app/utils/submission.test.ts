@@ -152,3 +152,21 @@ describe('clear session wording', () => {
     );
   });
 });
+
+describe('staff jobs in History', () => {
+  it('labels a staff job with its tournament', () => {
+    expect(historyLabel({ kind: 'staff', undoOf: null, playSessionLabel: 'Staff for League Cup · 0001', tournamentLabel: 'League Cup · 0001' })).toBe(
+      'Staff for League Cup · 0001',
+    );
+  });
+
+  it('says a running staff job is assigning, not removing', () => {
+    expect(submissionStatus('running', 'staff')).toEqual({ label: 'Assigning…', color: 'info' });
+    expect(submissionStatus('running', 'undo')).toEqual({ label: 'Removing…', color: 'info' });
+    expect(submissionStatus('succeeded', 'staff')).toEqual({ label: 'Done', color: 'success' });
+  });
+
+  it('offers no undo for a staff job, and says where staff are changed', () => {
+    expect(undoBlockedText({ kind: 'staff', undoBlockedReason: 'not_undoable', items: [] })).toBe('Staff are changed from This week, not undone.');
+  });
+});
