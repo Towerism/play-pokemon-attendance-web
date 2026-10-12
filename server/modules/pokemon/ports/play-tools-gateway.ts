@@ -11,6 +11,12 @@ export interface PlayToolsGateway {
   listLeagues(): Promise<League[]>;
 
   /**
+   * Who the connected account is: the player id owning its `personal` activity group (never a league's owner,
+   * who is the store owner), and the professor's name when upstream offers one.
+   */
+  getProfessorProfile(): Promise<ProfessorProfile>;
+
+  /**
    * Play sessions whose start falls in `[range.from, range.to)`. Pages are
    * followed to exhaustion. `statuses` are queried in order and the call
    * short-circuits on the first status that yields a match (§4.4).
@@ -129,6 +135,12 @@ export type StaffAssignResult =
   | { readonly status: 'refused'; readonly code: string; readonly suggestedPlayerId?: PlayerId }
   /** A 400 with no reason for this staffer; callers record it as failed. */
   | { readonly status: 'invalid'; readonly code: string };
+
+export interface ProfessorProfile {
+  readonly playerId: PlayerId;
+  /** Null when upstream offers no name; the UI shows "Professor <player id>". */
+  readonly name: string | null;
+}
 
 export interface League {
   /** Activity group GUID. */

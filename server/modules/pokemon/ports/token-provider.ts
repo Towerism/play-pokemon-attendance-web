@@ -1,6 +1,6 @@
 /**
- * TokenProvider port (ADR-0003). Hands out a bearer access token for the OP
- * API on behalf of one league's Pokémon connection.
+ * TokenProvider port (ADR-0003, ADR-0008). Hands out a bearer access token for
+ * the OP API on behalf of one professor's Pokémon connection.
  *
  * Contract:
  * - Returns a cached token while it has ≥ 2 minutes of validity left.
@@ -11,7 +11,7 @@
  * - Never logs or returns the refresh token.
  */
 export interface TokenProvider {
-  getAccessToken(leagueId: string): Promise<AccessToken>;
+  getAccessToken(connectionId: number): Promise<AccessToken>;
 }
 
 export interface AccessToken {

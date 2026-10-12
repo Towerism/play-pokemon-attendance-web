@@ -174,6 +174,8 @@ function setUp(): void {
     connectedAt: clock,
     lastRefreshedAt: clock,
     league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
+    connectionId: 1,
+    professor: { playerId: '0012345', name: 'Ash Ketchum' },
   };
   sleeps = [];
   onSleep = undefined;
@@ -653,6 +655,7 @@ describe('history', () => {
       date: TUESDAY,
       playSessionLabel: 'Open play · TCG · Tue 6:00 PM',
       startedBy: 'organizer',
+      professor: { playerId: '0012345', name: 'Ash Ketchum' },
       startedAt: clock,
       finishedAt: clock,
       status: 'succeeded',
@@ -1837,4 +1840,49 @@ describe('a clear never deletes a staff record or a record added after it starte
       for (const p of late) expect(upstream.ids(), `seed ${seed}`).toContain(p);
     }
   }, 60_000);
+});
+
+describe('the submitting professor (ADR-0008)', () => {
+  const BROCK = { playerId: '0000222', name: 'Brock Harrison' };
+  const professorOf = (submissionId: number) =>
+    database.sqlite.prepare('select professor_player_id, professor_name from submission where id = ?').get(submissionId);
+
+  it("records who the league's submitting professor was on the attempt and in its history entry", async () => {
+    sessionPlayers('1');
+    const view = await submit();
+    expect(view.professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
+    expect(professorOf(view.id)).toEqual({ professor_player_id: '0012345', professor_name: 'Ash Ketchum' });
+    expect(service.list(L)[0]!.professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
+  });
+
+  it('records the professor submitting now on a retry, not the one who made the first attempt', async () => {
+    sessionPlayers('1', '2');
+    upstream.onBulk = (ids) =>
+      ids.includes(id('2')) ? { status: 'rejected', alreadyPresent: [], failed: [{ playerId: id('2'), error: 'op.x' }] } : undefined;
+    const first = await submit();
+    upstream.onBulk = undefined;
+    connection = { ...connection, connectionId: 2, professor: BROCK };
+
+    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    await service.idle();
+
+    expect(service.get(L, submissionId).professor).toEqual(BROCK);
+    expect(service.get(L, first.id).professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
+  });
+
+  it('records the professor on an undo and a clear too', async () => {
+    sessionPlayers('1');
+    const submitted = await submit();
+    connection = { ...connection, connectionId: 2, professor: BROCK };
+    expect((await undo(submitted.id)).professor).toEqual(BROCK);
+    upstream.has('3');
+    expect((await clear()).professor).toEqual(BROCK);
+  });
+
+  it('shows no professor on attempts from before professors were recorded', async () => {
+    sessionPlayers('1');
+    const view = await submit();
+    database.sqlite.prepare('update submission set professor_player_id = null, professor_name = null where id = ?').run(view.id);
+    expect(service.get(L, view.id).professor).toBeNull();
+  });
 });

@@ -68,6 +68,8 @@ export function stubPlayTools() {
       connectedAt: new Date(0),
       lastRefreshedAt: new Date(0),
       league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
+      connectionId: 1,
+      professor: { playerId: '0012345', name: 'Ash Ketchum' },
     } as ConnectionView,
   };
   let inFlight = 0;

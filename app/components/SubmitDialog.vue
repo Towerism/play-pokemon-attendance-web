@@ -15,6 +15,10 @@ const submissionId = ref<number | null>(null);
 
 const { latest, result } = useSubmissionEvents(submissionId);
 
+// Which professor the attendance goes in as (ADR-0008).
+const { data: connections } = await usePokemonConnection();
+const submitAs = computed(() => submitAsText(connections.value));
+
 const candidates = computed(() => resolution.value?.candidates ?? []);
 const selected = computed(() => candidates.value.find((c) => c.id === chosen.value));
 const formatInstant = (iso: string | Date) =>
@@ -116,6 +120,7 @@ watch(result, (view) => {
           <p v-if="selected?.editableUntil" class="text-sm text-muted">
             play-tools accepts attendance for this session until {{ formatInstant(selected.editableUntil) }}.
           </p>
+          <p v-if="submitAs" class="text-sm" data-testid="submit-as">{{ submitAs }}</p>
           <p class="text-xs text-muted">Times are in {{ resolution.timeZone }}. Players already in play-tools are not sent again.</p>
         </div>
       </template>

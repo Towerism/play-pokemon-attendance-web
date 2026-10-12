@@ -177,6 +177,10 @@ export const submission = sqliteTable(
     playSessionLabel: text('play_session_label').notNull(),
     /** Organizer username. */
     startedBy: text('started_by').notNull(),
+    /** The professor whose Pokémon connection made the upstream calls (ADR-0008); null on attempts from before it. */
+    professorPlayerId: text('professor_player_id'),
+    /** Their name at the time, when known. */
+    professorName: text('professor_name'),
     startedAt: integer('started_at', { mode: 'timestamp' }).notNull(),
     finishedAt: integer('finished_at', { mode: 'timestamp' }),
     status: text('status', { enum: ['planned', 'running', 'succeeded', 'partial', 'failed', 'interrupted'] }).notNull(),
@@ -275,14 +279,16 @@ export const submissionLock = sqliteTable('submission_lock', {
 });
 
 /**
- * The league's link to play-tools (ADR-0003): whose Pokémon account, which
- * activity group, and the refresh token sealed by the token vault. Owned by
- * the pokemon module.
+ * One professor's Pokémon account (ADR-0003, ADR-0008): who it is and the
+ * refresh token sealed by the token vault. Owned by the pokemon module.
  */
 export const pokemonConnection = sqliteTable('pokemon_connection', {
-  leagueId: text('league_id')
-    .primaryKey()
-    .references(() => league.id),
+  /** Also the vault's AAD (`pokemon_connection:<id>`), so a ciphertext only opens on its own row. */
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  /** The professor's player id; null only for a connection carried over from v1 until its first refresh identifies it. */
+  professorPlayerId: text('professor_player_id').unique(),
+  /** Null when upstream offers no name. */
+  professorName: text('professor_name'),
   /** Access-token `sub`: the OP user id (S5). */
   ptcUserId: text('ptc_user_id').notNull(),
   /** AES-256-GCM blob from the token vault; never leaves the server. */
@@ -292,12 +298,25 @@ export const pokemonConnection = sqliteTable('pokemon_connection', {
   statusReason: text('status_reason'),
   connectedAt: integer('connected_at', { mode: 'timestamp' }).notNull(),
   lastRefreshedAt: integer('last_refreshed_at', { mode: 'timestamp' }).notNull(),
-  /** The upstream activity group this league submits to; null until chosen. */
-  activityGroupId: text('activity_group_id'),
-  activityGroupName: text('activity_group_name'),
+});
+
+/**
+ * Where the league's attendance goes (ADR-0008): the professor whose
+ * connection makes every upstream call for it, and the activity group. Owned
+ * by the pokemon module; deleting the connection forgets the binding.
+ */
+export const leagueUpstream = sqliteTable('league_upstream', {
+  leagueId: text('league_id')
+    .primaryKey()
+    .references(() => league.id),
+  connectionId: integer('connection_id')
+    .notNull()
+    .references(() => pokemonConnection.id, { onDelete: 'cascade' }),
+  activityGroupId: text('activity_group_id').notNull(),
+  activityGroupName: text('activity_group_name').notNull(),
   activityGroupDisplayId: text('activity_group_display_id'),
   /** `criteria.play_sessions.create_attendance` when the group was chosen. */
-  activityGroupCanSubmit: integer('activity_group_can_submit', { mode: 'boolean' }),
+  activityGroupCanSubmit: integer('activity_group_can_submit', { mode: 'boolean' }).notNull(),
 });
 
 /**

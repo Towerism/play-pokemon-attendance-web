@@ -192,6 +192,8 @@ beforeEach(() => {
     connectedAt: clock,
     lastRefreshedAt: clock,
     league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
+    connectionId: 1,
+    professor: { playerId: '0012345', name: 'Ash Ketchum' },
   };
   staffing = createStaffingService({
     db: database.db,
@@ -867,5 +869,13 @@ describe('history', () => {
         undoable: false,
       }),
     ]);
+  });
+});
+
+describe('the submitting professor on a staff job (ADR-0008)', () => {
+  it("records the league's submitting professor", async () => {
+    await want('500');
+    connection = { ...connection, connectionId: 2, professor: { playerId: '0000222', name: 'Brock Harrison' } };
+    expect((await apply()).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
   });
 });

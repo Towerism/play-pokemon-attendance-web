@@ -54,7 +54,7 @@ beforeEach(() => {
   getAccessToken.mockClear();
   log.warn.mockClear();
 });
-const gateway = () => createPlayToolsHttpAdapter({ tokens, leagueId: 'default', log });
+const gateway = () => createPlayToolsHttpAdapter({ tokens, connectionId: 1, log });
 const pid = (s: string) => s as PlayerId;
 
 async function upstreamError(promise: Promise<unknown>): Promise<PokemonUpstreamError> {
@@ -153,7 +153,7 @@ describe('listTournaments (S6: core/activities, organizer only)', () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({ type: 'tournament', role: 'organizer', sort_by: '-start_date', page_size: '40' });
     expect(seen[0]!.headers.get('authorization')).toBe('Bearer access-jwt');
     expect(seen[0]!.headers.get('origin')).toBe('https://play-tools.pokemon.com');
-    expect(getAccessToken).toHaveBeenCalledWith('default');
+    expect(getAccessToken).toHaveBeenCalledWith(1);
   });
 
   it('stops paging once a page reaches back past the range (at most 2 of 3 pages for a current date)', async () => {

@@ -28,7 +28,7 @@ let resolver: PlaySessionResolver;
 
 beforeEach(() => {
   clock = new Date('2026-10-13T20:00:00Z');
-  connection = { status: 'connected', reason: null, connectedAt: clock, lastRefreshedAt: clock, league: LEAGUE };
+  connection = { status: 'connected', reason: null, connectedAt: clock, lastRefreshedAt: clock, league: LEAGUE, connectionId: 1, professor: { playerId: '0012345', name: 'Ash Ketchum' } };
   sessions = [evening];
   listPlaySessions = vi.fn(async () => sessions);
   resolver = createPlaySessionResolver({

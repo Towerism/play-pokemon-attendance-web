@@ -9,7 +9,7 @@ const links = [
   { to: '/settings', label: 'Settings' },
 ];
 
-// Global reconnect banner (architecture §8): shown on every page once Pokémon refuses the saved login.
+// Global reconnect banner (architecture §8): shown on every page once Pokémon refuses the submitting professor's login.
 const { data: connection, execute: loadConnection } = await usePokemonConnection({ immediate: false });
 watch(
   user,
@@ -18,7 +18,7 @@ watch(
   },
   { immediate: true },
 );
-const needsReconnect = computed(() => !!user.value && connection.value?.status === 'needs_reconnect');
+const reconnectTitle = computed(() => (user.value ? reconnectBanner(connection.value) : null));
 
 // Phones get the links in a drawer (below `sm`); any navigation closes it as soon as the URL changes.
 // The layout's `useRoute()` only follows once the new page has loaded, which would close a drawer
@@ -48,10 +48,10 @@ async function logout() {
 <template>
   <div class="min-h-dvh flex flex-col">
     <UBanner
-      v-if="needsReconnect"
+      v-if="reconnectTitle"
       color="warning"
       icon="i-lucide-plug-zap"
-      title="Pokémon no longer accepts the saved login. Reconnect before submitting attendance."
+      :title="reconnectTitle"
       :actions="[{ label: 'Reconnect', to: '/settings', color: 'neutral', variant: 'outline' }]"
     />
     <header class="border-b border-default">

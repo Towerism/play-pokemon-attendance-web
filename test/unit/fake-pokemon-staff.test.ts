@@ -25,7 +25,7 @@ beforeEach(async () => {
   const token = ((await res.json()) as { access_token: string }).access_token;
   gateway = createPlayToolsHttpAdapter({
     tokens: { getAccessToken: async () => ({ value: token, expiresAt: new Date(Date.now() + 3_600_000), subject: 'sub' }) },
-    leagueId: 'default',
+    connectionId: 1,
     baseUrl: fake.env.NUXT_POKEMON_API_URL,
   });
   fake.tournaments.push(fakeTournament(T, { startsAt: '2026-10-11T19:30:00Z', organizer: ORGANIZER }));

@@ -10,6 +10,7 @@ import type {
   PlaySession,
   PlaySessionStatus,
   PlayToolsGateway,
+  ProfessorProfile,
   Tournament,
   TournamentDetails as TournamentDetailsPort,
   StaffAssignResult,
@@ -50,7 +51,8 @@ const STAFF_EDIT_WINDOW_MS = 90 * DAY_MS;
 
 export interface PlayToolsHttpAdapterOptions {
   tokens: TokenProvider;
-  leagueId: string;
+  /** The professor connection the calls are made as; null when the league has none, which fails each call with `not_connected`. */
+  connectionId: number | null;
   /** Replaces `https://api.play.pokemon.com/services/` (test doubles only; `NUXT_POKEMON_API_URL`). */
   baseUrl?: string;
   log?: Pick<Logger, 'warn'>;
@@ -89,8 +91,15 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
   const base = new URL(opts.baseUrl || OP_API_BASE);
   const log = opts.log ?? silentLogger;
 
+  function accessToken() {
+    if (opts.connectionId === null) {
+      return Promise.reject(new PokemonUpstreamError('not_connected', 'No Pokémon account submits for this league. Choose one in Settings.'));
+    }
+    return opts.tokens.getAccessToken(opts.connectionId);
+  }
+
   async function get(url: URL, what: string): Promise<unknown> {
-    const token = await opts.tokens.getAccessToken(opts.leagueId);
+    const token = await accessToken();
     const res = await fetchUpstream(url.toString(), { headers: { ...OP_API_HEADERS, authorization: `Bearer ${token.value}` } }, what);
     if (res.ok) return jsonOrUndefined(res);
     throw throttleOrServerError(res, what) ?? clientError(res.status, what);
@@ -98,7 +107,7 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
 
   /** A JSON write with a fresh token; the caller reads the status. */
   async function writeJson(method: 'POST' | 'PATCH' | 'DELETE', path: string, payload: unknown, what: string): Promise<{ res: Response; url: URL }> {
-    const token = await opts.tokens.getAccessToken(opts.leagueId);
+    const token = await accessToken();
     const url = new URL(path, base);
     const res = await fetchUpstream(
       url.toString(),
@@ -144,7 +153,7 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
     listStaffRoles: () => STAFF_ROLES,
 
     async listLeagues(): Promise<League[]> {
-      const { subject } = await opts.tokens.getAccessToken(opts.leagueId);
+      const { subject } = await accessToken();
       const groups = await getAll(opPaths.userActivityGroups(subject), ActivityGroupsPage, 'League discovery');
       return groups
         .filter((g) => g.group_type === 'league')
@@ -154,6 +163,17 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
           displayId: g.display_id,
           canSubmit: g.criteria?.play_sessions?.create_attendance === true,
         }));
+    },
+
+    async getProfessorProfile(): Promise<ProfessorProfile> {
+      const what = 'Professor identity';
+      const { subject } = await accessToken();
+      const groups = await getAll(opPaths.userActivityGroups(subject), ActivityGroupsPage, what);
+      const owner = groups.find((g) => g.group_type === 'personal')?.owner?.player_id;
+      if (!owner || !/^\d{1,12}$/.test(owner)) {
+        throw new PokemonUpstreamError('unexpected_shape', `${what}: the account's personal activity group has no owner player id.`);
+      }
+      return { playerId: toPlayerId(owner), name: null };
     },
 
     async listPlaySessions(groupId, range, statuses = RESOLVE_ORDER): Promise<PlaySession[]> {
@@ -199,7 +219,7 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
       if (ids.length === 0) return { status: 'added', records: [] };
 
       const what = 'Adding attendance';
-      const token = await opts.tokens.getAccessToken(opts.leagueId);
+      const token = await accessToken();
       const url = new URL(opPaths.recordsBulk(groupId, sessionId), base);
       const res = await fetchUpstream(
         url.toString(),
@@ -309,7 +329,7 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
       if (!RECORD_ID.test(recordId)) throw new TypeError(`Not an attendance record id: ${JSON.stringify(recordId)}`);
 
       const what = 'Removing attendance';
-      const token = await opts.tokens.getAccessToken(opts.leagueId);
+      const token = await accessToken();
       const res = await fetchUpstream(
         new URL(opPaths.record(groupId, sessionId, recordId), base).toString(),
         { method: 'DELETE', headers: { ...OP_API_HEADERS, authorization: `Bearer ${token.value}` } },

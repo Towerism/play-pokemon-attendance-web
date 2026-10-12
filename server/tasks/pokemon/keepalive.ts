@@ -1,18 +1,20 @@
-import { DEFAULT_LEAGUE_ID } from '../../modules/leagues';
-
 /**
- * Hourly refresh-token keep-alive (ADR-0003), scheduled in nuxt.config.ts.
- * Rotates the token when the last refresh is ≥ 45 min old, so the chain never
- * ages out during a week off. Logs outcomes only, never tokens.
+ * Hourly refresh-token keep-alive (ADR-0003, ADR-0008), scheduled in
+ * nuxt.config.ts. Rotates each professor's token when its last refresh is
+ * ≥ 45 min old, one connection at a time, so no chain ages out during a week
+ * off. Logs one outcome per professor, never tokens.
  */
 export default defineTask({
-  meta: { name: 'pokemon:keepalive', description: 'Refresh the Pokémon token so the connection never ages out' },
+  meta: { name: 'pokemon:keepalive', description: "Refresh each professor's Pokémon token so no connection ages out" },
   async run() {
-    const result = await usePokemon().keepAlive(DEFAULT_LEAGUE_ID);
-    const log = useLogger('pokemon', { outcome: result.outcome });
-    if (result.outcome === 'failed') log.warn(`Keep-alive failed: ${result.message}`);
-    else if (result.outcome === 'needs_reconnect') log.warn('Keep-alive: the Pokémon account needs a reconnect (see Settings).');
-    else log.info(`Keep-alive: ${result.outcome}`);
+    const result = await usePokemon().keepAliveAll();
+    for (const r of result) {
+      const professor = r.professorPlayerId ?? `connection ${r.connectionId}`;
+      const log = useLogger('pokemon', { outcome: r.outcome, professor });
+      if (r.outcome === 'failed') log.warn(`Keep-alive failed for professor ${professor}: ${r.message}`);
+      else if (r.outcome === 'needs_reconnect') log.warn(`Keep-alive: professor ${professor}'s Pokémon account needs a reconnect (see Settings).`);
+      else log.info(`Keep-alive for professor ${professor}: ${r.outcome}`);
+    }
     return { result };
   },
 });

@@ -1,4 +1,5 @@
 import { z } from '../zod';
+import { ProfessorPlayerId } from './pokemon';
 
 const count = z.number().int().min(1, 'At least 1').max(52, 'At most 52');
 
@@ -11,11 +12,12 @@ export const Thresholds = z.object({
 });
 export type Thresholds = z.infer<typeof Thresholds>;
 
-/** `PUT /settings`: the upstream league (activity group), the curation thresholds, or both. */
+/** `PUT /settings`: the submitting professor with their upstream league (activity group), the curation thresholds, or both. */
 export const SettingsBody = z
   .object({
+    professorPlayerId: ProfessorPlayerId.optional(),
     activityGroupId: z.string().trim().min(1).max(100).optional(),
     thresholds: Thresholds.optional(),
   })
-  .refine((b) => b.activityGroupId !== undefined || b.thresholds !== undefined, 'Nothing to change');
+  .refine((b) => (b.professorPlayerId === undefined) === (b.activityGroupId === undefined), 'Choose the professor and their league together');
 export type SettingsBody = z.infer<typeof SettingsBody>;
