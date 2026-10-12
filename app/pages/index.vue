@@ -57,16 +57,20 @@ const presentCount = computed(() => session.value?.regulars.filter((r) => r.pres
 
 /** "Present" is evidence for curation (ADR-0005); regulars are submitted either way. Optimistic. */
 async function setPresent(regular: SessionRegular, present: boolean) {
-  const before = regular.present;
-  regular.present = present;
+  const { playerId, present: before } = regular;
+  const patch = (presence: Partial<Pick<SessionRegular, 'present' | 'inTournament'>>) => {
+    if (session.value) session.value = withRegularPresence(session.value, playerId, presence);
+  };
+  patch({ present });
   try {
-    const presence = await $fetch<Pick<SessionRegular, 'present' | 'inTournament'>>(`/api/sessions/${date.value}/regulars/${regular.playerId}`, {
-      method: 'PUT',
-      body: { present },
-    });
-    Object.assign(regular, presence);
+    patch(
+      await $fetch<Pick<SessionRegular, 'present' | 'inTournament'>>(`/api/sessions/${date.value}/regulars/${playerId}`, {
+        method: 'PUT',
+        body: { present },
+      }),
+    );
   } catch (err) {
-    regular.present = before;
+    patch({ present: before });
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not mark the regular present.') });
   }
 }
