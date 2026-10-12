@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic test data: invented names and IDs, placeholder birthdates. -->
+<tournament type="2" stage="5" version="1.74" gametype="TRADING_CARD_GAME" mode="LEAGUECHALLENGE">
+  <data>
+    <name>Tuesday Clear Night</name>
+    <id>26-10-000002</id>
+    <city>Testville</city>
+    <state>IL</state>
+    <country>US</country>
+    <roundtime>50</roundtime>
+    <finalsroundtime>75</finalsroundtime>
+    <organizer popid="1000001" name="Test Organizer" />
+    <startdate>10/13/2026</startdate>
+    <lessswiss>false</lessswiss>
+  </data>
+  <timeelapsed>0</timeelapsed>
+  <players>
+    <player userid="8100001">
+      <firstname>Ava</firstname>
+      <lastname>Attendee</lastname>
+      <birthdate>01/01/2000</birthdate>
+      <creationdate>10/01/2026 18:00:00</creationdate>
+      <lastmodifieddate>10/01/2026 18:00:00</lastmodifieddate>
+    </player>
+    <player userid="8100002">
+      <firstname>Toby</firstname>
+      <lastname>Tourney</lastname>
+      <birthdate>01/01/2000</birthdate>
+      <creationdate>10/01/2026 18:00:00</creationdate>
+      <lastmodifieddate>10/01/2026 18:00:00</lastmodifieddate>
+    </player>
+  </players>
+  <pods></pods>
+  <finalsoptions></finalsoptions>
+</tournament>
