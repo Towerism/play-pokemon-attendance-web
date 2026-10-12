@@ -27,20 +27,18 @@ watch(search, (value) => {
 const onStaff = computed(() => tab.value === 'staff');
 
 // Each list is fetched only on its own tabs: `/players` has no staff filter.
-const { data, refresh } = await useAsyncData(
-  'players',
-  () => (onStaff.value ? Promise.resolve(null) : $fetch('/api/players', { query: { q: q.value, filter: tab.value } })),
-  { watch: [q, tab] },
-);
-const {
-  data: staff,
-  refresh: refreshStaff,
-  error: staffError,
-} = await useAsyncData('staff', () => (onStaff.value ? $fetch('/api/staff', { query: q.value ? { q: q.value } : {} }) : Promise.resolve(null)), {
-  watch: [q, tab],
-});
+async function fetchPlayers() {
+  if (onStaff.value) return null;
+  return await $fetch('/api/players', { query: { q: q.value, filter: tab.value } });
+}
+async function fetchStaff() {
+  if (!onStaff.value) return null;
+  return await $fetch('/api/staff', { query: q.value ? { q: q.value } : {} });
+}
+const { data, refresh } = await useAsyncData('players', fetchPlayers, { watch: [q, tab] });
+const { data: staff, refresh: refreshStaff, error: staffError } = await useAsyncData('staff', fetchStaff, { watch: [q, tab] });
 // The roles are fetched once, the first time the Staff tab shows.
-const { data: roles, execute: loadRoles } = await useAsyncData('staff-roles', () => $fetch('/api/staff/roles'), { immediate: onStaff.value });
+const { data: roles, execute: loadRoles } = await useAsyncData('staff-roles', () => $fetch<{ roles: StaffRole[] }>('/api/staff/roles'), { immediate: onStaff.value });
 watch(onStaff, (yes) => {
   if (yes && !roles.value) void loadRoles();
 });

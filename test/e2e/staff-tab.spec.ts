@@ -173,3 +173,30 @@ test('the rename guards, the staff search, and which tab asks for what', async (
   await expect(staffRow(page, BROCK)).toBeVisible();
   expect(calls.roles).toBe(1);
 });
+
+test('with no staff yet, the Staff tab points to the import in Settings', async ({ page, api }) => {
+  void api;
+  await page.goto('/players?tab=staff');
+  await expect(page.getByText('No staff yet.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Import staff from play-tools in Settings' })).toHaveAttribute('href', '/settings');
+  await expect(page.getByRole('link', { name: 'Change thresholds' })).toHaveCount(0);
+});
+
+test('at 360 px a long name stays inside the page, and a nameless staffer can be named', async ({ page, connected, fake }) => {
+  const LONG = `${'A'.repeat(50)} ${'B'.repeat(49)}`;
+  await staffTournament(fake, connected, [
+    { id: ASH, role: 'judge', first: LONG.slice(0, 50), last: LONG.slice(51) },
+    { id: BROCK, role: 'judge', first: '', last: '' },
+  ]);
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.goto('/players?tab=staff');
+
+  await expect(staffRow(page, ASH)).toContainText(LONG);
+  const nameless = staffRow(page, BROCK);
+  await expect(nameless.getByText('No name')).toHaveClass(/italic/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+
+  await page.getByRole('button', { name: `Rename ${BROCK}` }).click();
+  await expect(page.getByRole('textbox', { name: `Name for ${BROCK}` })).toHaveValue('');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+});
