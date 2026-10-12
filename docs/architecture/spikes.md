@@ -10,7 +10,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 | S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ✅ done | UTC `start_date`/`end_date`. Statuses are `active`/`pending`/`complete`. DRF pagination. Server-side date filters exist. No title field. Attendance locks at `final_modifiable_datetime` (= start + 7 d). | §4.4 and the submission flow change ([below](#design-changes-triggered-apply-in-m4m5)). |
 | S4 | `_bulk` semantics: response, partial failure, already-present player | ✅ done | 201 `[{guid}]` in request order. **All-or-nothing:** one rejected item adds nobody. Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record. DELETE → 204. | Diff against **all** records. Validate ids locally. Retry without the offending index. (See design changes 6–9.) |
 | S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
-| S6 | Staff (M8): tournament list, staff assign/remove calls, roles, organizer, edit window | ✅ done | One `POST core/tournaments/{guid}/records` per staffer → 201 `{guid}`; duplicate/unclaimed/uncertified → 400 keyed `participant.player_id`; past the window → 423 `cannot_modify_old_activity`; `PATCH`/`DELETE …/records/{guid}` → 204. Unfiltered records = players + staff. Organizer in `core/tournament/{guid}`. `core/activities` lists the organizer's tournaments but **ignores date filters**. Staff tab is organizer-only (403 otherwise). | See [S6](#s6-staff-assignment-done-2026-10-11); §4.3 and ADR-0007 to be updated by #41's owner. |
+| S6 | Staff (M8): tournament list, staff assign/remove calls, roles, organizer, edit window | ✅ done | One `POST core/tournaments/{guid}/records` per staffer → 201 `{guid}`; duplicate/unclaimed/uncertified → 400 keyed `participant.player_id`; past the window → 423 `cannot_modify_old_activity` (assume locked to all changes); `PATCH`/`DELETE …/records/{guid}` → 204. Unfiltered records = players + staff. Organizer in `core/tournament/{guid}`. `core/activities` lists the organizer's tournaments but **ignores date filters**. Staff tab is organizer-only (403 otherwise). | See [S6](#s6-staff-assignment-done-2026-10-11); §4.3 and ADR-0007 to be updated by #41's owner. |
 
 ## Verified without a login (2026-10-10)
 
@@ -308,6 +308,9 @@ paths without a trailing slash.
     tournaments inside start + 90 d.
   - Removing or re-roling staff on a locked tournament was **deliberately not tried**. If only adds were locked,
     a removal couldn't have been undone.
+  - **Assumption (organizer, 2026-10-11): a tournament past its window is locked to every change.** Add, role
+    change and remove are all refused. The app treats it as read-only, offers no staff actions on it, and expects
+    423 from any write.
 - **Certification is per product, and upstream enforces it** (`pnpm spike:s6-cert`, fixtures 14–18).
   - The person tested is TCG-certified only, chosen by the organizer.
   - Adding them to a VGC (`product: "vg"`) tournament as `judge` → 400 `missing_certification`, and as
@@ -364,7 +367,8 @@ paths without a trailing slash.
 
 **Still open (low risk):**
 
-- the exact cut-off (the UI says start + 90 d), and whether `PATCH` or `DELETE` are locked too (not tried, as it can't be undone);
+- the exact cut-off (the UI says start + 90 d). `PATCH`/`DELETE` on a locked tournament are *assumed* refused, by
+  the organizer's call; not tried.
 - whether `DELETE` without the `legacy_alias` body works.
 
 **Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the
