@@ -85,6 +85,7 @@ watch(rolesError, (err) => {
         </template>
       </UAlert>
       <p v-if="!staff.tournaments.length && !staff.unread.length" class="text-sm text-muted">No tournament in this league on {{ date }} in play-tools.</p>
+      <StaffBatchDialog :date="date" :tournaments="staff.tournaments" @finished="refresh()" />
       <StaffCard v-for="tournament in staff.tournaments" :key="tournament.tournamentId" :date="date" :tournament="tournament" :roles="roles" @changed="refresh()" />
       <p class="text-xs text-muted">Times are in {{ staff.timeZone }}.</p>
     </template>
