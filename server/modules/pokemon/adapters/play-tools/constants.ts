@@ -1,3 +1,5 @@
+import type { StaffRole } from '../../ports/play-tools-gateway';
+
 /** Organized Play gateway (architecture §4.3). */
 export const OP_API_BASE = 'https://api.play.pokemon.com/services/';
 
@@ -26,3 +28,23 @@ export const opPaths = {
 function enc(segment: string): string {
   return encodeURIComponent(segment);
 }
+
+/** Tournament paths (S6): recorded without a trailing slash, which upstream accepts. */
+export const tournamentPaths = {
+  activities: () => 'core/activities',
+  details: (tournamentId: string) => `core/tournament/${enc(tournamentId)}`,
+  records: (tournamentId: string) => `core/tournaments/${enc(tournamentId)}/records`,
+  record: (tournamentId: string, recordId: string) => `core/tournaments/${enc(tournamentId)}/records/${enc(recordId)}`,
+} as const;
+
+/**
+ * Staff roles (S6): a constant in play-tools' own code, not an endpoint, in its order.
+ * `organizer` is fixed upstream and never offered.
+ */
+export const STAFF_ROLES: readonly StaffRole[] = Object.freeze([
+  { code: 'judge', label: 'Judge' },
+  { code: 'headjudge', label: 'Head Judge' },
+  { code: 'scorekeeper', label: 'Scorekeeper' },
+  { code: 'administration', label: 'Support Staff' },
+  { code: 'translator', label: 'Translator' },
+]);

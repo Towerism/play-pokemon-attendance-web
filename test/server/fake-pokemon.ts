@@ -13,7 +13,7 @@ export interface FakePokemon {
   url: string;
   env: Record<string, string>;
   /** Every request, in order, with when it arrived (ms since epoch), the form for token calls and the player ids of a `_bulk`. */
-  requests: { method: string; path: string; at?: number; form?: Record<string, string>; playerIds?: string[] }[];
+  requests: { method: string; path: string; at?: number; form?: Record<string, string>; playerIds?: string[]; body?: unknown }[];
   /** Seconds; under 120 makes every access-token use refresh. */
   accessTtl: number;
   leagues: { guid: string; display_id: string; display_name: string; canSubmit: boolean }[];
@@ -25,6 +25,14 @@ export interface FakePokemon {
   bulkDelayMs: number;
   /** The next `_bulk` answers 201 for everyone but doesn't store these ids (a record that never sticks); then cleared. */
   dropOnce: Set<string>;
+  /** Tournaments the account organizes (any activity group), in the S6 `core/activities` shape plus their organizer. */
+  tournaments: FakeTournament[];
+  /** Everyone on each tournament (players and staff, the organizer record too), by tournament guid. */
+  tournamentRecords: Map<string, FakeRecord[]>;
+  /** Tournament guids past their edit window: every write answers 423 `cannot_modify_old_activity`. */
+  lockedTournaments: Set<string>;
+  /** Player id → the upstream code a staff assign for them is refused with (400), e.g. `op.activity_record.missing_certification`. */
+  refuseStaff: Map<string, string>;
   /** Refuse the next refresh with `invalid_grant`. */
   revokeChain(): void;
   liveRefreshToken(): string | undefined;
@@ -43,6 +51,41 @@ export interface FakePlaySession {
   end_date: string | null;
   final_modifiable_datetime: string | null;
   products: string[];
+}
+
+export interface FakeTournament {
+  guid: string;
+  activity_type: 'tournament';
+  name: string | null;
+  display_id: string;
+  product: string;
+  /** Local wall-clock time stamped Z, as upstream sends it (S6); only used for ordering. */
+  start_date: string;
+  start_date_v2: string | null;
+  status: string;
+  activity_group: { guid: string; group_type: 'league' } | null;
+  organizer: { player_id: string; first_name: string; last_name: string };
+}
+
+/** A tournament as `core/activities` lists it (S6). `startsAt` is true UTC; the wall clock is taken as UTC−5. */
+export function fakeTournament(
+  guid: string,
+  opts: { startsAt?: string | null; groupId?: string; organizer?: string; status?: string; product?: string; name?: string } = {},
+): FakeTournament {
+  const startsAt = opts.startsAt === undefined ? '2026-10-11T19:30:00Z' : opts.startsAt;
+  const wallClock = startsAt ? new Date(Date.parse(startsAt) - 5 * 3_600_000) : new Date('2024-10-26T16:00:00Z');
+  return {
+    guid,
+    activity_type: 'tournament',
+    name: opts.name ?? `League Challenge ${guid}`,
+    display_id: `26-10-${guid}`,
+    product: opts.product ?? 'tcg',
+    start_date: wallClock.toISOString().replace('.000', ''),
+    start_date_v2: startsAt,
+    status: opts.status ?? 'sanctioned',
+    activity_group: { guid: opts.groupId ?? 'group-1', group_type: 'league' },
+    organizer: { player_id: opts.organizer ?? '9999991', first_name: 'Olive', last_name: 'Organizer' },
+  };
 }
 
 export interface FakeRecord {
@@ -70,6 +113,10 @@ const SESSIONS_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_session
 const RECORDS_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/([^/]+)\/records\/$/;
 const RECORD_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/([^/]+)\/records\/([^/]+)\/$/;
 const BULK_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/([^/]+)\/records\/_bulk\/$/;
+// Tournaments (S6): recorded without a trailing slash.
+const TOURNAMENT_PATH = /^\/services\/core\/tournament\/([^/]+)$/;
+const T_RECORDS_PATH = /^\/services\/core\/tournaments\/([^/]+)\/records$/;
+const T_RECORD_PATH = /^\/services\/core\/tournaments\/([^/]+)\/records\/([^/]+)$/;
 
 export async function startFakePokemon(): Promise<FakePokemon> {
   let serial = 0;
@@ -84,6 +131,10 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     records: new Map(),
     bulkDelayMs: 0,
     dropOnce: new Set(),
+    tournaments: [],
+    tournamentRecords: new Map(),
+    lockedTournaments: new Set(),
+    refuseStaff: new Map(),
     revokeChain: () => (live = undefined),
     liveRefreshToken: () => live,
     liveAccessToken: () => liveAccess,
@@ -188,6 +239,67 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       return;
     }
 
+    // S6: the organizer's tournaments, any activity group, newest first by the wall-clock start.
+    // Date filters are ignored, as upstream does; `page`/`page_size` page with absolute `next` links.
+    if (req.method === 'GET' && url.pathname === '/services/core/activities') {
+      const all = fake.tournaments
+        .filter(() => url.searchParams.get('type') === 'tournament')
+        .map(({ organizer: _organizer, ...row }) => row)
+        .sort((a, b) => b.start_date.localeCompare(a.start_date));
+      return json(res, 200, paged(all, url, req));
+    }
+
+    const tournamentMatch = TOURNAMENT_PATH.exec(url.pathname);
+    if (req.method === 'GET' && tournamentMatch) {
+      const t = fake.tournaments.find((x) => x.guid === tournamentMatch[1]);
+      if (!t) return json(res, 404, { code: 'op.generic.not_found' });
+      return json(res, 200, { ...t, start_date_actual: t.start_date_v2, organizer: { guid: 'org', country: 'US', display_name: null, ...t.organizer } });
+    }
+
+    const tRecordsMatch = T_RECORDS_PATH.exec(url.pathname);
+    const tRecordMatch = T_RECORD_PATH.exec(url.pathname);
+    const tournamentId = tRecordsMatch?.[1] ?? tRecordMatch?.[1];
+    if (tournamentId) {
+      const records = fake.tournamentRecords.get(tournamentId) ?? [];
+      if (req.method === 'GET' && tRecordsMatch) {
+        const player = url.searchParams.get('player');
+        const shown = player === null ? records : records.filter((r) => r.player === (player === 'true'));
+        // Real records also carry the birth year (S6); the adapter must drop it.
+        return json(res, 200, paged(shown.map((r) => ({ ...r, participant: { ...r.participant, year_of_birth: 2010 } })), url, req));
+      }
+      if (req.method !== 'GET') {
+        const raw = await body(req);
+        entry.body = raw ? (JSON.parse(raw) as unknown) : undefined;
+        if (fake.lockedTournaments.has(tournamentId)) {
+          return json(res, 423, { code: 'op.activity.cannot_modify_old_activity', message: 'The given activity is no longer modifiable.' });
+        }
+      }
+      if (req.method === 'POST' && tRecordsMatch) {
+        const { role, participant } = entry.body as { role: string; participant: { player_id: string } };
+        const refusal = records.some((r) => r.participant.player_id === participant.player_id)
+          ? 'op.activity_record.cannot_duplicate_participant'
+          : fake.refuseStaff.get(participant.player_id);
+        if (refusal) {
+          return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.', errors: { body: { 'participant.player_id': [{ code: refusal }] } } });
+        }
+        const record = { ...fakeRecord(participant.player_id, { role, guid: `staff-${++serial}` }), origin: 'manual' };
+        fake.tournamentRecords.set(tournamentId, [...records, record]);
+        return json(res, 201, { guid: record.guid });
+      }
+      if ((req.method === 'PATCH' || req.method === 'DELETE') && tRecordMatch) {
+        const record = records.find((r) => r.guid === tRecordMatch[2]);
+        if (!record) return json(res, 404, { code: 'op.generic.not_found' });
+        if (req.method === 'PATCH') {
+          const [op] = entry.body as { op: string; path: string; value: string }[];
+          if (op?.op === 'replace' && op.path === '/role') record.role = op.value;
+        } else {
+          fake.tournamentRecords.set(tournamentId, records.filter((r) => r !== record));
+        }
+        res.writeHead(204).end();
+        return;
+      }
+    }
+
     if (req.method === 'GET' && url.pathname === `/services/core/users/${FAKE_SUB}/activity_groups/`) {
       const results = [
         { guid: 'personal-1', display_id: null, group_type: 'personal', name: null, display_name: null },
@@ -213,6 +325,20 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     env: { NUXT_POKEMON_ACCESS_URL: `${url}/`, NUXT_POKEMON_API_URL: `${url}/services/` },
     close: () => new Promise<void>((r) => server.close(() => r())),
   });
+}
+
+/** A DRF page of `items` for the request's `page`/`page_size` (default 100), with an absolute `next` link. */
+function paged<T>(items: T[], url: URL, req: IncomingMessage) {
+  const size = Number(url.searchParams.get('page_size') ?? '100');
+  const n = Number(url.searchParams.get('page') ?? '1');
+  const results = items.slice((n - 1) * size, n * size);
+  let next: string | null = null;
+  if (n * size < items.length) {
+    const nextUrl = new URL(`${url.pathname}${url.search}`, `http://${req.headers.host}`);
+    nextUrl.searchParams.set('page', String(n + 1));
+    next = nextUrl.toString();
+  }
+  return { count: items.length, next, previous: null, results };
 }
 
 function json(res: ServerResponse, status: number, payload: unknown) {

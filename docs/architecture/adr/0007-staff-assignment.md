@@ -85,10 +85,12 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
 
 3. **Tournaments are their own upstream resource behind the port.** `PlayToolsGateway`
    gains the following methods (contract in architecture §4.3):
-   - `listTournaments(groupId, range)` pages `core/activities` newest first and stops
+   - `listTournaments(range?)` pages `core/activities` newest first and stops
      once `start_date_v2` falls before the range. It keeps tournaments whose
      `start_date_v2` falls within the range, and drops `cancelled`, `deleted` and
-     `invalidated` ones.
+     `invalidated` ones. It covers every activity group the account organizes in, since
+     professors often staff at other stores' events (organizer, #45). Each tournament
+     carries its `groupId`, so callers choose which groups to show.
    - `getTournament(ref)` returns details, including `organizerPlayerId`.
    - `listTournamentParticipants(ref)` returns every record, unfiltered, every page.
    - `assignStaff(ref, {playerId, role})`

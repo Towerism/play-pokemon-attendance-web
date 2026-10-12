@@ -305,7 +305,7 @@ Tournaments are their own resource, separate from play sessions. Spike S6 record
 
 | Purpose                     | Method & path (under `services/`)                                                                                  |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Organizer's tournaments     | `GET core/activities?type=tournament&role=organizer&activity_group_id=&sort_by=-start_date&page_size=` (DRF; **date filters ignored**) |
+| Organizer's tournaments     | `GET core/activities?type=tournament&role=organizer&sort_by=-start_date&page_size=40` (DRF; **date filters ignored**; every activity group) |
 | Tournament details          | `GET core/tournament/{t}` (singular): `organizer.player_id`, `start_date_actual`, `status`, `name`, `display_id`   |
 | Everyone on a tournament    | `GET core/tournaments/{t}/records` unfiltered, every page: players **and** staff, including the `organizer` record |
 | Assign one staffer          | `POST core/tournaments/{t}/records` `{role, player: false, participant: {player_id}, origin: "manual"}` → 201 `{guid}` |
@@ -315,21 +315,29 @@ Tournaments are their own resource, separate from play sessions. Spike S6 record
 ```ts
 interface PlayToolsGateway {
   // … attendance methods above …
-  listTournaments(groupId: string, range: DateRange): Promise<Tournament[]>;
-  // Pages core/activities newest first and stops once start_date_v2 < range.from. Keeps
-  // range.from <= start_date_v2 < range.to and drops cancelled/deleted/invalidated tournaments.
-  // Tournament = {id, name, displayId, products, startsAt (start_date_v2, true UTC; never start_date),
-  //   status, editableUntil (startsAt + 90 d)}
-  getTournament(tournamentId: string): Promise<TournamentDetails>;  // Tournament + organizerPlayerId
+  listTournaments(range?: DateRange): Promise<Tournament[]>;
+  // Every tournament the connected account organizes, in ANY activity group: professors staff at other
+  // stores' events too (organizer, #45). Callers pick by groupId. Pages core/activities newest first; with a
+  // range it stops after a page reaching back past range.from − 24 h (pages are ordered by the wall clock)
+  // and keeps range.from <= startsAt < range.to. Without a range: every page, undated ones included (import).
+  // Drops cancelled/deleted/invalidated and non-tournament rows. Oldest first, undated first, then by id.
+  // Tournament = {id, name (nullable), displayId, groupId (activity_group.guid, nullable), products ([product]),
+  //   startsAt (start_date_v2, true UTC; never start_date; null on older tournaments), status (raw),
+  //   editableUntil (startsAt + 90 d, null when undated)}. The adapter never reads the clock.
+  getTournament(tournamentId: string): Promise<TournamentDetails>;
+  // Tournament + organizerPlayerId; startsAt = start_date_v2 ?? start_date_actual; 404 throws not_found
   listTournamentParticipants(tournamentId: string): Promise<TournamentParticipant[]>;
-  // EVERY record, every page: {recordId, playerId, role (null for players), isStaff, name}
+  // EVERY record, every page, no player/role filter: {recordId, playerId (text), role (raw string; null for
+  //   players), isStaff, name ('' when unknown)}. year_of_birth and the rest never cross the port.
   listStaffRoles(): readonly StaffRole[];
   // adapter constant: judge, headjudge, scorekeeper, administration (Support Staff), translator; never organizer
   assignStaff(tournamentId: string, a: {playerId: PlayerId; role: StaffRoleCode}): Promise<StaffAssignResult>;
-  // = {status: 'assigned', recordId}
-  //   | {status: 'refused', code, attributes}  400 errors.body["participant.player_id"][0], e.g. missing_certification,
-  //                                             player_id_must_be_claimed, merged_player_id {actual_player_id},
-  //                                             cannot_duplicate_participant (backstop only)
+  // = {status: 'assigned', recordId}                 201 {guid}; a 2xx without one throws unexpected_shape
+  //   | {status: 'refused', code, suggestedPlayerId?} 400 errors.body["participant.player_id"][0], code without its
+  //                                                  op.<ns>. prefix: missing_certification, player_id_must_be_claimed,
+  //                                                  merged_player_id (+ suggestedPlayerId from actual_player_id),
+  //                                                  cannot_duplicate_participant (backstop only), or any new code
+  //   | {status: 'invalid', code}                     a 400 with no per-staffer error (callers record it as failed)
   // Callers must have just checked listTournamentParticipants and getTournament: the app never sends a player id
   // the tournament lists, or its organizer (ADR-0007 decisions 8 and 9).
   changeStaffRole(tournamentId: string, recordId: string, role: StaffRoleCode): Promise<'changed' | 'not_found'>;
@@ -341,14 +349,19 @@ Across these calls:
 - **Error mapping:**
   - A 423 `cannot_modify_old_activity` throws `tournament_locked` (the whole tournament is read-only; no
     per-person detail).
-  - A 403 throws `forbidden` (staff management is organizer-only).
-  - A 5xx throws `unavailable`, and the caller re-reads.
+  - A 401/403 throws `forbidden` (staff management is organizer-only).
+  - A 429 throws `rate_limited`. A 5xx or network failure throws `unavailable`, and the caller re-reads. The
+    adapter never retries.
 - **Validated locally:**
   - A tournament id or record id is refused unless it matches `^[A-Za-z0-9-]{1,64}$`.
   - A player id is refused unless it is digits only.
-  - A role is refused unless it is in the constant.
-- **Staff wire schemas are their own**, strict on request and `passthrough()` on response. The attendance
-  `_bulk` schema keeps `role: null`.
+  - A role is refused unless it is in the constant (so `organizer` never is).
+  - All of these throw `TypeError` before the token is fetched or anything is sent.
+- **Staff wire schemas are their own** (`wire.ts`): loose on response, declaring only the fields read, and
+  pinned to every S6 recording by `wire.contract.test.ts`, which also checks the assign body against them. The
+  attendance `_bulk` schema keeps `role: null`.
+- **The fake** (`test/server/fake-pokemon.ts`) serves the same calls: `tournaments`, `tournamentRecords`,
+  `lockedTournaments` (writes answer 423) and `refuseStaff` (assign answers 400 with a given code).
 
 ### 4.4 Resolving "which play session?" from a date
 

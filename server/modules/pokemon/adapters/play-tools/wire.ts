@@ -133,13 +133,73 @@ export const DUPLICATE_PARTICIPANT = 'op.activity_record.cannot_duplicate_partic
 export const OpErrorResponse = z.looseObject({
   code: z.string(),
   message: z.string().optional(),
-  errors: z.record(z.string(), z.record(z.string(), z.array(z.looseObject({ code: z.string() })))).optional(),
+  errors: z
+    .record(z.string(), z.record(z.string(), z.array(z.looseObject({ code: z.string(), attributes: z.record(z.string(), z.unknown()).optional() }))))
+    .optional(),
 });
 export type OpErrorResponse = z.infer<typeof OpErrorResponse>;
+
+/**
+ * Item of `core/activities?type=tournament&role=organizer` (S6, recorded 2026-10-11).
+ * `start_date` is local wall-clock time stamped `Z` and is not declared: read
+ * `start_date_v2` (true UTC), which is null on older tournaments.
+ */
+export const ActivityTournament = z.looseObject({
+  guid: Guid,
+  activity_type: z.string(),
+  name: z.string().nullable(),
+  display_id: z.string().nullable(),
+  product: z.string(),
+  start_date_v2: z.iso.datetime().nullable(),
+  status: z.string(),
+  activity_group: z.looseObject({ guid: Guid }).nullable().optional(),
+});
+export type ActivityTournament = z.infer<typeof ActivityTournament>;
+
+/**
+ * `core/tournament/{t}` (S6, recorded 2026-10-11). `organizer.player_id` holds the fixed
+ * `organizer` role. `start_date_actual` is true UTC too.
+ */
+export const TournamentDetails = ActivityTournament.omit({ activity_type: true }).extend({
+  start_date_actual: z.iso.datetime().nullable().optional(),
+  organizer: z.looseObject({ player_id: WirePlayerId }),
+});
+
+/**
+ * Item of `core/tournaments/{t}/records`, unfiltered (S6): players (`player: true`,
+ * `role: null`) and staff (`player: false`), the organizer's own record included.
+ * The participant also carries `year_of_birth`, which is never read.
+ */
+export const TournamentRecord = z.looseObject({
+  guid: Guid,
+  role: z.string().nullable(),
+  player: z.boolean(),
+  participant: z.looseObject({
+    player_id: WirePlayerId,
+    display_first_name: z.string().nullable(),
+    display_last_name: z.string().nullable(),
+  }),
+});
+
+/** Request body for assigning one staffer, exactly as play-tools sends it (S6 fixture 07). */
+export function staffAssignBody(playerId: string, role: string) {
+  return { role, player: false, participant: { player_id: playerId }, origin: 'manual' } as const;
+}
+
+/** `201 {guid}`: the new staff record (S6 fixture 07). A re-added staffer gets a new guid. */
+export const StaffAssignResponse = z.looseObject({ guid: Guid });
+
+/** Where an assign refusal is keyed (S6): the plain field, since one call carries one staffer. */
+export const STAFF_ERROR_FIELD = 'participant.player_id';
+
+/** Tournament statuses that mean it is not happening (S6 part 1). */
+export const DEAD_TOURNAMENT_STATUSES: readonly string[] = ['cancelled', 'deleted', 'invalidated'];
 
 export const ActivityGroupsPage = Page(ActivityGroup);
 export const PlaySessionsPage = Page(PlaySession);
 export const AttendancePage = Page(AttendanceRecord);
+export const ActivitiesPage = Page(ActivityTournament);
+export const TournamentRecordsPage = Page(TournamentRecord);
 
 /**
  * Fixture kinds → schema. Fixture files are named `<kind>.<label>.json`
