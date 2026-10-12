@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { PlayerId } from '../../../shared/types/ids';
+import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
@@ -577,5 +577,158 @@ describe('listRoles', () => {
     const roles = staffing.listRoles(L);
     expect(roles.map((r) => r.code)).toEqual(['judge', 'headjudge', 'scorekeeper', 'administration', 'translator']);
     expect(upstream.state.calls).toEqual([]);
+  });
+});
+
+describe('what a staff job reads and writes back (#47)', () => {
+  const DATE = '2026-10-14' as SessionDate;
+  const row = (sql: string) => database.sqlite.prepare(sql).get();
+
+  async function want(playerId: string, role = 'judge') {
+    const { assignment } = await staffing.addAssignment(L, DATE, { tournamentId: 't-1', playerId: id(playerId), role }, 'organizer');
+    return assignment.id;
+  }
+
+  beforeEach(() => {
+    upstream.state.tournaments = [tournament('t-1', { name: 'League Challenge', displayId: '26-10-1' })];
+  });
+
+  describe('prepareApply', () => {
+    it("returns one of the date's tournaments with its label, read fresh", async () => {
+      await want('00123');
+      upstream.state.calls = [];
+
+      expect(await staffing.prepareApply(L, DATE, 't-1')).toEqual({ tournamentId: 't-1', label: 'League Challenge · 26-10-1' });
+      expect(upstream.state.calls).toContain(`listTournaments ${new Date('2026-10-14T05:00:00Z').toISOString()}`);
+    });
+
+    it('refuses a tournament that is not one of this league’s on the date', async () => {
+      await want('00123');
+      upstream.state.tournaments.push(tournament('t-other', { groupId: 'another-store' }));
+      await expect(staffing.prepareApply(L, DATE, 't-other')).rejects.toMatchObject({ code: 'unknown_tournament' });
+      await expect(staffing.prepareApply(L, DATE, 't-nope')).rejects.toMatchObject({ code: 'unknown_tournament' });
+    });
+
+    it('refuses a tournament past its edit window', async () => {
+      await want('00123');
+      upstream.state.tournaments = [tournament('t-1', { editableUntil: new Date(NOW.getTime() - 1) })];
+      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'tournament_locked' });
+    });
+
+    it('refuses a tournament with no assignments at all', async () => {
+      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'nothing_to_apply' });
+    });
+
+    it('still applies a tournament whose only assignment is tombstoned (it has a removal to send)', async () => {
+      const a = await want('00123');
+      staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
+      await staffing.removeAssignment(L, DATE, a);
+      await expect(staffing.prepareApply(L, DATE, 't-1')).resolves.toMatchObject({ tournamentId: 't-1' });
+    });
+
+    it('refuses an active assignment holding a role play-tools does not offer (organizer included)', async () => {
+      const a = await want('00123');
+      database.sqlite.prepare("update staff_assignment set role = 'organizer' where id = ?").run(a);
+      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'unknown_role' });
+    });
+
+    it('refuses before a league is chosen', async () => {
+      upstream.state.connection = { ...upstream.state.connection, league: null };
+      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'league_not_selected' });
+    });
+  });
+
+  describe('assignmentsFor', () => {
+    it("lists the tournament's live and tombstoned assignments with the record this app holds", async () => {
+      const a = await want('00123');
+      const b = await want('00456', 'scorekeeper');
+      staffing.recordApplied(L, b, { recordId: 'rec-b', role: 'scorekeeper' });
+      await staffing.removeAssignment(L, DATE, b);
+
+      expect(staffing.assignmentsFor(L, 't-1')).toEqual([
+        { id: a, playerId: '00123', role: 'judge', appliedRole: null, recordId: null, removed: false },
+        { id: b, playerId: '00456', role: 'scorekeeper', appliedRole: null, recordId: 'rec-b', removed: true },
+      ]);
+      expect(staffing.assignmentsFor(L, 't-other')).toEqual([]);
+    });
+  });
+
+  describe('recordApplied', () => {
+    it('marks the assignment assigned with its record, and puts the staffer on the staff list as the app’s', async () => {
+      const a = await want('00123');
+
+      staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
+
+      expect(row(`select state, record_id, applied_role, assigned_at from staff_assignment where id = ${a}`)).toEqual({
+        state: 'assigned',
+        record_id: 'rec-1',
+        applied_role: null,
+        assigned_at: Math.floor(NOW.getTime() / 1000),
+      });
+      expect(history()).toContainEqual({ tournament_id: 't-1', player_id: '00123', tournament_date: DATE, role: 'judge', source: 'app' });
+    });
+
+    it('keeps when the assignment first reached play-tools, and updates the staff list role on a role change', async () => {
+      const a = await want('00123');
+      staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
+      database.sqlite.prepare(`update staff_assignment set assigned_at = 1, role = 'scorekeeper', applied_role = 'judge' where id = ${a}`).run();
+
+      staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'scorekeeper' });
+
+      expect(row(`select assigned_at, applied_role from staff_assignment where id = ${a}`)).toEqual({ assigned_at: 1, applied_role: null });
+      expect(history()).toContainEqual(expect.objectContaining({ player_id: '00123', role: 'scorekeeper', source: 'app' }));
+    });
+
+    it('remembers the role play-tools now holds when the organizer changed it while the job ran', async () => {
+      const a = await want('00123');
+      database.sqlite.prepare(`update staff_assignment set role = 'scorekeeper' where id = ${a}`).run();
+
+      staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
+
+      expect(row(`select role, applied_role, state from staff_assignment where id = ${a}`)).toEqual({
+        role: 'scorekeeper',
+        applied_role: 'judge',
+        state: 'assigned',
+      });
+    });
+
+    it('is a no-op for an assignment deleted while the job ran', async () => {
+      const a = await want('00123');
+      await staffing.removeAssignment(L, DATE, a);
+      expect(() => staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' })).not.toThrow();
+      expect(row('select count(*) n from staff_assignment')).toEqual({ n: 0 });
+    });
+  });
+
+  describe('recordFailed', () => {
+    it('marks a live assignment failed, and leaves a tombstoned one alone', async () => {
+      const a = await want('00123');
+      staffing.recordFailed(L, a);
+      expect(row(`select state from staff_assignment where id = ${a}`)).toEqual({ state: 'failed' });
+
+      staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
+      await staffing.removeAssignment(L, DATE, a);
+      staffing.recordFailed(L, a);
+      expect(row(`select state from staff_assignment where id = ${a}`)).toEqual({ state: 'removing' });
+    });
+  });
+
+  describe('forgetRemoved', () => {
+    it('deletes a tombstoned assignment and keeps the staff list', async () => {
+      const a = await want('00123');
+      staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
+      await staffing.removeAssignment(L, DATE, a);
+
+      staffing.forgetRemoved(L, a);
+
+      expect(row('select count(*) n from staff_assignment')).toEqual({ n: 0 });
+      expect(history()).toContainEqual(expect.objectContaining({ player_id: '00123', source: 'app' }));
+    });
+
+    it('never deletes a live assignment (the organizer revived it while the job ran)', async () => {
+      const a = await want('00123');
+      staffing.forgetRemoved(L, a);
+      expect(row('select count(*) n from staff_assignment')).toEqual({ n: 1 });
+    });
   });
 });

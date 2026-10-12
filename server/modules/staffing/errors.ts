@@ -14,7 +14,9 @@ export type StaffingErrorCode =
   /** No league chosen in Settings, so the league's tournaments are unknown. */
   | 'league_not_selected'
   /** No such assignment on that date. */
-  | 'not_found';
+  | 'not_found'
+  /** The tournament has no staff assignments, live or removed, for a staff job to apply. */
+  | 'nothing_to_apply';
 
 export class StaffingError extends Error {
   override name = 'StaffingError';
