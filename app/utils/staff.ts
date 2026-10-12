@@ -164,3 +164,14 @@ export function applyStartText(code: string | undefined): string | undefined {
   if (code === 'submission_running') return 'Another job is running for this league. Try again when it finishes.';
   return undefined;
 }
+
+/** A 409 `already_listed` on add: play-tools lists them on the tournament already (as `how`). */
+export function alreadyListedText(who: { name: string; playerId: string }, how: 'player' | 'staff' | undefined): string {
+  const as = how === 'player' ? ' as a player' : how === 'staff' ? ' as staff' : '';
+  return `${who.name || who.playerId} is already listed in play-tools${as}.`;
+}
+
+/** A 200 on add: they were already wanted here in that role. */
+export function alreadyStaffingText(who: { name: string; playerId: string; role: string }, roles: readonly StaffRole[] | undefined): string {
+  return `${who.name || who.playerId} is already staffing as ${roleLabel(who.role, roles)}.`;
+}

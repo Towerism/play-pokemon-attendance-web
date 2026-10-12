@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { StaffOutcome } from './staff';
 import {
+  alreadyListedText,
+  alreadyStaffingText,
   applyStartText,
   defaultRole,
   lastStaffedLabel,
@@ -213,5 +215,19 @@ describe('applyStartText', () => {
   it("leaves any other code to the server's message", () => {
     expect(applyStartText('tournament_locked')).toBeUndefined();
     expect(applyStartText(undefined)).toBeUndefined();
+  });
+});
+
+describe('add refusals', () => {
+  const roles = [{ code: 'headjudge', label: 'Head Judge' }];
+
+  it('says who play-tools already lists, and how', () => {
+    expect(alreadyListedText({ name: 'Ash Late', playerId: '6000016' }, 'player')).toBe('Ash Late is already listed in play-tools as a player.');
+    expect(alreadyListedText({ name: '', playerId: '6000016' }, 'staff')).toBe('6000016 is already listed in play-tools as staff.');
+    expect(alreadyListedText({ name: 'Ash', playerId: '1' }, undefined)).toBe('Ash is already listed in play-tools.');
+  });
+
+  it('says someone is already staffing in the role picked', () => {
+    expect(alreadyStaffingText({ name: 'Ash Judge', playerId: '6000011', role: 'headjudge' }, roles)).toBe('Ash Judge is already staffing as Head Judge.');
   });
 });

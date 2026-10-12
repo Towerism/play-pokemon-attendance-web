@@ -165,6 +165,8 @@ async function removePlayer(player: SessionPlayer) {
       </UCollapsible>
     </section>
 
+    <StaffSection :date="date" />
+
     <section class="space-y-2 rounded-md border border-error/40 p-4" aria-labelledby="danger-zone">
       <h2 id="danger-zone" class="text-lg font-medium text-error">Danger zone</h2>
       <p class="text-sm text-muted">
