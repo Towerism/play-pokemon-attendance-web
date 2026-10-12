@@ -956,6 +956,7 @@ Client patterns:
 - **Submission progress:** the `useSubmissionEvents(id)` composable wraps `EventSource` on `/api/submissions/{id}/events`. It falls back to polling `GET /api/submissions/{id}` if SSE drops. As built (M5), progress lives in `SubmitDialog` and on `history/[id].vue`; there is no separate drawer, so Pinia isn't needed yet.
 - **Notifications:** Nuxt UI `useToast()` for results, and a global `UBanner` in `app.vue` when the Pokémon connection is `needs_reconnect`.
 - **Layout:** mobile-first, because attendance is often taken on a phone at the store. Below `sm` (640 px) the header shows only the brand and an "Open menu" button. The nav links, the username and Log out are in a `USlideover` drawer (`app/layouts/default.vue`), which closes as soon as a navigation changes the URL (it watches the router's route, not the layout's, which only follows once the new page has loaded). From `sm` up the links sit inline in the header.
+- **Navigation feedback:** pages await their data in `setup`, so a slow navigation keeps the old page up until the new one has loaded. `<NuxtLoadingIndicator>` in `app.vue` draws a 3 px primary-coloured bar across the top once a navigation has taken 200 ms, and fades it when the page is shown. It is fixed, ignores taps and is `aria-hidden`.
 
 ## 9. Security
 
