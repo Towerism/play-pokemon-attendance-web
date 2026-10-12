@@ -5,13 +5,18 @@ import {
   alreadyListedText,
   alreadyStaffingText,
   applyStartText,
+  batchRowDetail,
+  batchRowStatus,
+  bulkApplyTargets,
   defaultRole,
   lastStaffedLabel,
   needsAttention,
   organizerText,
   readOnlyNote,
   renameDecision,
+  retryFailedIds,
   runsAsText,
+  showsBulkApply,
   roleLabel,
   staffOutcomeText,
   staffSummary,
@@ -307,5 +312,85 @@ describe('runsAsText (#75)', () => {
     expect(runsAsText({ playerId: BROCK_ID, name: null })).toBe(
       'Assigned as Professor 0000222, who organizes this tournament.',
     );
+  });
+});
+
+describe('assign staff for all tournaments (#76)', () => {
+  const OLIVE = { playerId: '9999991', name: 'Olive', connected: true, needsReconnect: false };
+  const staffed = { assignments: [{ id: 1 }] };
+  const card = (tournamentId: string, over: Partial<Parameters<typeof bulkApplyTargets>[0][number]> = {}) => ({
+    tournamentId,
+    editable: true,
+    organizer: OLIVE,
+    ...staffed,
+    ...over,
+  });
+
+  describe('bulkApplyTargets', () => {
+    it('lists every tournament its own card could apply, in the staff list’s order', () => {
+      expect(bulkApplyTargets([card('a'), card('b'), card('c')])).toEqual(['a', 'b', 'c']);
+    });
+
+    it.each([
+      ['read-only (past 90 days)', { editable: false }],
+      ['missing upstream', { missing: true as const, editable: false, organizer: null }],
+      ['unreadable', { unavailable: true as const, editable: false, organizer: null }],
+      ['its organizer not connected', { editable: false, organizer: { ...OLIVE, connected: false } }],
+      ['its organizer needing a reconnect', { organizer: { ...OLIVE, needsReconnect: true } }],
+      ['no staff rows', { assignments: [] }],
+    ])('leaves out a tournament %s', (_what, over) => {
+      expect(bulkApplyTargets([card('a'), card('b', over)])).toEqual(['a']);
+    });
+  });
+
+  describe('showsBulkApply', () => {
+    it('shows with two tournaments to apply, not with one or none', () => {
+      expect(showsBulkApply([card('a'), card('b')])).toBe(true);
+      expect(showsBulkApply([card('a'), card('b', { editable: false })])).toBe(false);
+      expect(showsBulkApply([])).toBe(false);
+    });
+  });
+
+  describe('batchRowStatus', () => {
+    it.each([
+      ['waiting', 'Waiting', 'neutral'],
+      ['running', 'Assigning…', 'info'],
+      ['succeeded', 'Done', 'success'],
+      ['partial', 'Partly done', 'warning'],
+      ['failed', 'Failed', 'error'],
+      ['not_started', 'Not started', 'error'],
+      ['interrupted', 'Interrupted', 'warning'],
+    ] as const)('words %s as %s', (status, label, color) => {
+      expect(batchRowStatus(status)).toEqual({ label, color });
+    });
+  });
+
+  describe('batchRowDetail', () => {
+    const row = { status: 'succeeded' as const, progress: null, counts: null, refusal: null };
+
+    it('says why a tournament was not started, in our words where we have them', () => {
+      expect(batchRowDetail({ ...row, status: 'not_started', refusal: { code: 'nothing_to_apply', message: 'x' } })).toBe('No staff to assign or remove.');
+      expect(batchRowDetail({ ...row, status: 'not_started', refusal: { code: 'needs_reconnect', message: 'Reconnect Brock in Settings.' } })).toBe(
+        'Reconnect Brock in Settings.',
+      );
+    });
+
+    it("counts a finished tournament's staff", () => {
+      expect(batchRowDetail({ ...row, counts: { added: 2, alreadyPresent: 1, failed: 1, skipped: 0 } })).toBe('2 assigned or changed · 1 failed · 1 already in play-tools');
+      expect(batchRowDetail({ ...row, counts: { added: 0, alreadyPresent: 0, failed: 0, skipped: 0 } })).toBe('Nothing to send');
+    });
+
+    it('shows the running tournament’s progress, and nothing for one waiting', () => {
+      expect(batchRowDetail({ ...row, status: 'running', progress: { done: 1, total: 3 } })).toBe('1 of 3');
+      expect(batchRowDetail({ ...row, status: 'running' })).toBe('Reading who play-tools already lists…');
+      expect(batchRowDetail({ ...row, status: 'waiting' })).toBe('');
+    });
+  });
+
+  describe('retryFailedIds', () => {
+    it('retries every tournament that did not succeed, including ones not started or interrupted, in order', () => {
+      const rows = (['succeeded', 'failed', 'partial', 'not_started', 'interrupted'] as const).map((status, i) => ({ tournamentId: `t${i}`, status }));
+      expect(retryFailedIds(rows)).toEqual(['t1', 't2', 't3', 't4']);
+    });
   });
 });

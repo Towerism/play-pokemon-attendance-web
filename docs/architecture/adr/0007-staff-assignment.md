@@ -285,6 +285,45 @@ is still read. Any other 403 on one tournament is skipped (`tournament_failed`),
 401 (the token refused) still stops the import. Decision 5 says so. Staff from former
 leagues' tournaments can't be imported, because play-tools won't show them.
 
+### Update (#76, 2026-10-12): assign staff for every tournament on a date at once
+
+A date with several tournaments meant opening **Assign staff in play-tools** on each
+card and waiting for each job, because a second one is refused while the first holds
+the lease. Since #75 those tournaments can belong to different professors. The organizer
+confirmed on #76:
+
+- **A staff batch, run by the server.** `POST /sessions/{date}/staff/apply-all
+  {tournamentIds}` (1 to 20, in the staff list's order) starts one **ordinary**
+  `kind = 'staff'` job per tournament, one after another. Each job has the same plan,
+  rules, pacing, retries, events, reconcile, History entry and retry as a single apply,
+  and each runs and is recorded as its tournament's organizer (ADR-0009). Before each
+  job, the same fresh checks as a single apply run (`prepareApply`). A tournament they
+  refuse is recorded as **not started** with the refusal's code, and the batch goes on.
+  A job that ends `failed` or `partial` doesn't stop the batch either.
+- **One hold of the lease.** The batch takes the per-league lease when it starts and
+  hands it to each job and back without freeing it. Between jobs, `submission_lock.
+  submission_id` holds minus the batch id. No job of any kind starts in between, and the
+  app still sends one call at a time (decision 7). Staff writes stay at least
+  `NUXT_STAFF_DELAY_MS` apart per league, including the last write of one tournament
+  and the first write of the next.
+- **Why the server sequences it**, not the browser: the batch keeps going if the page
+  is closed. It also avoids the gap where the lease is freed just after a job's
+  `finished` event, when a browser starting the next job could be refused.
+- **Following it.** `GET /staff-batches/{id}` shows one row per tournament: waiting,
+  running (with progress), succeeded, partial, failed, not started (with why) or
+  interrupted. `GET /sessions/{date}/staff/apply-all` returns the date's running batch
+  (204 if none), so a reloaded page can show it again. The batch is `succeeded` when
+  every job succeeded, `failed` when none got anywhere, and `partial` otherwise.
+  **Retry failed** starts a new batch of the tournaments that didn't succeed, and each
+  job re-reads first (ADR-0004). The batch itself has no History entry; its jobs do.
+- **Recovery.** On shutdown the batch starts no further tournament. Boot recovery marks
+  a batch left running `interrupted`, along with its waiting tournaments.
+- **Tables.** `staff_batch` (league, date, who started it, status) and
+  `staff_batch_item` (position, tournament, status, its job, refusal), owned by the
+  submission module.
+
+There is no cancel, and nothing runs in parallel, even for different professors.
+
 ## Alternatives considered
 
 - **Fire each assignment immediately, synchronously.** Simpler UI, but it skips the

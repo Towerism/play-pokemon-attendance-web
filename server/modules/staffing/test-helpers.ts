@@ -3,7 +3,9 @@ import type { PlayerId } from '../../../shared/types/ids';
 import type { ActingConnection, ConnectionView } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
+  StaffAssignResult,
   StaffRole,
+  StaffRoleCode,
   Tournament,
   TournamentDetails,
   TournamentParticipant,
@@ -77,6 +79,12 @@ export function stubPlayTools() {
     /** `method@connectionId` → throw this from that connection's next call of the method. */
     failNextAs: new Map<string, PokemonUpstreamError>(),
     professors: [{ ...OLIVE }] as StubProfessor[],
+    /** Writes (assign, change, remove) in order, with the connection and `clock()` when each was made. */
+    writes: [] as { call: string; as: number; at: number }[],
+    /** The time writes are stamped with; tests with a fake clock point it there. */
+    clock: () => Date.now(),
+    /** Runs before every call once it is counted in flight; may wait (a gate) or throw (a failure). */
+    before: undefined as ((call: string, as: number) => unknown) | undefined,
     connection: {
       status: 'connected',
       reason: null,
@@ -97,6 +105,7 @@ export function stubPlayTools() {
     maxInFlight = Math.max(maxInFlight, inFlight);
     try {
       await new Promise((r) => setTimeout(r, 1));
+      await state.before?.(`${name} ${arg}`, as);
       const own = state.failNextAs.get(`${name}@${as}`);
       if (own) {
         state.failNextAs.delete(`${name}@${as}`);
@@ -137,7 +146,34 @@ export function stubPlayTools() {
         if (t && t.organizerPlayerId !== who) throw new PokemonUpstreamError('forbidden', 'Only the organizer manages staff.', { status: 403 });
         return [...(state.participants.get(id) ?? [])];
       }),
+    listLeagues: () => Promise.reject(new Error('the stub lists no leagues')),
+    assignStaff: (id: string, a: { playerId: PlayerId; role: StaffRoleCode }) =>
+      call(as, 'assignStaff', `${id} ${a.playerId} ${a.role}`, (): StaffAssignResult => {
+        write(as, `assign ${id} ${a.playerId} ${a.role}`);
+        const listed = state.participants.get(id) ?? [];
+        if (listed.some((p) => p.playerId === a.playerId)) return { status: 'refused', code: 'cannot_duplicate_participant' };
+        const recordId = `staff-${++serial}`;
+        state.participants.set(id, [...listed, staffer(a.playerId, a.role, '', recordId)]);
+        return { status: 'assigned', recordId };
+      }),
+    changeStaffRole: (id: string, recordId: string, role: StaffRoleCode) =>
+      call(as, 'changeStaffRole', `${id} ${recordId} ${role}`, (): 'changed' | 'not_found' => {
+        write(as, `change ${id} ${recordId} ${role}`);
+        const listed = state.participants.get(id) ?? [];
+        if (!listed.some((p) => p.recordId === recordId)) return 'not_found';
+        state.participants.set(id, listed.map((p) => (p.recordId === recordId ? { ...p, role } : p)));
+        return 'changed';
+      }),
+    unassignStaff: (id: string, recordId: string) =>
+      call(as, 'unassignStaff', `${id} ${recordId}`, (): 'removed' | 'not_found' => {
+        write(as, `remove ${id} ${recordId}`);
+        const listed = state.participants.get(id) ?? [];
+        state.participants.set(id, listed.filter((p) => p.recordId !== recordId));
+        return listed.some((p) => p.recordId === recordId) ? 'removed' : 'not_found';
+      }),
   });
+  let serial = 0;
+  const write = (as: number, call: string) => state.writes.push({ call, as, at: state.clock() });
 
   return {
     state,

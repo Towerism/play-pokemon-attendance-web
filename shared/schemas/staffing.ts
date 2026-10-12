@@ -29,6 +29,25 @@ export const ChangeStaffRoleBody = z.object({ role });
 /** Apply one tournament's staff assignments to play-tools (`POST /sessions/{date}/staff/apply`). */
 export const ApplyStaffBody = z.object({ tournamentId });
 
+/** Most tournaments one staff batch takes (#76). */
+export const STAFF_BATCH_MAX = 20;
+
+/** Apply several of the date's tournaments' staff, one after another (`POST /sessions/{date}/staff/apply-all`, #76). */
+export const ApplyAllStaffBody = z.object({
+  tournamentIds: z
+    .array(tournamentId)
+    .min(1, 'Choose at least one tournament')
+    .max(STAFF_BATCH_MAX, `At most ${STAFF_BATCH_MAX} tournaments`)
+    .refine((ids) => new Set(ids).size === ids.length, 'Each tournament once'),
+});
+
+export const StaffBatchIdParam = z.object({
+  id: z
+    .string()
+    .regex(/^[1-9]\d{0,9}$/, 'Not a staff batch id')
+    .transform(Number),
+});
+
 export const StaffAssignmentParams = z.object({
   date: sessionDate,
   assignmentId: z

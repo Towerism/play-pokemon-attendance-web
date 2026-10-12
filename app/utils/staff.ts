@@ -1,5 +1,6 @@
 import type { OrganizerView, UnreadProfessor } from '../../server/modules/staffing/service';
 import type { ItemOutcome } from '../../server/modules/submission/service';
+import type { StaffBatchRowStatus, StaffBatchRowView } from '../../server/modules/submission/staff-batch';
 import { professorLabel } from './pokemon-connections';
 
 /** A staff role as `GET /staff/roles` lists it. */
@@ -220,4 +221,64 @@ export function unreadWarning(u: UnreadProfessor): { text: string; settings: boo
 /** The Apply dialog's line on who the staff job runs as: always the tournament's organizer. */
 export function runsAsText(organizer: Pick<OrganizerView, 'playerId' | 'name'>): string {
   return `Assigned as ${professorLabel({ professorPlayerId: organizer.playerId, professorName: organizer.name })}, who organizes this tournament.`;
+}
+
+/** A tournament as the Staff section has it, as far as assigning everyone's staff at once needs. */
+type BulkCard = {
+  tournamentId: string;
+  editable: boolean;
+  missing?: true;
+  unavailable?: true;
+  organizer: Pick<OrganizerView, 'connected' | 'needsReconnect'> | null;
+  assignments: readonly unknown[];
+};
+
+/**
+ * The tournaments **Assign staff for all tournaments** covers (#76): each one whose own card offers
+ * **Assign staff in play-tools**, in the staff list's order (by start).
+ */
+export function bulkApplyTargets(tournaments: readonly BulkCard[]): string[] {
+  return tournaments
+    .filter((t) => t.editable && !t.missing && !t.unavailable && t.organizer?.connected && !t.organizer.needsReconnect && t.assignments.length > 0)
+    .map((t) => t.tournamentId);
+}
+
+/** The button shows only when it saves opening more than one card. */
+export function showsBulkApply(tournaments: readonly BulkCard[]): boolean {
+  return bulkApplyTargets(tournaments).length >= 2;
+}
+
+const ROW_STATUS: Record<StaffBatchRowStatus, { label: string; color: 'neutral' | 'info' | 'success' | 'warning' | 'error' }> = {
+  waiting: { label: 'Waiting', color: 'neutral' },
+  running: { label: 'Assigning…', color: 'info' },
+  succeeded: { label: 'Done', color: 'success' },
+  partial: { label: 'Partly done', color: 'warning' },
+  failed: { label: 'Failed', color: 'error' },
+  not_started: { label: 'Not started', color: 'error' },
+  interrupted: { label: 'Interrupted', color: 'warning' },
+};
+
+/** One tournament's status in the batch dialog, as text and a badge color. */
+export function batchRowStatus(status: StaffBatchRowStatus): { label: string; color: 'neutral' | 'info' | 'success' | 'warning' | 'error' } {
+  return ROW_STATUS[status];
+}
+
+/** The line under a tournament in the batch dialog: why it wasn't started, its progress, or its counts. */
+export function batchRowDetail(row: Pick<StaffBatchRowView, 'status' | 'progress' | 'counts' | 'refusal'>): string {
+  if (row.refusal) return row.refusal.code === 'nothing_to_apply' ? 'No staff to assign or remove.' : row.refusal.message;
+  if (row.status === 'running') return row.progress ? `${row.progress.done} of ${row.progress.total}` : 'Reading who play-tools already lists…';
+  if (!row.counts) return '';
+  const c = row.counts;
+  const parts = [
+    [c.added, 'assigned or changed'],
+    [c.failed, 'failed'],
+    [c.skipped, 'not sent'],
+    [c.alreadyPresent, 'already in play-tools'],
+  ].flatMap(([n, what]) => (n ? [`${n} ${what}`] : []));
+  return parts.length ? parts.join(' · ') : 'Nothing to send';
+}
+
+/** **Retry failed**: every tournament that didn't succeed, not started and interrupted ones too, in order. */
+export function retryFailedIds(rows: readonly Pick<StaffBatchRowView, 'tournamentId' | 'status'>[]): string[] {
+  return rows.filter((r) => r.status !== 'succeeded').map((r) => r.tournamentId);
 }

@@ -269,7 +269,52 @@ export const submissionEvent = sqliteTable(
   (t) => [index('submission_event_submission_idx').on(t.submissionId, t.id)],
 );
 
-/** Per-league lease: one submission at a time (ADR-0004). Renewed while the job runs; an expired lease is free. */
+/**
+ * Assign staff for every tournament on a date (#76, ADR-0007 update): one `staff` job per tournament,
+ * run one after another under one hold of the league's lease. Owned by the submission module.
+ */
+export const staffBatch = sqliteTable(
+  'staff_batch',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    sessionDate: text('session_date').notNull(),
+    /** Organizer username. */
+    startedBy: text('started_by').notNull(),
+    startedAt: integer('started_at', { mode: 'timestamp_ms' }).notNull(),
+    finishedAt: integer('finished_at', { mode: 'timestamp_ms' }),
+    status: text('status', { enum: ['running', 'succeeded', 'partial', 'failed', 'interrupted'] }).notNull().default('running'),
+  },
+  (t) => [index('staff_batch_league_date_status_idx').on(t.leagueId, t.sessionDate, t.status)],
+);
+
+/** One tournament of a staff batch, in run order: its job once started, or why it wasn't. */
+export const staffBatchItem = sqliteTable(
+  'staff_batch_item',
+  {
+    batchId: integer('batch_id')
+      .notNull()
+      .references(() => staffBatch.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    tournamentId: text('tournament_id').notNull(),
+    /** The tournament's label once its turn read it; its id until then. */
+    tournamentLabel: text('tournament_label').notNull(),
+    status: text('status', { enum: ['waiting', 'running', 'succeeded', 'partial', 'failed', 'not_started', 'interrupted'] })
+      .notNull()
+      .default('waiting'),
+    submissionId: integer('submission_id').references(() => submission.id),
+    refusalCode: text('refusal_code'),
+    refusalMessage: text('refusal_message'),
+  },
+  (t) => [primaryKey({ columns: [t.batchId, t.position] }), unique('staff_batch_item_tournament_uq').on(t.batchId, t.tournamentId)],
+);
+
+/**
+ * Per-league lease: one submission at a time (ADR-0004). Renewed while the job runs; an expired lease is free.
+ * Between a staff batch's jobs `submission_id` holds minus the batch id, so no job of any kind starts in between (#76).
+ */
 export const submissionLock = sqliteTable('submission_lock', {
   leagueId: text('league_id')
     .primaryKey()
