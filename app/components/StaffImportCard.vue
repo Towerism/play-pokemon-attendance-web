@@ -44,9 +44,9 @@ const progress = computed(() => {
 </script>
 
 <template>
-  <UCard>
+  <UCard as="section" aria-labelledby="staff-list-heading">
     <template #header>
-      <h2 class="font-semibold">Staff list</h2>
+      <h2 id="staff-list-heading" class="font-semibold">Staff list</h2>
       <p class="text-sm text-muted">
         Reads every tournament your Pokémon account organizes, in any league, and adds the staff it finds to the staff list. It only reads
         from play-tools, and running it again is harmless.
