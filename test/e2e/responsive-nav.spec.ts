@@ -208,11 +208,11 @@ test('the reconnect banner does not crowd the phone header', async ({ page, fake
   await connectOverApi(api);
   fake.revokeChain();
   // Any upstream call now finds the saved login refused.
-  await api.request('/api/leagues/upstream');
+  await api.request('/api/leagues/upstream?professor=9999991');
 
   await page.setViewportSize(PHONE);
   await page.goto('/');
-  await expect(page.getByText('Pokémon no longer accepts the saved login.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Pokémon no longer accepts Professor 9999991’s login.', { exact: false })).toBeVisible();
   await expectPhoneHeader(page);
   await openMenu(page);
   await expectDrawerFits(page);
