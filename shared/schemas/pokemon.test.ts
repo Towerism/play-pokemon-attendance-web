@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { ConnectCompleteBody, ProfessorParams, ProfessorQuery } from './pokemon';
+import { ConnectCompleteBody, ProfessorNameBody, ProfessorParams, ProfessorQuery } from './pokemon';
+
+describe('ProfessorNameBody (display only)', () => {
+  it('trims the name and takes up to 60 characters', () => {
+    expect(ProfessorNameBody.parse({ name: '  Brock Harrison  ' })).toEqual({ name: 'Brock Harrison' });
+    expect(ProfessorNameBody.parse({ name: 'a'.repeat(60) })).toEqual({ name: 'a'.repeat(60) });
+  });
+
+  it('clears the name with an empty string, blanks or null', () => {
+    expect(ProfessorNameBody.parse({ name: '' })).toEqual({ name: null });
+    expect(ProfessorNameBody.parse({ name: '   ' })).toEqual({ name: null });
+    expect(ProfessorNameBody.parse({ name: null })).toEqual({ name: null });
+  });
+
+  it.each([
+    ['61 characters', { name: 'a'.repeat(61) }],
+    ['a control character', { name: 'Brock\u0007' }],
+    ['a newline', { name: 'Brock\nHarrison' }],
+    ['a number', { name: 42 }],
+    ['missing', {}],
+  ])('rejects a name that is %s', (_l, body) => {
+    expect(ProfessorNameBody.safeParse(body).success).toBe(false);
+  });
+});
 
 describe('ProfessorParams and ProfessorQuery', () => {
   it('take a 1–12 digit player id, leading zeros kept', () => {

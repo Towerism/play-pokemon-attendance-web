@@ -92,31 +92,39 @@ test('a second professor: added next to the first, then chosen to submit for the
   // Both listed, each with its own actions named for its professor; the first still submits.
   const professors = page.getByRole('list', { name: 'Connected professors' });
   await expect(professors.getByRole('listitem')).toHaveCount(2);
-  await expect(page.getByRole('button', { name: 'Reconnect Professor 0000222' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Disconnect Professor 0000222' })).toBeVisible();
+
+  // Name him: display only, so the app shows it and Pokémon never sees it.
+  await page.getByRole('button', { name: 'Rename Professor 0000222' }).click();
+  await page.getByLabel('Display name for Professor 0000222').fill('Brock Harrison');
+  await page.getByRole('button', { name: 'Save name' }).click();
+  await expect(page.getByRole('button', { name: 'Reconnect Brock Harrison (0000222)' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Disconnect Brock Harrison (0000222)' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Disconnect Professor 9999991' })).toBeVisible();
   await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 9999991' })).toContainText('Submits attendance');
 
   // Choose Brock, then his league.
   await page.getByRole('button', { name: 'Change league' }).click();
   await page.getByRole('combobox', { name: 'Professor who submits attendance' }).click();
-  await page.getByRole('option', { name: 'Professor 0000222' }).click();
+  await page.getByRole('option', { name: 'Brock Harrison (0000222)' }).click();
   await page.getByRole('combobox', { name: 'League' }).click();
   await page.getByRole('option', { name: 'Pewter Gym (L7000)' }).click();
   await page.getByRole('button', { name: 'Save league' }).click();
   await expect(page.getByText('Pewter Gym (L7000)')).toBeVisible();
-  await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 0000222' })).toContainText('Submits attendance');
+  await expect(professors.getByRole('listitem').filter({ hasText: 'Brock Harrison (0000222)' })).toContainText('Submits attendance');
   await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 9999991' })).not.toContainText('Submits attendance');
 
   // The submit dialog says who attendance goes in as, and looks up sessions as Brock, in his league.
   const added = await page.request.post(`/api/sessions/${TUESDAY}/players`, { data: { playerId: '4000001', name: 'Walk In' } });
   expect(added.status()).toBe(201);
+  expect(fake.requests.filter((r) => JSON.stringify(r).includes('Brock Harrison')), 'naming and choosing Brock sent his name nowhere').toEqual([]);
   fake.requests.length = 0;
   await page.goto(`/?date=${TUESDAY}`);
   await page.getByRole('button', { name: 'Submit attendance' }).click();
   await expect(page.getByRole('radio', { name: /6:00/ })).toBeVisible();
-  await expect(page.getByTestId('submit-as')).toHaveText('Submitting as Professor 0000222');
+  await expect(page.getByTestId('submit-as')).toHaveText('Submitting as Brock Harrison (0000222)');
   const lookups = fake.requests.filter((r) => r.path.endsWith('/play_sessions/'));
   expect(lookups.length).toBeGreaterThan(0);
   expect(lookups.every((r) => r.as === '0000222' && r.path.includes('/activity_groups/group-3/')), 'every lookup as Brock, in his league').toBe(true);
+  expect(fake.requests.filter((r) => JSON.stringify(r).includes('Brock Harrison')), 'the display name never reaches Pokémon').toEqual([]);
 });

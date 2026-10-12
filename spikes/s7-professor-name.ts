@@ -15,7 +15,7 @@ import { opPaths } from '../server/modules/pokemon/adapters/play-tools/constants
 import { ActivityGroupsPage } from '../server/modules/pokemon/adapters/play-tools/wire';
 import { heading, run } from './lib/cli';
 import { op } from './lib/op';
-import { profileReport } from './lib/profile';
+import { maskedRequestLine, profileReport } from './lib/profile';
 import { RAW_DIR, writeSecretJson } from './lib/secrets';
 import { claimsOf, getAccessToken } from './lib/tokens';
 
@@ -39,7 +39,9 @@ run(async () => {
   const sub = claimsOf(t.access_token)?.claims.sub;
   if (!sub) throw new Error('access token has no sub');
   await new Promise((r) => setTimeout(r, 1500));
-  const res = await op('GET', opPaths.userActivityGroups(sub), { query: { page: 1, page_size: 25 } });
+  const path = opPaths.userActivityGroups(sub);
+  const res = await op('GET', path, { query: { page: 1, page_size: 25 }, quiet: true });
+  console.log(`  ${maskedRequestLine('GET', `${path}?page=1&page_size=25`, res.status, [sub])}`);
   const parsed = ActivityGroupsPage.safeParse(res.body);
   const personal = parsed.success ? parsed.data.items.find((g) => g.group_type === 'personal') : undefined;
   const ownerId = personal?.owner?.player_id;

@@ -15,14 +15,14 @@ named after its professor and identified uniquely by that professor's player ID.
 league can then stay connected. Attendance goes in under the one the organizer picks, and History shows who
 submitted (#66).
 
-Facts this relies on (spike S5, the S7 spike for the name):
+Facts this relies on (spikes S5 and S7):
 
 - `GET core/users/{sub}/activity_groups/` returns a `group_type: "personal"` group whose `owner.player_id` is the
   caller's own player ID. A league group's `owner` is the store owner, a different person, and is never used.
 - Upstream, a league isn't tied to one account: `criteria` describes the *caller's* permissions, so several
   professors can each see and submit to the same league.
-- The professor's name comes from `https://me.pokemon.com/me` (`organized_play`) or the `id_token` claims. S7 records
-  which. When neither has one, the app shows "Professor <player ID>".
+- Pokémon doesn't expose the professor's name: S7 (2026-10-12) found none in the `id_token` claims or in
+  `https://me.pokemon.com/me` (`organized_play` holds only `player_id`, `player_rankings_opt_in`, `terms`).
 
 ## Options considered
 
@@ -46,7 +46,7 @@ Option 2.
 - `pokemon_connection` is rebuilt:
   - the key is a surrogate `id`;
   - `professor_player_id` is TEXT and UNIQUE;
-  - `professor_name` is stored;
+  - `professor_name` is the organizer's optional display name (never from Pokémon);
   - `ptc_user_id` stays.
 - The upstream binding moves to a new `league_upstream` table: the league, the submitting `connection_id` (ON DELETE CASCADE) and the
   activity group. Account identity and league choice are no longer fused in one row.
@@ -61,8 +61,8 @@ Option 2.
 
 **Identity at connect:**
 
-- After the code exchange, the gateway reads the personal group's `owner.player_id`, plus the name.
-- A player ID that is already connected is a reconnect: the token, status and name are replaced and the binding is kept.
+- After the code exchange, the gateway reads the personal group's `owner.player_id`. No name is asked for (S7).
+- A player ID that is already connected is a reconnect: the token and status are replaced; the display name and the binding are kept.
 - A new player ID adds a connection, up to 10 per install.
 - No player ID means the connect fails and nothing is stored.
 - The identity is read with the fresh access token *before* the refresh token is stored, because the row's key isn't
@@ -88,7 +88,8 @@ record it.
   `league_upstream`.
 - A boot step re-seals the ciphertext under the new AAD before any refresh can run. The SQL migration can't do this,
   because it has no vault key.
-- The first successful refresh fills in the player ID and name, so no reconnect is needed.
+- The first successful refresh fills in the player ID, so no reconnect is needed. Identity is read only while the player ID
+  is unknown, never on an identified connection's refresh.
 - If that refresh gets `invalid_grant`, the row is `needs_reconnect` as today. The next connect claims it for the player ID
   read at connect, and keeps the binding (a healthy unidentified row is only claimed by the same account, `sub`).
 - If the professor it turns out to be is already connected under another row, the two merge: their own row and the league
@@ -97,7 +98,12 @@ record it.
 ## Consequences
 
 - (+) Several professors stay connected. Attendance goes in under an explicit, visible choice, and History says who.
-- (+) Settings can finally say "connected as <name> (<player ID>)" (§8).
+- (+) Settings can say who is connected: "<display name> (<player ID>)", or "Professor <player ID>" (§8).
+
+**Display name (#66, Q6):** the organizer may give each professor an optional name in Settings (`PATCH
+/api/pokemon/connections/:playerId`): trimmed, ≤ 60 characters, no control characters, `''`/null clears. It is display
+only: never sent to Pokémon, never used to identify or match a professor, not unique, kept across reconnects, and
+recorded on each submission as it was when the submission started.
 - (−) Hourly refresh traffic grows with the number of connections: N refreshes an hour, run one at a time. With
   the cap of 10 that's ≤ 240 calls a day, each human-scale.
 - (−) More stolen-token surface: each connection is a refresh token that can act as its professor. The mitigations
@@ -108,5 +114,4 @@ record it.
   3. pin the previous image tag.
 
   Done that way it costs nothing. Without a backup, the fallback is one reconnect on the old version.
-- (−) The name source depends on undocumented upstream payloads, like everything in ADR-0003. A missing name
-  degrades to "Professor <player ID>". It never blocks a connect.
+- (−) Names are only as good as what the organizer types; without one a professor is "Professor <player ID>".

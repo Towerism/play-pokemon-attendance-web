@@ -45,7 +45,7 @@ async function completeConnect() {
     });
     attempt.value = null;
     await refreshPokemonConnection();
-    const who = professorLabel(result.connection);
+    const who = professorShortLabel(result.connection);
     toast.add({ color: 'success', title: result.outcome === 'added' ? `${who} added` : `${who} reconnected` });
     if (!league.value) await openLeaguePicker(result.connection.professorPlayerId);
   } catch (err) {
@@ -119,8 +119,35 @@ async function saveLeague() {
   }
 }
 
+// The organizer's display name for a professor (ADR-0008): display only, never sent to Pokémon.
+const renaming = ref<string | null>(null);
+const nameDraft = ref('');
+
+function startRename(c: ProfessorConnectionJson) {
+  renaming.value = c.professorPlayerId;
+  nameDraft.value = c.professorName ?? '';
+}
+
+async function saveName() {
+  if (!renaming.value) return;
+  busy.value = true;
+  try {
+    const saved = await $fetch<ProfessorConnectionJson>(`/api/pokemon/connections/${renaming.value}`, {
+      method: 'PATCH',
+      body: { name: nameDraft.value },
+    });
+    renaming.value = null;
+    await refreshPokemonConnection();
+    toast.add({ color: 'success', title: saved.professorName ? 'Name saved' : 'Name cleared' });
+  } catch (err) {
+    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not save the name.') });
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function disconnect(c: ProfessorConnectionJson) {
-  const who = professorLabel(c);
+  const who = professorShortLabel(c);
   const warning = c.submitsForLeague ? ' Attendance won’t go in until another professor is chosen for the league.' : '';
   if (!window.confirm(`Disconnect ${who}?${warning}`)) return;
   busy.value = true;
@@ -163,6 +190,19 @@ async function disconnect(c: ProfessorConnectionJson) {
           </div>
           <p v-if="c.status === 'needs_reconnect'" class="text-warning">{{ c.reason ?? 'Pokémon no longer accepts this login.' }}</p>
           <p class="text-muted">Last refreshed {{ formatDate(c.lastRefreshedAt) }}</p>
+          <form v-if="renaming && renaming === c.professorPlayerId" class="flex flex-col sm:flex-row gap-2" @submit.prevent="saveName">
+            <UInput
+              v-model="nameDraft"
+              class="flex-1"
+              maxlength="60"
+              :placeholder="`Professor ${c.professorPlayerId}`"
+              :aria-label="`Display name for ${professorLabel(c)}`"
+              autocomplete="off"
+            />
+            <UButton type="submit" size="sm" :loading="busy">Save name</UButton>
+            <UButton size="sm" variant="ghost" color="neutral" @click="renaming = null">Cancel</UButton>
+          </form>
+          <p v-if="renaming && renaming === c.professorPlayerId" class="text-xs text-muted">Shown in this app only; Pokémon never sees it. Leave empty to show the player ID.</p>
           <div class="flex flex-wrap gap-2">
             <UButton
               size="sm"
@@ -173,6 +213,18 @@ async function disconnect(c: ProfessorConnectionJson) {
               @click="startConnect(professorLabel(c))"
             >
               Reconnect
+            </UButton>
+            <UButton
+              v-if="c.professorPlayerId"
+              size="sm"
+              variant="ghost"
+              color="neutral"
+              icon="i-lucide-pencil"
+              :aria-label="`Rename ${professorLabel(c)}`"
+              :disabled="busy"
+              @click="startRename(c)"
+            >
+              Rename
             </UButton>
             <UButton
               v-if="c.professorPlayerId"

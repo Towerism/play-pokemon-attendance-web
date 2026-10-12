@@ -201,7 +201,7 @@ describe('getStatus (the league view submission and staffing read)', () => {
       lastRefreshedAt: clock,
       league: STORE,
       connectionId: idOf(ASH),
-      professor: { playerId: '0012345', name: 'Ash Ketchum' },
+      professor: { playerId: '0012345', name: null },
     });
   });
 
@@ -234,7 +234,7 @@ describe('connect flow (§4.1, paste-back)', () => {
       connection: {
         id: idOf(ASH),
         professorPlayerId: '0012345',
-        professorName: 'Ash Ketchum',
+        professorName: null,
         status: 'connected',
         reason: null,
         connectedAt: clock,
@@ -242,13 +242,13 @@ describe('connect flow (§4.1, paste-back)', () => {
         submitsForLeague: true,
       },
     });
-    expect(rowOf('0012345')).toMatchObject({ ptc_user_id: ASH.sub, professor_name: 'Ash Ketchum' });
+    expect(rowOf('0012345')).toMatchObject({ ptc_user_id: ASH.sub, professor_name: null });
     expect(rowOf('0012345')!.refresh_token_ciphertext.toString('latin1')).not.toContain('ory_rt_1');
     expect(storedRefreshToken('0012345')).toBe('ory_rt_1');
   });
 
-  it('saves a professor upstream gives no name for, with the name left empty', async () => {
-    professors.get(ASH.sub)!.name = null;
+  it("never takes a name from Pokémon, even when the profile carries one (Q5: names come from the organizer)", async () => {
+    expect(professors.get(ASH.sub)!.name).toBe('Ash Ketchum');
     const { connection } = await connect(ASH);
     expect(connection).toMatchObject({ professorPlayerId: '0012345', professorName: null });
   });
@@ -386,19 +386,24 @@ describe('several professors', () => {
     expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_2');
   });
 
-  it('updates the stored name when it changed upstream', async () => {
+  it("keeps the organizer's display name across a reconnect", async () => {
     await connect(ASH);
-    professors.get(ASH.sub)!.name = 'Ash K.';
+    service.setProfessorName(L, ASH.playerId, 'Ash K.');
     await connect(ASH);
     expect(rowOf(ASH.playerId)!.professor_name).toBe('Ash K.');
   });
 
-  it('lists the connections sorted by name, marking the one that submits for the league', async () => {
+  it('lists the connections sorted by display name, unnamed ones by player id, marking the one that submits for the league', async () => {
     await connect(BROCK);
     await connect(ASH);
-    expect(service.listConnections(L).map((c) => [c.professorName, c.submitsForLeague])).toEqual([
+    professors.set('sub-misty', { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [] });
+    await connect(professors.get('sub-misty')!);
+    service.setProfessorName(L, BROCK.playerId, 'Brock Harrison');
+    service.setProfessorName(L, ASH.playerId, 'Ash Ketchum');
+    expect(service.listConnections(L).map((c) => [c.professorName ?? c.professorPlayerId, c.submitsForLeague])).toEqual([
       ['Ash Ketchum', false],
       ['Brock Harrison', true],
+      ['0000444', false],
     ]);
   });
 
@@ -558,13 +563,15 @@ describe('getAccessToken (TokenProvider contract, per connection)', () => {
     expect(oauth.refreshCalls).toEqual(['ory_rt_1']);
   });
 
-  it('fills in a name upstream lacked at connect on a later refresh', async () => {
-    professors.get(ASH.sub)!.name = null;
+  it("never re-reads an identified professor's identity on a refresh, even without a display name (one call per connect)", async () => {
     await connect(ASH);
-    professors.get(ASH.sub)!.name = 'Ash Ketchum';
+    expect(profileCalls).toEqual([ASH.playerId]);
     advance(HOUR);
     await service.getAccessToken(idOf(ASH));
-    expect(rowOf(ASH.playerId)!.professor_name).toBe('Ash Ketchum');
+    advance(HOUR);
+    await service.keepAliveAll();
+    expect(oauth.refreshCalls).toHaveLength(2);
+    expect(profileCalls).toEqual([ASH.playerId]);
   });
 });
 
@@ -648,7 +655,7 @@ describe('league binding', () => {
 
     const view = await service.selectLeague(L, BROCK.playerId, 'group-2');
 
-    expect(view).toMatchObject({ league: OTHER_STORE, connectionId: idOf(BROCK), professor: { playerId: '222', name: 'Brock Harrison' } });
+    expect(view).toMatchObject({ league: OTHER_STORE, connectionId: idOf(BROCK), professor: { playerId: '222', name: null } });
     expect(binding()).toMatchObject({ connection_id: idOf(BROCK), activity_group_id: 'group-2' });
   });
 
@@ -731,7 +738,7 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
     await service.identifyCarriedOver();
 
     expect(oauth.refreshCalls).toEqual(['ory_rt_v1']);
-    expect(rows()[0]).toMatchObject({ id, professor_player_id: ASH.playerId, professor_name: 'Ash Ketchum', status: 'connected' });
+    expect(rows()[0]).toMatchObject({ id, professor_player_id: ASH.playerId, professor_name: null, status: 'connected' });
     expect(service.getStatus(L)).toMatchObject({ league: STORE, connectionId: id, professor: { playerId: ASH.playerId } });
   });
 
@@ -790,11 +797,44 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
 });
 
 describe('edge cases', () => {
-  it("keeps the stored name when a later connect's profile has none", async () => {
+  it('sets, changes and clears a display name, which shows on the league view and nowhere upstream', async () => {
     await connect(ASH);
-    professors.get(ASH.sub)!.name = null;
+    const callsBefore = oauth.refreshCalls.length + profileCalls.length;
+
+    expect(service.setProfessorName(L, ASH.playerId, 'Ash Ketchum')).toMatchObject({ professorPlayerId: ASH.playerId, professorName: 'Ash Ketchum' });
+    expect(service.getStatus(L).professor).toEqual({ playerId: ASH.playerId, name: 'Ash Ketchum' });
+    expect(service.setProfessorName(L, ASH.playerId, 'Ash K.').professorName).toBe('Ash K.');
+    expect(service.setProfessorName(L, ASH.playerId, null).professorName).toBeNull();
+
+    expect(rowOf(ASH.playerId)!.professor_name).toBeNull();
+    expect(oauth.refreshCalls.length + profileCalls.length).toBe(callsBefore);
+  });
+
+  it('lets two professors share a display name (it identifies nobody)', async () => {
     await connect(ASH);
-    expect(rowOf(ASH.playerId)!.professor_name).toBe('Ash Ketchum');
+    await connect(BROCK);
+    service.setProfessorName(L, ASH.playerId, 'Prof');
+    service.setProfessorName(L, BROCK.playerId, 'Prof');
+    expect(rows().map((r) => r.professor_name)).toEqual(['Prof', 'Prof']);
+  });
+
+  it('refuses to name a professor nobody connected', () => {
+    expect(() => service.setProfessorName(L, '999', 'Nobody')).toThrow(ConnectionNotFoundError);
+  });
+
+  it("keeps the professor's own display name when a carried-over twin merges into them", async () => {
+    database.sqlite
+      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .run(ASH.sub, vault.encrypt('ory_rt_v1', L), 'connected', 1, 1);
+    (oauth as unknown as { owners: Map<string, string> }).owners.set('ory_rt_v1', ASH.sub);
+    service.resealCarriedOver(L);
+    professors.set('sub-ash-again', { ...ASH, sub: 'sub-ash-again' });
+    await connect(professors.get('sub-ash-again')!);
+    service.setProfessorName(L, ASH.playerId, 'Ash Ketchum');
+
+    await service.identifyCarriedOver();
+
+    expect(rows()).toEqual([expect.objectContaining({ professor_player_id: ASH.playerId, professor_name: 'Ash Ketchum' })]);
   });
 
   it('still forgets a professor whose token the vault can no longer open, without revoking', async () => {

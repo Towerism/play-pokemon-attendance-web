@@ -24,10 +24,20 @@ export interface ConnectionsResponse {
 
 type Maybe<T> = T | null | undefined;
 
-/** "Ash Ketchum (0012345)"; "Professor 0012345" without a name; "Identifying…" for a carried-over connection not yet identified. */
+/**
+ * "Ash Ketchum (0012345)" with the organizer's display name; "Professor 0012345" without one; "Identifying…" for a
+ * carried-over connection not yet identified. Used where telling professors apart matters (Settings, the league
+ * picker, the submit dialog, History).
+ */
 export function professorLabel(c: Pick<ProfessorConnectionJson, 'professorPlayerId' | 'professorName'>): string {
   if (!c.professorPlayerId) return 'Identifying…';
   return c.professorName ? `${c.professorName} (${c.professorPlayerId})` : `Professor ${c.professorPlayerId}`;
+}
+
+/** The display name alone, else "Professor <player id>": for the banner and toasts. */
+export function professorShortLabel(c: Pick<ProfessorConnectionJson, 'professorPlayerId' | 'professorName'>): string {
+  if (!c.professorPlayerId) return 'Identifying…';
+  return c.professorName ?? `Professor ${c.professorPlayerId}`;
 }
 
 /** The connection that makes the league's upstream calls, if one is chosen. */
@@ -50,7 +60,7 @@ export function leagueConnection(r: Maybe<ConnectionsResponse>): {
 export function reconnectBanner(r: Maybe<ConnectionsResponse>): string | null {
   const submitting = submittingProfessor(r);
   if (submitting?.status !== 'needs_reconnect') return null;
-  return `Pokémon no longer accepts ${professorLabel(submitting)}’s login. Reconnect before submitting attendance.`;
+  return `Pokémon no longer accepts ${professorShortLabel(submitting)}’s login. Reconnect before submitting attendance.`;
 }
 
 /** "Submitting as Brock Harrison (0000222)", for the submit dialog. */

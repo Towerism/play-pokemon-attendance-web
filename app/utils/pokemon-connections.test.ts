@@ -4,6 +4,7 @@ import {
   type ProfessorConnectionJson,
   leagueConnection,
   professorLabel,
+  professorShortLabel,
   reconnectBanner,
   startedByText,
   submitAsText,
@@ -37,6 +38,14 @@ describe('professorLabel', () => {
   });
 });
 
+describe('professorShortLabel (banner, toasts)', () => {
+  it('is the display name alone, or "Professor <player id>" without one', () => {
+    expect(professorShortLabel(ash)).toBe('Ash Ketchum');
+    expect(professorShortLabel(conn({ professorName: null }))).toBe('Professor 0012345');
+    expect(professorShortLabel(conn({ professorName: null, professorPlayerId: null }))).toBe('Identifying…');
+  });
+});
+
 describe('submittingProfessor', () => {
   it('is the connection that submits for the league, or none', () => {
     expect(submittingProfessor(both)).toBe(brock);
@@ -61,7 +70,7 @@ describe('leagueConnection (what submit and staff checks read)', () => {
 describe('reconnectBanner', () => {
   it('names the submitting professor when they need a reconnect', () => {
     expect(reconnectBanner({ connections: [ash, { ...brock, status: 'needs_reconnect' }], league: BOUND })).toBe(
-      'Pokémon no longer accepts Brock Harrison (0000222)’s login. Reconnect before submitting attendance.',
+      'Pokémon no longer accepts Brock Harrison’s login. Reconnect before submitting attendance.',
     );
   });
 

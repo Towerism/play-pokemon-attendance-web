@@ -91,6 +91,8 @@ export interface PokemonConnectionService extends TokenProvider {
   startConnect(userId: number): { authorizeUrl: string; expiresAt: Date };
   /** Adds the professor the pasted login belongs to, or reconnects them. @throws ConnectError, PokemonUpstreamError */
   completeConnect(leagueId: string, userId: number, pastedUrl: string): Promise<{ connection: ProfessorConnection; outcome: 'added' | 'reconnected' }>;
+  /** The organizer's display name for a professor (ADR-0008): display only, never from or to Pokémon; null clears it. @throws ConnectionNotFoundError */
+  setProfessorName(leagueId: string, professorPlayerId: string, name: string | null): ProfessorConnection;
   /** @throws ConnectionNotFoundError, PokemonUpstreamError */
   listUpstreamLeagues(leagueId: string, professorPlayerId: string): Promise<{ leagues: League[]; selectedId: string | null }>;
   /** Makes that professor's connection submit for the league, to one of their leagues. @throws ConnectionNotFoundError, LeagueNotFoundError, PokemonUpstreamError */
@@ -279,11 +281,11 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       .run();
     const token = toAccessToken(grant);
     accessTokens.set(r.id, token);
-    if (r.professorPlayerId === null || r.professorName === null) await fillIdentity(r.id, token);
+    if (r.professorPlayerId === null) await fillIdentity(r.id, token);
     return token;
   }
 
-  /** After a refresh: learn a carried-over connection's professor, or a name upstream lacked before. Failures wait for the next refresh. */
+  /** After a refresh: learn which professor a carried-over connection belongs to. Failures wait for the next refresh. */
   async function fillIdentity(id: number, token: AccessToken): Promise<void> {
     let profile: ProfessorProfile;
     try {
@@ -301,10 +303,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         return;
       }
     }
-    db.update(pokemonConnection)
-      .set({ professorPlayerId: profile.playerId, professorName: profile.name ?? r.professorName })
-      .where(eq(pokemonConnection.id, id))
-      .run();
+    db.update(pokemonConnection).set({ professorPlayerId: profile.playerId }).where(eq(pokemonConnection.id, id)).run();
   }
 
   /** A carried-over connection turned out to be a professor who is already connected: keep theirs, and the league binding. */
@@ -346,7 +345,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       const target = own ?? carried;
       if (target) {
         tx.update(pokemonConnection)
-          .set({ ...fields, professorPlayerId: profile.playerId, professorName: profile.name ?? target.professorName, refreshTokenCiphertext: seal(target.id) })
+          .set({ ...fields, professorPlayerId: profile.playerId, refreshTokenCiphertext: seal(target.id) })
           .where(eq(pokemonConnection.id, target.id))
           .run();
         return { id: target.id, outcome: 'reconnected' as const };
@@ -357,7 +356,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       }
       const { id } = tx
         .insert(pokemonConnection)
-        .values({ ...fields, professorPlayerId: profile.playerId, professorName: profile.name, refreshTokenCiphertext: Buffer.alloc(0) })
+        .values({ ...fields, professorPlayerId: profile.playerId, refreshTokenCiphertext: Buffer.alloc(0) })
         .returning({ id: pokemonConnection.id })
         .get();
       tx.update(pokemonConnection).set({ refreshTokenCiphertext: seal(id) }).where(eq(pokemonConnection.id, id)).run();
@@ -409,9 +408,15 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
 
     listConnections(leagueId) {
       const b = bindingOf(leagueId);
-      const label = (r: Row) => r.professorName ?? `Professor ${r.professorPlayerId ?? ''}`;
+      // Named professors first, by name; then the rest by player id.
+      const named = (r: Row) => (r.professorName === null ? 1 : 0);
       return all()
-        .sort((x, y) => label(x).localeCompare(label(y)) || (x.professorPlayerId ?? '').localeCompare(y.professorPlayerId ?? ''))
+        .sort(
+          (x, y) =>
+            named(x) - named(y) ||
+            (x.professorName ?? '').localeCompare(y.professorName ?? '') ||
+            (x.professorPlayerId ?? '').localeCompare(y.professorPlayerId ?? ''),
+        )
         .map((r) => professorView(r, b));
     },
 
@@ -483,6 +488,12 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
 
       await autoSelectLeague(leagueId, id);
       return { connection: professorView(load(id)!, bindingOf(leagueId)), outcome };
+    },
+
+    setProfessorName(leagueId, professorPlayerId, name) {
+      const r = requireByPlayer(professorPlayerId);
+      db.update(pokemonConnection).set({ professorName: name }).where(eq(pokemonConnection.id, r.id)).run();
+      return professorView(load(r.id)!, bindingOf(leagueId));
     },
 
     async listUpstreamLeagues(leagueId, professorPlayerId) {

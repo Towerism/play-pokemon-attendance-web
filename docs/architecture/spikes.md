@@ -147,6 +147,16 @@ Plan (changed 2026-10-10 at the organizer's request): refresh **hourly** from th
   - `criteria`: the caller's **permissions** per resource, e.g. `play_sessions.create_attendance`.
 - `https://me.pokemon.com/me` → 200 with `guid`, `consent_age`, `mailing_address`, `meta` and `organized_play`. Not needed.
 
+### S7: the professor's name (2026-10-12, #66)
+
+- `pnpm spike:s7` printed paths and types only (name-like values masked).
+- `id_token` claims: `at_hash, aud, auth_time, exp, iat, iss, jti, rat, sid, sub`. No name.
+- `me.pokemon.com/me`: `consent_age`, `guid`, `mailing_address.country_region_code`, `meta.*` (token metadata) and
+  `organized_play.{player_id (number), player_rankings_opt_in, terms}`. No name.
+- The personal activity group's `owner.player_id` is present (7 digits), as S5 found.
+- **Outcome (ADR-0008):** no upstream name source. Professors are shown as "Professor <player ID>" unless the organizer
+  gives them a display name in Settings.
+
 ### S6: staff assignment (done 2026-10-11)
 
 This decides the staff methods on `PlayToolsGateway` ([ADR-0007](adr/0007-staff-assignment.md), issue #41). Nothing

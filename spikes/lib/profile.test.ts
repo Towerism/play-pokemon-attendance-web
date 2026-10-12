@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { profileReport } from './profile';
+import { maskedRequestLine, profileReport } from './profile';
+
+describe('maskedRequestLine', () => {
+  it('prints the request with the account id masked, so the output stays pasteable', () => {
+    const sub = 'dcadf76c3a58ece3e84301fc988b83e5';
+    expect(maskedRequestLine('GET', `/services/core/users/${sub}/activity_groups/?page=1`, 200, [sub])).toBe(
+      'GET /services/core/users/<sub>/activity_groups/?page=1 → 200',
+    );
+  });
+});
 
 describe('profileReport', () => {
   it('lists every leaf path with its type and never prints a value', () => {

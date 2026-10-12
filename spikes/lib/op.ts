@@ -30,7 +30,8 @@ const KEPT_HEADERS = /^(content-type|retry-after|x-ratelimit-.*|ratelimit.*|x-re
 export async function op(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
-  opts: { query?: Record<string, string | number>; body?: unknown; recordAs?: RecordAs } = {},
+  /** `quiet`: don't print the request line (the caller prints a masked one). */
+  opts: { query?: Record<string, string | number>; body?: unknown; recordAs?: RecordAs; quiet?: boolean } = {},
 ): Promise<OpResponse> {
   const wait = lastCallAt + READ_SPACING_MS - Date.now();
   if (wait > 0) await sleep(wait);
@@ -60,7 +61,7 @@ export async function op(
   const headers = Object.fromEntries([...res.headers].filter(([k]) => KEPT_HEADERS.test(k)));
   const result: OpResponse = { status: res.status, body, headers };
 
-  console.log(`  ${method} ${url.pathname}${url.search} → ${res.status}`);
+  if (!opts.quiet) console.log(`  ${method} ${url.pathname}${url.search} → ${res.status}`);
 
   if (opts.recordAs) {
     const file = join(RAW_DIR, `${opts.recordAs.kind}.${opts.recordAs.label}.json`);

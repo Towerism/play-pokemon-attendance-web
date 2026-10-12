@@ -107,6 +107,7 @@ describe('Pokémon connections API', () => {
     const routes = [
       ['GET', '/api/pokemon/connections'],
       ['DELETE', `/api/pokemon/connections/${FAKE_PLAYER_ID}`],
+      ['PATCH', `/api/pokemon/connections/${FAKE_PLAYER_ID}`],
       ['POST', '/api/pokemon/connect/start'],
       ['POST', '/api/pokemon/connect/complete'],
       ['GET', '/api/leagues/upstream?professor=1'],
@@ -361,6 +362,64 @@ describe('Pokémon connections API', () => {
       expect(res.status).toBe(200);
       expect(res.json()).toEqual({});
       expect((await connections()).league?.professorPlayerId).toBe(FAKE_PLAYER_ID);
+    });
+  });
+
+  describe('PATCH /pokemon/connections/:playerId (display name)', () => {
+    const rename = (id: string, json: unknown) => api(`/pokemon/connections/${id}`, { method: 'PATCH', json });
+
+    beforeEach(async () => {
+      const brock = fake.addAccount({ ...BROCK, leagues: [GAME_DEN] });
+      await connect(browser, brock.code);
+    });
+
+    it('sets a trimmed display name and lists it, without sending it to Pokémon', async () => {
+      fake.requests.length = 0;
+      const res = await rename('0000222', { name: '  Brock Harrison  ' });
+      expect(res.status).toBe(200);
+      expect(ProfessorConnection.parse(res.json())).toMatchObject({ professorPlayerId: '0000222', professorName: 'Brock Harrison' });
+      expect((await connections()).connections[0]).toMatchObject({ professorPlayerId: '0000222', professorName: 'Brock Harrison' });
+      expect(fake.requests).toEqual([]);
+    });
+
+    it('never sends the name to Pokémon later either: not on reconnect, league discovery or keep-alive', async () => {
+      await rename('0000222', { name: 'Brock Harrison' });
+      await connect(browser, fake.accounts[1]!.code);
+      await api('/leagues/upstream?professor=0000222');
+      const sent = fake.requests.map((r) => JSON.stringify(r));
+      expect(sent.filter((r) => r.includes('Brock Harrison'))).toEqual([]);
+      expect((await connections()).connections[0]?.professorName).toBe('Brock Harrison');
+    });
+
+    it.each([
+      ['an empty string', { name: '' }],
+      ['null', { name: null }],
+    ])('clears the name with %s', async (_l, json) => {
+      await rename('0000222', { name: 'Brock Harrison' });
+      const res = await rename('0000222', json);
+      expect(res.status).toBe(200);
+      expect(res.json().professorName).toBeNull();
+    });
+
+    it('takes 60 characters', async () => {
+      expect((await rename('0000222', { name: 'a'.repeat(60) })).status).toBe(200);
+    });
+
+    it.each([
+      ['61 characters', { name: 'a'.repeat(61) }],
+      ['a control character', { name: 'Brock\u0000' }],
+      ['a number', { name: 42 }],
+      ['no name field', {}],
+    ])('is 400 for %s', async (_l, json) => {
+      expect((await rename('0000222', json)).status).toBe(400);
+      expect((await connections()).connections[0]?.professorName).toBeNull();
+    });
+
+    it('is 400 for a player id that is not digits, and 404 connection_not_found for an unknown professor', async () => {
+      expect((await rename('abc', { name: 'X' })).status).toBe(400);
+      const res = await rename('999', { name: 'X' });
+      expect(res.status).toBe(404);
+      expect(res.json().data).toEqual({ code: 'connection_not_found' });
     });
   });
 

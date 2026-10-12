@@ -25,6 +25,12 @@ function walk(path: string, key: string, value: unknown, lines: string[]): void 
   lines.push(`${path}: ${describe(key, value)}`);
 }
 
+/** A request line for pasteable output: each secret (the account `sub`) is replaced by `<sub>`. */
+export function maskedRequestLine(method: string, pathAndQuery: string, status: number, secrets: readonly string[]): string {
+  const masked = secrets.reduce((line, secret) => (secret ? line.split(secret).join('<sub>') : line), pathAndQuery);
+  return `${method} ${masked} → ${status}`;
+}
+
 function describe(key: string, value: unknown): string {
   if (value === null) return 'null';
   if (typeof value !== 'string') return typeof value;

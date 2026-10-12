@@ -12,5 +12,20 @@ export const ProfessorPlayerId = z.string().regex(/^\d{1,12}$/, 'A player id is 
 /** `DELETE /api/pokemon/connections/:playerId`. */
 export const ProfessorParams = z.object({ playerId: ProfessorPlayerId });
 
+/**
+ * `PATCH /api/pokemon/connections/:playerId`: the professor's display name (ADR-0008). Display only, never sent to
+ * Pokémon; trimmed, at most 60 characters, no control characters. An empty name or null clears it.
+ */
+export const ProfessorNameBody = z.object({
+  name: z
+    .string()
+    .trim()
+    .max(60, 'At most 60 characters')
+    .regex(/^[^\p{Cc}]*$/u, 'No control characters')
+    .nullable()
+    .transform((n) => n || null),
+});
+export type ProfessorNameBody = z.infer<typeof ProfessorNameBody>;
+
 /** `GET /api/leagues/upstream?professor=…`: whose leagues to list. */
 export const ProfessorQuery = z.object({ professor: ProfessorPlayerId });
