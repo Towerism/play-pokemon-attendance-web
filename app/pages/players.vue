@@ -132,9 +132,13 @@ async function save(player: Player, patch: { name?: string; notes?: string | nul
 /**
  * Optimistic: flip the switch now, put it back if the server says no
  * (architecture §8). Then refresh, since the player may leave this tab.
+ * `data` is a shallow ref, so the flip swaps in a copy instead of changing the row.
  */
 async function toggleRegular(player: Player, isRegular: boolean) {
-  player.isRegular = isRegular;
+  const flip = (value: boolean) => {
+    if (data.value) data.value = withPlayerRegular(data.value, player.playerId, value);
+  };
+  flip(isRegular);
   try {
     await save(player, { isRegular });
     if (tab.value !== 'all') {
@@ -142,7 +146,7 @@ async function toggleRegular(player: Player, isRegular: boolean) {
       toast.add({ title: isRegular ? `${name} is now a regular` : `${name} is no longer a regular` });
     }
   } catch (err) {
-    player.isRegular = !isRegular;
+    flip(!isRegular);
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not change the regular flag.') });
     return;
   }

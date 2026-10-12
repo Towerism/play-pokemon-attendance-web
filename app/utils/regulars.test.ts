@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { withRegularPresence } from './regulars';
+import { withPlayerRegular, withRegularPresence } from './regulars';
 
 const regular = (playerId: string, present = false, inTournament = false) => ({ playerId, displayName: `Player ${playerId}`, present, inTournament });
 
@@ -44,5 +44,34 @@ describe('withRegularPresence', () => {
     const before = session();
 
     expect(withRegularPresence(before, '6000099', { present: true })).toBe(before);
+  });
+});
+
+describe('withPlayerRegular', () => {
+  const player = (playerId: string, isRegular = false) => ({ playerId, displayName: `Player ${playerId}`, isRegular, notes: null });
+  const list = () => ({ players: [player('6000030'), player('6000031', true)], thresholds: { promoteMinSightings: 3, staleAfterSessions: 4 } });
+
+  it('returns a new list with only that player replaced, leaving the input as it was', () => {
+    const before = list();
+    const snapshot = structuredClone(before);
+
+    const after = withPlayerRegular(before, '6000030', true);
+
+    expect(after).not.toBe(before);
+    expect(after.players).not.toBe(before.players);
+    expect(after.players[0]).toEqual({ ...before.players[0], isRegular: true });
+    expect(after.players[1]).toBe(before.players[1]);
+    expect(after.thresholds).toBe(before.thresholds);
+    expect(before).toEqual(snapshot);
+  });
+
+  it('can turn a regular off', () => {
+    expect(withPlayerRegular(list(), '6000031', false).players[1]!.isRegular).toBe(false);
+  });
+
+  it('returns the same list when the player is not in it', () => {
+    const before = list();
+
+    expect(withPlayerRegular(before, '6000099', true)).toBe(before);
   });
 });
