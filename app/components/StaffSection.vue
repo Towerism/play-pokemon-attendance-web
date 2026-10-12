@@ -29,6 +29,13 @@ watch(errorCode, async (code) => {
   // The banner and Settings share the connection status; let them see what this read just learned.
   if (code === 'needs_reconnect' || code === 'not_connected') await refreshPokemonConnection();
 });
+// A professor whose login needs a reconnect: let the banner and Settings see it too (#75).
+watch(
+  () => staff.value?.unread.some((u) => u.code === 'needs_reconnect'),
+  async (any) => {
+    if (any) await refreshPokemonConnection();
+  },
+);
 watch(rolesError, (err) => {
   if (err) toast.add({ color: 'error', title: 'Could not load the staff roles. Roles show as play-tools codes.' });
 });
@@ -60,7 +67,24 @@ watch(rolesError, (err) => {
     </div>
 
     <template v-else>
-      <p v-if="!staff.tournaments.length" class="text-sm text-muted">No tournament in this league on {{ date }} in play-tools.</p>
+      <UAlert
+        v-for="u in staff.unread"
+        :key="u.professor.playerId ?? 'unidentified'"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        :title="unreadWarning(u).text"
+      >
+        <template v-if="unreadWarning(u).settings" #description>
+          <NuxtLink to="/settings" class="underline">Open Settings</NuxtLink>
+        </template>
+        <template v-if="unreadWarning(u).retry" #actions>
+          <UButton size="sm" variant="outline" color="neutral" icon="i-lucide-refresh-cw" :loading="status === 'pending'" @click="refresh()">
+            Try again
+          </UButton>
+        </template>
+      </UAlert>
+      <p v-if="!staff.tournaments.length && !staff.unread.length" class="text-sm text-muted">No tournament in this league on {{ date }} in play-tools.</p>
       <StaffCard v-for="tournament in staff.tournaments" :key="tournament.tournamentId" :date="date" :tournament="tournament" :roles="roles" @changed="refresh()" />
       <p class="text-xs text-muted">Times are in {{ staff.timeZone }}.</p>
     </template>

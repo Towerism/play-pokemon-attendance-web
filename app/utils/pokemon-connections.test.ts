@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   type ConnectionsResponse,
   type ProfessorConnectionJson,
+  excludedText,
   leagueConnection,
   professorLabel,
   professorShortLabel,
@@ -96,5 +97,22 @@ describe('startedByText (History)', () => {
     );
     expect(startedByText({ startedBy: 'organizer', professor: { playerId: '0000222', name: null } })).toBe('organizer, as Professor 0000222');
     expect(startedByText({ startedBy: 'organizer', professor: null })).toBe('organizer');
+  });
+
+  it('says a staff import read as every connected professor (#75)', () => {
+    expect(startedByText({ startedBy: 'organizer', professor: null, kind: 'staff_import' })).toBe('organizer, as every connected professor');
+    expect(startedByText({ startedBy: 'organizer', professor: { playerId: '0012345', name: null }, kind: 'staff_import' })).toBe(
+      'organizer, as Professor 0012345',
+    );
+  });
+});
+
+describe('excludedText (league picker, #75)', () => {
+  it('names who the shared leagues leave out until they reconnect', () => {
+    expect(excludedText([])).toBeNull();
+    expect(excludedText([{ playerId: '0000222', name: 'Brock Harrison' }])).toBe("Brock Harrison isn't included until reconnected.");
+    expect(excludedText([{ playerId: '0000222', name: null }, { playerId: '0000333', name: 'Cilan' }])).toBe(
+      "Professor 0000222 and Cilan aren't included until reconnected.",
+    );
   });
 });

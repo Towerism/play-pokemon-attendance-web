@@ -4,7 +4,7 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
-import type { ConnectionView } from '../pokemon/connection';
+import type { ActingConnection, ConnectionView } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
   DateRange,
@@ -141,6 +141,10 @@ let sessions: SessionsService;
 let staffing: StaffingService;
 let upstream: FakeStaffTools;
 let connection: ConnectionView;
+/** The professors connected: Olive organizes the tournament; Ash submits attendance. */
+let professors: ActingConnection[];
+/** The connection each of the staff job's gateways was built for. */
+let jobGateways: (number | null)[];
 let clock: Date;
 let sleeps: number[];
 let onSleep: ((signal: AbortSignal) => Promise<void> | void) | undefined;
@@ -164,9 +168,12 @@ function build(over: { staffDelayMs?: number } = {}): SubmissionService {
     sessions,
     roster,
     sightings,
-    connections: { getStatus: () => connection },
+    connections: { getStatus: () => connection, listActingConnections: () => professors },
     gateway: () => noAttendance,
-    staffGateway: () => upstream,
+    staffGateway: (connectionId) => {
+      jobGateways.push(connectionId);
+      return upstream;
+    },
     staffing,
     resolver: noResolver,
     now: () => clock,
@@ -199,11 +206,16 @@ beforeEach(() => {
     connectionId: 1,
     professor: { playerId: '0012345', name: 'Ash Ketchum' },
   };
+  professors = [
+    { id: 7, professorPlayerId: '0012345', professorName: 'Ash Ketchum', status: 'connected' },
+    { id: 1, professorPlayerId: ORGANIZER, professorName: 'Olive Organizer', status: 'connected' },
+  ];
+  jobGateways = [];
   staffing = createStaffingService({
     db: database.db,
     roster,
-    connections: { getStatus: () => connection },
-    gateway: () => upstream,
+    connections: { getStatus: () => connection, listActingConnections: () => professors },
+    staffGateway: () => upstream,
     timeZone: TZ,
     now: () => clock,
   });
@@ -679,7 +691,9 @@ describe('when play-tools is down, throttling or locked', () => {
 
   it('fails the whole job as unknown_tournament when the tournament is gone by the time it plans', async () => {
     await want('00123');
-    upstream.onDetails = () => upstream.gone.add(T);
+    // prepareApply reads the details first to find the organizer; the job's own read finds it gone.
+    let reads = 0;
+    upstream.onDetails = () => ++reads === 2 && upstream.gone.add(T);
 
     const view = await apply();
 
@@ -776,7 +790,10 @@ describe('starting a staff job', () => {
   it('refuses while another job holds the league’s lease', async () => {
     await want('00123');
     let release!: () => void;
+    // Hold the job's own read of the tournament (prepareApply's comes first).
+    let reads = 0;
     upstream.onDetails = () => {
+      if (++reads < 2) return undefined;
       upstream.onDetails = undefined;
       return new Promise<void>((r) => (release = r));
     };
@@ -876,10 +893,56 @@ describe('history', () => {
   });
 });
 
-describe('the submitting professor on a staff job (ADR-0008)', () => {
-  it("records the league's submitting professor", async () => {
+describe('the professor a staff job runs as (#75)', () => {
+  it("records and runs as the tournament's organizer, not the league's submitting professor", async () => {
     await want('500');
-    connection = { ...connection, connectionId: 2, professor: { playerId: '0000222', name: 'Brock Harrison' } };
-    expect((await apply()).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
+    const view = await apply();
+    expect(view.professor).toEqual({ playerId: ORGANIZER, name: 'Olive Organizer' });
+    expect(view.status).toBe('succeeded');
+    expect(jobGateways.length).toBeGreaterThan(0);
+    expect(new Set(jobGateways)).toEqual(new Set([1]));
+  });
+
+  it('stops failed with needs_reconnect, sending nothing through anyone else, when the organizer needs a reconnect as it runs', async () => {
+    await want('500');
+    upstream.resetLog();
+    // The job's own read of the tournament finds the organizer's login refused (prepareApply read it first).
+    let details = 0;
+    upstream.onDetails = () => {
+      if (++details === 2) {
+        professors = professors.map((p) => (p.id === 1 ? { ...p, status: 'needs_reconnect' } : p));
+        throw new PokemonUpstreamError('needs_reconnect', 'Reconnect Olive in Settings.');
+      }
+    };
+
+    const view = await apply();
+    expect(view).toMatchObject({ status: 'failed', error: expect.stringContaining('Reconnect') });
+    expect(upstream.writes).toEqual([]);
+    expect(new Set(jobGateways)).toEqual(new Set([1]));
+  });
+
+  it('refuses a retry with organizer_not_connected once the organizer has disconnected, starting nothing', async () => {
+    await want('500');
+    upstream.onAssign = () => ({ status: 'refused', code: 'missing_certification' });
+    const first = await apply();
+    professors = professors.filter((p) => p.id !== 1);
+
+    await expect(service.retry(L, first.id, 'organizer')).rejects.toMatchObject({ code: 'organizer_not_connected' });
+    expect(service.list(L).filter((s) => s.kind === 'staff')).toHaveLength(1);
+  });
+
+  it('runs a retry as whoever organizes the tournament now', async () => {
+    await want('500');
+    upstream.onAssign = () => ({ status: 'refused', code: 'missing_certification' });
+    const first = await apply();
+    upstream.onAssign = undefined;
+    professors = [...professors, { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison', status: 'connected' }];
+    upstream.tournaments = [tournament(T, { name: 'League Challenge', displayId: '26-10-1', organizer: '0000222' })];
+    jobGateways = [];
+
+    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    await service.idle();
+    expect(service.get(L, submissionId).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
+    expect(new Set(jobGateways)).toEqual(new Set([2]));
   });
 });

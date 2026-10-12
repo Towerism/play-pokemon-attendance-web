@@ -56,7 +56,8 @@ export interface FakePokemon {
   staffPostDelayMs: number;
   /**
    * Path → status: the next request for that path answers it (e.g. 503), then the entry is cleared. With
-   * `{ status, after }`, the first `after` requests go through and the one after them fails.
+   * `{ status, after }`, the first `after` requests go through and the one after them fails. A key
+   * `path@playerId` fails only that professor's requests for the path.
    */
   failOnce: Map<string, number | { status: number; after: number }>;
   /** Refuse the account's next refresh with `invalid_grant` (default account when no player id is given). */
@@ -281,6 +282,14 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     if (url.pathname.startsWith('/services/')) {
       if (!caller) return json(res, 401, { code: 'op.generic.unauthorized', message: 'Request is not authenticated for the request.' });
       entry.as = caller.playerId;
+      const key = `${url.pathname}@${caller.playerId}`;
+      const own = fake.failOnce.get(key);
+      if (typeof own === 'object' && own.after > 0) {
+        fake.failOnce.set(key, { ...own, after: own.after - 1 });
+      } else if (own) {
+        fake.failOnce.delete(key);
+        return json(res, typeof own === 'object' ? own.status : own, { code: 'op.generic.unavailable' });
+      }
       // Play sessions belong to a league; only its staff may touch them.
       const group = /^\/services\/core\/activity_groups\/([^/]+)\//.exec(url.pathname)?.[1];
       if (group && !caller.leagues.some((l) => l.guid === group)) {
@@ -346,11 +355,11 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       return;
     }
 
-    // S6: the organizer's tournaments, any activity group, newest first by the wall-clock start.
+    // S6: the caller's own tournaments (`role=organizer`), any activity group, newest first by the wall-clock start.
     // Date filters are ignored, as upstream does; `page`/`page_size` page with absolute `next` links.
     if (req.method === 'GET' && url.pathname === '/services/core/activities') {
       const all = fake.tournaments
-        .filter(() => url.searchParams.get('type') === 'tournament')
+        .filter((t) => url.searchParams.get('type') === 'tournament' && t.organizer.player_id === caller?.playerId)
         .map(({ organizer: _organizer, ...row }) => row)
         .sort((a, b) => b.start_date.localeCompare(a.start_date));
       return json(res, 200, paged(all, url, req));
@@ -368,11 +377,16 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     const tournamentId = tRecordsMatch?.[1] ?? tRecordMatch?.[1];
     if (tournamentId) {
       const records = fake.tournamentRecords.get(tournamentId) ?? [];
+      // S6: staff management is organizer-only; anyone else gets 403.
+      const organizer = fake.tournaments.find((x) => x.guid === tournamentId)?.organizer.player_id;
+      if (organizer && organizer !== caller?.playerId) {
+        return json(res, 403, { code: 'op.generic.permission_denied', message: 'You do not have permission to perform this action.' });
+      }
       if (req.method === 'GET' && tRecordsMatch) {
         if (fake.tournamentReadDelayMs) await new Promise((r) => setTimeout(r, fake.tournamentReadDelayMs));
         // Spike #67: play-tools lists a tournament from a league the account has left, but refuses its records.
         const group = fake.tournaments.find((x) => x.guid === tournamentId)?.activity_group?.guid;
-        if (group && !fake.leagues.some((l) => l.guid === group)) {
+        if (group && !caller?.leagues.some((l) => l.guid === group)) {
           return json(res, 403, {
             code: 'op.activity_group.criteria_failure',
             message: 'The requested action could not be performed due to insufficient access.',

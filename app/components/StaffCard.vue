@@ -8,7 +8,8 @@ const emit = defineEmits<{ changed: [] }>();
 const toast = useToast();
 
 const headingId = useId();
-const editable = computed(() => props.tournament.editable && !props.tournament.missing);
+const editable = computed(() => props.tournament.editable && !props.tournament.missing && !props.tournament.unavailable);
+const note = computed(() => readOnlyNote(props.tournament));
 
 const STATE: Record<StaffAssignmentView['state'], { label: string; color: 'neutral' | 'success' | 'error' | 'warning' }> = {
   pending: { label: 'Not sent yet', color: 'neutral' },
@@ -60,9 +61,14 @@ async function remove(a: StaffAssignmentView) {
 
 <template>
   <section :aria-labelledby="headingId" class="space-y-3 rounded-md border border-default p-3">
-    <h3 :id="headingId" class="font-medium break-words">{{ tournament.label }}</h3>
-    <p v-if="tournament.missing" class="text-sm text-warning">No longer listed in play-tools, for example cancelled. Shown so nothing here is lost.</p>
-    <p v-else-if="!tournament.editable" class="text-sm text-muted">Read-only: more than 90 days past its start.</p>
+    <div>
+      <h3 :id="headingId" class="font-medium break-words">{{ tournament.label }}</h3>
+      <p v-if="organizerText(tournament.organizer)" class="text-sm text-muted break-words">{{ organizerText(tournament.organizer) }}</p>
+    </div>
+    <p v-if="note" class="text-sm" :class="note.warning ? 'text-warning' : 'text-muted'">
+      {{ note.text }}
+      <NuxtLink v-if="note.settings" to="/settings" class="underline">Open Settings</NuxtLink>
+    </p>
 
     <ul v-if="rows.length" aria-label="Wanted staff" class="divide-y divide-default">
       <li v-for="a in rows" :key="a.id" class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
@@ -101,7 +107,14 @@ async function remove(a: StaffAssignmentView) {
     <template v-if="editable">
       <StaffSearch :date="date" :tournament="tournament" :roles="roles" @changed="emit('changed')" />
       <AddStaffForm :date="date" :tournament-id="tournament.tournamentId" :roles="roles" @changed="emit('changed')" />
-      <StaffApplyDialog v-if="rows.length" :date="date" :tournament-id="tournament.tournamentId" :label="tournament.label" @finished="emit('changed')" />
+      <StaffApplyDialog
+        v-if="rows.length"
+        :date="date"
+        :tournament-id="tournament.tournamentId"
+        :label="tournament.label"
+        :organizer="tournament.organizer"
+        @finished="emit('changed')"
+      />
     </template>
   </section>
 </template>

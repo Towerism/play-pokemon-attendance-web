@@ -4,7 +4,7 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { submission, submissionEvent, submissionItem, submissionLock } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
-import type { PokemonConnectionService } from '../pokemon/connection';
+import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { type PokemonErrorCode, PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { BulkResult, PlayToolsGateway, Tournament, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
@@ -14,7 +14,7 @@ import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
 import { dateIn } from './local-time';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
-import { type PlaySessionResolver, connectedLeague, submissionTarget } from './resolve';
+import { type PlaySessionResolver, submissionTarget } from './resolve';
 import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
 
 export type SubmissionStatus = (typeof submission.$inferSelect)['status'];
@@ -103,7 +103,9 @@ export type SubmissionEventType =
   /** A staff import read one tournament's participants; `done` of `total` count tournaments. */
   | 'tournament_read'
   /** A staff import gave up on one tournament and went on with the rest. */
-  | 'tournament_failed';
+  | 'tournament_failed'
+  /** A staff import could not read one professor's tournaments and went on with the other professors (#75). */
+  | 'professor_failed';
 
 /** Progress, persisted before it is pushed. `done` of `total` players to add are dealt with. */
 export interface SubmissionEvent {
@@ -190,11 +192,11 @@ export interface SubmissionDeps {
   sessions: Pick<SessionsService, 'getSession' | 'recordSubmission' | 'removePlayer' | 'resetAfterClear'>;
   roster: Pick<RosterService, 'ensurePlayers' | 'getPlayers'>;
   sightings: Pick<SightingsService, 'record' | 'retract'>;
-  connections: Pick<PokemonConnectionService, 'getStatus'>;
+  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
   gateway: (leagueId: string) => Pick<PlayToolsGateway, 'listAttendance' | 'addAttendanceBulk' | 'removeAttendance'>;
-  /** The tournament calls a staff job makes (ADR-0007). */
+  /** The tournament calls staff jobs and imports make (ADR-0007), as one professor's connection (#75). */
   staffGateway: (
-    leagueId: string,
+    connectionId: number | null,
   ) => Pick<
     PlayToolsGateway,
     | 'listLeagues'
@@ -430,10 +432,21 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     };
   }
 
-  /** The league's submitting professor, stamped on each new attempt (ADR-0008). */
+  /** The league's submitting professor, stamped on each new attendance attempt (ADR-0008). */
   function professorOf(leagueId: string) {
     const p = deps.connections.getStatus(leagueId).professor;
     return { professorPlayerId: p?.playerId ?? null, professorName: p?.name ?? null };
+  }
+
+  /**
+   * The connection a staff job runs as: the professor stamped on it, its tournament's organizer (#75).
+   * Never another professor's: a job whose professor is gone or can't act stops.
+   */
+  function stampedConnection(row: Row): number {
+    const p = deps.connections.listActingConnections().find((c) => c.professorPlayerId !== null && c.professorPlayerId === row.professorPlayerId);
+    if (!p) throw new PokemonUpstreamError('not_connected', `Professor ${row.professorPlayerId}'s Pokémon account is no longer connected.`);
+    if (p.status === 'needs_reconnect') throw new PokemonUpstreamError('needs_reconnect', `Reconnect ${p.professorName ?? `Professor ${p.professorPlayerId}`} in Settings.`);
+    return p.id;
   }
 
   function summary(row: Row): SubmissionSummary {
@@ -809,7 +822,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   async function runStaff(row: Row): Promise<void> {
     const { leagueId } = row;
     const tournamentId = row.playSessionId;
-    const gateway = deps.staffGateway(leagueId);
+    const gateway = deps.staffGateway(stampedConnection(row));
     const roles = gateway.listStaffRoles();
     const roleLabel = (code: string) => roles.find((r) => r.code === code)?.label ?? code;
     setStatus(row, 'running');
@@ -1227,17 +1240,20 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   /**
-   * Staff import (ADR-0007 decision 5): reads every tournament the account
-   * organizes, in any league, and seeds the staff list from each one's
-   * participants. Read-only, one call at a time and unpaced (organizer,
+   * Staff import (ADR-0007 decision 5, #75): reads every tournament each
+   * connected professor organizes, in the leagues they are in today, as that
+   * professor, and seeds the staff list from each one's participants. A
+   * tournament two professors list is read once. One professor's failure stops
+   * only their reads. Read-only, one call at a time and unpaced (organizer,
    * 2026-10-12: reads don't need pacing).
    */
   async function runStaffImport(row: Row): Promise<void> {
-    const { leagueId } = row;
-    const gateway = deps.staffGateway(leagueId);
     setStatus(row, 'running');
     let total = 0;
     let done = 0;
+    let failed = 0;
+    let professorsFailed = 0;
+    let lastFailure: string | null = null;
 
     /** One read, tried at most `IMPORT_TRIES` times after a 429 or a 5xx; waits only when play-tools asks; stops on shutdown. */
     async function read<T>(call: () => Promise<T>, what: string): Promise<T> {
@@ -1258,25 +1274,63 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
     }
 
-    // play-tools still lists tournaments from leagues the account has left, but refuses their records (#67).
-    const leagues = new Set((await read(() => gateway.listLeagues(), 'the leagues')).map((l) => l.id));
-    const listed = await read(() => gateway.listTournaments(), 'the tournaments');
-    const tournaments = listed.filter((t) => t.groupId === null || leagues.has(t.groupId));
-    const leftOut = listed.length - tournaments.length;
-    total = tournaments.length;
+    const nameOf = (c: ActingConnection) =>
+      c.professorName ? `${c.professorName} (${c.professorPlayerId})` : `Professor ${c.professorPlayerId ?? '(not identified yet)'}`;
+    /** A professor whose login or listing failed: the import goes on with the others. */
+    function professorFailed(c: ActingConnection, code: string): void {
+      professorsFailed += 1;
+      lastFailure = code;
+      log.warn(`Staff import #${row.id} could not read professor ${c.professorPlayerId}'s tournaments: ${code}`, {
+        submissionId: row.id,
+        professorPlayerId: c.professorPlayerId,
+        code,
+      });
+      emit(row, 'professor_failed', `Could not read ${nameOf(c)}'s tournaments: ${code}.`, done + failed, total);
+    }
+
+    // Plan: each professor's own tournaments (play-tools lists only the caller's), in the leagues they are in
+    // today: play-tools still lists tournaments from leagues an account has left, but refuses their records (#67).
+    const plan: { conn: ActingConnection; gateway: ReturnType<SubmissionDeps['staffGateway']>; t: Tournament }[] = [];
+    let leftOut = 0;
+    for (const conn of deps.connections.listActingConnections()) {
+      if (conn.status === 'needs_reconnect') {
+        professorFailed(conn, 'needs_reconnect');
+        continue;
+      }
+      const gateway = deps.staffGateway(conn.id);
+      try {
+        const leagues = new Set((await read(() => gateway.listLeagues(), 'the leagues')).map((l) => l.id));
+        const listed = await read(() => gateway.listTournaments(), 'the tournaments');
+        const theirs = listed.filter((t) => t.groupId === null || leagues.has(t.groupId));
+        leftOut += listed.length - theirs.length;
+        for (const t of theirs) if (!plan.some((p) => p.t.id === t.id)) plan.push({ conn, gateway, t });
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        professorFailed(conn, err.code);
+      }
+    }
+    total = plan.length;
     const why = leftOut ? `; ${leftOut} left out (leagues this account is no longer in)` : '';
     emit(row, 'planned', `${total} tournaments to read${why}.`, 0, total);
+
     /** Every staffer found so far: once new to the league, a staffer stays `new_player` for the whole import. */
     const found = new Map<PlayerId, 'found' | 'new_player'>();
-    let failed = 0;
-    let lastFailure: string | null = null;
-    for (const t of tournaments) {
+    const stopped = new Set<number>();
+    for (const [i, { conn, gateway, t }] of plan.entries()) {
+      if (stopped.has(conn.id)) continue;
       let participants: TournamentParticipant[];
       try {
         participants = await read(() => gateway.listTournamentParticipants(t.id), 'that tournament');
       } catch (err) {
-        // Gone, unreadable, refused (403), or still down after 3 tries: this tournament only. Anything else stops the import.
-        if (!(err instanceof PokemonUpstreamError) || !(err.retryable || skipsTournament(err))) throw err;
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        if (!(err.retryable || skipsTournament(err))) {
+          // The login itself (a 401, needs_reconnect): none of this professor's other tournaments can be read either.
+          stopped.add(conn.id);
+          total -= plan.slice(i).filter((p) => p.conn.id === conn.id).length;
+          professorFailed(conn, err.code);
+          continue;
+        }
+        // Gone, unreadable, refused (403), or still down after 3 tries: this tournament only.
         failed += 1;
         lastFailure = err.code;
         log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, {
@@ -1293,7 +1347,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       done += 1;
       emit(row, 'tournament_read', `Read ${done} of ${total} tournaments.`, done + failed, total);
     }
-    const status = failed === 0 ? 'succeeded' : done > 0 ? 'partial' : 'failed';
+    const status = failed === 0 && professorsFailed === 0 ? 'succeeded' : done > 0 ? 'partial' : 'failed';
     setStatus(row, status, status === 'failed' ? lastFailure : null);
     emit(row, 'finished', `Staff import ${status}: read ${done} of ${total} tournaments, found ${found.size} staff.`, done + failed, total);
   }
@@ -1558,7 +1612,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: target.tournamentId,
           playSessionLabel: `${STAFF_PREFIX}${target.label}`,
           startedBy,
-          ...professorOf(leagueId),
+          // A staff job runs as its tournament's organizer (#75), not the league's submitting professor.
+          professorPlayerId: target.professor.playerId,
+          professorName: target.professor.name,
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -1575,7 +1631,15 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   async function beginStaffImport(leagueId: string, startedBy: string, retryOf: number | null) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
-    connectedLeague(deps.connections, leagueId);
+    // Every connected professor is read (#75): it needs one who can be, and the league chosen.
+    const conns = deps.connections.listActingConnections();
+    if (conns.length === 0) throw new PokemonUpstreamError('not_connected', 'No Pokémon account is connected. Connect one in Settings.');
+    if (conns.every((c) => c.status === 'needs_reconnect')) {
+      throw new PokemonUpstreamError('needs_reconnect', 'Every connected Pokémon account needs a reconnect. Reconnect one in Settings.');
+    }
+    if (!deps.connections.getStatus(leagueId).league) {
+      throw new SubmissionError('league_not_selected', 'Choose the league to submit to in Settings.');
+    }
     const row = db.transaction(() => {
       const created = db
         .insert(submission)
@@ -1585,7 +1649,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: '',
           playSessionLabel: STAFF_IMPORT_LABEL,
           startedBy,
-          ...professorOf(leagueId),
+          // Read as every connected professor, so no single one (#75).
+          professorPlayerId: null,
+          professorName: null,
           startedAt: now(),
           status: 'planned',
           retryOf,

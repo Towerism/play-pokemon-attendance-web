@@ -132,12 +132,13 @@ describe('staffing API', () => {
             label: `League Challenge · 26-10-${T}`,
             startsAt: '2026-10-14T23:30:00.000Z',
             editable: true,
-            organizer: { playerId: ORGANIZER },
+            organizer: { playerId: ORGANIZER, name: null, connected: true, needsReconnect: false },
             assignments: [],
             upstreamOnly: [{ playerId: '00555', name: 'Jo Judge', role: 'judge' }],
             players: [{ playerId: '00888' }],
           },
         ],
+        unread: [],
       });
 
       const staff = await (await api('/staff')).json();

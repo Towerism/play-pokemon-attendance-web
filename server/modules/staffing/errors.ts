@@ -16,14 +16,18 @@ export type StaffingErrorCode =
   /** No such assignment on that date. */
   | 'not_found'
   /** The tournament has no staff assignments, live or removed, for a staff job to apply. */
-  | 'nothing_to_apply';
+  | 'nothing_to_apply'
+  /** No connected professor organizes the tournament: only its organizer may log its staff (#75). */
+  | 'organizer_not_connected'
+  /** The tournament's organizer is connected but needs a reconnect (`details.professorPlayerId`). */
+  | 'needs_reconnect';
 
 export class StaffingError extends Error {
   override name = 'StaffingError';
   constructor(
     readonly code: StaffingErrorCode,
     message: string,
-    readonly details: { how?: 'player' | 'staff' } = {},
+    readonly details: { how?: 'player' | 'staff'; organizerPlayerId?: string; professorPlayerId?: string } = {},
   ) {
     super(message);
   }

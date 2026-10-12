@@ -57,7 +57,7 @@ async function completeConnect() {
   }
 }
 
-// The league binding: which professor submits, and to which of their play-tools leagues.
+// The league binding: which professor submits, and to which play-tools league every connected professor shares (#75).
 const picking = ref(false);
 const professorId = ref<string | undefined>();
 interface UpstreamLeague {
@@ -67,6 +67,8 @@ interface UpstreamLeague {
   canSubmit: boolean;
 }
 const leagues = ref<UpstreamLeague[] | null>(null);
+/** Professors the shared leagues leave out until they reconnect. */
+const excluded = ref<{ playerId: string | null; name: string | null }[]>([]);
 const chosenId = ref<string | undefined>();
 const professorItems = computed(() =>
   connections.value
@@ -86,14 +88,16 @@ async function openLeaguePicker(preferred: string | null = null) {
 
 async function loadLeagues() {
   leagues.value = null;
+  excluded.value = [];
   chosenId.value = undefined;
   if (!professorId.value) return;
   busy.value = true;
   try {
-    const result = await $fetch<{ leagues: UpstreamLeague[]; selectedId: string | null }>('/api/leagues/upstream', {
+    const result = await $fetch<{ leagues: UpstreamLeague[]; selectedId: string | null; excluded: typeof excluded.value }>('/api/leagues/upstream', {
       query: { professor: professorId.value },
     });
     leagues.value = result.leagues;
+    excluded.value = result.excluded;
     chosenId.value = result.selectedId ?? result.leagues[0]?.activityGroupId;
   } catch (err) {
     if (apiErrorCode(err) === 'needs_reconnect') await refreshPokemonConnection();
@@ -283,10 +287,13 @@ async function disconnect(c: ProfessorConnectionJson) {
           <USelect v-model="professorId" :items="professorItems" class="flex-1" aria-label="Professor who submits attendance" @update:model-value="loadLeagues" />
           <USelect v-if="leagues?.length" v-model="chosenId" :items="leagueItems" class="flex-1" aria-label="League" />
         </div>
-        <p v-if="leagues && leagues.length === 0" class="text-muted">This professor doesn't manage any league in play-tools.</p>
+        <p v-if="leagues && leagues.length === 0" class="text-muted">
+          {{ connections.length > 1 ? NO_SHARED_LEAGUE : "This professor doesn't manage any league in play-tools." }}
+        </p>
+        <p v-if="excludedText(excluded)" class="text-sm text-muted">{{ excludedText(excluded) }}</p>
         <p v-if="chosen && !chosen.canSubmit" class="text-warning">This professor can't record attendance for that league.</p>
         <div class="flex gap-2">
-          <UButton :loading="busy" :disabled="!professorId || !chosenId" @click="saveLeague">Save league</UButton>
+          <UButton v-if="!leagues || leagues.length" :loading="busy" :disabled="!professorId || !chosenId" @click="saveLeague">Save league</UButton>
           <UButton variant="ghost" color="neutral" @click="picking = false">Cancel</UButton>
         </div>
       </div>

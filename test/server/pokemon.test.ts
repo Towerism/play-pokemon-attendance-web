@@ -15,6 +15,8 @@ const OWNER = { username: 'organizer', password: 'correct horse' };
 const VAULT_KEY = randomBytes(32).toString('base64');
 const BROCK = { playerId: '0000222', name: 'Brock Harrison' };
 const GAME_DEN = { guid: 'group-2', display_id: 'L7000', display_name: 'Game Den', canSubmit: true };
+/** The default account's league (`group-1`), as Brock's account names it. */
+const CARD_SHOP_AS_BROCK = { guid: 'group-1', display_id: 'L5012', display_name: 'Card Shop (Brock)', canSubmit: true };
 
 // The response contracts, strict so an unexpected key (a token, say) fails the test.
 const ProfessorConnection = z
@@ -37,6 +39,7 @@ const UpstreamLeagues = z
   .object({
     leagues: z.array(z.object({ activityGroupId: z.string(), displayName: z.string(), displayId: z.string().nullable(), canSubmit: z.boolean() }).strict()),
     selectedId: z.string().nullable(),
+    excluded: z.array(z.object({ playerId: z.string().nullable(), name: z.string().nullable() }).strict()),
   })
   .strict();
 
@@ -298,47 +301,86 @@ describe('Pokémon connections API', () => {
       expect(res.json().data).toEqual({ code: 'connection_not_found' });
     });
 
-    it("lists only that professor's leagues, and which one is chosen", async () => {
+    it('lists only the leagues every connected professor shares, as that professor names them, each read as its own professor', async () => {
       await connect(browser);
-      const brock = fake.addAccount({ ...BROCK, leagues: [GAME_DEN] });
+      const brock = fake.addAccount({ ...BROCK, leagues: [GAME_DEN, CARD_SHOP_AS_BROCK] });
       await connect(browser, brock.code);
+      fake.requests.length = 0;
 
       const res = await api('/leagues/upstream?professor=0000222');
       expect(res.status).toBe(200);
       expect(UpstreamLeagues.parse(res.json())).toEqual({
-        leagues: [{ activityGroupId: 'group-2', displayName: 'Game Den', displayId: 'L7000', canSubmit: true }],
+        leagues: [{ activityGroupId: 'group-1', displayName: 'Card Shop (Brock)', displayId: 'L5012', canSubmit: true }],
         selectedId: null,
+        excluded: [],
       });
-      expect(fake.requests.filter((r) => r.path.endsWith('/activity_groups/')).at(-1)?.as).toBe('0000222');
+      const reads = fake.requests.filter((r) => r.path.endsWith('/activity_groups/'));
+      expect(reads.map((r) => [r.path, r.as]).sort()).toEqual(
+        [
+          [`/services/core/users/${fake.accounts[0]!.sub}/activity_groups/`, FAKE_PLAYER_ID],
+          [`/services/core/users/${brock.sub}/activity_groups/`, '0000222'],
+        ].sort(),
+      );
+    });
+
+    it('leaves out a professor whose login was refused, naming them', async () => {
+      await connect(browser);
+      const brock = fake.addAccount({ ...BROCK, leagues: [GAME_DEN] });
+      // Brock's access token is short-lived, so his next use refreshes, and Hydra refuses it.
+      fake.accessTtl = 60;
+      await connect(browser, brock.code);
+      fake.revokeChain('0000222');
+
+      const res = await api(`/leagues/upstream?professor=${FAKE_PLAYER_ID}`);
+      expect(res.status).toBe(200);
+      expect(UpstreamLeagues.parse(res.json())).toEqual({
+        leagues: [{ activityGroupId: 'group-1', displayName: 'Card Shop', displayId: 'L5012', canSubmit: true }],
+        selectedId: 'group-1',
+        excluded: [{ playerId: '0000222', name: null }],
+      });
+    });
+
+    it("is 502 unavailable when another professor's leagues can't be read, so nothing is chosen from a partial list", async () => {
+      await connect(browser);
+      const brock = fake.addAccount({ ...BROCK, leagues: [GAME_DEN, CARD_SHOP_AS_BROCK] });
+      await connect(browser, brock.code);
+      fake.failOnce.set(`/services/core/users/${brock.sub}/activity_groups/@0000222`, 503);
+
+      const res = await api(`/leagues/upstream?professor=${FAKE_PLAYER_ID}`);
+      expect(res.status).toBe(502);
+      expect(res.json().data).toEqual({ code: 'unavailable' });
     });
   });
 
   describe('PUT /settings (the submitting professor)', () => {
     beforeEach(async () => {
       await connect(browser);
-      const brock = fake.addAccount({ ...BROCK, leagues: [GAME_DEN] });
+      const brock = fake.addAccount({ ...BROCK, leagues: [GAME_DEN, CARD_SHOP_AS_BROCK] });
       await connect(browser, brock.code);
     });
 
-    it('binds the league to the chosen professor and their league', async () => {
-      const put = await api('/settings', { method: 'PUT', json: { professorPlayerId: '0000222', activityGroupId: 'group-2' } });
+    it('binds the league to the chosen professor and a league every professor shares', async () => {
+      const put = await api('/settings', { method: 'PUT', json: { professorPlayerId: '0000222', activityGroupId: 'group-1' } });
       expect(put.status).toBe(200);
       expect(LeagueBinding.parse(put.json().connection)).toEqual({
         professorPlayerId: '0000222',
-        activityGroupId: 'group-2',
-        displayName: 'Game Den',
-        displayId: 'L7000',
+        activityGroupId: 'group-1',
+        displayName: 'Card Shop (Brock)',
+        displayId: 'L5012',
         canSubmit: true,
       });
       const list = await connections();
       expect(list.connections.find((c) => c.professorPlayerId === '0000222')?.submitsForLeague).toBe(true);
     });
 
-    it("is 404 league_not_found for a league that professor can't see, and keeps the current binding", async () => {
-      const res = await api('/settings', { method: 'PUT', json: { professorPlayerId: '0000222', activityGroupId: 'group-1' } });
+    it.each([
+      ["that professor can't see", 'group-9'],
+      ['another professor lacks', 'group-2'],
+    ])("is 404 league_not_found for a league %s, and keeps the current binding", async (_l, activityGroupId) => {
+      const res = await api('/settings', { method: 'PUT', json: { professorPlayerId: '0000222', activityGroupId } });
       expect(res.status).toBe(404);
       expect(res.json().data).toEqual({ code: 'league_not_found' });
-      expect((await connections()).league?.professorPlayerId).toBe(FAKE_PLAYER_ID);
+      expect((await connections()).league).toMatchObject({ professorPlayerId: FAKE_PLAYER_ID, activityGroupId: 'group-1' });
     });
 
     it('is 404 connection_not_found for a professor nobody connected', async () => {
@@ -348,7 +390,7 @@ describe('Pokémon connections API', () => {
     });
 
     it.each([
-      ['only the league', { activityGroupId: 'group-2' }],
+      ['only the league', { activityGroupId: 'group-1' }],
       ['only the professor', { professorPlayerId: '0000222' }],
       ['a numeric professor', { professorPlayerId: 222, activityGroupId: 'group-2' }],
       ['a professor that is not digits', { professorPlayerId: 'abc', activityGroupId: 'group-2' }],

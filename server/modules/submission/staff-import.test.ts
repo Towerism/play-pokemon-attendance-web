@@ -4,7 +4,7 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
-import type { ConnectionView } from '../pokemon/connection';
+import type { ActingConnection, ConnectionView } from '../pokemon/connection';
 import type { DateRange, League, Tournament, TournamentDetails, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import { type RosterService, createRosterService } from '../roster/service';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
@@ -111,6 +111,10 @@ let sessions: SessionsService;
 let staffing: StaffingService;
 let upstream: FakeTournaments;
 let connection: ConnectionView;
+/** The professors connected; Olive (1) organizes `upstream`'s tournaments. */
+let professors: ActingConnection[];
+/** Play-tools as each connection sees it; a connection with no entry sees `upstream`. */
+let asConnection: Map<number, FakeTournaments>;
 let clock: Date;
 let sleeps: number[];
 let onSleep: ((signal: AbortSignal) => Promise<void> | void) | undefined;
@@ -134,9 +138,9 @@ function build(): SubmissionService {
     sessions,
     roster,
     sightings,
-    connections: { getStatus: () => connection },
+    connections: { getStatus: () => connection, listActingConnections: () => professors },
     gateway: () => noAttendance,
-    staffGateway: () => upstream,
+    staffGateway: (connectionId) => asConnection.get(connectionId ?? 0) ?? upstream,
     staffing,
     resolver: noResolver,
     timeZone: TZ,
@@ -168,11 +172,13 @@ beforeEach(() => {
     connectionId: 1,
     professor: { playerId: '0012345', name: 'Ash Ketchum' },
   };
+  professors = [{ id: 1, professorPlayerId: ORGANIZER, professorName: 'Olive Organizer', status: 'connected' }];
+  asConnection = new Map();
   staffing = createStaffingService({
     db: database.db,
     roster,
-    connections: { getStatus: () => connection },
-    gateway: () => upstream,
+    connections: { getStatus: () => connection, listActingConnections: () => professors },
+    staffGateway: () => upstream,
     timeZone: TZ,
     now: () => clock,
   });
@@ -344,10 +350,17 @@ describe('starting an import', () => {
   });
 
   it.each([
-    ['not_connected', { status: 'not_connected' as const, reason: null, connectedAt: null, lastRefreshedAt: null, league: null }],
-    ['needs_reconnect', { status: 'needs_reconnect' as const, reason: 'Reconnect.', connectedAt: null, lastRefreshedAt: null, league: null }],
-  ])('is refused with %s when the Pokémon account is not usable, before any call', async (code, view) => {
-    connection = view as ConnectionView;
+    ['not_connected', 'no professor is connected', [] as ActingConnection[]],
+    [
+      'needs_reconnect',
+      'every professor needs a reconnect',
+      [
+        { id: 1, professorPlayerId: ORGANIZER, professorName: null, status: 'needs_reconnect' as const },
+        { id: 2, professorPlayerId: '0000222', professorName: null, status: 'needs_reconnect' as const },
+      ],
+    ],
+  ])('is refused with %s when %s, before any call', async (code, _l, connected) => {
+    professors = connected;
 
     const err = await refusal(service.importStaff(L, 'organizer'));
 
@@ -520,7 +533,7 @@ describe('reading tournaments', () => {
   it.each([
     ['forbidden', 'a 401 (the token refused)', refused(401)],
     ['needs_reconnect', 'needs_reconnect', new PokemonUpstreamError('needs_reconnect', 'Reconnect the Pokémon account in Settings.')],
-  ])('stops failed with %s on %s, sends nothing more, and keeps what it recorded', async (code, _, error) => {
+  ])("stops reading that professor's tournaments on %s (%s), keeps what it recorded, and ends partial", async (code, _, error) => {
     upstream.onRead = (t) => {
       if (t === 't-2') throw error;
     };
@@ -528,7 +541,8 @@ describe('reading tournaments', () => {
     const view = await importStaff();
 
     expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2']);
-    expect(view).toMatchObject({ status: 'failed', error: code });
+    expect(view).toMatchObject({ status: 'partial', error: null });
+    expect(service.events(L, view.id).find((e) => e.type === 'professor_failed')?.message).toContain(code);
     expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
     expect(events(view.id).at(-1)).toBe('finished');
   });
@@ -709,8 +723,72 @@ describe('retry, crash and shutdown', () => {
   });
 });
 
-describe('the submitting professor on a staff import (ADR-0008)', () => {
-  it("records the league's submitting professor", async () => {
-    expect((await importStaff()).professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
+describe('importing from every connected professor (#75)', () => {
+  const BROCK = '0000222';
+  let brock: FakeTournaments;
+
+  beforeEach(() => {
+    brock = new FakeTournaments();
+    asConnection.set(2, brock);
+    professors = [...professors, { id: 2, professorPlayerId: BROCK, professorName: 'Brock Harrison', status: 'connected' }];
+    upstream.add(tournament('olives'), staffer('100', 'judge'));
+    brock.add(tournament('brocks', { organizer: BROCK }), staffer('200', 'scorekeeper'));
+  });
+
+  it("records every professor's staff, reading each one's tournaments as them, and records no single professor", async () => {
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read olives']);
+    expect(brock.calls).toEqual(['leagues', 'list', 'read brocks']);
+    expect(history().map((h) => (h as { player_id: string }).player_id).sort()).toEqual(['100', '200']);
+    expect(view).toMatchObject({ status: 'succeeded', professor: null });
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 2, tournamentsRead: 2, tournamentsFailed: 0 });
+  });
+
+  it('reads a tournament two professors list only once', async () => {
+    const shared = tournament('shared');
+    upstream.add(shared, staffer('300', 'judge'));
+    brock.tournaments.push(shared);
+    brock.participants.set('shared', upstream.participants.get('shared')!);
+
+    const view = await importStaff();
+
+    expect([...upstream.calls, ...brock.calls].filter((c) => c === 'read shared')).toHaveLength(1);
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 3, tournamentsRead: 3 });
+  });
+
+  it('goes on with the others when a professor needs a reconnect, without calling as them, and ends partial', async () => {
+    professors = professors.map((p) => (p.id === 2 ? { ...p, status: 'needs_reconnect' } : p));
+
+    const view = await importStaff();
+
+    expect(brock.calls).toEqual([]);
+    expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
+    expect(view.status).toBe('partial');
+    const failed = service.events(L, view.id).filter((e) => e.type === 'professor_failed');
+    expect(failed.map((e) => e.message)).toEqual([expect.stringContaining('Brock Harrison')]);
+  });
+
+  it("goes on with the others when a professor's tournaments can't be listed", async () => {
+    brock.onList = () => {
+      throw down();
+    };
+
+    const view = await importStaff();
+
+    expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100']);
+    expect(view.status).toBe('partial');
+    expect(events(view.id)).toContain('professor_failed');
+  });
+
+  it('ends failed with the last professor failure when no professor could be read', async () => {
+    upstream.onLeagues = () => {
+      throw down();
+    };
+    professors = professors.map((p) => (p.id === 2 ? { ...p, status: 'needs_reconnect' } : p));
+
+    const view = await importStaff();
+
+    expect(view).toMatchObject({ status: 'failed', error: 'needs_reconnect' });
   });
 });

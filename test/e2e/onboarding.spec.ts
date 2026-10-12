@@ -79,7 +79,15 @@ test('a second professor: added next to the first, then chosen to submit for the
       products: ['tcg'],
     },
   ];
-  const brock = fake.addAccount({ playerId: '0000222', name: 'Brock Harrison', leagues: [{ guid: 'group-3', display_id: 'L7000', display_name: 'Pewter Gym', canSubmit: true }] });
+  // Brock is in Card Shop too (#75: the league must be one every professor shares), and in Pewter Gym, which Olive isn't.
+  const brock = fake.addAccount({
+    playerId: '0000222',
+    name: 'Brock Harrison',
+    leagues: [
+      { guid: 'group-3', display_id: 'L7000', display_name: 'Pewter Gym', canSubmit: true },
+      { guid: 'group-1', display_id: 'L5012', display_name: 'Card Shop', canSubmit: true },
+    ],
+  });
 
   await page.goto('/settings');
   await page.getByRole('button', { name: 'Add Pokémon account' }).click();
@@ -103,14 +111,14 @@ test('a second professor: added next to the first, then chosen to submit for the
   await expect(page.getByRole('button', { name: 'Disconnect Professor 9999991' })).toBeVisible();
   await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 9999991' })).toContainText('Submits attendance');
 
-  // Choose Brock, then his league.
+  // Choose Brock, then a league both professors share: Pewter Gym, only Brock's, isn't offered.
   await page.getByRole('button', { name: 'Change league' }).click();
   await page.getByRole('combobox', { name: 'Professor who submits attendance' }).click();
   await page.getByRole('option', { name: 'Brock Harrison (0000222)' }).click();
   await page.getByRole('combobox', { name: 'League' }).click();
-  await page.getByRole('option', { name: 'Pewter Gym (L7000)' }).click();
+  await expect(page.getByRole('option')).toHaveText(['Card Shop (L5012)']);
+  await page.getByRole('option', { name: 'Card Shop (L5012)' }).click();
   await page.getByRole('button', { name: 'Save league' }).click();
-  await expect(page.getByText('Pewter Gym (L7000)')).toBeVisible();
   await expect(professors.getByRole('listitem').filter({ hasText: 'Brock Harrison (0000222)' })).toContainText('Submits attendance');
   await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 9999991' })).not.toContainText('Submits attendance');
 
@@ -125,6 +133,24 @@ test('a second professor: added next to the first, then chosen to submit for the
   await expect(page.getByTestId('submit-as')).toHaveText('Submitting as Brock Harrison (0000222)');
   const lookups = fake.requests.filter((r) => r.path.endsWith('/play_sessions/'));
   expect(lookups.length).toBeGreaterThan(0);
-  expect(lookups.every((r) => r.as === '0000222' && r.path.includes('/activity_groups/group-3/')), 'every lookup as Brock, in his league').toBe(true);
+  expect(lookups.every((r) => r.as === '0000222' && r.path.includes('/activity_groups/group-1/')), 'every lookup as Brock, in the shared league').toBe(true);
   expect(fake.requests.filter((r) => JSON.stringify(r).includes('Brock Harrison')), 'the display name never reaches Pokémon').toEqual([]);
+});
+
+// #75: connected professors can't be from different leagues, so the picker
+// offers only leagues they all share, and says so when there is none.
+test('the league picker offers nothing to save when the professors share no league', async ({ page, fake, connected }) => {
+  void connected; // the default professor, in Card Shop
+  const cilan = fake.addAccount({ playerId: '0000333', name: 'Cilan', leagues: [{ guid: 'group-9', display_id: 'L9000', display_name: 'Striaton Café', canSubmit: true }] });
+  const start = await connected.request('/api/pokemon/connect/start', { method: 'POST', json: {} });
+  const state = new URL(((await start.json()) as { authorizeUrl: string }).authorizeUrl).searchParams.get('state')!;
+  expect((await connected.request('/api/pokemon/connect/complete', { method: 'POST', json: { url: loggedInUrl(state, cilan.code) } })).status).toBe(200);
+
+  await page.goto('/settings');
+  await page.getByRole('button', { name: 'Change league' }).click();
+  await page.getByRole('combobox', { name: 'Professor who submits attendance' }).click();
+  await page.getByRole('option', { name: 'Professor 0000333' }).click();
+  await expect(page.getByText("These professors share no league in play-tools. Disconnect the one who isn't in your league.")).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'League' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save league' })).toHaveCount(0);
 });

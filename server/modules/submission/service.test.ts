@@ -141,7 +141,12 @@ function build(
     sessions: over.sessions ?? sessions,
     roster,
     sightings: over.sightings ?? sightings,
-    connections: { getStatus: () => connection },
+    connections: {
+      getStatus: () => connection,
+      listActingConnections: () => {
+        throw new Error('attendance never lists the professors');
+      },
+    },
     gateway: () => upstream,
     staffGateway: () => {
       throw new Error('attendance tests run no staff jobs');
