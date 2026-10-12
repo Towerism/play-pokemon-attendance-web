@@ -110,6 +110,58 @@ test('tapping a page in the drawer opens it and closes the drawer', async ({ pag
   await expect(menuButton(page)).toHaveAttribute('aria-expanded', 'false');
 });
 
+/** Holds every response matching `url` until the returned function is called, so the next page stays loading. */
+async function holdResponses(page: Page, url: string): Promise<() => void> {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route(url, async (route) => {
+    await released;
+    await route.continue();
+  });
+  return release;
+}
+
+/** Lets any pending route update and close transition start before the drawer's state is read. */
+async function settle(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+test('a drawer opened while the next page is loading stays open once it has loaded', async ({ page, api: _api }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/regulars');
+  await expect(page.getByRole('heading', { name: 'Regulars' })).toBeVisible();
+  const release = await holdResponses(page, '**/api/sessions/**');
+
+  await header(page).getByRole('link', { name: 'League attendance' }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', { name: 'This week' })).toBeHidden();
+  await openMenu(page);
+
+  release();
+  // The open drawer hides the page behind it from assistive tech, so the heading is looked up with hidden ones.
+  await expect(page.getByRole('heading', { name: 'This week', includeHidden: true })).toBeVisible();
+  await settle(page);
+  await expect(drawer(page)).toHaveAttribute('data-state', 'open');
+  await drawer(page).getByRole('link', { name: 'Regulars' }).click();
+  await expect(page).toHaveURL(/\/regulars$/);
+  await expect(drawer(page)).toBeHidden();
+});
+
+test('tapping a page in the drawer closes it before that page has loaded', async ({ page, api: _api }) => {
+  await page.setViewportSize(PHONE);
+  await page.goto('/');
+  await openMenu(page);
+  const release = await holdResponses(page, '**/api/submissions**');
+
+  await drawer(page).getByRole('link', { name: 'History' }).click();
+  await expect(page).toHaveURL(/\/history$/);
+  await expect(drawer(page)).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'History' })).toBeHidden();
+
+  release();
+  await expect(page.getByRole('heading', { name: 'History' })).toBeVisible();
+});
+
 test('Log out in the drawer ends the session', async ({ page, api: _api }) => {
   await page.setViewportSize(PHONE);
   await page.goto('/');
