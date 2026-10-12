@@ -119,14 +119,15 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
      every page.
      - `toAssign` = wanted assignments whose player id the tournament doesn't list at all.
      - A wanted player the tournament already lists as staff in the same role is
-       `already_assigned`, and the job adopts that record.
+       `already_assigned`, and the job **adopts** that record: its `guid` is stored on the
+       assignment, and from then on it counts as the app's own record (decision 12).
      - A wanted player the tournament lists in any other way (as a player, or as staff in
        another role) is `already_listed`. **Nothing is sent for them** (decision 8).
      - The tournament's organizer is `is_organizer`, and nothing is sent (decision 9).
-     - `toRechange` = this app's own records whose wanted role the organizer has
-       changed. They are sent as `PATCH` (decision 12).
-     - `toRemove` = staff records **this app created** whose assignment the organizer
-       has since removed.
+     - `toRechange` = this app's own records (created or adopted) whose wanted role the
+       organizer has changed. They are sent as `PATCH` (decision 12).
+     - `toRemove` = staff records **this app created or adopted** whose assignment the
+       organizer has since removed.
      - Staff assigned directly in play-tools are shown, and **never** changed or deleted
        (ADR-0004).
    - **Execute:**
@@ -187,7 +188,9 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
      second role for the same player with 409 `player_already_staffed`. Staff search
      shows players the tournament already lists as disabled, with how they are listed.
    - The ids are compared exactly as text, so leading zeros count.
-   - The app never changes or deletes a record it didn't create.
+   - The app never changes or deletes a record it neither created nor adopted (decision 4):
+     only a `record_id` stored on one of the league's assignments is ever sent a `PATCH`
+     or a `DELETE`.
 
 9. **A tournament's organizer is never its staff.** The organizer's role is
    `organizer`, set by play-tools and fixed: the app never assigns, changes or removes
@@ -231,10 +234,11 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
       job with `forbidden`. Only tournaments from `listTournaments` (organizer-only) are
       offered, so this means the account changed.
 
-12. **The app may change the role of a record it created, and only that.** When the
-    organizer edits the role of an applied assignment, the job sends `PATCH` on that
-    record (`role_changed`). It never re-roles a record found upstream, the organizer's
-    record, or anyone listed as a player. If `PATCH` is refused, the item is `failed`,
+12. **The app may change the role of a record it created or adopted, and only that.** When
+    the organizer edits the role of an applied assignment, the job sends `PATCH` on that
+    record (`role_changed`). An adopted record is one play-tools already listed in the wanted
+    role when a staff job first ran for that assignment (decision 4). The app never re-roles
+    any other record found upstream, the organizer's record, or anyone listed as a player. If `PATCH` is refused, the item is `failed`,
     and the previous role stays both upstream and in the row.
 
 13. **Names are the organizer's to correct. Play-tools names only seed.** A play-tools
@@ -254,6 +258,14 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
     - **Not kept:** the upstream name is not stored next to the local one, and the
       app never compares the two. Records also carry `year_of_birth`, which the adapter
       drops at the port, like TDF birthdates.
+
+### Update (#47, 2026-10-12): adopted records count as the app's own
+
+The organizer confirmed on #47 that an `already_assigned` match stores the upstream
+record's `guid` on the assignment. Removing or re-roling that assignment later sends a
+`DELETE` or `PATCH` naming that record, as for a record the app created. Decisions 4, 8
+and 12 say so. Records no assignment holds (staff added in play-tools that nobody asked
+the app for, the organizer's record, players) are still never changed or deleted.
 
 ## Alternatives considered
 
@@ -293,8 +305,9 @@ fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s6/`):
 - (+) The app never sends an assignment for a player id the tournament already lists,
   or for its organizer. The guarantee rests on a fresh read, not on upstream refusing
   the call.
-- (+) Removal and role changes are explicit and limited to records this app created,
-  so ADR-0004's "never auto-delete upstream records" holds.
+- (+) Removal and role changes are explicit and limited to records this app created or
+  adopted for an assignment the organizer made, so ADR-0004's "never auto-delete upstream
+  records" holds.
 - (+) History becomes the audit trail for staffing, which is the evidence staff need
   if points go missing.
 - (+) Staffing and attendance don't constrain each other's order.

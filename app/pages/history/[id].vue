@@ -23,6 +23,13 @@ const OUTCOME: Record<ItemOutcome, { label: string; color: 'success' | 'neutral'
   unrequested: { label: 'Only in play-tools', color: 'info' },
   removed: { label: 'Removed', color: 'success' },
   already_removed: { label: 'Already gone', color: 'neutral' },
+  // A staff job's outcomes (ADR-0007).
+  assigned: { label: 'Assigned', color: 'success' },
+  already_assigned: { label: 'Already assigned', color: 'neutral' },
+  already_listed: { label: 'Already listed', color: 'neutral' },
+  is_organizer: { label: 'Organizer', color: 'neutral' },
+  role_changed: { label: 'Role changed', color: 'success' },
+  ineligible: { label: 'Not eligible', color: 'error' },
 };
 const ORIGIN = { session: 'Session player', regular: 'Regular', upstream: 'Added in play-tools' } as const;
 
@@ -35,12 +42,18 @@ const columns: TableColumn<SubmissionItemView>[] = [
 // Problems first, then what was added, then the rest.
 const RANK: Record<ItemOutcome, number> = {
   failed: 0,
+  ineligible: 0,
   skipped: 1,
   pending: 2,
   added: 3,
   removed: 3,
+  assigned: 3,
+  role_changed: 3,
   already_present: 4,
   already_removed: 4,
+  already_assigned: 4,
+  already_listed: 4,
+  is_organizer: 4,
   unrequested: 5,
 };
 const items = computed(() =>

@@ -101,6 +101,13 @@ class FakePlayTools {
   }
 }
 
+/** Attendance jobs never touch staffing. */
+const unusedStaffing = new Proxy({} as SubmissionDeps['staffing'], {
+  get: (_t, method) => () => {
+    throw new Error(`attendance tests call no staffing method (${String(method)})`);
+  },
+});
+
 let database: OpenDatabase;
 let roster: RosterService;
 let sightings: SightingsService;
@@ -136,6 +143,10 @@ function build(
     sightings: over.sightings ?? sightings,
     connections: { getStatus: () => connection },
     gateway: () => upstream,
+    staffGateway: () => {
+      throw new Error('attendance tests run no staff jobs');
+    },
+    staffing: unusedStaffing,
     resolver,
     now: () => clock,
     sleep: async (ms, signal) => {
@@ -209,6 +220,9 @@ describe('a submission (ADR-0004 plan → execute → reconcile)', () => {
       recordId: expect.stringMatching(/^rec-/),
       asStaff: false,
       removedBy: null,
+      role: null,
+      errorCode: null,
+      suggestedPlayerId: null,
     });
     expect(view.finishedAt).toEqual(clock);
   });
@@ -647,6 +661,7 @@ describe('history', () => {
       undoOf: null,
       undoable: false,
       undoBlockedReason: 'nothing_to_undo',
+      tournamentLabel: null,
       counts: { added: 0, alreadyPresent: 1, failed: 0, skipped: 0, unrequested: 0 },
     });
     expect(service.list(L, { date: '2026-10-20' as SessionDate })).toEqual([]);

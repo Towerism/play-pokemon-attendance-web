@@ -31,6 +31,7 @@ const STATUS: Record<StaffingErrorCode, number> = {
   already_listed: 409,
   league_not_selected: 409,
   not_found: 404,
+  nothing_to_apply: 422,
 };
 
 /** Maps staffing and Pokémon errors to HTTP; `data.code` (and `data.how` for `already_listed`) tells the UI what to show. */

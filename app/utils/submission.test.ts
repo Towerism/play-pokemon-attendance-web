@@ -75,6 +75,9 @@ describe('undo wording', () => {
     recordId: 'rec-1',
     asStaff: false,
     removedBy: null,
+    role: null,
+    errorCode: null,
+    suggestedPlayerId: null,
     ...over,
   });
 

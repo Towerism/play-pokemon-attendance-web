@@ -473,12 +473,14 @@ erDiagram
     text record_id "upstream record, for undo and clear (M7)"
     bool as_staff "present upstream in a staff role"
     text role "staff jobs only (M8); null for attendance"
+    text error_code "staff jobs only: refusal code, tournament_locked, forbidden, local_write_failed…"
+    text suggested_player_id "staff jobs only: the id a merged_player_id was merged into (a suggestion)"
   }
   SUBMISSION_EVENT {
     int id PK "also the SSE event id"
     int submission_id FK
     datetime at
-    text type "planned|batch_sent|batch_rejected|retrying|reconciled|finished|record_removed"
+    text type "planned|batch_sent|batch_rejected|retrying|reconciled|finished|record_removed|staff_sent (M8)"
     text message
     int done "players dealt with"
     int total "players to add"
@@ -831,11 +833,13 @@ Both come from a fresh read, not from upstream refusing the call.
   - **The tournament's organizer is never staff.** Their role is `organizer`, fixed by play-tools. A wanted
     player whose id is `organizerPlayerId` is `is_organizer`, and nothing is sent.
   - A wanted player listed as staff in the same role (set in play-tools, or by an earlier run) is
-    `already_assigned`, and its record id is adopted.
-  - A wanted player listed any other way (as a player, or as staff in another role on a record this app didn't
-    create) is `already_listed`. Nothing is sent, and History shows how they are listed.
-  - `toRechange` = this app's own records whose wanted role differs from `applied_role`. They are sent as
-    `PATCH`.
+    `already_assigned`, and its record id is **adopted**: stored on the assignment, it counts as the app's own
+    record from then on, so removing or re-roling that assignment later sends a `DELETE`/`PATCH` naming it
+    (ADR-0007 update, #47).
+  - A wanted player listed any other way (as a player, or as staff in another role on a record this app neither
+    created nor adopted) is `already_listed`. Nothing is sent, and History shows how they are listed.
+  - `toRechange` = this app's own records (created or adopted) whose wanted role differs from the role upstream.
+    They are sent as `PATCH`.
   - `toRemove` = tombstoned assignments with a `record_id`.
   - Records nobody asked for are shown, never changed or deleted.
 - **Execute:** one call at a time, ≥ `NUXT_STAFF_DELAY_MS` (1 s, never under 500 ms) apart. Removals go first,
@@ -858,8 +862,19 @@ Both come from a fresh read, not from upstream refusing the call.
   - `role_changed` clears `applied_role`.
   - `assigned` and `already_assigned` also write `STAFF_HISTORY` (`source = app`).
   - `removed` and `already_removed` delete the tombstoned row.
+- **As built** (#47, `server/modules/submission/service.ts`, `staff-plan.ts`): a staff job is a `submission` row
+  with `kind = 'staff'`, the tournament GUID in `play_session_id` and "Staff for <tournament>" in
+  `play_session_label` (no new `submission` column). One item per wanted staffer, with the wanted `role`; a
+  refusal carries `error_code` (and `suggested_player_id` for `merged_player_id`), and `error` reads
+  `<code>: <reason>`. A 400 with no per-staffer reason is `failed`, a malformed id or role `failed`
+  (`invalid_input`). Each write emits `staff_sent` ("Assigned 01234 as Judge."). Every participant read seeds
+  the staff list. The local write-back runs per item in one transaction with its outcome (also after an early
+  stop); a failed write is `failed` (`local_write_failed`), and the next apply's plan adopts the record. A
+  job's summary carries `tournamentLabel`; it is never undoable (`not_undoable`). Its counts read `added` =
+  assigned + role changed + removed, `alreadyPresent` = already assigned / listed, organizer, already removed,
+  `failed` = failed + ineligible.
 - **Refused** before anything is created:
-  - `nothing_to_apply`;
+  - `nothing_to_apply` (no assignments for the tournament, live or removed);
   - `tournament_locked` (past start + 90 d) and `unknown_tournament` (the date's tournaments are re-read);
   - `submission_running` while the lease is held;
   - `shutting_down`;
@@ -900,7 +915,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, tournaments: [{ tournamentId, label, startsAt, editable, missing?, organizer: { playerId } \| null, assignments: [{ id, playerId, name, role, appliedRole, state }], upstreamOnly: [{ playerId, name, role }], players: [{ playerId }] }] }`: this league's tournaments that start on the date (league TZ), in start order. Reads upstream live (one call at a time) and seeds the staff list. An assignment whose tournament play-tools no longer lists shows under a `missing: true` entry (`startsAt` and `organizer` null, not editable). 409 `league_not_selected`/`not_connected`/`needs_reconnect` |
 | `POST /sessions/{date}/staff` (M8)                        | Add `{ tournamentId, playerId, role, name? }`: 201 when added (or a tombstoned assignment revived), 200 when that player is already wanted there in that role (no upstream call), 409 `player_already_staffed` in another role, 409 `already_listed` (`data.how`: `player` \| `staff`) when play-tools already lists them, 422 `organizer_cannot_staff` for the tournament's organizer (fresh read), `unknown_role`, `unknown_tournament` (not this league's on that date) and `tournament_locked`. 400 for a malformed body, before any upstream call |
 | `PATCH /sessions/{date}/staff/{assignmentId}` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | `PATCH { role }` → 200 `{ assignment }`; for an applied assignment `appliedRole` keeps the upstream role until the staff job sends the change. `DELETE` → 204: gone at once if it never reached play-tools, otherwise tombstoned for the next apply. Both 404 for an unknown or removed assignment or another date, 422 `unknown_role`/`tournament_locked` (applied assignments on a tournament past its window), and send nothing upstream |
-| `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ tournamentId }` → `{ submissionId }` (§6.4) |
+| `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ tournamentId }` → `{ submissionId }` (§6.4); follow it like a submission (`/submissions/{id}`, its events, retry). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`/`not_connected`, 422 `nothing_to_apply`/`unknown_tournament`/`tournament_locked`/`unknown_role`, 503 `shutting_down`. A staff job's items carry `role`, `errorCode` and `suggestedPlayerId` (null for other kinds), its summary `tournamentLabel` (null for other kinds) |
 | `GET /pokemon/connection` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connection` | Pokémon connection. Status never carries a token. `complete` is 400 with `data.code` for a bad paste or a refused code. `DELETE` is 200 `{ revoked }`. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | Pick activity group, timezone, thresholds, batch delay. As built: `GET` is `{ thresholds }`; `PUT` takes `{ activityGroupId?, thresholds? }` (at least one; 422 `unknown_league` if the account lacks the group) and answers with what it changed, `{ connection?, thresholds? }` |
 
@@ -1051,7 +1066,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M5 Submission                 | Date → session resolve, plan/execute/reconcile job, SSE, history, retry. Built.                                |
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
-| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45) and the `staffing` module with its tables and staff routes (#46) are built. Next: staff job kind (#47), import (#48), Staff card and `StaffSearch` (#49), Staff tab (#50) ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
+| M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45) and the `staffing` module with its tables and staff routes (#46), and the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47) are built. Next: import (#48), Staff card and `StaffSearch` (#49), Staff tab (#50) ([ADR-0007](adr/0007-staff-assignment.md), #41). Proposed |
 
 ## 14. Architecture Decision Records
 

@@ -1,4 +1,5 @@
 import { createPlayToolsHttpAdapter } from '../modules/pokemon/adapters/play-tools/gateway';
+import { StaffingError } from '../modules/staffing/errors';
 import { SubmissionError, type SubmissionErrorCode } from '../modules/submission/errors';
 import { dateIn } from '../modules/submission/local-time';
 import { type PlaySessionResolver, createPlaySessionResolver } from '../modules/submission/resolve';
@@ -37,12 +38,15 @@ export function useSubmissions(): SubmissionService {
       sightings: useSightings(),
       connections: usePokemon(),
       gateway,
+      staffGateway: gateway,
+      staffing: useStaffing(),
       resolver: usePlaySessionResolver(),
       batchSize: Math.min(50, Number(config.batchSize)),
       batchDelayMs: Number(config.batchDelayMs),
       settleMs: Number(config.settleMs),
       settlePollMs: Number(config.settlePollMs),
       undoDelayMs: Math.max(500, Number(useRuntimeConfig().undo.delayMs) || 0),
+      staffDelayMs: Number(useRuntimeConfig().staff.delayMs) || 0,
       log: useLogger('submission'),
     });
   }
@@ -69,11 +73,12 @@ const STATUS: Record<SubmissionErrorCode, number> = {
   nothing_to_clear: 422,
 };
 
-/** Maps submission and Pokémon errors to HTTP; `data.code` tells the UI what to show. */
+/** Maps submission, staffing (a staff job's checks) and Pokémon errors to HTTP; `data.code` tells the UI what to show. */
 export function submissionHttpError(err: unknown): never {
   if (err instanceof SubmissionError) {
     throw createError({ statusCode: STATUS[err.code], message: err.message, data: { code: err.code } });
   }
+  if (err instanceof StaffingError) return staffingHttpError(err);
   return pokemonHttpError(err);
 }
 

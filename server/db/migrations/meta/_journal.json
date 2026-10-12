@@ -57,6 +57,13 @@
       "when": 1791769095583,
       "tag": "0007_staffing",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791771256643,
+      "tag": "0008_staff_job",
+      "breakpoints": true
     }
   ]
 }

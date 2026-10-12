@@ -84,6 +84,17 @@ export interface AddStaff {
   name?: string;
 }
 
+/** A staff assignment as the staff job sees it: the wanted role and the record this app holds (created or adopted). */
+export interface StaffAssignmentRecord {
+  id: number;
+  playerId: PlayerId;
+  role: string;
+  appliedRole: string | null;
+  recordId: string | null;
+  /** Tombstoned: the staff job deletes `recordId`. */
+  removed: boolean;
+}
+
 export interface StaffingService {
   /** The roles play-tools offers staff, judge first; never `organizer`. No upstream call. */
   listRoles(leagueId: string): readonly { code: string; label: string }[];
@@ -122,6 +133,24 @@ export interface StaffingService {
   recordUpstreamStaff(leagueId: string, tournament: SeedTournament, participants: readonly TournamentParticipant[]): PlayerId[];
   /** Records staffers this app applied or adopted upstream (`source = app`, which then sticks). */
   recordAppStaff(leagueId: string, rows: readonly AppStaffRow[]): void;
+  /**
+   * Checks a staff job may start for one of the date's tournaments (read fresh)
+   * and returns its label.
+   * @throws StaffingError `unknown_tournament`, `tournament_locked`, `nothing_to_apply`, `unknown_role`, `league_not_selected`; PokemonUpstreamError
+   */
+  prepareApply(leagueId: string, date: SessionDate, tournamentId: string): Promise<{ tournamentId: string; label: string }>;
+  /** The tournament's assignments, live and tombstoned, oldest first. */
+  assignmentsFor(leagueId: string, tournamentId: string): StaffAssignmentRecord[];
+  /**
+   * Play-tools holds `recordId` for the assignment in `role`: it is `assigned`,
+   * and the staffer joins the staff list as the app's. A no-op for an
+   * assignment deleted or tombstoned meanwhile.
+   */
+  recordApplied(leagueId: string, assignmentId: number, applied: { recordId: string; role: string }): void;
+  /** The staff job could not apply a live assignment. */
+  recordFailed(leagueId: string, assignmentId: number): void;
+  /** Play-tools no longer holds a tombstoned assignment's record: the row goes. Never deletes a live one. */
+  forgetRemoved(leagueId: string, assignmentId: number): void;
 }
 
 /** The play-tools calls staffing makes. */
@@ -330,6 +359,29 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
     assertEditable(tournament);
   }
 
+  function recordAppStaff(leagueId: string, rows: readonly AppStaffRow[]): void {
+    if (rows.length === 0) return;
+    db.transaction(() => {
+      roster.ensurePlayers(leagueId, rows.map((r) => ({ playerId: r.playerId })));
+      upsertHistory(leagueId, rows, 'app');
+    });
+  }
+
+  const ofTournament = (leagueId: string, tournamentId: string) =>
+    db
+      .select()
+      .from(staffAssignment)
+      .where(and(eq(staffAssignment.leagueId, leagueId), eq(staffAssignment.tournamentId, tournamentId)))
+      .orderBy(asc(staffAssignment.id))
+      .all();
+
+  const liveById = (leagueId: string, assignmentId: number) =>
+    db
+      .select()
+      .from(staffAssignment)
+      .where(and(eq(staffAssignment.id, assignmentId), eq(staffAssignment.leagueId, leagueId), isNull(staffAssignment.removedAt)))
+      .get();
+
   return {
     listRoles: (leagueId) => deps.gateway(leagueId).listStaffRoles(),
 
@@ -502,12 +554,62 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
 
     recordUpstreamStaff,
 
-    recordAppStaff(leagueId, rows) {
-      if (rows.length === 0) return;
+    recordAppStaff,
+
+    async prepareApply(leagueId, date, tournamentId) {
+      const tournament = (await tournamentsOn(leagueId, date)).find((t) => t.id === tournamentId);
+      if (!tournament) {
+        throw new StaffingError('unknown_tournament', `Tournament ${tournamentId} is not one of this league's tournaments on ${date}.`);
+      }
+      assertEditable(tournament);
+      const rows = ofTournament(leagueId, tournamentId);
+      if (rows.length === 0) throw new StaffingError('nothing_to_apply', 'This tournament has no staff to assign or remove.');
+      for (const row of rows.filter((r) => !r.removedAt)) assertRole(leagueId, row.role);
+      return { tournamentId, label: labelOf(tournament) };
+    },
+
+    assignmentsFor(leagueId, tournamentId) {
+      return ofTournament(leagueId, tournamentId).map((r) => ({
+        id: r.id,
+        playerId: r.playerId as PlayerId,
+        role: r.role,
+        appliedRole: r.appliedRole,
+        recordId: r.recordId,
+        removed: r.removedAt !== null,
+      }));
+    },
+
+    recordApplied(leagueId, assignmentId, applied) {
       db.transaction(() => {
-        roster.ensurePlayers(leagueId, rows.map((r) => ({ playerId: r.playerId })));
-        upsertHistory(leagueId, rows, 'app');
+        const row = liveById(leagueId, assignmentId);
+        if (!row) return;
+        db.update(staffAssignment)
+          .set({
+            state: 'assigned',
+            recordId: applied.recordId,
+            // The organizer may have changed the wanted role while the job ran: the next job sends it.
+            appliedRole: row.role === applied.role ? null : applied.role,
+            assignedAt: row.assignedAt ?? now(),
+          })
+          .where(eq(staffAssignment.id, row.id))
+          .run();
+        recordAppStaff(leagueId, [
+          { tournamentId: row.tournamentId, playerId: row.playerId as PlayerId, role: applied.role, tournamentDate: row.sessionDate as SessionDate },
+        ]);
       });
+    },
+
+    recordFailed(leagueId, assignmentId) {
+      db.update(staffAssignment)
+        .set({ state: 'failed' })
+        .where(and(eq(staffAssignment.id, assignmentId), eq(staffAssignment.leagueId, leagueId), isNull(staffAssignment.removedAt)))
+        .run();
+    },
+
+    forgetRemoved(leagueId, assignmentId) {
+      db.delete(staffAssignment)
+        .where(and(eq(staffAssignment.id, assignmentId), eq(staffAssignment.leagueId, leagueId), isNotNull(staffAssignment.removedAt)))
+        .run();
     },
   };
 }
