@@ -40,6 +40,10 @@ class FakeStaffTools {
   tournaments: TournamentDetails[] = [];
   participants = new Map<string, TournamentParticipant[]>();
   gone = new Set<string>();
+
+  listLeagues(): Promise<never> {
+    return Promise.reject(new Error('a staff job never lists leagues'));
+  }
   /** Every call, in order: `read`, `assign <player> <role>`, `change <record> <role>`, `remove <record>`. */
   calls: string[] = [];
   /** Writes with the fake clock's time when each started. */
