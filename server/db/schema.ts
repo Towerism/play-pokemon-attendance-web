@@ -187,9 +187,10 @@ export const submission = sqliteTable(
     /**
      * `undo` removes the records another submission added; `clear` removes every player record in the play session (M7).
      * `staff` applies a tournament's staff assignments (M8): `play_session_id` then holds the tournament GUID and
-     * `play_session_label` "Staff for <tournament>".
+     * `play_session_label` "Staff for <tournament>". `staff_import` reads every tournament the account organizes
+     * into the staff list (M8): `play_session_id` is '' and `play_session_label` "Staff import".
      */
-    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff'] }).notNull().default('submit'),
+    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import'] }).notNull().default('submit'),
     /** For an undo: the submission whose added records it removes. */
     undoOf: integer('undo_of'),
   },
@@ -207,7 +208,11 @@ export const submissionItem = sqliteTable(
       .notNull()
       .references(() => player.playerId),
     origin: text('origin', { enum: ['session', 'regular', 'upstream'] }).notNull(),
-    /** `removed` and `already_removed` are the outcomes of an undo, a clear or a staff job; the rest after them only a staff job's. */
+    /**
+     * `removed` and `already_removed` are the outcomes of an undo, a clear or a staff job; the rest after them up to
+     * `ineligible` only a staff job's. `found` and `new_player` are a staff import's: a staffer it found, already known
+     * to the league or not.
+     */
     outcome: text('outcome', {
       enum: [
         'pending',
@@ -224,6 +229,8 @@ export const submissionItem = sqliteTable(
         'is_organizer',
         'role_changed',
         'ineligible',
+        'found',
+        'new_player',
       ],
     }).notNull(),
     error: text('error'),

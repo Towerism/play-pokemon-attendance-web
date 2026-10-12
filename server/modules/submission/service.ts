@@ -6,14 +6,15 @@ import { submission, submissionEvent, submissionItem, submissionLock } from '../
 import type { SightingsService } from '../metrics/sightings';
 import type { PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { BulkResult, PlayToolsGateway, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
+import type { BulkResult, PlayToolsGateway, Tournament, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
 import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
+import { dateIn } from './local-time';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
-import { type PlaySessionResolver, submissionTarget } from './resolve';
+import { type PlaySessionResolver, connectedLeague, submissionTarget } from './resolve';
 import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
 
 export type SubmissionStatus = (typeof submission.$inferSelect)['status'];
@@ -72,6 +73,19 @@ export interface SubmissionView extends SubmissionSummary {
   /** Why the job stopped early; null otherwise. */
   error: string | null;
   items: SubmissionItemView[];
+  /** A staff import's result; absent for other kinds. */
+  staffImport?: StaffImportResult;
+}
+
+/** What a staff import read and found (ADR-0007 decision 5). */
+export interface StaffImportResult {
+  tournamentsTotal: number;
+  tournamentsRead: number;
+  tournamentsFailed: number;
+  /** Distinct staffers, one item each. */
+  staffersFound: number;
+  /** Staffers the league didn't know before, by their local name, then id: check their names on Players → Staff. */
+  newPlayers: { playerId: PlayerId; name: string }[];
 }
 
 export type SubmissionEventType =
@@ -83,7 +97,11 @@ export type SubmissionEventType =
   | 'finished'
   | 'record_removed'
   /** A staff job sent one write (assign, role change or removal). */
-  | 'staff_sent';
+  | 'staff_sent'
+  /** A staff import read one tournament's participants; `done` of `total` count tournaments. */
+  | 'tournament_read'
+  /** A staff import gave up on one tournament and went on with the rest. */
+  | 'tournament_failed';
 
 /** Progress, persisted before it is pushed. `done` of `total` players to add are dealt with. */
 export interface SubmissionEvent {
@@ -144,6 +162,13 @@ export interface SubmissionService {
    * @throws StaffingError, SubmissionError, PokemonUpstreamError
    */
   applyStaff(leagueId: string, date: SessionDate, input: { tournamentId: string; startedBy: string }): Promise<{ submissionId: number }>;
+  /**
+   * Import staff from play-tools (ADR-0007 decision 5): reads every tournament
+   * the account organizes, in any league, into the staff list, as a new
+   * read-only `staff_import` job in the background.
+   * @throws SubmissionError, PokemonUpstreamError
+   */
+  importStaff(leagueId: string, startedBy: string): Promise<{ submissionId: number }>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -168,9 +193,14 @@ export interface SubmissionDeps {
   /** The tournament calls a staff job makes (ADR-0007). */
   staffGateway: (
     leagueId: string,
-  ) => Pick<PlayToolsGateway, 'getTournament' | 'listTournamentParticipants' | 'listStaffRoles' | 'assignStaff' | 'changeStaffRole' | 'unassignStaff'>;
+  ) => Pick<
+    PlayToolsGateway,
+    'listTournaments' | 'getTournament' | 'listTournamentParticipants' | 'listStaffRoles' | 'assignStaff' | 'changeStaffRole' | 'unassignStaff'
+  >;
   staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
+  /** The league timezone (ADR-0006): a staff import is dated by the day it starts in it. Default: the process's. */
+  timeZone?: string;
   now?: () => Date;
   /** Rejects with `signal.reason` when the signal aborts. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
@@ -208,6 +238,8 @@ const HELD: ItemOutcome[] = ['assigned', 'already_assigned', 'role_changed'];
 /** Staff item outcomes that mean the job did not get its way. */
 const STAFF_UNDONE: ItemOutcome[] = ['failed', 'ineligible', 'skipped'];
 const STAFF_PREFIX = 'Staff for ';
+/** A staff import's `play_session_label`; it has no play session or tournament of its own. */
+const STAFF_IMPORT_LABEL = 'Staff import';
 
 const DRAFT_STATUS: Record<SubmissionStatus, SessionStatus> = {
   planned: 'submitting',
@@ -239,7 +271,8 @@ class Interrupted extends Error {
 }
 
 /** How logs name a job. */
-const what = (row: { kind: SubmissionKind }) => ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job' })[row.kind];
+const what = (row: { kind: SubmissionKind }) =>
+  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', staff_import: 'Staff import' })[row.kind];
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -271,6 +304,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const settlePollMs = deps.settlePollMs ?? 15_000;
   const undoDelayMs = deps.undoDelayMs ?? 1_000;
   const staffDelayMs = Math.max(500, deps.staffDelayMs ?? 1_000);
+  const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const log = deps.log ?? silentLogger;
 
   const running = new Set<Promise<void>>();
@@ -1164,6 +1198,76 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     });
   }
 
+  /**
+   * Staff import (ADR-0007 decision 5): reads every tournament the account
+   * organizes, in any league, and seeds the staff list from each one's
+   * participants. Read-only, one call at a time and unpaced (organizer,
+   * 2026-10-12: reads don't need pacing).
+   */
+  async function runStaffImport(row: Row): Promise<void> {
+    const { leagueId } = row;
+    const gateway = deps.staffGateway(leagueId);
+    setStatus(row, 'running');
+    const tournaments = await gateway.listTournaments();
+    const total = tournaments.length;
+    emit(row, 'planned', `${total} tournaments to read.`, 0, total);
+    /** Every staffer found so far: once new to the league, a staffer stays `new_player` for the whole import. */
+    const found = new Map<PlayerId, 'found' | 'new_player'>();
+    let done = 0;
+    for (const t of tournaments) {
+      const participants = await gateway.listTournamentParticipants(t.id);
+      db.transaction(() => seedFrom(row, t, participants, found));
+      done += 1;
+      emit(row, 'tournament_read', `Read ${done} of ${total} tournaments.`, done, total);
+    }
+    setStatus(row, 'succeeded');
+    emit(row, 'finished', 'Staff import succeeded.', done, total);
+  }
+
+  /**
+   * Seeds the staff list from one tournament's participants and records each
+   * staffer as an item. The organizer is whoever holds the `organizer` record,
+   * so the import needs no `getTournament` read.
+   */
+  function seedFrom(
+    row: Row,
+    t: Pick<Tournament, 'id' | 'startsAt'>,
+    participants: readonly TournamentParticipant[],
+    found: Map<PlayerId, 'found' | 'new_player'>,
+  ): void {
+    const organizerPlayerId = participants.find((p) => p.role === 'organizer')?.playerId ?? ('' as PlayerId);
+    const added = new Set(deps.staffing.recordUpstreamStaff(row.leagueId, { id: t.id, startsAt: t.startsAt, organizerPlayerId }, participants));
+    // The staffers recordUpstreamStaff records: staff records other than the organizer's.
+    const staff = participants.filter((p) => p.isStaff && p.role !== null && p.role !== 'organizer' && p.playerId !== organizerPlayerId);
+    for (const { playerId } of staff) {
+      found.set(playerId, added.has(playerId) || found.get(playerId) === 'new_player' ? 'new_player' : 'found');
+    }
+    setItems(
+      [...new Set(staff.map((p) => p.playerId))].map((playerId) => ({
+        submissionId: row.id,
+        playerId,
+        origin: 'upstream' as const,
+        outcome: found.get(playerId)!,
+      })),
+    );
+  }
+
+  /** A staff import's counts, from its events and items. */
+  function staffImportResult(row: Row, items: readonly { playerId: string; outcome: ItemOutcome }[], names: Map<PlayerId, string>): StaffImportResult {
+    const events = db.select({ type: submissionEvent.type, total: submissionEvent.total }).from(submissionEvent).where(eq(submissionEvent.submissionId, row.id)).all();
+    const newPlayers = items
+      .filter((i) => i.outcome === 'new_player')
+      .map((i) => ({ playerId: i.playerId as PlayerId, name: names.get(i.playerId as PlayerId) ?? '' }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.playerId.localeCompare(b.playerId));
+    return {
+      tournamentsTotal: events.find((e) => e.type === 'planned')?.total ?? 0,
+      tournamentsRead: events.filter((e) => e.type === 'tournament_read').length,
+      tournamentsFailed: events.filter((e) => e.type === 'tournament_failed').length,
+      staffersFound: items.length,
+      newPlayers,
+    };
+  }
+
   /** A job that stops early: whoever was not sent yet is skipped. */
   function stopEarly(row: Row, status: 'failed' | 'interrupted', error: string): void {
     db.update(submissionItem)
@@ -1181,7 +1285,17 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   function launch(row: Row): void {
     const submissionId = row.id;
     log.info(`${what(row)} #${submissionId} started for ${row.sessionDate}`, { submissionId, date: row.sessionDate });
-    const job = (row.kind === 'undo' ? runUndo(row) : row.kind === 'clear' ? runClear(row) : row.kind === 'staff' ? runStaff(row) : run(row))
+    const job = (
+      row.kind === 'undo'
+        ? runUndo(row)
+        : row.kind === 'clear'
+          ? runClear(row)
+          : row.kind === 'staff'
+            ? runStaff(row)
+            : row.kind === 'staff_import'
+              ? runStaffImport(row)
+              : run(row)
+    )
       .catch((err: unknown) => {
         const interrupted = err instanceof Interrupted;
         if (!interrupted) log.warn(`${what(row)} #${submissionId} failed: ${(err as Error).message}`, { submissionId });
@@ -1367,6 +1481,32 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return { submissionId: row.id };
   }
 
+  async function beginStaffImport(leagueId: string, startedBy: string, retryOf: number | null) {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    connectedLeague(deps.connections, leagueId);
+    const row = db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: dateIn(now(), timeZone),
+          playSessionId: '',
+          playSessionLabel: STAFF_IMPORT_LABEL,
+          startedBy,
+          startedAt: now(),
+          status: 'planned',
+          retryOf,
+          kind: 'staff_import',
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      return created;
+    });
+    launch(row);
+    return { submissionId: row.id };
+  }
+
   // --- the service -----------------------------------------------------------
 
   const service: SubmissionService = {
@@ -1380,6 +1520,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       if (row.kind === 'undo') return beginUndo(leagueId, mustFind(leagueId, row.undoOf!), startedBy, row.id);
       if (row.kind === 'clear') return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
+      if (row.kind === 'staff_import') return beginStaffImport(leagueId, startedBy, row.id);
       return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
     },
 
@@ -1409,6 +1550,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
     applyStaff: async (leagueId, date, input) => beginStaff(leagueId, date, input.tournamentId, input.startedBy, null),
 
+    importStaff: async (leagueId, startedBy) => beginStaffImport(leagueId, startedBy, null),
+
     get(leagueId, submissionId) {
       const row = mustFind(leagueId, submissionId);
       const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
@@ -1433,6 +1576,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           errorCode: i.errorCode,
           suggestedPlayerId: i.suggestedPlayerId as PlayerId | null,
         })),
+        ...(row.kind === 'staff_import' ? { staffImport: staffImportResult(row, items, names) } : {}),
       };
     },
 
