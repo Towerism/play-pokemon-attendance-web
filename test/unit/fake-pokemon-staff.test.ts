@@ -131,6 +131,56 @@ describe('fake play-tools: tournaments and staff', () => {
   });
 });
 
+describe('fake play-tools: several professors (S6: organizer-only)', () => {
+  const BROCK = '0000222';
+
+  async function gatewayAs(code: string): Promise<PlayToolsGateway> {
+    const res = await fetch(`${fake.url}/oauth2/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: 'op-tools-app', code, code_verifier: 'v' }),
+    });
+    const token = ((await res.json()) as { access_token: string }).access_token;
+    return createPlayToolsHttpAdapter({
+      tokens: { getAccessToken: async () => ({ value: token, expiresAt: new Date(Date.now() + 3_600_000), subject: 'sub' }) },
+      connectionId: 2,
+      baseUrl: fake.env.NUXT_POKEMON_API_URL,
+    });
+  }
+
+  beforeEach(() => {
+    fake.tournaments.push(fakeTournament('brocks', { startsAt: '2026-10-11T21:00:00Z', organizer: BROCK }));
+    fake.tournamentRecords.set('brocks', [fakeRecord(BROCK, { role: 'organizer' })]);
+  });
+
+  it("lists only the caller's own tournaments", async () => {
+    const brock = await gatewayAs(fake.addAccount({ playerId: BROCK, name: 'Brock Harrison', leagues: fake.leagues }).code);
+    expect((await gateway.listTournaments()).map((t) => t.id)).toEqual([T]);
+    expect((await brock.listTournaments()).map((t) => t.id)).toEqual(['brocks']);
+  });
+
+  it("refuses another professor's tournament records and staff writes with 403, but still serves its details", async () => {
+    const brock = await gatewayAs(fake.addAccount({ playerId: BROCK, name: 'Brock Harrison', leagues: fake.leagues }).code);
+    expect((await brock.getTournament(T)).organizerPlayerId).toBe(ORGANIZER);
+    for (const call of [
+      () => brock.listTournamentParticipants(T),
+      () => brock.assignStaff(T, { playerId: pid('2222'), role: 'judge' }),
+      () => gateway.assignStaff('brocks', { playerId: pid('2222'), role: 'judge' }),
+    ]) {
+      await expect(call()).rejects.toMatchObject({ code: 'forbidden' });
+    }
+    expect(fake.tournamentRecords.get('brocks')).toHaveLength(1);
+  });
+
+  it('fails a path once for one caller only, when keyed `path@playerId`', async () => {
+    const brock = await gatewayAs(fake.addAccount({ playerId: BROCK, name: 'Brock Harrison', leagues: fake.leagues }).code);
+    fake.failOnce.set(`/services/core/activities@${BROCK}`, 503);
+    expect((await gateway.listTournaments()).map((t) => t.id)).toEqual([T]);
+    await expect(brock.listTournaments()).rejects.toMatchObject({ code: 'unavailable' });
+    expect((await brock.listTournaments()).map((t) => t.id)).toEqual(['brocks']);
+  });
+});
+
 describe('fake play-tools: slow tournament reads', () => {
   it("holds each read of a tournament's records for tournamentReadDelayMs (to keep an import running)", async () => {
     fake.tournamentReadDelayMs = 150;
