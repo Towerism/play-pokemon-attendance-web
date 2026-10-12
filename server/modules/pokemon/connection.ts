@@ -38,6 +38,23 @@ export interface ConnectionView {
   professor: { playerId: string | null; name: string | null } | null;
 }
 
+/** A connection as staffing and submission see it: whose it is and whether it can act. Never carries a token. */
+export interface ActingConnection {
+  id: number;
+  professorPlayerId: string | null;
+  professorName: string | null;
+  status: 'connected' | 'needs_reconnect';
+}
+
+/** The leagues every connected professor shares (#75), as the named professor sees them. */
+export interface SharedLeagues {
+  leagues: League[];
+  /** The league's activity group when the named professor submits for it. */
+  selectedId: string | null;
+  /** Professors left out of the shared set because they need a reconnect. */
+  excluded: { playerId: string | null; name: string | null }[];
+}
+
 export type KeepAliveResult =
   | { outcome: 'refreshed' | 'skipped_recent' | 'not_connected' | 'needs_reconnect' }
   | { outcome: 'failed'; message: string };
@@ -87,15 +104,21 @@ export class ConnectionNotFoundError extends Error {
 export interface PokemonConnectionService extends TokenProvider {
   getStatus(leagueId: string): ConnectionView;
   listConnections(leagueId: string): ProfessorConnection[];
+  /** Every connection, oldest first, for reading and acting as each professor (#75). */
+  listActingConnections(): ActingConnection[];
   /** Begins a connect for `userId`: the attempt (PKCE verifier + state) lives 10 minutes, in memory only. */
   startConnect(userId: number): { authorizeUrl: string; expiresAt: Date };
   /** Adds the professor the pasted login belongs to, or reconnects them. @throws ConnectError, PokemonUpstreamError */
   completeConnect(leagueId: string, userId: number, pastedUrl: string): Promise<{ connection: ProfessorConnection; outcome: 'added' | 'reconnected' }>;
   /** The organizer's display name for a professor (ADR-0008): display only, never from or to Pokémon; null clears it. @throws ConnectionNotFoundError */
   setProfessorName(leagueId: string, professorPlayerId: string, name: string | null): ProfessorConnection;
-  /** @throws ConnectionNotFoundError, PokemonUpstreamError */
-  listUpstreamLeagues(leagueId: string, professorPlayerId: string): Promise<{ leagues: League[]; selectedId: string | null }>;
-  /** Makes that professor's connection submit for the league, to one of their leagues. @throws ConnectionNotFoundError, LeagueNotFoundError, PokemonUpstreamError */
+  /**
+   * The leagues every connected professor shares (#75), each read as that professor. A professor who needs a
+   * reconnect is left out and named; any other failure throws, so a league is never chosen from a partial set.
+   * @throws ConnectionNotFoundError, PokemonUpstreamError
+   */
+  listUpstreamLeagues(leagueId: string, professorPlayerId: string): Promise<SharedLeagues>;
+  /** Makes that professor's connection submit for the league, to a league every professor shares. @throws ConnectionNotFoundError, LeagueNotFoundError, PokemonUpstreamError */
   selectLeague(leagueId: string, professorPlayerId: string, activityGroupId: string): Promise<ConnectionView>;
   /** Rotates each refresh token whose last refresh is ≥ 45 min old, one connection at a time. Never throws. */
   keepAliveAll(): Promise<KeepAliveReport[]>;
@@ -376,11 +399,36 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     }
   }
 
-  /** After a connect: a league with no submitting professor takes this one when they have exactly one league. */
+  /** The leagues `named` shares with every other professor; those needing a reconnect are left out (#75). */
+  async function sharedLeagues(named: Row): Promise<{ leagues: League[]; excluded: SharedLeagues['excluded'] }> {
+    let leagues = await deps.gateway(service, named.id).listLeagues();
+    const excluded: SharedLeagues['excluded'] = [];
+    for (const other of all()) {
+      if (other.id === named.id) continue;
+      const leaveOut = () => excluded.push({ playerId: other.professorPlayerId, name: other.professorName });
+      if (other.status === 'needs_reconnect') {
+        leaveOut();
+        continue;
+      }
+      let theirs: League[];
+      try {
+        theirs = await deps.gateway(service, other.id).listLeagues();
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError && err.code === 'needs_reconnect')) throw err;
+        leaveOut();
+        continue;
+      }
+      const ids = new Set(theirs.map((l) => l.id));
+      leagues = leagues.filter((l) => ids.has(l.id));
+    }
+    return { leagues, excluded };
+  }
+
+  /** After a connect: a league with no submitting professor takes this one when exactly one league is shared. */
   async function autoSelectLeague(leagueId: string, id: number): Promise<void> {
     if (bindingOf(leagueId)) return;
     try {
-      const leagues = await deps.gateway(service, id).listLeagues();
+      const { leagues } = await sharedLeagues(load(id)!);
       if (leagues.length === 1) bind(leagueId, id, leagues[0]!);
     } catch (err) {
       log.warn(`League discovery after connecting failed; pick the league in Settings (${(err as Error).message}).`, { err });
@@ -496,11 +544,14 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       return professorView(load(r.id)!, bindingOf(leagueId));
     },
 
+    listActingConnections: () =>
+      all().map((r) => ({ id: r.id, professorPlayerId: r.professorPlayerId, professorName: r.professorName, status: r.status })),
+
     async listUpstreamLeagues(leagueId, professorPlayerId) {
       const r = requireByPlayer(professorPlayerId);
-      const leagues = await deps.gateway(service, r.id).listLeagues();
+      const { leagues, excluded } = await sharedLeagues(r);
       const b = bindingOf(leagueId);
-      return { leagues, selectedId: b?.connectionId === r.id ? b.activityGroupId : null };
+      return { leagues, selectedId: b?.connectionId === r.id ? b.activityGroupId : null, excluded };
     },
 
     async selectLeague(leagueId, professorPlayerId, activityGroupId) {
