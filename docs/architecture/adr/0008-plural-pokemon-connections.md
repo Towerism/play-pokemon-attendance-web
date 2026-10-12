@@ -65,6 +65,9 @@ Option 2.
 - A player ID that is already connected is a reconnect: the token, status and name are replaced and the binding is kept.
 - A new player ID adds a connection, up to 10 per install.
 - No player ID means the connect fails and nothing is stored.
+- The identity is read with the fresh access token *before* the refresh token is stored, because the row's key isn't
+  known until then. Nothing has rotated yet, so this can't revoke a chain; the ADR-0003 rule (persist a *rotated* token
+  before using its access token) is unchanged. A connect that fails after the exchange revokes the fresh login.
 
 **Keep-alive:** the hourly task runs the ADR-0003 rule (refresh when the last refresh is ≥ 45 min old) for every
 connection, one at a time. One connection's failure doesn't stop the others.
@@ -86,8 +89,10 @@ record it.
 - A boot step re-seals the ciphertext under the new AAD before any refresh can run. The SQL migration can't do this,
   because it has no vault key.
 - The first successful refresh fills in the player ID and name, so no reconnect is needed.
-- If that refresh gets `invalid_grant`, the row is `needs_reconnect` as today. Reconnecting claims it for the player ID
-  read at connect, and keeps the binding.
+- If that refresh gets `invalid_grant`, the row is `needs_reconnect` as today. The next connect claims it for the player ID
+  read at connect, and keeps the binding (a healthy unidentified row is only claimed by the same account, `sub`).
+- If the professor it turns out to be is already connected under another row, the two merge: their own row and the league
+  binding stay, and the carried-over chain is revoked.
 
 ## Consequences
 
