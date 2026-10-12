@@ -20,11 +20,14 @@ watch(
 );
 const needsReconnect = computed(() => !!user.value && connection.value?.status === 'needs_reconnect');
 
-// Phones get the links in a drawer (below `sm`); any navigation closes it.
+// Phones get the links in a drawer (below `sm`); any navigation closes it as soon as the URL changes.
+// The layout's `useRoute()` only follows once the new page has loaded, which would close a drawer
+// opened in between, so this watches the router's route instead.
 const menuOpen = ref(false);
 const route = useRoute();
+const router = useRouter();
 watch(
-  () => route.fullPath,
+  () => router.currentRoute.value.fullPath,
   () => {
     menuOpen.value = false;
   },
