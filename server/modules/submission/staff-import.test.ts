@@ -188,6 +188,9 @@ async function importStaff(): Promise<SubmissionView> {
   return service.get(L, submissionId);
 }
 
+/** play-tools refusing a tournament's records: 403 for a league the account isn't in (#67), 401 for the token. */
+const refused = (status: 401 | 403) => new PokemonUpstreamError('forbidden', `Tournament participants: play-tools refused the request (${status}).`, { status });
+
 const history = () =>
   database.sqlite
     .prepare('select tournament_id, player_id, role, source from staff_history order by tournament_id, player_id')
@@ -487,10 +490,35 @@ describe('reading tournaments', () => {
     expect((await importStaff()).status).toBe('failed');
   });
 
+  it('skips a tournament play-tools refuses (403) without reading it again, goes on, and ends partial', async () => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw refused(403);
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2', 'read t-3']);
+    expect(events(view.id).filter((e) => e === 'tournament_failed')).toHaveLength(1);
+    expect(view.status).toBe('partial');
+    expect(view.staffImport).toMatchObject({ tournamentsTotal: 3, tournamentsRead: 2, tournamentsFailed: 1 });
+    expect(history().map((h) => (h as { player_id: string }).player_id)).toEqual(['100', '300']);
+  });
+
+  it('ends failed with forbidden when play-tools refuses every tournament, reading each once', async () => {
+    upstream.onRead = () => {
+      throw refused(403);
+    };
+
+    const view = await importStaff();
+
+    expect(upstream.calls).toEqual(['leagues', 'list', 'read t-1', 'read t-2', 'read t-3']);
+    expect(view).toMatchObject({ status: 'failed', error: 'forbidden' });
+  });
+
   it.each([
-    ['forbidden', new PokemonUpstreamError('forbidden', 'play-tools refused the request (403).', { status: 403 })],
-    ['needs_reconnect', new PokemonUpstreamError('needs_reconnect', 'Reconnect the Pokémon account in Settings.')],
-  ])('stops failed with %s, sends nothing more, and keeps what it recorded', async (code, error) => {
+    ['forbidden', 'a 401 (the token refused)', refused(401)],
+    ['needs_reconnect', 'needs_reconnect', new PokemonUpstreamError('needs_reconnect', 'Reconnect the Pokémon account in Settings.')],
+  ])('stops failed with %s on %s, sends nothing more, and keeps what it recorded', async (code, _, error) => {
     upstream.onRead = (t) => {
       if (t === 't-2') throw error;
     };

@@ -249,6 +249,14 @@ const STAFF_PREFIX = 'Staff for ';
 const IMPORT_TRIES = 3;
 /** Read errors after which a staff import gives up on that tournament only, without trying again. */
 const SKIPPED_TOURNAMENT: PokemonErrorCode[] = ['not_found', 'unexpected_shape'];
+
+/**
+ * Whether a staff import gives up on one tournament and goes on: gone, unreadable, or
+ * refused with a 403 (that tournament's league, #67). A 401 is the token, so it stops.
+ */
+function skipsTournament(err: PokemonUpstreamError): boolean {
+  return SKIPPED_TOURNAMENT.includes(err.code) || (err.code === 'forbidden' && err.details.status === 403);
+}
 /** A staff import's `play_session_label`; it has no play session or tournament of its own. */
 const STAFF_IMPORT_LABEL = 'Staff import';
 
@@ -1258,8 +1266,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       try {
         participants = await read(() => gateway.listTournamentParticipants(t.id), 'that tournament');
       } catch (err) {
-        // Gone, unreadable, or still down after 3 tries: this tournament only. Anything else stops the import.
-        if (!(err instanceof PokemonUpstreamError) || !(err.retryable || SKIPPED_TOURNAMENT.includes(err.code))) throw err;
+        // Gone, unreadable, refused (403), or still down after 3 tries: this tournament only. Anything else stops the import.
+        if (!(err instanceof PokemonUpstreamError) || !(err.retryable || skipsTournament(err))) throw err;
         failed += 1;
         lastFailure = err.code;
         log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, { submissionId: row.id, tournamentId: t.id, code: err.code });
