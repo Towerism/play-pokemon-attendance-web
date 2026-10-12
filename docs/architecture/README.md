@@ -815,17 +815,19 @@ recovery, shutdown, retry that re-reads, and History ("Staff for <tournament>").
 records each staff record found, excluding `organizer`, in `STAFF_HISTORY` (`source = upstream`). It does so
 through `RosterService`, which uses the play-tools name only for a player the app can't name yet. The one-time
 **Import staff from play-tools** (`kind = 'staff_import'`, #48) does the same for every tournament the account has
-organized, in any league, dated or not. As built (`runStaffImport` in `server/modules/submission/service.ts`):
-- **Read-only and unpaced.** One `listTournaments()` with no range, then one `listTournamentParticipants` per
-  tournament, one call at a time with no delay between them (organizer, 2026-10-12: reads don't need pacing;
+organized, dated or not, in the leagues it is in today (#67: play-tools refuses a former league's records). As built (`runStaffImport` in `server/modules/submission/service.ts`):
+- **Read-only and unpaced.** One `listLeagues()`, one `listTournaments()` with no range, then one
+  `listTournamentParticipants` per tournament not left out (one whose activity group isn't among the leagues; the
+  `planned` event counts them), one call at a time with no delay between them (organizer, 2026-10-12: reads don't need pacing;
   `NUXT_STAFF_DELAY_MS` paces only the staff job's writes). The organizer's id comes from their own `organizer`
   record, so it makes no `getTournament` read.
 - **Seeding** goes through `StaffingService.recordUpstreamStaff`, whose return value (the players it newly made
   known) decides each staffer's item: one per distinct staffer, `origin = upstream`, `new_player` or `found`.
 - **Errors:** a 429 waits for `Retry-After`, and a 429 or 5xx is tried at most 3 times. A tournament that is still
-  down, gone (`not_found`) or unreadable (`unexpected_shape`) is a `tournament_failed` event, and the import goes
-  on: `succeeded` when every tournament was read, `partial` when some were, `failed` when none were. `forbidden`,
-  `needs_reconnect` or anything else stops it `failed`, with the code as its `error`.
+  down, gone (`not_found`), unreadable (`unexpected_shape`) or refused with a 403 (`forbidden`) is a
+  `tournament_failed` event naming its display id and date, and the import goes on: `succeeded` when every
+  tournament was read, `partial` when some were, `failed` when none were. A 401 (`forbidden`), `needs_reconnect`
+  or anything else stops it `failed`, with the code as its `error`.
 - **The row:** `play_session_id = ''`, `play_session_label = 'Staff import'`, and `session_date` the day it started
   in the league `TZ`. It is never undoable. Retry and Resume read everything again, which is harmless (rows are
   unique), and boot recovery and shutdown work as for every job.
@@ -924,7 +926,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `POST /submissions/{id}/undo` → 202                       | Remove the records this submission added, as a new undo attempt → `{ submissionId }` (§6.3). Summaries carry `kind`, `undoOf`, `undoable`, `undoBlockedReason`; items carry `removedBy` |
 | `GET /sessions/{date}/clear?playSessionId=` · `POST /sessions/{date}/clear` → 202 | Clear session (§6.3). `GET` previews `{ playSessionId, playSessionLabel, players: [{ playerId, name, addedByApp }], staffKept, otherSessionHasAppRecords }`. `POST` takes `{ playSessionId, confirmDate }` and starts a `kind = 'clear'` job → `{ submissionId }` |
 | `GET /staff?q=&limit=` (M8)                               | Staff list search over `STAFF_HISTORY` (seeded from play-tools): a bare array `[{ playerId, name, timesStaffed, lastStaffedOn, lastRole }]`, most recent first (`lastStaffedOn` null and last when no tournament has a date; `lastRole` is upstream text); `q` and `limit` (1–100, absent = every match) as for `/players`. `name` is always the local name. Needs no Pokémon connection |
-| `POST /staff/import` → 202 (M8)                           | No body. Start the read-only `kind = 'staff_import'` job: every tournament the account organizes, in any league, read one at a time and unpaced → `{ submissionId }`; 409 `submission_running` / `league_not_selected` / `not_connected` / `needs_reconnect`, 503 `shutting_down`. `GET /submissions/{id}` then carries the `staffImport` result: tournaments total, read and failed, staffers found, and the new players (to check names). Re-running is harmless |
+| `POST /staff/import` → 202 (M8)                           | No body. Start the read-only `kind = 'staff_import'` job: every tournament the account organizes in the leagues it is in today (#67), read one at a time and unpaced → `{ submissionId }`; 409 `submission_running` / `league_not_selected` / `not_connected` / `needs_reconnect`, 503 `shutting_down`. `GET /submissions/{id}` then carries the `staffImport` result: tournaments total, read and failed, staffers found, and the new players (to check names). Re-running is harmless |
 | `GET /staff/roles` (M8)                                   | `{ roles: [{ code, label }] }` from `listStaffRoles` (the S6 constant; `judge` first as the default). No upstream call |
 | `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, tournaments: [{ tournamentId, label, startsAt, editable, missing?, organizer: { playerId } \| null, assignments: [{ id, playerId, name, role, appliedRole, state }], upstreamOnly: [{ playerId, name, role }], players: [{ playerId }] }] }`: this league's tournaments that start on the date (league TZ), in start order. Reads upstream live (one call at a time) and seeds the staff list. An assignment whose tournament play-tools no longer lists shows under a `missing: true` entry (`startsAt` and `organizer` null, not editable). 409 `league_not_selected`/`not_connected`/`needs_reconnect` |
 | `POST /sessions/{date}/staff` (M8)                        | Add `{ tournamentId, playerId, role, name? }`: 201 when added (or a tombstoned assignment revived), 200 when that player is already wanted there in that role (no upstream call), 409 `player_already_staffed` in another role, 409 `already_listed` (`data.how`: `player` \| `staff`) when play-tools already lists them, 422 `organizer_cannot_staff` for the tournament's organizer (fresh read), `unknown_role`, `unknown_tournament` (not this league's on that date) and `tournament_locked`. 400 for a malformed body, before any upstream call |
