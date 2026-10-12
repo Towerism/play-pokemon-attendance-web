@@ -10,7 +10,7 @@ How to run them: [`spikes/README.md`](../../spikes/README.md).
 | S3 | `play_sessions` shape: date field, timezone, pagination, statuses | ✅ done | UTC `start_date`/`end_date`. Statuses are `active`/`pending`/`complete`. DRF pagination. Server-side date filters exist. No title field. Attendance locks at `final_modifiable_datetime` (= start + 7 d). | §4.4 and the submission flow change ([below](#design-changes-triggered-apply-in-m4m5)). |
 | S4 | `_bulk` semantics: response, partial failure, already-present player | ✅ done | 201 `[{guid}]` in request order. **All-or-nothing:** one rejected item adds nobody. Duplicate → 400 `cannot_duplicate_participant` (index-keyed). Non-numeric id → HTML 500. The session creator holds a hidden organizer record. DELETE → 204. | Diff against **all** records. Validate ids locally. Retry without the offending index. (See design changes 6–9.) |
 | S5 | Which id does `users/{id}/activity_groups/` take? | ✅ done | The access-token `sub` claim (32 hex chars). | `TokenProvider` exposes `subject`. League discovery = filter `group_type === "league"`. |
-| S6 | Staff (M8): tournament list, staff assign/remove calls, roles, organizer, edit window | ✅ done | One `POST core/tournaments/{guid}/records` per staffer → 201 `{guid}`; duplicate/unclaimed → 400 keyed `participant.player_id`; `PATCH`/`DELETE …/records/{guid}` → 204. Unfiltered records = players + staff. Organizer in `core/tournament/{guid}`. `core/activities` lists the organizer's tournaments but **ignores date filters**. Staff tab is organizer-only (403 otherwise). | See [S6](#s6-staff-assignment-done-2026-10-11); §4.3 and ADR-0007 to be updated by #41's owner. |
+| S6 | Staff (M8): tournament list, staff assign/remove calls, roles, organizer, edit window | ✅ done | One `POST core/tournaments/{guid}/records` per staffer → 201 `{guid}`; duplicate/unclaimed/uncertified → 400 keyed `participant.player_id`; `PATCH`/`DELETE …/records/{guid}` → 204. Unfiltered records = players + staff. Organizer in `core/tournament/{guid}`. `core/activities` lists the organizer's tournaments but **ignores date filters**. Staff tab is organizer-only (403 otherwise). | See [S6](#s6-staff-assignment-done-2026-10-11); §4.3 and ADR-0007 to be updated by #41's owner. |
 
 ## Verified without a login (2026-10-10)
 
@@ -178,6 +178,7 @@ below are what the client *sends* and *expects*. Claims marked *(inferred)* need
 | Action | Call | Body |
 | ------ | ---- | ---- |
 | Assign | `POST core/tournaments/{t}/records` | **One object**, not a list: `{"role":"judge","player":false,"participant":{"player_id":"…"},"origin":"manual"}` |
+| Assign, role needs a certification the person lacks | same | **400**, same envelope, code `op.activity_record.missing_certification` ("The given user lacks the appropriate certificate for the given role.") |
 | Change role | `PATCH core/tournaments/{t}/records/{r}` | JSON-Patch array: `[{"op":"replace","path":"/role","value":"scorekeeper"}]` |
 | Remove | `DELETE core/tournaments/{t}/records/{r}` | `[{"legacy_alias":"<the staffer's player_id>"}]` |
 
@@ -297,7 +298,14 @@ paths without a trailing slash.
 
 - The error key is the dotted string `"participant.player_id"`, not an index like `_bulk`'s `"0.participant.player_id"`.
   One call carries one staffer, so there is nothing to index.
-- `judge` → `administration` → `judge` was accepted for a certified judge. Certification refusals weren't provoked.
+- `judge` → `administration` → `judge` was accepted for a certified judge.
+- **Certification is per product, and upstream enforces it** (`pnpm spike:s6-cert`, fixtures 14–18).
+  - The person tested is TCG-certified only, chosen by the organizer.
+  - Adding them to a VGC (`product: "vg"`) tournament as `judge` → 400 `missing_certification`, and as
+    `headjudge` → the same.
+  - Nothing was added, and the staff list matched its snapshot afterwards.
+  - The app needs no certification rules of its own. It reports this code per staffer, for example "not certified
+    for this role at a VGC event".
 
 **Reads (confirmed).**
 
@@ -341,13 +349,12 @@ paths without a trailing slash.
 4. **Already listed:** an unfiltered records pass, every page, before each assign. Upstream refuses a duplicate
    anyway (`cannot_duplicate_participant`).
 5. **Organizer:** `organizer.player_id` in the tournament details.
-6. **Edit window:** the UI allows adding until start + 90 d. The server side after that, and certification
-   refusals, weren't provoked. Map any 400 code to a per-staffer failure.
+6. **Edit window:** the UI allows adding until start + 90 d. The server side after that wasn't provoked.
+   Certification is enforced upstream per product (`missing_certification`). Map any 400 code to a per-staffer failure.
 
 **Still open (low risk):**
 
 - the server's answer after the 90-day window;
-- a `missing_certification` body;
 - whether `DELETE` without the `legacy_alias` body works.
 
 **Result:** fill in the gateway contract in architecture §4.3, settle ADR-0007's open questions, and add the

@@ -65,6 +65,11 @@ export function repairActions(before: readonly Staff[], after: readonly Staff[],
   };
 }
 
+/** Records for `playerId` in `after` that the snapshot `before` didn't have, i.e. what a probe added. */
+export function addedFor(before: readonly Staff[], after: readonly Staff[], playerId: string): Staff[] {
+  return after.filter((a) => a.playerId === playerId && !before.some((b) => b.recordId === a.recordId));
+}
+
 /** Entries of `before` with no record of the same player id and role in `after`. */
 export function missingFrom(before: readonly Staff[], after: readonly Staff[]): Staff[] {
   return before.filter((b) => !after.some((a) => a.playerId === b.playerId && a.role === b.role));

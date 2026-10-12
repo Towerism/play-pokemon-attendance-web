@@ -19,9 +19,10 @@ import { loadCalls, sanitizeCalls } from './lib/har';
 const OUT_DIR = join(import.meta.dirname, '..', 'server/modules/pokemon/adapters/play-tools/__fixtures__/s6');
 
 run(async () => {
-  const file = process.argv[2];
-  if (!file) throw new Error('Usage: pnpm spike:s6 <capture.har | spikes/.secrets/raw/s6-live.json>');
-  const { calls, leaks } = sanitizeCalls(loadCalls(JSON.parse(readFileSync(file, 'utf8'))));
+  // Several captures are sanitised in one pass, so ids stay consistent across them.
+  const files = process.argv.slice(2);
+  if (files.length === 0) throw new Error('Usage: pnpm spike:s6 <capture.har | spikes/.secrets/raw/s6-*.json> [...]');
+  const { calls, leaks } = sanitizeCalls(files.flatMap((f) => loadCalls(JSON.parse(readFileSync(f, 'utf8')))));
   if (leaks.length) throw new Error(`${leaks.length} original value(s) survived sanitisation; nothing written`);
 
   heading('S6 calls');

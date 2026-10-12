@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ASSIGNABLE_ROLES, missingFrom, otherRole, pickStaffer, repairActions, toStaff, withinAddWindow, type Staff } from './staff';
+import { ASSIGNABLE_ROLES, addedFor, missingFrom, otherRole, pickStaffer, repairActions, toStaff, withinAddWindow, type Staff } from './staff';
 
 const rec = (guid: string, player_id: string, role: string | null) => ({ guid, role, participant: { player_id } });
 
@@ -83,6 +83,15 @@ describe('repairActions', () => {
     const r = repair(toStaff([rec('o', '1', 'organizer'), rec('j', '3', 'judge')]));
     expect(r.othersMissing).toEqual([{ recordId: 'k', playerId: '4', role: 'scorekeeper' }]);
     expect(r.remove).toEqual([]);
+  });
+});
+
+describe('addedFor', () => {
+  it("lists only the player's records that were not in the snapshot", () => {
+    const before = toStaff([rec('o', '1', 'organizer'), rec('j', '3', 'judge')]);
+    const after = toStaff([rec('o', '1', 'organizer'), rec('j', '3', 'judge'), rec('N1', '7', 'judge'), rec('N2', '8', 'judge')]);
+    expect(addedFor(before, after, '7')).toEqual([{ recordId: 'N1', playerId: '7', role: 'judge' }]);
+    expect(addedFor(before, after, '3')).toEqual([]);
   });
 });
 
