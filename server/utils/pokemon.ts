@@ -32,11 +32,16 @@ export function usePokemon(): PokemonConnectionService {
   return pokemon;
 }
 
-/** The play-tools gateway as the league's submitting professor; every call fails `not_connected` while none is chosen. */
+/** The play-tools gateway as the league's submitting professor, for attendance; every call fails `not_connected` while none is chosen. */
 export function leagueGateway(leagueId: string) {
+  return connectionGateway(usePokemon().getStatus(leagueId).connectionId);
+}
+
+/** The play-tools gateway as one professor's connection: tournaments are read and staffed as their organizer (#75). */
+export function connectionGateway(connectionId: number | null) {
   return createPlayToolsHttpAdapter({
     tokens: usePokemon(),
-    connectionId: usePokemon().getStatus(leagueId).connectionId,
+    connectionId,
     baseUrl: useRuntimeConfig().pokemon.apiUrl,
     log: useLogger('pokemon'),
   });

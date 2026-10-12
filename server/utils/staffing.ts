@@ -9,7 +9,7 @@ export function useStaffing(): StaffingService {
     db: useDb(),
     roster: useRoster(),
     connections: usePokemon(),
-    gateway: leagueGateway,
+    staffGateway: connectionGateway,
     timeZone: leagueTimeZone(),
   });
   return staffing;
@@ -25,9 +25,14 @@ const STATUS: Record<StaffingErrorCode, number> = {
   league_not_selected: 409,
   not_found: 404,
   nothing_to_apply: 422,
+  organizer_not_connected: 409,
+  needs_reconnect: 409,
 };
 
-/** Maps staffing and Pokémon errors to HTTP; `data.code` (and `data.how` for `already_listed`) tells the UI what to show. */
+/**
+ * Maps staffing and Pokémon errors to HTTP; `data.code` tells the UI what to show, with `data.how` for
+ * `already_listed`, `data.organizerPlayerId` for `organizer_not_connected` and `data.professorPlayerId` for `needs_reconnect`.
+ */
 export function staffingHttpError(err: unknown): never {
   if (err instanceof StaffingError) {
     throw createError({ statusCode: STATUS[err.code], message: err.message, data: { code: err.code, ...err.details } });

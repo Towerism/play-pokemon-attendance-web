@@ -1,6 +1,6 @@
 /** Test-only stand-ins for the staffing module's upstream ports. Not imported by production code. */
 import type { PlayerId } from '../../../shared/types/ids';
-import type { ConnectionView } from '../pokemon/connection';
+import type { ActingConnection, ConnectionView } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
   StaffRole,
@@ -52,7 +52,17 @@ export const playing = (playerId: string, name = ''): TournamentParticipant => (
   name,
 });
 
-/** An in-memory play-tools: tournaments of any league, their participants, and a log of every call. */
+/** A connected professor in the stub; `upstreamAs` is who play-tools knows the login as (default: their player id). */
+export type StubProfessor = ActingConnection & { upstreamAs?: string };
+
+/** The default professor: the organizer `tournament()` uses. */
+export const OLIVE: StubProfessor = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
+
+/**
+ * An in-memory play-tools as several professors see it (S6): each connection lists only the
+ * tournaments its professor organizes, only the organizer reads a tournament's records, and
+ * anyone reads its details. Every call is logged with the connection that made it.
+ */
 export function stubPlayTools() {
   const state = {
     tournaments: [] as TournamentDetails[],
@@ -62,6 +72,11 @@ export function stubPlayTools() {
     /** Throw this from the next call of the named method. */
     failNext: new Map<string, PokemonUpstreamError>(),
     calls: [] as string[],
+    /** Every call with the connection id it was made as. */
+    callsAs: [] as { call: string; as: number }[],
+    /** `method@connectionId` → throw this from that connection's next call of the method. */
+    failNextAs: new Map<string, PokemonUpstreamError>(),
+    professors: [{ ...OLIVE }] as StubProfessor[],
     connection: {
       status: 'connected',
       reason: null,
@@ -69,50 +84,75 @@ export function stubPlayTools() {
       lastRefreshedAt: new Date(0),
       league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
       connectionId: 1,
-      professor: { playerId: '0012345', name: 'Ash Ketchum' },
+      professor: { playerId: '9999991', name: 'Olive Organizer' },
     } as ConnectionView,
   };
   let inFlight = 0;
   let maxInFlight = 0;
 
-  async function call<T>(name: string, arg: string, run: () => T): Promise<T> {
+  async function call<T>(as: number, name: string, arg: string, run: (who: string | undefined) => T): Promise<T> {
     state.calls.push(`${name} ${arg}`);
+    state.callsAs.push({ call: `${name} ${arg}`, as });
     inFlight++;
     maxInFlight = Math.max(maxInFlight, inFlight);
     try {
       await new Promise((r) => setTimeout(r, 1));
+      const own = state.failNextAs.get(`${name}@${as}`);
+      if (own) {
+        state.failNextAs.delete(`${name}@${as}`);
+        throw own;
+      }
       const failure = state.failNext.get(name);
       if (failure) {
         state.failNext.delete(name);
         throw failure;
       }
-      return run();
+      const p = state.professors.find((x) => x.id === as);
+      if (!p) throw new PokemonUpstreamError('not_connected', 'No Pokémon account is connected. Connect one in Settings.');
+      if (p.status === 'needs_reconnect') throw new PokemonUpstreamError('needs_reconnect', 'The Pokémon login was refused.');
+      return run(p.upstreamAs ?? p.professorPlayerId ?? undefined);
     } finally {
       inFlight--;
     }
   }
 
-  const gateway = {
+  const gatewayAs = (as: number) => ({
     listStaffRoles: () => ROLES,
     listTournaments: (range?: { from: Date; to: Date }) =>
-      call('listTournaments', range ? range.from.toISOString() : 'all', () =>
+      call(as, 'listTournaments', range ? range.from.toISOString() : 'all', (who) =>
         state.tournaments
+          .filter((t) => t.organizerPlayerId === who)
           .filter((t) => !range || (t.startsAt && t.startsAt >= range.from && t.startsAt < range.to))
           .map(({ organizerPlayerId: _o, ...t }) => t as Tournament),
       ),
     getTournament: (id: string) =>
-      call('getTournament', id, () => {
+      call(as, 'getTournament', id, () => {
         const t = state.tournaments.find((x) => x.id === id);
         if (!t || state.gone.has(id)) throw new PokemonUpstreamError('not_found', `No tournament ${id}`);
         return t;
       }),
-    listTournamentParticipants: (id: string) => call('listTournamentParticipants', id, () => [...(state.participants.get(id) ?? [])]),
-  };
+    listTournamentParticipants: (id: string) =>
+      call(as, 'listTournamentParticipants', id, (who) => {
+        const t = state.tournaments.find((x) => x.id === id);
+        if (t && t.organizerPlayerId !== who) throw new PokemonUpstreamError('forbidden', 'Only the organizer manages staff.', { status: 403 });
+        return [...(state.participants.get(id) ?? [])];
+      }),
+  });
 
   return {
     state,
-    gateway: () => gateway,
-    connections: { getStatus: () => state.connection },
+    /** The gateway as one connection; `null` serves only the role list (no call). */
+    gateway: (connectionId: number | null) => gatewayAs(connectionId ?? 0),
+    connections: {
+      getStatus: () => state.connection,
+      listActingConnections: (): ActingConnection[] => state.professors.map(({ upstreamAs: _u, ...p }) => ({ ...p })),
+    },
+    /** Connects another professor (or replaces one with the same id). */
+    addProfessor(p: Partial<StubProfessor> & { id: number; professorPlayerId: string | null }): StubProfessor {
+      const added: StubProfessor = { professorName: null, status: 'connected', ...p };
+      state.professors = [...state.professors.filter((x) => x.id !== p.id), added];
+      return added;
+    },
     maxConcurrentCalls: () => maxInFlight,
   };
 }

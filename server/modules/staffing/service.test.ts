@@ -7,7 +7,7 @@ import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import { type RosterService, createRosterService } from '../roster/service';
 import { StaffingError } from './errors';
 import { type StaffingService, createStaffingService } from './service';
-import { playing, staffer, stubPlayTools, tournament } from './test-helpers';
+import { OLIVE, playing, staffer, stubPlayTools, tournament } from './test-helpers';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 
@@ -37,7 +37,7 @@ beforeEach(() => {
     db: database.db,
     roster,
     connections: upstream.connections,
-    gateway: upstream.gateway,
+    staffGateway: upstream.gateway,
     timeZone: TZ,
     now: () => NOW,
   });
@@ -228,6 +228,7 @@ describe('sessionStaff', () => {
   });
 
   it('describes each tournament: label, start, editable, organizer and who is playing', async () => {
+    upstream.addProfessor({ id: 1, professorPlayerId: '777' });
     upstream.state.tournaments = [tournament('t-1', { name: 'League Challenge', displayId: '26-10-900001', organizer: '777' })];
     upstream.state.participants.set('t-1', [playing('00888'), staffer('777', 'organizer'), playing('00889')]);
 
@@ -237,7 +238,7 @@ describe('sessionStaff', () => {
       label: 'League Challenge · 26-10-900001',
       startsAt: '2026-10-14T23:30:00.000Z',
       editable: true,
-      organizer: { playerId: '777' },
+      organizer: { playerId: '777', name: null, connected: true, needsReconnect: false },
       assignments: [],
       upstreamOnly: [],
       players: [{ playerId: '00888' }, { playerId: '00889' }],
@@ -331,18 +332,150 @@ describe('sessionStaff', () => {
     expect(upstream.state.calls).toEqual([]);
   });
 
-  it.each(['not_connected', 'needs_reconnect'] as const)('refuses with %s when the connection is not usable', async (status) => {
-    upstream.state.connection = { ...upstream.state.connection, status };
-    await expect(staffing.sessionStaff(L, WED)).rejects.toEqual(expect.objectContaining({ name: 'PokemonUpstreamError', code: status }));
+  it('refuses with not_connected when no professor is connected, before calling play-tools', async () => {
+    upstream.state.connection = { ...upstream.state.connection, status: 'not_connected', league: null };
+    upstream.state.professors = [];
+    await expect(staffing.sessionStaff(L, WED)).rejects.toEqual(expect.objectContaining({ name: 'PokemonUpstreamError', code: 'not_connected' }));
     expect(upstream.state.calls).toEqual([]);
   });
 
-  it('fails as a whole when play-tools is unavailable, seeding nothing for the tournament it could not read', async () => {
+  it("names the professor it couldn't read when play-tools is unavailable, seeding nothing for the tournament it couldn't read", async () => {
     upstream.state.tournaments = [tournament('t-1')];
     upstream.state.participants.set('t-1', [staffer('00777', 'judge')]);
     upstream.state.failNext.set('listTournamentParticipants', new PokemonUpstreamError('unavailable', 'down'));
-    await expect(staffing.sessionStaff(L, WED)).rejects.toEqual(expect.objectContaining({ code: 'unavailable' }));
+    const view = await staffing.sessionStaff(L, WED);
+    expect(view.tournaments).toEqual([]);
+    expect(view.unread).toEqual([{ professor: { playerId: '9999991', name: 'Olive Organizer' }, code: 'unavailable', message: 'down' }]);
     expect(history()).toEqual([]);
+  });
+});
+
+describe('sessionStaff with several professors (#75)', () => {
+  const WED = '2026-10-14' as never;
+  const BROCK = { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison' };
+  const CILAN = { id: 3, professorPlayerId: '0000333', professorName: null };
+  const assign = (tournamentId: string) =>
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, created_by, created_at)
+         values (?, ?, ?, 'Stored label', '00123', 'judge', 'organizer', 0)`,
+      )
+      .run(L, WED, tournamentId);
+  /** Every call that names a tournament, with the professor it was made as. */
+  const tournamentCallsAs = () =>
+    upstream.state.callsAs.filter((c) => !c.call.startsWith('listTournaments')).map((c) => [c.call.split(' ')[1], c.as]);
+
+  beforeEach(() => {
+    upstream.addProfessor(BROCK);
+    upstream.state.tournaments = [
+      tournament('olives', { startsAt: new Date('2026-10-14T23:30:00Z') }),
+      tournament('brocks', { startsAt: new Date('2026-10-14T22:00:00Z'), organizer: '0000222' }),
+      tournament('brocks-elsewhere', { startsAt: new Date('2026-10-14T21:00:00Z'), organizer: '0000222', groupId: 'another-store' }),
+    ];
+  });
+
+  it("lists every professor's tournaments in this league by start, each with its organizer, every call made as that organizer", async () => {
+    const view = await staffing.sessionStaff(L, WED);
+
+    expect(view.tournaments.map((t) => [t.tournamentId, t.organizer, t.editable])).toEqual([
+      ['brocks', { playerId: '0000222', name: 'Brock Harrison', connected: true, needsReconnect: false }, true],
+      ['olives', { playerId: '9999991', name: 'Olive Organizer', connected: true, needsReconnect: false }, true],
+    ]);
+    expect(view.unread).toEqual([]);
+    expect(tournamentCallsAs()).toEqual([
+      ['olives', 1],
+      ['olives', 1],
+      ['brocks', 2],
+      ['brocks', 2],
+    ]);
+  });
+
+  it('shows and reads a tournament two connections list only once', async () => {
+    upstream.addProfessor({ id: 4, professorPlayerId: null, upstreamAs: '9999991' });
+    const view = await staffing.sessionStaff(L, WED);
+    expect(view.tournaments.map((t) => t.tournamentId)).toEqual(['brocks', 'olives']);
+    expect(upstream.state.calls.filter((c) => c === 'getTournament olives')).toHaveLength(1);
+  });
+
+  it("still shows everyone else's tournaments when the submitting professor needs a reconnect, naming them, without calling as them", async () => {
+    upstream.state.connection = { ...upstream.state.connection, status: 'needs_reconnect' };
+    upstream.addProfessor({ ...OLIVE, status: 'needs_reconnect' });
+
+    const view = await staffing.sessionStaff(L, WED);
+    expect(view.tournaments.map((t) => t.tournamentId)).toEqual(['brocks']);
+    expect(view.unread).toEqual([
+      { professor: { playerId: '9999991', name: 'Olive Organizer' }, code: 'needs_reconnect', message: expect.any(String) },
+    ]);
+    expect(upstream.state.callsAs.filter((c) => c.as === 1)).toEqual([]);
+  });
+
+  it.each([
+    ['its listing', 'listTournaments'],
+    ['a tournament it organizes', 'listTournamentParticipants'],
+  ])("isolates one professor's failure reading %s: the others show unchanged, and nothing of theirs goes through another login", async (_l, method) => {
+    upstream.state.failNextAs.set(`${method}@2`, new PokemonUpstreamError('unavailable', 'play-tools is down'));
+
+    const view = await staffing.sessionStaff(L, WED);
+    expect(view.tournaments.map((t) => t.tournamentId)).toEqual(['olives']);
+    expect(view.unread).toEqual([{ professor: { playerId: '0000222', name: 'Brock Harrison' }, code: 'unavailable', message: 'play-tools is down' }]);
+    expect(upstream.state.callsAs.filter((c) => c.call.endsWith(' brocks') && c.as !== 2)).toEqual([]);
+  });
+
+  it("shows an assignment on a tournament nobody listed as unavailable when a professor couldn't be read, and missing when everyone was", async () => {
+    assign('cancelled');
+    expect((await staffing.sessionStaff(L, WED)).tournaments.find((t) => t.tournamentId === 'cancelled')).toMatchObject({ missing: true, editable: false });
+
+    upstream.state.failNextAs.set('listTournaments@2', new PokemonUpstreamError('unavailable', 'down'));
+    const view = await staffing.sessionStaff(L, WED);
+    const shown = view.tournaments.find((t) => t.tournamentId === 'cancelled')!;
+    expect(shown).toMatchObject({ unavailable: true, editable: false, organizer: null });
+    expect(shown.missing).toBeUndefined();
+  });
+
+  it('answers with no tournaments and every professor named when nobody can be read', async () => {
+    assign('olives');
+    upstream.state.failNextAs.set('listTournaments@1', new PokemonUpstreamError('unavailable', 'down'));
+    upstream.state.failNextAs.set('listTournaments@2', new PokemonUpstreamError('rate_limited', 'slow down'));
+    const view = await staffing.sessionStaff(L, WED);
+    expect(view.unread.map((u) => [u.professor.playerId, u.code])).toEqual([
+      ['9999991', 'unavailable'],
+      ['0000222', 'rate_limited'],
+    ]);
+    expect(view.tournaments).toEqual([expect.objectContaining({ tournamentId: 'olives', unavailable: true, editable: false })]);
+  });
+
+  it("seeds the staff list from another professor's tournament", async () => {
+    upstream.state.participants.set('brocks', [staffer('0000222', 'organizer'), staffer('00555', 'judge', 'Jo Judge')]);
+    await staffing.sessionStaff(L, WED);
+    expect(staffing.searchStaff(L, {}).map((s) => s.playerId)).toEqual(['00555']);
+  });
+
+  it("shows a tournament whose organizer isn't an identified, connected professor as read-only", async () => {
+    upstream.state.professors = [{ id: 5, professorPlayerId: null, professorName: null, status: 'connected', upstreamAs: '0000222' }];
+    upstream.state.connection = { ...upstream.state.connection, status: 'connected' };
+    const [t] = (await staffing.sessionStaff(L, WED)).tournaments;
+    expect(t).toMatchObject({ tournamentId: 'brocks', editable: false, organizer: { playerId: '0000222', name: null, connected: false, needsReconnect: false } });
+  });
+
+  it('matches the organizer by exact player id: 222 is not 0000222', async () => {
+    upstream.state.professors = [{ id: 6, professorPlayerId: '222', professorName: null, status: 'connected', upstreamAs: '0000222' }];
+    const [t] = (await staffing.sessionStaff(L, WED)).tournaments;
+    expect(t!.organizer).toMatchObject({ playerId: '0000222', connected: false });
+    expect(t!.editable).toBe(false);
+  });
+
+  it('lists each professor once and reads each tournament once (human-scale)', async () => {
+    upstream.addProfessor(CILAN);
+    upstream.state.tournaments.push(
+      tournament('cilans-1', { organizer: '0000333', startsAt: new Date('2026-10-14T17:00:00Z') }),
+      tournament('cilans-2', { organizer: '0000333', startsAt: new Date('2026-10-14T18:00:00Z') }),
+    );
+    await staffing.sessionStaff(L, WED);
+    const count = (prefix: string) => upstream.state.calls.filter((c) => c.startsWith(prefix)).length;
+    expect(count('listTournaments')).toBe(3);
+    expect(count('getTournament')).toBe(4);
+    expect(count('listTournamentParticipants')).toBe(4);
+    expect(upstream.maxConcurrentCalls()).toBe(1);
   });
 });
 
@@ -353,6 +486,7 @@ describe('addAssignment', () => {
   const rows = () => database.sqlite.prepare('select id, player_id, role, state, record_id, applied_role, removed_at from staff_assignment order by id').all();
 
   beforeEach(() => {
+    upstream.addProfessor({ id: 1, professorPlayerId: '00777' });
     upstream.state.tournaments = [tournament('t-1', { name: 'League Challenge', displayId: '26-10-1', organizer: '00777' })];
     upstream.state.participants.set('t-1', [staffer('00777', 'organizer'), playing('00888')]);
   });
@@ -397,6 +531,7 @@ describe('addAssignment', () => {
   });
 
   it('lets the organizer of one tournament staff another one', async () => {
+    upstream.addProfessor({ id: 2, professorPlayerId: '00999' });
     upstream.state.tournaments.push(tournament('t-2', { organizer: '00999' }));
     await expect(add({ tournamentId: 't-1', playerId: '00999' })).resolves.toMatchObject({ created: true });
   });
@@ -419,7 +554,7 @@ describe('addAssignment', () => {
   });
 
   it('refuses a tournament past its edit window', async () => {
-    upstream.state.tournaments = [tournament('t-1', { editableUntil: new Date('2026-10-01T00:00:00Z') })];
+    upstream.state.tournaments = [tournament('t-1', { editableUntil: new Date('2026-10-01T00:00:00Z'), organizer: '00777' })];
     await expect(add({ playerId: '00999' })).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
   });
 
@@ -466,7 +601,7 @@ describe('addAssignment', () => {
     });
 
     it('still refuses the revive on a locked tournament', async () => {
-      upstream.state.tournaments = [tournament('t-1', { editableUntil: new Date('2026-10-01T00:00:00Z') })];
+      upstream.state.tournaments = [tournament('t-1', { editableUntil: new Date('2026-10-01T00:00:00Z'), organizer: '00777' })];
       await expect(add({ playerId: '00999' })).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
     });
   });
@@ -598,7 +733,11 @@ describe('what a staff job reads and writes back (#47)', () => {
       await want('00123');
       upstream.state.calls = [];
 
-      expect(await staffing.prepareApply(L, DATE, 't-1')).toEqual({ tournamentId: 't-1', label: 'League Challenge · 26-10-1' });
+      expect(await staffing.prepareApply(L, DATE, 't-1')).toEqual({
+        tournamentId: 't-1',
+        label: 'League Challenge · 26-10-1',
+        professor: { connectionId: 1, playerId: '9999991', name: 'Olive Organizer' },
+      });
       expect(upstream.state.calls).toContain(`listTournaments ${new Date('2026-10-14T05:00:00Z').toISOString()}`);
     });
 
@@ -730,5 +869,88 @@ describe('what a staff job reads and writes back (#47)', () => {
       staffing.forgetRemoved(L, a);
       expect(row('select count(*) n from staff_assignment')).toEqual({ n: 1 });
     });
+  });
+});
+
+describe('acting on a tournament as its organizer (#75)', () => {
+  const WED = '2026-10-14' as SessionDate;
+  const BROCK = { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison' };
+  const add = (tournamentId: string, playerId = '00555') =>
+    staffing.addAssignment(L, WED, { tournamentId, playerId: id(playerId), role: 'judge' }, 'organizer');
+  const stored = () => database.sqlite.prepare('select count(*) n from staff_assignment').get();
+
+  beforeEach(() => {
+    upstream.addProfessor(BROCK);
+    upstream.state.tournaments = [tournament('olives'), tournament('brocks', { organizer: '0000222', name: 'Brock Cup', displayId: null })];
+    upstream.state.participants.set('brocks', [staffer('0000222', 'organizer')]);
+  });
+
+  it("adds staff to another professor's tournament, reading it fresh as that professor", async () => {
+    upstream.state.callsAs = [];
+    await add('brocks');
+    expect(upstream.state.callsAs.filter((c) => c.call.endsWith(' brocks')).map((c) => c.as)).toEqual([2, 2]);
+    expect(stored()).toEqual({ n: 1 });
+  });
+
+  it("prepares a staff job on another professor's tournament as that professor", async () => {
+    await add('brocks');
+    expect(await staffing.prepareApply(L, WED, 'brocks')).toEqual({
+      tournamentId: 'brocks',
+      label: 'Brock Cup',
+      professor: { connectionId: 2, playerId: '0000222', name: 'Brock Harrison' },
+    });
+  });
+
+  it('acts as whoever organizes the tournament now, read fresh', async () => {
+    await add('brocks');
+    upstream.state.tournaments = [tournament('brocks', { organizer: '9999991', name: 'Brock Cup', displayId: null })];
+    expect((await staffing.prepareApply(L, WED, 'brocks')).professor).toEqual({ connectionId: 1, playerId: '9999991', name: 'Olive Organizer' });
+  });
+
+  it('refuses with organizer_not_connected when no connected professor organizes it, storing nothing', async () => {
+    upstream.state.professors = [{ ...OLIVE }, { id: 5, professorPlayerId: null, professorName: null, status: 'connected', upstreamAs: '0000222' }];
+    await expect(add('brocks')).rejects.toMatchObject({ name: 'StaffingError', code: 'organizer_not_connected', details: { organizerPlayerId: '0000222' } });
+    expect(stored()).toEqual({ n: 0 });
+  });
+
+  it('refuses with organizer_not_connected when the organizer disconnected after the card loaded', async () => {
+    upstream.state.professors = [{ ...OLIVE }];
+    await expect(add('brocks')).rejects.toMatchObject({ code: 'organizer_not_connected', details: { organizerPlayerId: '0000222' } });
+    expect(stored()).toEqual({ n: 0 });
+  });
+
+  it("refuses with needs_reconnect naming the organizer when their login needs a reconnect, never acting through another professor", async () => {
+    await add('brocks');
+    upstream.addProfessor({ ...BROCK, status: 'needs_reconnect' });
+    upstream.state.callsAs = [];
+
+    await expect(staffing.prepareApply(L, WED, 'brocks')).rejects.toMatchObject({ code: 'needs_reconnect', details: { professorPlayerId: '0000222' } });
+    await expect(add('brocks', '00556')).rejects.toMatchObject({ code: 'needs_reconnect', details: { professorPlayerId: '0000222' } });
+    expect(upstream.state.callsAs.filter((c) => c.call === 'listTournamentParticipants brocks')).toEqual([]);
+  });
+
+  it('still answers unknown_tournament for a tournament nobody has on the date', async () => {
+    await expect(add('nope')).rejects.toMatchObject({ code: 'unknown_tournament' });
+  });
+
+  it("changes the role of, or deletes, a pending assignment without play-tools, even after its organizer disconnected", async () => {
+    const { assignment } = await add('brocks');
+    upstream.state.professors = [];
+    upstream.state.calls = [];
+
+    await expect(staffing.changeRole(L, WED, assignment.id, 'scorekeeper')).resolves.toMatchObject({ role: 'scorekeeper' });
+    await staffing.removeAssignment(L, WED, assignment.id);
+    expect(stored()).toEqual({ n: 0 });
+    expect(upstream.state.calls).toEqual([]);
+  });
+
+  it('checks an applied change against the tournament as its organizer', async () => {
+    const { assignment } = await add('brocks');
+    staffing.recordApplied(L, assignment.id, { recordId: 'rec-1', role: 'judge' });
+    upstream.state.callsAs = [];
+    await staffing.changeRole(L, WED, assignment.id, 'scorekeeper');
+    const aboutBrocks = upstream.state.callsAs.filter((c) => c.call.endsWith(' brocks'));
+    expect(aboutBrocks.length).toBeGreaterThan(0);
+    expect(aboutBrocks.map((c) => c.as)).not.toContain(1);
   });
 });

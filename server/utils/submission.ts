@@ -13,7 +13,7 @@ export const leagueTimeZone = () => Intl.DateTimeFormat().resolvedOptions().time
 /** Today's session date in the league timezone; curation metrics are as of this date. */
 export const leagueToday = () => dateIn(new Date(), leagueTimeZone());
 
-/** Every upstream call for the league is made as its submitting professor (ADR-0008). */
+/** Attendance calls are made as the league's submitting professor (ADR-0008); tournament calls as each tournament's organizer (#75). */
 const gateway = (leagueId: string) => leagueGateway(leagueId);
 
 export function usePlaySessionResolver(): PlaySessionResolver {
@@ -31,7 +31,7 @@ export function useSubmissions(): SubmissionService {
       sightings: useSightings(),
       connections: usePokemon(),
       gateway,
-      staffGateway: gateway,
+      staffGateway: connectionGateway,
       staffing: useStaffing(),
       resolver: usePlaySessionResolver(),
       timeZone: leagueTimeZone(),
