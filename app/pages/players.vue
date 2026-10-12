@@ -5,11 +5,12 @@ const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 
-type Tab = 'promote' | 'stale' | 'all';
+type Tab = 'promote' | 'stale' | 'all' | 'staff';
 const TABS: { label: string; value: Tab; icon: string }[] = [
   { label: 'Promotion candidates', value: 'promote', icon: 'i-lucide-trending-up' },
   { label: 'Stale regulars', value: 'stale', icon: 'i-lucide-clock-alert' },
   { label: 'All', value: 'all', icon: 'i-lucide-users' },
+  { label: 'Staff', value: 'staff', icon: 'i-lucide-badge-check' },
 ];
 const tab = computed<Tab>({
   get: () => TABS.find((t) => t.value === route.query.tab)?.value ?? 'promote',
@@ -23,9 +24,30 @@ watch(search, (value) => {
   clearTimeout(debounce);
   debounce = setTimeout(() => (q.value = value), 250);
 });
-const { data, refresh } = await useFetch('/api/players', { key: 'players', query: { q, filter: tab } });
+const onStaff = computed(() => tab.value === 'staff');
+
+// Each list is fetched only on its own tabs: `/players` has no staff filter.
+async function fetchPlayers() {
+  if (onStaff.value) return null;
+  return await $fetch('/api/players', { query: { q: q.value, filter: tab.value } });
+}
+async function fetchStaff() {
+  if (!onStaff.value) return null;
+  return await $fetch('/api/staff', { query: q.value ? { q: q.value } : {} });
+}
+const { data, refresh } = await useAsyncData('players', fetchPlayers, { watch: [q, tab] });
+const { data: staff, refresh: refreshStaff, error: staffError } = await useAsyncData('staff', fetchStaff, { watch: [q, tab] });
+// The roles are fetched once, the first time the Staff tab shows.
+const { data: roles, execute: loadRoles } = await useAsyncData('staff-roles', () => $fetch<{ roles: StaffRole[] }>('/api/staff/roles'), { immediate: onStaff.value });
+watch(onStaff, (yes) => {
+  if (yes && !roles.value) void loadRoles();
+});
+watch(staffError, (err) => {
+  if (err) toast.add({ color: 'error', title: 'Could not load the staff list.' });
+});
 
 type Player = NonNullable<typeof data.value>['players'][number];
+type Staffer = NonNullable<typeof staff.value>[number];
 const columns: TableColumn<Player>[] = [
   { accessorKey: 'displayName', header: 'Name' },
   { accessorKey: 'playerId', header: 'Player ID' },
@@ -40,6 +62,9 @@ const columns: TableColumn<Player>[] = [
 
 const thresholds = computed(() => data.value?.thresholds);
 const tabHint = computed(() => {
+  if (onStaff.value) {
+    return "Everyone who has staffed this league's tournaments, from this app or from play-tools. A name from play-tools can be out of date: rename it here.";
+  }
   const t = thresholds.value;
   if (!t) return '';
   if (tab.value === 'promote') return `Not regulars, seen in at least ${t.promoteMinSightings} events in the last 8 weeks.`;
@@ -51,6 +76,53 @@ const emptyText = computed(() => {
   if (tab.value === 'promote') return 'No promotion candidates right now.';
   if (tab.value === 'stale') return 'No stale regulars.';
   return 'No players yet.';
+});
+
+const staffColumns: TableColumn<Staffer>[] = [
+  { accessorKey: 'name', header: 'Name' },
+  { accessorKey: 'playerId', header: 'Player ID' },
+  { accessorKey: 'timesStaffed', header: 'Times staffed' },
+  { id: 'lastStaffed', header: 'Last staffed' },
+  { id: 'lastRole', header: 'Last role' },
+  { id: 'actions' },
+];
+
+/** Inline rename on the Staff tab: one row at a time (ADR-0007 decision 13). */
+const renaming = ref<string | null>(null);
+const nameDraft = ref('');
+const renameSaving = ref(false);
+const renameBlocked = computed(() => renameDecision(nameDraft.value, '').kind === 'blocked');
+
+function startRename(staffer: Staffer) {
+  renaming.value = staffer.playerId;
+  nameDraft.value = staffer.name;
+}
+
+function cancelRename() {
+  renaming.value = null;
+}
+
+async function saveRename(staffer: Staffer) {
+  const decision = renameDecision(nameDraft.value, staffer.name);
+  if (decision.kind === 'blocked' || renameSaving.value) return;
+  if (decision.kind === 'unchanged') return cancelRename();
+  renameSaving.value = true;
+  try {
+    await $fetch(`/api/players/${staffer.playerId}`, { method: 'PATCH', body: { name: decision.name } });
+    renaming.value = null;
+    await refreshStaff();
+  } catch (err) {
+    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not rename the player.') });
+    if ((err as { statusCode?: number }).statusCode === 404) await refreshStaff();
+  } finally {
+    renameSaving.value = false;
+  }
+}
+
+// A rename in progress is dropped when its row leaves the screen.
+watch(tab, cancelRename);
+watch(staff, (list) => {
+  if (renaming.value && !list?.some((s) => s.playerId === renaming.value)) cancelRename();
 });
 
 async function save(player: Player, patch: { name?: string; notes?: string | null; isRegular?: boolean }) {
@@ -125,11 +197,54 @@ async function saveEdit() {
       <UTabs v-model="tab" :items="TABS" :content="false" class="w-full" />
       <p class="text-sm text-muted">
         {{ tabHint }}
-        <NuxtLink v-if="tab !== 'all'" to="/settings" class="underline">Change thresholds</NuxtLink>
+        <NuxtLink v-if="tab === 'promote' || tab === 'stale'" to="/settings" class="underline">Change thresholds</NuxtLink>
       </p>
     </div>
 
-    <UTable :data="data?.players ?? []" :columns="columns" :empty="emptyText">
+    <UTable v-if="onStaff" :data="staff ?? []" :columns="staffColumns">
+      <template #empty>
+        <p v-if="q">No staff match.</p>
+        <p v-else>No staff yet. <NuxtLink to="/settings" class="underline">Import staff from play-tools in Settings</NuxtLink>.</p>
+      </template>
+      <template #name-cell="{ row }">
+        <form v-if="renaming === row.original.playerId" class="flex flex-wrap items-center gap-2" @submit.prevent="saveRename(row.original)">
+          <UInput
+            v-model="nameDraft"
+            autofocus
+            maxlength="100"
+            class="w-full sm:w-56"
+            :aria-label="`Name for ${row.original.playerId}`"
+            @keydown.esc.prevent="cancelRename"
+          />
+          <UButton type="submit" size="sm" :disabled="renameBlocked" :loading="renameSaving">Save</UButton>
+          <UButton size="sm" variant="ghost" color="neutral" @click="cancelRename">Cancel</UButton>
+        </form>
+        <span v-else :class="{ 'text-muted italic': !row.original.name }">{{ row.original.name || 'No name' }}</span>
+      </template>
+      <template #timesStaffed-cell="{ row }">
+        <span class="tabular-nums">{{ row.original.timesStaffed }}</span>
+      </template>
+      <template #lastStaffed-cell="{ row }">
+        <span class="tabular-nums">{{ lastStaffedLabel(row.original.lastStaffedOn) }}</span>
+      </template>
+      <template #lastRole-cell="{ row }">
+        {{ roleLabel(row.original.lastRole, roles?.roles) }}
+      </template>
+      <template #actions-cell="{ row }">
+        <div class="text-right">
+          <UButton
+            icon="i-lucide-pencil"
+            size="sm"
+            variant="ghost"
+            color="neutral"
+            :aria-label="`Rename ${row.original.name || row.original.playerId}`"
+            @click="startRename(row.original)"
+          />
+        </div>
+      </template>
+    </UTable>
+
+    <UTable v-else :data="data?.players ?? []" :columns="columns" :empty="emptyText">
       <template #displayName-cell="{ row }">
         <span :class="{ 'text-muted italic': !row.original.displayName }">{{ row.original.displayName || 'No name' }}</span>
       </template>
