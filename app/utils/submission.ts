@@ -1,6 +1,7 @@
 import type { ConnectionView } from '../../server/modules/pokemon/connection';
 import type {
   ClearPreview,
+  PlayerImportResult,
   StaffImportResult,
   SubmissionCounts,
   SubmissionItemView,
@@ -33,13 +34,13 @@ const STATUS: Record<SubmissionStatus, { label: string; color: BadgeColor }> = {
 };
 
 export function submissionStatus(status: SubmissionStatus, kind: SubmissionKind = 'submit'): { label: string; color: BadgeColor } {
-  if (kind === 'staff_import' && status === 'running') return { label: 'Reading…', color: 'info' };
+  if ((kind === 'staff_import' || kind === 'player_import') && status === 'running') return { label: 'Reading…', color: 'info' };
   if (kind === 'staff' && status === 'running') return { label: 'Assigning…', color: 'info' };
   if (kind !== 'submit' && status === 'running') return { label: 'Removing…', color: 'info' };
   return STATUS[status];
 }
 
-/** "Undo of #7" for an undo, "Cleared session …" for a clear, "Staff for …" for a staff job, "Staff import" for one; null for a submission. */
+/** "Undo of #7" for an undo, "Cleared session …" for a clear, "Staff for …" for a staff job, "Staff import" or "Player import" for one; null for a submission. */
 export function historyLabel(
   s: Pick<SubmissionSummary, 'kind' | 'undoOf' | 'playSessionLabel'> & Partial<Pick<SubmissionSummary, 'tournamentLabel'>>,
 ): string | null {
@@ -48,6 +49,7 @@ export function historyLabel(
   if (s.kind === 'staff') return s.tournamentLabel ? `Staff for ${s.tournamentLabel}` : s.playSessionLabel;
   if (s.kind === 'clear') return `Cleared session ${s.playSessionLabel}`;
   if (s.kind === 'staff_import') return 'Staff import';
+  if (s.kind === 'player_import') return 'Player import';
   return null;
 }
 
@@ -75,6 +77,7 @@ export function undoBlockedText(
   if (s.kind === 'clear') return "A cleared session can't be undone.";
   if (s.kind === 'staff') return 'Staff are changed from This week, not undone.';
   if (s.kind === 'staff_import') return "A staff import can't be undone.";
+  if (s.kind === 'player_import') return "A player import can't be undone.";
   if (s.undoBlockedReason === 'not_undoable') return 'Only a finished submission can be undone.';
   if (s.undoBlockedReason === 'nothing_to_undo') {
     return s.items.some((i) => i.removedBy !== null) ? 'Already undone' : 'Nothing to undo: this submission added nobody.';
@@ -121,7 +124,21 @@ export function staffImportSummary(r: StaffImportResult): string {
     .join(' · ');
 }
 
-/** Why Import staff from play-tools can't start; null when it can. */
+/** e.g. "Read 115 of 117 tournaments · 2 could not be read · 640 players found · 37 new players". */
+export function playerImportSummary(r: PlayerImportResult): string {
+  if (r.tournamentsTotal === 0) return 'No tournaments to read';
+  const added = r.newPlayers.length;
+  return [
+    `Read ${r.tournamentsRead} of ${r.tournamentsTotal} tournaments`,
+    r.tournamentsFailed && `${r.tournamentsFailed} could not be read`,
+    `${r.playersFound} ${r.playersFound === 1 ? 'player' : 'players'} found`,
+    added && `${added} new ${added === 1 ? 'player' : 'players'}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/** Why Import staff (or players) from play-tools can't start; null when it can. */
 export function staffImportBlocked(c: Pick<ConnectionView, 'status' | 'league'> | null | undefined): string | null {
   if (!c || c.status === 'not_connected') return 'Connect a Pokémon account first.';
   if (c.status === 'needs_reconnect') return 'Reconnect the Pokémon account first.';

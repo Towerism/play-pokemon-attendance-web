@@ -159,12 +159,13 @@ async function retry() {
           <NuxtLink to="/players?tab=staff" class="underline">Players → Staff</NuxtLink>.
         </p>
       </template>
+      <p v-else-if="submission.playerImport" class="text-sm">{{ playerImportSummary(submission.playerImport) }}</p>
       <UAlert
         v-if="submission.error"
         color="error"
         variant="subtle"
         icon="i-lucide-circle-alert"
-        :title="submission.kind === 'staff_import' ? staffImportErrorText(submission.error) : submission.error"
+        :title="submission.kind === 'staff_import' || submission.kind === 'player_import' ? staffImportErrorText(submission.error) : submission.error"
       />
       <p v-if="submission.kind === 'submit'" class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
 
