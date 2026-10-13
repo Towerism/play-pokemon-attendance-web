@@ -232,6 +232,21 @@ for each date).
     across a DST fall-back, still inside 84 h. S8 part 2 confirms what the server enforces (Q5);
   - a back-dated tournament is created like any other (adopt before create, as the organizer, paced). If play-tools
     refuses it anyway, the refusal is the item's outcome (`refused`), as for any create.
+- **Sanction at least 7 days ahead: a guideline, not a block** (organizer, 2026-10-12: tournaments not in the past
+  must be sanctioned at least 7 days in advance, but it isn't a hard and fast rule).
+  - **Sanction by.** Every planned tournament shows a **sanction-by date**: its date − 7 days, in the league `TZ`. The
+    Upcoming tab, This week's reminder and the create-through list sort and highlight by it ("Create by Tue 20 Oct").
+  - **Short notice is a warning.** Creating a tournament whose date is today through 6 days ahead, or moving one
+    there by edit or reschedule (decisions 8 and 11), is allowed. The dialog lists each such tournament as **short
+    notice** ("less than 7 days before it is held; the league is expected to sanction 7 days ahead"). The organizer
+    confirms (**Create anyway** / **Save anyway**), and the server refuses a request without
+    `acknowledgeShortNotice: true` when any are short notice (422 `short_notice_not_acknowledged`), as for TDF
+    warnings (ADR-0011). Who acknowledged it is kept on the job.
+  - **Not short notice:** a tournament already held (back-dated, above) is after the fact, not short notice, and a
+    date 7 or more days ahead needs no warning.
+  - **Create through date…** includes short-notice dates with the same warning. Nothing is left out for being soon.
+  - S8 found no lead time in play-tools' client. If play-tools turns out to enforce one, its refusal is the item's
+    outcome as usual (Q5).
 
 ### 7. Same rails as every other job
 
@@ -402,14 +417,18 @@ schedules: a schedule is how events usually get planned, and coverage is the che
   - **open:** the period has started or is ahead, and it isn't covered yet;
   - **at risk:** it isn't `sanctioned` and the period ends within the warning lead (default 21 days for monthly, 45
     for quarterly, editable per requirement). `planned`, `pending` and `problem` are at risk too: a planned tournament
-    isn't in play-tools, and approval can be refused;
+    isn't in play-tools, and approval can be refused. The cell names the **sanction-by date** for a tournament on the
+    period's last day (its end − 7 days);
+  - **short notice:** that sanction-by date has passed and it still isn't covered. A tournament can still be
+    sanctioned before the period ends, with the short-notice warning (decision 6). The banner says so and gives the
+    latest dates left;
   - **last chance:** the period has ended less than 2 days ago and isn't covered. A tournament held in its last 2 days
     can still be sanctioned (decision 6), and the warning says which dates qualify;
   - **missed:** the period ended more than 2 days ago uncovered. It stays on record and in the grid's history.
 - **Impossible to overlook:**
   - a **Required events** grid at the top of the Tournaments page: requirements × periods, each cell showing its
     status, the covering tournament (display id, date, organizer), or the action to take;
-  - on **This week**, a banner whenever anything is **at risk**, **last chance** or **missed** (one line per
+  - on **This week**, a banner whenever anything is **at risk**, **short notice**, **last chance** or **missed** (one line per
     requirement and period, most urgent first), and **problem** whenever a tournament comes back `sanctioning-error`;
   - a count badge on the Tournaments nav link while anything is at risk or worse.
 
@@ -480,4 +499,5 @@ schedules: a schedule is how events usually get planned, and coverage is the che
 | Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Open: S8 part 2** |
 | Q7 | Which events must the league hold? | **Answered (organizer, 2026-10-12):** a League Cup per quarter and a League Challenge per month, for each of TCG, GO and VGC (decision 12) |
 | Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Coverage uses the series window when one exists, else the calendar period |
+| Q10 | Is the 7-day lead a hard rule? | **Answered (organizer, 2026-10-12):** no. Tournaments not yet held should be sanctioned 7 days ahead, as a guideline: a short-notice warning to acknowledge, never a refusal (decision 6) |
 | Q9 | Should a missed or at-risk requirement also notify outside the app (email, push)? | **Open: organizer.** Designed as in-app only (banner, grid, badge) |

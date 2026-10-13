@@ -1224,13 +1224,17 @@ sequenceDiagram
 - **Required events** (ADR-0010 decision 12): a League Cup per quarter and a League Challenge per month, for each
   of TCG, GO and VGC (seeded requirements, editable). Coverage is computed on read from every connected professor's
   tournaments (series from cached details) and the planned ones. Each requirement and period is `sanctioned`,
-  `pending`, `planned`, `problem` or `missing`, and **at risk**, **last chance** (the 2-day back-dating grace) or
+  `pending`, `planned`, `problem` or `missing`, and **at risk**, **short notice** (past the 7-day sanction-by date), **last chance** (the 2-day back-dating grace) or
   **missed**. A Required events grid on Tournaments, an undismissable banner on This week and a nav badge make it
   impossible to overlook. **Plan one…** fixes a gap in one click, and **Mark as covered…** records an event the app
   can't see.
 - **Back-dated sanctioning:** a tournament held in the last 2 days (league `TZ`) can still be created, from a schedule,
   one-off or by **Create through date…**, so it can be sanctioned and its TDF uploaded. Earlier dates are refused
   locally (`date_too_far_past`). Two days fits play-tools' back-dating limit (72 h in its form, 84 h in its code; S8; ADR-0010 decision 6).
+- **Sanction 7 days ahead, as a guideline:** each planned tournament shows its sanction-by date (date − 7 days). A
+  date less than 7 days ahead can still be created, edited or rescheduled to, after a **short notice** warning the
+  organizer acknowledges (`acknowledgeShortNotice`; 422 `short_notice_not_acknowledged` without it). Required-event
+  urgency adds a **short notice** stage once the sanction-by date has passed (ADR-0010 decisions 6 and 12).
 - **Create through date…** on a schedule materialises it up to the chosen date, lists what it will create, and on
   confirm starts the same job for all of them (at most 60).
 - **Edit** any field with **Edit…**: only changed fields are applied over a fresh read and sent (`PATCH`), as a
@@ -1288,7 +1292,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET/POST /tournament-scaffolds` · `PATCH/DELETE /tournament-scaffolds/{id}` (M9) | Scaffolds and their slots |
 | `GET/POST /tournament-schedules` · `PATCH/DELETE /tournament-schedules/{id}` · `POST /tournament-schedules/preview` (M9) | Schedules; preview lists the next dates for a rule without saving |
 | `POST /planned-tournaments` · `PATCH /planned-tournaments/{id}` (M9) | One-off planned tournament from a template and date; edit date, time or series pick, or `{skipped}` (only while not in play-tools). The date may be up to 2 days in the past (league `TZ`); earlier is 422 `date_too_far_past` |
-| `POST /tournaments/create` → 202 (M9) | `{plannedIds}` (1–60) → a `tournament_create` job |
+| `POST /tournaments/create` → 202 (M9) | `{plannedIds, acknowledgeShortNotice?}` (1–60) → a `tournament_create` job; 422 `short_notice_not_acknowledged` when any is less than 7 days ahead and unacknowledged (the same flag on create-through and edit) |
 | `GET /tournament-schedules/{id}/create-through?date=` · `POST /tournament-schedules/{id}/create-through` → 202 (M9) | Preview what the schedule would create up to the date (materialised past its horizon; lists what is left out and why), then `{date}` → one `tournament_create` job; 422 `too_many_tournaments` (> 60) or a date more than 12 months ahead |
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
 | `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found` |
