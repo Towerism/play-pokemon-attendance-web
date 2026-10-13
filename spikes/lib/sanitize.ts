@@ -14,7 +14,9 @@ const PERSON_KEY =
   /^(name|title_name)$|(first|last|full|display|screen|user|nick|middle|given|family)_?name$|email|phone|birth|dob|address|avatar|guardian|parent/i;
 const PLAYER_ID_KEY = /^(player_?id|pop_?id|playerid)$/i;
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-const DASHLESS_ID = /(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])/gi;
+const MESSAGE_KEY = /^(message|detail)$/i;
+const ID_IN_TEXT = /(?<![\d-])\d{6,10}(?![\d-])/g;
+const DASHLESS_ID =/(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])/gi;
 const JWT = /^eyJ[\w-]+\.[\w-]+\.[\w-]*$/;
 const EMAIL = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
 
@@ -40,7 +42,9 @@ export class Sanitizer {
     }
     if (typeof value !== 'string') return value;
     if (JWT.test(value)) return '<jwt>';
-    return value
+    // Upload errors name player ids in free text ("4589085 !== 4942060").
+    const text = MESSAGE_KEY.test(key) ? value.replace(ID_IN_TEXT, (id) => this.fakePlayerId(id)) : value;
+    return text
       .replace(EMAIL, 'user@example.invalid')
       .replace(GUID, (g) => this.fakeGuid(g))
       .replace(DASHLESS_ID, (h) => undash(this.fakeGuid(dash(h))));

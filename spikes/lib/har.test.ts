@@ -177,6 +177,14 @@ describe('sanitizeCalls: TDFs and known originals', () => {
     expect(json).not.toMatch(/<tournament|<player|Ash|01\/02\/2012|1234567|7654321/);
   });
 
+  it('pseudonymises player ids inside upload error messages, which no key names', () => {
+    const { calls, leaks } = sanitizeCalls([
+      call({ response: [{ errors: [{ type: 'ORGANIZER_ID_MISMATCH', message: '4589085 !== 4942060' }], upload_timestamp: 1789926304744 }] }),
+    ]);
+    expect(leaks).toEqual([]);
+    expect(calls[0]?.response).toEqual([{ errors: [{ type: 'ORGANIZER_ID_MISMATCH', message: '9999991 !== 9999992' }], upload_timestamp: 1789926304744 }]);
+  });
+
   it('redacts any other long base64 string, which could be an encoded file', () => {
     const blob = Buffer.from('PK\u0003\u0004'.padEnd(400, 'x')).toString('base64');
     const { calls } = sanitizeCalls([call({ response: { file: blob } })]);
