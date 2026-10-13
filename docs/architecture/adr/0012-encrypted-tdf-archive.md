@@ -81,9 +81,10 @@ Option 4.
      kept on the upload row, so a re-drop of it is still recognised.
 
 5. **Handled with care.**
-   - **Who can read it:** only a logged-in organizer, through `GET /tdf-files/{id}/download`. It answers with
-     `Content-Disposition: attachment`, `Cache-Control: no-store` and the original file name. Each download writes one
-     log line (file id, who, when), never the content or a player. No other route returns the file or a birthdate.
+   - **Who can read it:** only a logged-in organizer, through `GET /tdf-files/{id}/download` or a tournament's
+     **Download TDF** (decision 7). Both answer with `Content-Disposition: attachment`, `Cache-Control: no-store`
+     and the original file name. Each download writes one log line (file id, who, when), never the content or a
+     player. No other route returns the file or a birthdate.
    - **What lists it:** History, and each tournament card's Results section, list the stored files (name, tournament,
      date, size, when and by whom) with **Download** and **Delete**. Settings shows the archive's size and file count.
    - **Abandoned previews don't pile up.** A file that was only previewed (never committed for attendance nor
@@ -105,6 +106,25 @@ Option 4.
    - A file that can't be decrypted (wrong key) shows as "can't be opened with this install's key". It can be deleted,
      and nothing else breaks.
 
+7. **Download a tournament's TDF** (organizer, 2026-10-12). Each tournament has a **Download TDF** action: on its
+   This week card (Results section) and on its row on the Tournaments page. `GET /tournaments/{id}/tdf`, as a
+   connected professor:
+   - **From the archive first:** the file kept for that tournament's results, the corrected one when the organizer
+     was replaced (ADR-0011 decision 8). If several were confirmed (a retry with another file), the latest confirmed
+     one is served, and the Results section lists the others.
+   - **Else from play-tools:** when the app holds no file for the tournament (results uploaded directly in
+     play-tools, or before this app kept TDFs), the app fetches play-tools' own copy as the tournament's organizer.
+     The S8 bundle shows `GET triumph/tournament/{display_id}/uploads/` (the upload history) and
+     `GET triumph/tdf/{uploadGuid}` (the file). It takes the latest accepted `tdf` upload, **stores it in the archive**
+     (encrypted, `source = play-tools`, so the next download is local), and serves it. Its shape and permissions are
+     S8 part 2's to confirm (Q3).
+   - **Nothing to download:** a tournament with no results anywhere answers 404 `no_tdf`, and the action is hidden on
+     a tournament still awaiting results.
+   - **Organizer only for the fetch.** Fetching from play-tools runs as the tournament's organizer (ADR-0009). If they
+     can't act, the archive copy is still served, and with none the answer is 409 `organizer_not_connected` /
+     `needs_reconnect`. It is a read, so it isn't paced, but it doesn't run while a job holds the lease
+     (`submission_running`), as for other upstream calls from a page.
+
 ## Consequences
 
 - (+) A bookkeeping copy of every tournament file, downloadable later, for disputes, support tickets and
@@ -125,4 +145,5 @@ Option 4.
 | #  | Question | Status |
 | -- | -------- | ------ |
 | Q1 | Should stored TDFs expire automatically after some time (e.g. after the season, or N years), or stay until deleted? | **Open: organizer.** Designed as kept until deleted |
-| Q2 | Should TDFs already imported before this change be recoverable? | **Not possible:** they were never kept |
+| Q2 | Should TDFs already imported before this change be recoverable? | **Partly:** the app never kept them, but a tournament whose results reached play-tools can be fetched back from play-tools on download (decision 7) |
+| Q3 | Shapes and permissions of `triumph/tournament/{display_id}/uploads/` and `triumph/tdf/{uploadGuid}` for an organizer | **Open: S8 part 2** |

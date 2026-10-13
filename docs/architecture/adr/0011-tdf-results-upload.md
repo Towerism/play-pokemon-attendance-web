@@ -61,7 +61,8 @@ Option 3.
 1. **Where.** Each This week tournament card (ADR-0010 decision 10) gets a **Results** section under Staff, showing
    the tournament's upload state from play-tools: *Awaiting results*, *Processing*, *Complete*, *Upload failed*, or
    why an upload isn't possible (not sanctioned yet, organizer not connected, past the window, players already
-   recorded).
+   recorded). Once the tournament has results, the section offers **Download TDF** (ADR-0012 decision 7): the
+   archived file, or play-tools' copy when the app has none.
 
 2. **One drop, both jobs.** Dropping a `.tdf` on a card previews **both** the results upload and the attendance
    import (M3) for that date. The attendance import is ticked by default (organizer, 2026-10-12), and the organizer
