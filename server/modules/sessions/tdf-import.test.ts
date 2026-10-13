@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { tomTdf } from '../../../shared/tdf/__fixtures__/tom';
@@ -6,9 +7,19 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
+import { silentLogger } from '../../logging/types';
 import { type RosterService, createRosterService } from '../roster/service';
+import { TdfKeyMismatchError } from '../tdf-archive/errors';
+import { type TdfArchiveService, createTdfArchiveService } from '../tdf-archive/service';
+import { createVault } from '../vault/vault';
 import { type SessionsService, createSessionsService } from './service';
-import { type TdfImportService, UploadNotFoundError, createTdfImportService } from './tdf-import';
+import {
+  TdfFileDeletedError,
+  type TdfImportService,
+  UploadNotFoundError,
+  createTdfImportService,
+  createTdfUploadReferrer,
+} from './tdf-import';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const OTHER = 'other-league';
@@ -30,8 +41,19 @@ let database: OpenDatabase;
 let roster: RosterService;
 let sightings: SightingsService;
 let sessions: SessionsService;
+let archive: TdfArchiveService;
 let imports: TdfImportService;
 let now: Date;
+
+function archiveWith(key: string): TdfArchiveService {
+  return createTdfArchiveService({
+    db: database.db,
+    vault: createVault(key, 'tdf'),
+    referrers: () => [createTdfUploadReferrer(database.db)],
+    log: silentLogger,
+    now: () => now,
+  });
+}
 
 beforeEach(() => {
   database = openDatabase(':memory:');
@@ -41,10 +63,26 @@ beforeEach(() => {
   sightings = createSightingsService({ db: database.db });
   sessions = createSessionsService({ db: database.db, roster, sightings });
   now = new Date('2026-10-14T23:00:00Z');
-  imports = createTdfImportService({ db: database.db, roster, sightings, now: () => now });
+  archive = archiveWith(randomBytes(32).toString('base64'));
+  imports = createTdfImportService({ db: database.db, roster, sightings, archive, now: () => now });
 });
 afterEach(() => database.close());
 
+/** A preview as the organizer drops it. */
+const previewFile = (league: string, date: SessionDate, file: { filename: string; content: string }) =>
+  imports.preview(league, date, { ...file, by: 'organizer' });
+const uploadRows = () =>
+  database.sqlite.prepare('select id, sha256, tdf_file_id as fileId, status from tdf_upload order by id').all() as {
+    id: number;
+    sha256: string;
+    fileId: number | null;
+    status: string;
+  }[];
+const dangling = () =>
+  database.sqlite
+    .prepare('select count(*) from tdf_upload where tdf_file_id is not null and tdf_file_id not in (select id from tdf_file)')
+    .pluck()
+    .get();
 const count = (table: string) => (database.sqlite.prepare(`select count(*) n from ${table}`).get() as { n: number }).n;
 
 describe('preview', () => {
@@ -53,7 +91,7 @@ describe('preview', () => {
     roster.addRegular(L, { playerId: id('3'), name: 'Regular Rae' });
     sessions.addPlayer(L, WED, { playerId: id('4'), name: 'Listed Lee' });
 
-    const preview = imports.preview(L, WED, {
+    const preview = previewFile(L, WED, {
       filename: 'cup.tdf',
       content: tdf([
         { userid: '1', name: 'New Nia' },
@@ -81,7 +119,7 @@ describe('preview', () => {
   });
 
   it('reports invalid rows and duplicates from the file', () => {
-    const preview = imports.preview(L, WED, {
+    const preview = previewFile(L, WED, {
       filename: 'cup.tdf',
       content: tdf([{ userid: '1' }, { userid: 'nope', name: 'Bad Row' }, { userid: '1' }]),
     });
@@ -91,75 +129,104 @@ describe('preview', () => {
   });
 
   it('changes nothing in the roster, session or sightings', () => {
-    imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1', name: 'New Nia' }]) });
+    previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1', name: 'New Nia' }]) });
 
     expect(roster.listPlayers(L)).toEqual([]);
     expect(sessions.getSession(L, WED).players).toEqual([]);
     expect(sightings.on(L, WED)).toEqual([]);
   });
 
-  it('does not keep the raw file or birthdates', () => {
-    imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1', name: 'New Nia' }]) });
+  it('keeps the file only in the encrypted archive, not yet kept, with the upload pointing at it', () => {
+    previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1', name: 'New Nia' }]) });
 
-    const dump = JSON.stringify(database.sqlite.prepare('select * from tdf_upload').all()) +
-      JSON.stringify(database.sqlite.prepare('select * from tdf_upload_player').all());
-    expect(dump).not.toMatch(/2012|birth|<tournament|<player/);
+    const [file] = archive.list(L);
+    expect(file).toMatchObject({ filename: 'cup.tdf', keptFor: [] });
+    expect(uploadRows()).toEqual([{ id: expect.any(Number), sha256: expect.any(String), fileId: file!.id, status: 'pending' }]);
+    const dump =
+      JSON.stringify(database.sqlite.prepare('select * from tdf_upload').all()) +
+      (database.sqlite.prepare('select ciphertext from tdf_file').pluck().get() as Buffer).toString('latin1');
+    expect(dump).not.toMatch(/2012|birth|<tournament|<player|Nia/);
   });
 
   it("shows only the tournament's name and date, never the file's organizer or id", () => {
     const content = tomTdf({ organizerElement: '<organizer popid="5550001" name="Pat Organizer"/>' });
 
-    const preview = imports.preview(L, WED, { filename: 'cup.tdf', content });
+    const preview = previewFile(L, WED, { filename: 'cup.tdf', content });
 
     expect(preview.tournament).toEqual({ name: 'Wednesday League Challenge', date: '2026-10-14' });
     expect(JSON.stringify(preview)).not.toMatch(/5550001|Pat Organizer|popid|26-10-000123/);
   });
 
   it('throws TdfError for a file that is not a tournament', () => {
-    expect(() => imports.preview(L, WED, { filename: 'x.tdf', content: 'hello' })).toThrow(TdfError);
+    expect(() => previewFile(L, WED, { filename: 'x.tdf', content: 'hello' })).toThrow(TdfError);
     expect(count('tdf_upload')).toBe(0);
   });
 
   it('returns the same upload when the same file is previewed again', () => {
     const content = tdf([{ userid: '1' }]);
-    const first = imports.preview(L, WED, { filename: 'cup.tdf', content });
-    const again = imports.preview(L, WED, { filename: 'renamed.tdf', content });
+    const first = previewFile(L, WED, { filename: 'cup.tdf', content });
+    const again = previewFile(L, WED, { filename: 'renamed.tdf', content });
 
     expect(again.uploadId).toBe(first.uploadId);
     expect(count('tdf_upload')).toBe(1);
   });
 
-  it('treats the same file on another date as a separate upload', () => {
+  it('treats the same file on another date as a separate upload of the one archived file', () => {
     const content = tdf([{ userid: '1' }]);
-    const wed = imports.preview(L, WED, { filename: 'cup.tdf', content });
-    const next = imports.preview(L, NEXT_WED, { filename: 'cup.tdf', content });
+    const wed = previewFile(L, WED, { filename: 'cup.tdf', content });
+    const next = previewFile(L, NEXT_WED, { filename: 'cup.tdf', content });
 
     expect(next.uploadId).not.toBe(wed.uploadId);
+    expect(archive.list(L)).toHaveLength(1);
+    expect(new Set(uploadRows().map((u) => u.fileId)).size).toBe(1);
   });
 
   it('marks a file that was already imported for the date', () => {
     const content = tdf([{ userid: '1' }]);
-    imports.commit(L, WED, imports.preview(L, WED, { filename: 'cup.tdf', content }).uploadId);
+    imports.commit(L, WED, previewFile(L, WED, { filename: 'cup.tdf', content }).uploadId);
 
-    const again = imports.preview(L, WED, { filename: 'cup.tdf', content });
+    const again = previewFile(L, WED, { filename: 'cup.tdf', content });
     expect(again.alreadyImported).toBe(true);
     expect(again.players).toEqual([{ playerId: '1', name: '', status: 'listed' }]);
   });
 
-  it('drops previews that were never committed after a day', () => {
-    imports.preview(L, WED, { filename: 'old.tdf', content: tdf([{ userid: '1' }]) });
+  it('drops previews that were never committed after a day, and their archived files', () => {
+    previewFile(L, WED, { filename: 'old.tdf', content: tdf([{ userid: '1' }]) });
     now = new Date(now.getTime() + 25 * 60 * 60 * 1000);
 
-    imports.preview(L, WED, { filename: 'new.tdf', content: tdf([{ userid: '2' }]) });
+    previewFile(L, WED, { filename: 'new.tdf', content: tdf([{ userid: '2' }]) });
 
     expect(database.sqlite.prepare('select filename from tdf_upload').all()).toEqual([{ filename: 'new.tdf' }]);
-    expect(count('tdf_upload_player')).toBe(1);
+    expect(archive.list(L).map((f) => f.filename)).toEqual(['new.tdf']);
+  });
+
+  it('expires abandoned previews on its own, without another drop (the hourly task)', () => {
+    previewFile(L, WED, { filename: 'old.tdf', content: tdf([{ userid: '1' }]) });
+    now = new Date(now.getTime() + 23 * 60 * 60 * 1000);
+    expect(imports.expirePreviews()).toEqual({ uploads: 0, files: 0 });
+
+    now = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+    expect(imports.expirePreviews()).toEqual({ uploads: 1, files: 1 });
+    expect(count('tdf_upload')).toBe(0);
+    expect(count('tdf_file')).toBe(0);
+  });
+
+  it('keeps a file while a preview of it is pending, and for good once one is committed', () => {
+    const content = tdf([{ userid: '1' }]);
+    imports.commit(L, WED, previewFile(L, WED, { filename: 'cup.tdf', content }).uploadId);
+    previewFile(L, NEXT_WED, { filename: 'cup.tdf', content });
+    now = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+
+    imports.expirePreviews();
+
+    expect(archive.list(L)).toEqual([expect.objectContaining({ keptFor: ['attendance'] })]);
+    expect(uploadRows().map((u) => u.status)).toEqual(['committed']);
   });
 });
 
 describe('commit', () => {
   const previewAndCommit = (date: SessionDate, players: { userid: string; name?: string }[], filename = 'cup.tdf') =>
-    imports.commit(L, date, imports.preview(L, date, { filename, content: tdf(players, filename) }).uploadId);
+    imports.commit(L, date, previewFile(L, date, { filename, content: tdf(players, filename) }).uploadId);
 
   it('lists the non-regulars for the date, records every player as known, and logs a tdf sighting for each', () => {
     roster.addRegular(L, { playerId: id('3'), name: 'Regular Rae' });
@@ -212,7 +279,7 @@ describe('commit', () => {
   });
 
   it('classifies against the state at commit time, not at preview time', () => {
-    const { uploadId } = imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '5', name: 'Late Reg' }]) });
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '5', name: 'Late Reg' }]) });
     roster.addRegular(L, { playerId: id('5') });
 
     expect(imports.commit(L, WED, uploadId)).toMatchObject({ added: 0, regulars: 1 });
@@ -220,7 +287,7 @@ describe('commit', () => {
   });
 
   it('is a no-op the second time (double click, retry)', () => {
-    const { uploadId } = imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
     imports.commit(L, WED, uploadId);
     sessions.removePlayer(L, WED, id('1'));
 
@@ -230,14 +297,14 @@ describe('commit', () => {
   });
 
   it('refuses an upload that belongs to another date', () => {
-    const { uploadId } = imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
 
     expect(() => imports.commit(L, NEXT_WED, uploadId)).toThrow(UploadNotFoundError);
     expect(sessions.getSession(L, NEXT_WED).players).toEqual([]);
   });
 
   it('refuses an upload that belongs to another league', () => {
-    const { uploadId } = imports.preview(OTHER, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
+    const { uploadId } = previewFile(OTHER, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
     expect(() => imports.commit(L, WED, uploadId)).toThrow(UploadNotFoundError);
   });
 
@@ -251,6 +318,42 @@ describe('commit', () => {
     expect(sightings.on(L, WED)).toHaveLength(2000);
   });
 
+  it('parses the players again from the archive and marks the file kept for attendance', () => {
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1', name: 'New Nia' }]) });
+
+    expect(imports.commit(L, WED, uploadId)).toMatchObject({ added: 1 });
+    expect(archive.list(L)).toEqual([expect.objectContaining({ keptFor: ['attendance'] })]);
+  });
+
+  it('refuses to commit once the organizer deleted the file, importing nothing', () => {
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
+    archive.delete(L, archive.list(L)[0]!.id);
+
+    expect(() => imports.commit(L, WED, uploadId)).toThrow(TdfFileDeletedError);
+    expect(roster.listPlayers(L)).toEqual([]);
+    expect(sightings.on(L, WED)).toEqual([]);
+  });
+
+  it("refuses to commit a file this install's key can't open, importing nothing", () => {
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
+    const otherKey = archiveWith(randomBytes(32).toString('base64'));
+    imports = createTdfImportService({ db: database.db, roster, sightings, archive: otherKey, now: () => now });
+
+    expect(() => imports.commit(L, WED, uploadId)).toThrow(TdfKeyMismatchError);
+    expect(roster.listPlayers(L)).toEqual([]);
+    expect(sightings.on(L, WED)).toEqual([]);
+  });
+
+  it('stores a deleted file afresh when it is dropped again, re-pointing the upload so it commits', () => {
+    const content = tdf([{ userid: '1' }]);
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content });
+    archive.delete(L, archive.list(L)[0]!.id);
+
+    expect(previewFile(L, WED, { filename: 'cup.tdf', content }).uploadId).toBe(uploadId);
+    expect(uploadRows()[0]!.fileId).toBe(archive.list(L)[0]!.id);
+    expect(imports.commit(L, WED, uploadId)).toMatchObject({ added: 1 });
+  });
+
   it('shows the import on the session', () => {
     previewAndCommit(WED, [{ userid: '1' }, { userid: '2' }], 'tcg.tdf');
 
@@ -260,7 +363,7 @@ describe('commit', () => {
   });
 
   it('does not show previews that were never committed on the session', () => {
-    imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
+    previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
     expect(sessions.getSession(L, WED).imports).toEqual([]);
   });
 });
@@ -269,21 +372,22 @@ describe('resetting a date after its play session was cleared', () => {
   const content = tdf([{ userid: '1' }, { userid: '2' }]);
 
   it('puts the draft back to draft and drops its committed imports, so the same file can be imported again', () => {
-    imports.commit(L, WED, imports.preview(L, WED, { filename: 'cup.tdf', content }).uploadId);
+    imports.commit(L, WED, previewFile(L, WED, { filename: 'cup.tdf', content }).uploadId);
     sessions.recordSubmission(L, WED, { playSessionId: 'ps-1', status: 'submitted' });
 
     sessions.resetAfterClear(L, WED);
 
     expect(sessions.getSession(L, WED)).toMatchObject({ status: 'draft', imports: [] });
-    expect(count('tdf_upload_player')).toBe(0);
-    const again = imports.preview(L, WED, { filename: 'cup.tdf', content });
+    // The file stays in the archive, kept, until the organizer deletes it.
+    expect(archive.list(L)).toEqual([expect.objectContaining({ keptFor: ['attendance'] })]);
+    const again = previewFile(L, WED, { filename: 'cup.tdf', content });
     expect(again.alreadyImported).toBe(false);
     expect(imports.commit(L, WED, again.uploadId)).toMatchObject({ alreadyImported: false });
   });
 
   it("leaves other dates and other leagues alone", () => {
-    imports.commit(L, NEXT_WED, imports.preview(L, NEXT_WED, { filename: 'cup.tdf', content }).uploadId);
-    imports.commit(OTHER, WED, imports.preview(OTHER, WED, { filename: 'cup.tdf', content }).uploadId);
+    imports.commit(L, NEXT_WED, previewFile(L, NEXT_WED, { filename: 'cup.tdf', content }).uploadId);
+    imports.commit(OTHER, WED, previewFile(OTHER, WED, { filename: 'cup.tdf', content }).uploadId);
     sessions.recordSubmission(L, NEXT_WED, { playSessionId: 'ps-2', status: 'submitted' });
 
     sessions.resetAfterClear(L, WED);
@@ -300,9 +404,53 @@ describe('resetting a date after its play session was cleared', () => {
 
 describe('removing a session player who came from a TDF', () => {
   it('retracts their tdf sighting too: the organizer says they were not there', () => {
-    imports.commit(L, WED, imports.preview(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) }).uploadId);
+    imports.commit(L, WED, previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) }).uploadId);
 
     expect(sessions.removePlayer(L, WED, id('1'))).toBe(true);
     expect(sightings.on(L, WED)).toEqual([]);
+  });
+});
+
+describe('the attendance referrer: archived files and the imports that use them', () => {
+  const original = tdf([{ userid: '1', name: 'Ash K' }, { userid: '2' }]);
+  const corrected = (name: string) => tdf([{ userid: '1', name: 'Ash K' }, { userid: '2' }], name);
+
+  it('re-points every import of a corrected file, keeping the sha256 of the file as dropped', () => {
+    imports.commit(L, WED, previewFile(L, WED, { filename: 'cup.tdf', content: original }).uploadId);
+    previewFile(L, NEXT_WED, { filename: 'cup.tdf', content: original });
+    const before = uploadRows();
+
+    const { fileId } = archive.replace(L, before[0]!.fileId!, { filename: 'cup.tdf', content: corrected('Fixed'), by: 'organizer' });
+
+    expect(uploadRows()).toEqual(before.map((u) => ({ ...u, fileId })));
+    expect(archive.list(L).map((f) => f.id)).toEqual([fileId]);
+    expect(imports.commit(L, NEXT_WED, uploadRows()[1]!.id)).toMatchObject({ added: 2 });
+    // A re-drop of the original is still recognised.
+    expect(previewFile(L, WED, { filename: 'cup.tdf', content: original }).alreadyImported).toBe(true);
+  });
+
+  it('reports the imports of a deleted file, which keep their sha256 and show the file as deleted', () => {
+    const { uploadId } = previewFile(L, WED, { filename: 'cup.tdf', content: original });
+    imports.commit(L, WED, uploadId);
+    const [before] = uploadRows();
+
+    expect(archive.delete(L, before!.fileId!)).toEqual({ referencedBy: [{ kind: 'attendance', id: uploadId }] });
+    expect(uploadRows()).toEqual([{ ...before, fileId: null }]);
+    expect(sessions.getSession(L, WED).imports).toHaveLength(1);
+  });
+
+  it('never leaves an import pointing at a missing file, whatever the sequence', () => {
+    const a = previewFile(L, WED, { filename: 'a.tdf', content: original }).uploadId;
+    previewFile(L, NEXT_WED, { filename: 'b.tdf', content: tdf([{ userid: '3' }]) });
+    imports.commit(L, WED, a);
+    archive.replace(L, uploadRows()[0]!.fileId!, { filename: 'a.tdf', content: corrected('Fixed'), by: 'organizer' });
+    now = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+    imports.expirePreviews();
+    archive.delete(L, uploadRows()[0]!.fileId!);
+    previewFile(L, WED, { filename: 'a.tdf', content: original });
+    imports.expirePreviews();
+
+    expect(dangling()).toBe(0);
+    expect(uploadRows()).toEqual([expect.objectContaining({ id: a, fileId: archive.list(L)[0]!.id, status: 'committed' })]);
   });
 });

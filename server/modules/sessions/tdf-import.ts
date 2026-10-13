@@ -1,11 +1,11 @@
-import { createHash } from 'node:crypto';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, isNull, lt } from 'drizzle-orm';
 import { type TdfInvalidRow, type TdfTournament, parseTdf } from '../../../shared/tdf/parse';
-import type { PlayerId, SessionDate } from '../../../shared/types/ids';
+import type { SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
-import { sessionPlayer, tdfUpload, tdfUploadPlayer } from '../../db/schema';
+import { sessionPlayer, tdfUpload } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
 import type { RosterService } from '../roster/service';
+import type { TdfArchiveService, TdfFileReferrer } from '../tdf-archive/service';
 import { createDrafts } from './drafts';
 
 /** How a TDF player relates to the league and the date, as of the preview. */
@@ -33,6 +33,14 @@ export interface TdfCommitResult {
   alreadyImported: boolean;
 }
 
+/** The organizer deleted the upload's archived file before it was committed. */
+export class TdfFileDeletedError extends Error {
+  override name = 'TdfFileDeletedError';
+  constructor(uploadId: number) {
+    super(`The file for TDF upload ${uploadId} was deleted. Drop it again to import it.`);
+  }
+}
+
 export class UploadNotFoundError extends Error {
   override name = 'UploadNotFoundError';
   constructor(uploadId: number) {
@@ -42,18 +50,38 @@ export class UploadNotFoundError extends Error {
 
 export interface TdfImportService {
   /**
-   * Parses the file and holds its players (name and ID only) for `commit`.
+   * Parses the file and keeps it in the encrypted archive for `commit` (ADR-0012).
    * Changes nothing else. The same file for the same date returns the same upload.
    * @throws TdfError
    */
-  preview(leagueId: string, date: SessionDate, file: { filename: string; content: string }): TdfPreview;
+  preview(leagueId: string, date: SessionDate, file: { filename: string; content: string; by: string }): TdfPreview;
   /**
-   * Records the file's players as known, lists the non-regulars for the date
-   * and logs a `tdf` sighting for every player, regulars included.
+   * Parses the archived file again, records its players as known, lists the
+   * non-regulars for the date and logs a `tdf` sighting for every player,
+   * regulars included, then keeps the file for attendance.
    * Classifies against the state at commit time. A second commit is a no-op.
-   * @throws UploadNotFoundError
+   * @throws UploadNotFoundError, TdfFileDeletedError, TdfKeyMismatchError
    */
   commit(leagueId: string, date: SessionDate, uploadId: number): TdfCommitResult;
+  /** Drops previews never committed within a day, then the archived files nothing uses any more. */
+  expirePreviews(): { uploads: number; files: number };
+}
+
+/** The archive's view of the attendance imports that point at its files. */
+export function createTdfUploadReferrer(db: Db): TdfFileReferrer {
+  return {
+    kind: 'attendance',
+    referencing: (fileId) =>
+      db
+        .select({ id: tdfUpload.id })
+        .from(tdfUpload)
+        .where(eq(tdfUpload.tdfFileId, fileId))
+        .all()
+        .map((r) => r.id),
+    repoint(fromFileId, toFileId) {
+      db.update(tdfUpload).set({ tdfFileId: toFileId }).where(eq(tdfUpload.tdfFileId, fromFileId)).run();
+    },
+  };
 }
 
 /** Previews that are never committed are dropped after this long. */
@@ -63,17 +91,20 @@ export function createTdfImportService(deps: {
   db: Db;
   roster: RosterService;
   sightings: SightingsService;
+  archive: TdfArchiveService;
   now?: () => Date;
 }): TdfImportService {
-  const { db, roster, sightings, now = () => new Date() } = deps;
+  const { db, roster, sightings, archive, now = () => new Date() } = deps;
   const drafts = createDrafts(db);
 
-  const uploadPlayers = (uploadId: number) =>
-    db
-      .select({ playerId: tdfUploadPlayer.playerId, name: tdfUploadPlayer.name })
-      .from(tdfUploadPlayer)
-      .where(eq(tdfUploadPlayer.uploadId, uploadId))
-      .all() as { playerId: PlayerId; name: string }[];
+  const expirePreviews = () =>
+    db.transaction(() => {
+      const uploads = db
+        .delete(tdfUpload)
+        .where(and(eq(tdfUpload.status, 'pending'), lt(tdfUpload.createdAt, new Date(now().getTime() - PENDING_TTL_MS))))
+        .run().changes;
+      return { uploads, files: archive.expire().deleted };
+    });
 
   const listedIds = (draftId: number) =>
     new Set(
@@ -86,15 +117,13 @@ export function createTdfImportService(deps: {
     );
 
   return {
-    preview(leagueId, date, { filename, content }) {
+    preview(leagueId, date, { filename, content, by }) {
       const parsed = parseTdf(content);
-      const sha256 = createHash('sha256').update(content).digest('hex');
 
       return db.transaction(() => {
-        db.delete(tdfUpload)
-          .where(and(eq(tdfUpload.status, 'pending'), lt(tdfUpload.createdAt, new Date(now().getTime() - PENDING_TTL_MS))))
-          .run();
+        expirePreviews();
 
+        const { fileId, sha256 } = archive.store(leagueId, { filename, content, by });
         const draft = drafts.ensure(leagueId, date);
         let upload = db
           .select()
@@ -108,6 +137,7 @@ export function createTdfImportService(deps: {
               draftId: draft.id,
               filename,
               sha256,
+              tdfFileId: fileId,
               tournamentName: parsed.tournament.name,
               tournamentDate: parsed.tournament.date,
               playerCount: parsed.players.length,
@@ -115,8 +145,11 @@ export function createTdfImportService(deps: {
             })
             .returning()
             .get();
-          db.insert(tdfUploadPlayer)
-            .values(parsed.players.map((p) => ({ uploadId: upload!.id, playerId: p.playerId, name: p.name })))
+        } else if (upload.tdfFileId === null) {
+          // The organizer deleted the archived copy; the file dropped again takes its place.
+          db.update(tdfUpload)
+            .set({ tdfFileId: fileId })
+            .where(and(eq(tdfUpload.id, upload.id), isNull(tdfUpload.tdfFileId)))
             .run();
         }
 
@@ -166,8 +199,9 @@ export function createTdfImportService(deps: {
             .get();
         if (!draft || !upload) throw new UploadNotFoundError(uploadId);
         if (upload.status === 'committed') return { added: 0, alreadyListed: 0, regulars: 0, alreadyImported: true };
+        if (upload.tdfFileId === null) throw new TdfFileDeletedError(uploadId);
 
-        const players = uploadPlayers(upload.id);
+        const { players } = parseTdf(archive.read(leagueId, upload.tdfFileId).content);
         roster.ensurePlayers(
           leagueId,
           players.map((p) => (p.name ? { playerId: p.playerId, name: p.name } : { playerId: p.playerId })),
@@ -190,10 +224,13 @@ export function createTdfImportService(deps: {
           players.map((p) => p.playerId),
         );
         db.update(tdfUpload).set({ status: 'committed', committedAt: now() }).where(eq(tdfUpload.id, upload.id)).run();
+        archive.markKept(upload.tdfFileId, 'attendance');
 
         return { added, alreadyListed: toList.length - added, regulars: players.length - toList.length, alreadyImported: false };
       });
     },
+
+    expirePreviews,
   };
 }
 
