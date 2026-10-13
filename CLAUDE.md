@@ -44,7 +44,9 @@ Key points (details in the docs):
 Module rules (enforce, don't erode):
 
 - `server/api/*` handlers are thin: `requireUserSession`, validate with shared Zod
-  schemas, call a module service, map errors.
+  schemas, call a module service, map errors. The one exception to the session rule is
+  `server/api/integrations/v1/*`, which takes only an integration bearer token
+  (`requireIntegrationToken`, ADR-0013); no other route may accept one.
 - `server/modules/*` are plain TS — no h3 or Nuxt imports.
 - Modules talk only through each other's exported services, never each other's tables.
 - Only `server/modules/pokemon/adapters/*` may call `*.pokemon.com`. Upstream payload
