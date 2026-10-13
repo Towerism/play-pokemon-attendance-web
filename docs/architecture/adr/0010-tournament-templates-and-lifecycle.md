@@ -372,7 +372,8 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
     skipped, in play-tools, approval pending, sanctioning error, cancelled, or **unknown**: a create that may have
     landed, with **Retry create**; decision 5) and offers
     **Create in play-tools** (one, or every selected), **Skip**, **Edit…** (decision 11; rescheduling is editing the
-    date), **Cancel…** and **Download TDF**. A one-off
+    date), **Cancel…** and **Download TDF** (only when the app holds the tournament's results file; ADR-0012
+    decision 7, #107). A one-off
     **New tournament** comes from a template and a date, which may be up to 2 days in the past.
   - **Templates:** list, create, edit, archive. The form's choices (formats, series, venues) are read live from
     play-tools as the template's organizer.
