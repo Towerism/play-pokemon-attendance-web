@@ -71,10 +71,10 @@ creation.
 
 ### 1. Scope
 
-Tournament creation, cancellation and rescheduling move into scope as **G7** (M9). Templates, scaffolds and
-schedules are the app's own. Still out of scope: running a tournament (TOM does that), editing a created tournament's
-other fields (done in play-tools), per-division registration times and costs, admin actions (delete, un-cancel,
-approve), and roster-only uploads.
+Tournament creation, cancellation, rescheduling and **editing any of a tournament's fields** (organizer,
+2026-10-12; decision 11) move into scope as **G7** (M9). Templates, scaffolds and schedules are the app's own. Still
+out of scope: running a tournament (TOM does that), per-division registration times and costs, admin actions (delete,
+un-cancel, approve), and roster-only uploads.
 
 ### 2. A new `tournaments` module
 
@@ -90,8 +90,10 @@ approve), and roster-only uploads.
   - name (≤ 80, with optional `{month}`, `{year}` and `{date}` tokens filled from the tournament's date);
   - the **organizer**: one connected professor, who it is created as (ADR-0009);
   - product and format (`category`, from `core/products` for the venue's country);
-  - **event type**: `custom`, or `premier` with a **series match** (text the series name must contain, e.g. "League
-    Challenge"). The series itself is resolved per date (decision 6);
+  - **tournament type**: picked from a dropdown **read live from play-tools**, never a list built into the app
+    (organizer, 2026-10-12: the types offered depend on when the tournament is sanctioned; decision 6). The template
+    stores what was picked as `custom`, or `premier` with a **series match** taken from the picked series' name (e.g.
+    "League Challenge"), so the series itself is resolved per date (decision 6);
   - venue (an address-book entry of the organizer: id, label and timezone are kept);
   - the usual start time (local to the venue);
   - registration: `on_site` (opens N minutes before the start, closes M minutes after, admission text) or
@@ -191,10 +193,25 @@ for each date).
 
 ### 6. Series and venue are resolved, not stored
 
-- **Series.** For a `premier` template, the series is the one from `listSeries` (as the organizer, for the league)
-  whose product matches, whose name contains the series match, and whose window for the venue's country contains the
-  date. None is `series_not_found`, and several are `series_ambiguous`, and the organizer picks one on the planned
-  tournament (a stored override). A `quarterly` schedule therefore follows the new series each quarter with no edit.
+- **Tournament types are always read from play-tools, for the date** (organizer, 2026-10-12: which types can be
+  sanctioned depends on when). The app keeps no list of types. Every type dropdown is filled from
+  `listSeries` (as the organizer, for the league) at the moment it is shown:
+  - **a form with a date** (a one-off **New tournament**, a planned tournament, the create-through list, **Edit…**)
+    offers **Custom** plus every premier series play-tools offers for that date: the product matches, and the series'
+    window for the venue's country contains the date. Its format dropdown follows the picked series' formats
+    (`category_slugs`), or `listFormats` for a custom event;
+  - **a template** (no date of its own) offers **Custom** plus the series play-tools offers across its schedules' next
+    planned dates (or the coming 12 months, when no schedule uses it yet). Picking one stores its series match. The
+    template form shows which upcoming dates it matches and which it doesn't;
+  - options are read fresh each time a form opens (a short cache, at most 10 minutes, as the organizer), so a type
+    play-tools adds or withdraws shows up without an app release.
+- **Series per date.** For a `premier` template, the series is the one from `listSeries` whose product matches, whose
+  name contains the series match, and whose window for the venue's country contains the date. None is
+  `series_not_found`, and several are `series_ambiguous`. Either way the planned tournament shows the live type
+  dropdown for its date, and the organizer picks a type (a stored override). The pick may be Custom, or a series under
+  a new name. A `quarterly` schedule therefore follows the new series each quarter with no edit.
+- **Edit… shows the type read-only**: play-tools doesn't let a professor change a tournament's event type or series
+  (S8).
 - **Venue.** The template keeps the address-book id. A venue no longer in the organizer's address book is
   `venue_not_found`, and the organizer picks another on the template.
 - **Dates.** The app doesn't mirror upstream's series windows or cycle end. Like eligibility for staff (ADR-0007
@@ -215,13 +232,13 @@ for each date).
 
 ### 7. Same rails as every other job
 
-Creation, cancellation, reschedule and TDF confirmation are `submission` rows with new kinds (`tournament_create`,
-`tournament_cancel`, `tournament_reschedule`, `tdf_upload`). They get the per-league lease (one job of any kind at a
+Creation, cancellation, editing (rescheduling included) and TDF confirmation are `submission` rows with new kinds
+(`tournament_create`, `tournament_cancel`, `tournament_edit`, `tdf_upload`). They get the per-league lease (one job of any kind at a
 time, so play-tools sees one call at a time), the event log and SSE, History, retry that re-reads first, boot recovery
 and shutdown. Their per-tournament items go in a new `submission_tournament_item` table, because `submission_item`
 is per player.
 
-### 8. Cancelling and rescheduling are explicit, and never automatic
+### 8. Cancelling, editing and rescheduling are explicit, and never automatic
 
 **Cancel** (`kind = 'tournament_cancel'`, one tournament):
 
@@ -234,8 +251,8 @@ is per player.
 - **Afterwards.** The planned tournament becomes `cancelled`. Its staff assignments that never reached play-tools
   are dropped, and the rest are marked removed locally. Nothing more is sent.
 
-**Reschedule** (`kind = 'tournament_reschedule'`, one tournament, a new date and start time) **edits the date in
-place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it):
+**Reschedule** is an edit of the date and start time (a `tournament_edit` job, decision 11) that **changes the date
+in place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it). On top of decision 11's rules:
 
 - **One call, as the organizer.** The job reads the tournament fresh (`getTournament`), then sends `PATCH
   core/tournament/{guid}/` with the new start. The registration window moves by the same amount, so its offsets from
@@ -249,7 +266,7 @@ place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it):
     A professor can't change the series, so moving a League Cup into another quarter means cancelling it and making
     a new one, which the dialog says;
   - a new date before the creatable window (today − 2 days, decision 6): `date_too_far_past`.
-- **Re-read, never re-send blindly.** A tournament already at the new start is `already_rescheduled`, and nothing is
+- **Re-read, never re-send blindly.** A tournament already at the new start is `already_applied`, and nothing is
   sent. After a 5xx the job re-reads, and the edit counts as landed when the start matches.
 - **Status afterwards.** If play-tools moves the tournament back to `approval-pending` (or `sanctioning-error`), the
   outcome says so, and the card shows it. The confirm dialog warns that play-tools may re-check the tournament.
@@ -270,7 +287,8 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
 - **A new Tournaments page** (`tournaments.vue`, in the nav), with three tabs:
   - **Upcoming:** planned and upstream tournaments from 2 days ago through the coming weeks, by date. Each shows its status (planned,
     skipped, in play-tools, approval pending, sanctioning error, cancelled) and offers
-    **Create in play-tools** (one, or every selected), **Skip**, **Reschedule…** and **Cancel…**. A one-off
+    **Create in play-tools** (one, or every selected), **Skip**, **Edit…** (decision 11; rescheduling is editing the
+    date), **Cancel…** and **Download TDF**. A one-off
     **New tournament** comes from a template and a date, which may be up to 2 days in the past.
   - **Templates:** list, create, edit, archive. The form's choices (formats, series, venues) are read live from
     play-tools as the template's organizer.
@@ -278,7 +296,69 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
     next dates before saving.
 - **This week** turns each Staff card into a **tournament card**: its status, its Staff section (as built), and a
   Results section for the TDF (ADR-0011). A date with planned tournaments not yet created shows them, with
-  **Create in play-tools**. Cancel and Reschedule stay on the Tournaments page, away from the weekly flow.
+  **Create in play-tools**. The card's menu offers **Edit…**. Cancel stays on the Tournaments page, away from the
+  weekly flow.
+
+### 11. Edit any field, and optionally apply it across the schedule
+
+The organizer (2026-10-12): editing any of a tournament's fields is in scope, and a tournament that is part of a
+schedule can have the change applied to other tournaments in the schedule.
+
+- **Edit…** is offered on any tournament of the league that a connected professor organizes, made here or in
+  play-tools, while play-tools lets a professor edit it (within start + 90 d, not cancelled or complete; S8). The
+  form is the template form, pre-filled from a fresh `getTournament` as the organizer:
+  - **editable:** name, format, venue, date and start time, registration (on-site window and admission, or
+    third-party URL), contact email and phone, details, event website;
+  - **read-only,** because play-tools doesn't let a professor change them (S8): league, organizer, event type,
+    premier series, and a premier event's product.
+
+  A planned tournament not yet in play-tools is edited locally, with no upstream call.
+- **Only what changed is sent.** The form is compared with the fresh read. The job applies just the changed fields onto
+  a fresh read of each tournament, then sends `PATCH core/tournament/{guid}/`: the full create body, or only the changed
+  fields if S8 part 2 shows a partial body is accepted (Q1). An edit made meanwhile in play-tools to another field is
+  never overwritten.
+- **A `tournament_edit` job,** as the organizer, one tournament at a time, paced like creation:
+  - re-read, then send;
+  - every changed field already at its new value is `already_applied`, and nothing is sent;
+  - after a 5xx, re-read and compare before anything else;
+  - outcomes: `edited`, `already_applied`, `refused` (upstream's message and correlation id), `failed`, `skipped`.
+    A tournament play-tools sends back to `approval-pending` says so;
+  - refused locally, before any call: `tournament_locked`, `date_too_far_past`, `outside_series_window` (decision 8),
+    `format_not_in_series` (a premier event's format must be one of its series' formats), `venue_not_found`.
+- **Applying it across the schedule.** When the tournament came from a schedule, the dialog asks where the change
+  goes:
+  - **This tournament only** (the default);
+  - **This and later tournaments in the schedule**;
+  - **All tournaments in the schedule**, from the creatable window's start (decision 6). Earlier ones are history and
+    are not touched.
+
+  It applies to the same scaffold slot (the same event on each date). A tick adds **the tournaments held with it**
+  (the scaffold's other slots on those dates), for fields that make sense across them (venue, contacts,
+  registration, details, website).
+  - **Per-field ticks.** Each changed field has a tick, all on except two:
+    - **the date never carries over.** Moving one week doesn't move the others. A start-time change carries over
+      as a time of day, keeping each tournament's own date;
+    - **the name is off by default,** since names often carry their month or date. Ticked, the new name is used as
+      typed.
+  - **Preview before anything is sent.** Every affected tournament is listed with each field's before → after, in
+    three groups:
+    - **in play-tools** (will be edited);
+    - **planned** (updated locally);
+    - **left out**, with why: cancelled, complete, locked, or before the creatable window.
+
+    The organizer can untick any tournament. Nothing changes until they confirm.
+  - **In play-tools:** one `tournament_edit` job with one item per tournament, oldest first, at most 60, each with
+    its own outcome. One refusal doesn't stop the others.
+  - **Not created yet:** the changes are stored as **overrides**, so those tournaments are created with them. They go
+    on each planned row in the range (`PLANNED_TOURNAMENT.overrides`). For "this and later" and "all", they also go on
+    the schedule (`TOURNAMENT_SCHEDULE_OVERRIDE`: slot, effective from a date, fields), so dates planned later get
+    them too. At creation, the settings are the template, then the schedule's overrides in effect for that date, then
+    the row's own.
+  - **The template is untouched** unless the organizer also ticks **Update the template**. That changes future
+    creation for every schedule using it, and those schedules are listed first.
+- **A tournament made in play-tools** (not from a schedule) is edited on its own. There is no schedule to apply to.
+- **A date change** moves the tournament's local staff assignments with it (decision 8). Other fields don't touch
+  staff.
 
 ## Consequences
 
@@ -291,6 +371,10 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
   and creates nothing past that date, so a wrong template can't multiply on its own.
 - (+) A regular tournament such as "3rd Tuesday monthly" is created for months ahead in one click.
 - (+) Rescheduling keeps the tournament: its display id, registrations and staff survive the move.
+- (+) Any field can be edited from the app, and a change to a regular event (a new venue, cost or contact) is made
+  once for the whole schedule, with a before → after preview of every tournament it touches.
+- (−) Overrides add a layer (template → schedule overrides → row overrides) that creation must resolve. The planned
+  tournament view shows which settings come from where.
 - (+) Staff follow a tournament through a reschedule, so staff credits keep working.
 - (−) A new module with five tables (templates, scaffold slots, schedules, planned tournaments, result uploads), four
   new job kinds and a new item table.
@@ -313,7 +397,7 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
 
 | #  | Question | Status |
 | -- | -------- | ------ |
-| Q1 | Does a professor's `PATCH` of the date work, does it accept a partial body, and does it send the tournament back for approval? | **Open: S8 part 2.** Removing means cancelling (organizer, 2026-10-12); reschedule edits in place if the `PATCH` works, else the fallback in decision 8 |
+| Q1 | Does a professor's `PATCH` of the date and other fields work, does it accept a partial body, and does it send the tournament back for approval? | **Open: S8 part 2.** Removing means cancelling (organizer, 2026-10-12); reschedule edits in place if the `PATCH` works, else the fallback in decision 8 |
 | Q2 | Which tournament types are in scope: custom (friendly) events only, or premier series (League Challenge, League Cup, Prerelease) too? | **Answered (organizer, 2026-10-12):** both; premier series are in scope |
 | Q3 | Should a tournament's default staff be part of the template? | **Answered (organizer, 2026-10-12):** no (decision 9) |
 | Q4 | Is there any case for automatic creation (e.g. weekly locals), or always a click? | **Answered (organizer, 2026-10-12):** "create everything up to date X" on a schedule, one click (decision 5); no background creation |

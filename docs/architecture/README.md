@@ -33,12 +33,12 @@ Pain points that remain with the CLI:
 - **G4 Submit attendance.** One click. The app obtains a valid JWT from `access.pokemon.com` **without manual token copying**, asks *which date* the attendance is for, resolves that date to the play session, and uploads regulars ∪ session players with no duplicates.
 - **G5 Metrics.** Every player ID that ever enters the system is tracked, with enough metrics to curate the regulars list by hand (promote frequent non-regulars, demote regulars who stopped coming).
 - **G6 Assign staff** (M8, [ADR-0007](adr/0007-staff-assignment.md)). In the same weekly flow, assign one or more staff (player ID + role; several people, roles may repeat) to each of the date's tournaments in play-tools, so they earn staff points. A search over the league's **staff list** (everyone who has staffed its tournaments, seeded from play-tools; names editable, since play-tools may show a dead name) fills in the player and their last role.
-- **G7 Tournaments** (M9, proposed, [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)). Create, cancel and reschedule the league's tournaments in play-tools from the app, custom events and premier series (League Challenge, League Cup, Prerelease) alike. **Templates** hold a tournament's settings, **scaffolds** group templates held back to back, and **schedules** repeat a scaffold weekly, monthly or quarterly. The app plans the upcoming dates, and the organizer creates them with one click: chosen ones, or every one a schedule plans up to a date they pick (e.g. the 3rd Tuesday of every month through the end of the year).
+- **G7 Tournaments** (M9, proposed, [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)). Create, edit (any field, optionally across its schedule), cancel and reschedule the league's tournaments in play-tools from the app, custom events and premier series (League Challenge, League Cup, Prerelease) alike. **Templates** hold a tournament's settings, **scaffolds** group templates held back to back, and **schedules** repeat a scaffold weekly, monthly or quarterly. The app plans the upcoming dates, and the organizer creates them with one click: chosen ones, or every one a schedule plans up to a date they pick (e.g. the 3rd Tuesday of every month through the end of the year).
 - **G8 Upload results** (M9, proposed, [ADR-0011](adr/0011-tdf-results-upload.md)). Upload a tournament's `.tdf` to play-tools from its This week card, the same drop that imports its players for attendance.
 
 ### Non-goals (v1)
 
-- Replacing any other play-tools feature (running tournaments, editing a tournament's other fields, admin actions, reporting). Staff *assignment* moved into scope as G6 (ADR-0007); creating, cancelling and rescheduling tournaments and uploading their results as G7 and G8 (ADR-0010, ADR-0011, proposed).
+- Replacing any other play-tools feature (running tournaments, admin actions, reporting). Staff *assignment* moved into scope as G6 (ADR-0007); creating, cancelling and rescheduling tournaments and uploading their results as G7 and G8 (ADR-0010, ADR-0011, proposed).
 - Real-time multi-user editing. One or two organizers per league is the expected load. (Several professors' Pokémon accounts can be connected at once, ADR-0008; the app itself still has one organizer login.)
 - Storing Pokémon Trainer Club **passwords** (see [ADR-0003](adr/0003-pokemon-auth-pkce-refresh-token.md)).
 - Storing minors' birthdates or other PII from the TDF beyond name and player ID.
@@ -414,7 +414,7 @@ and [ADR-0011](adr/0011-tdf-results-upload.md).
 | Purpose                     | Method & path (under `services/`)                                                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------- |
 | Create                      | `POST core/tournament` (name, `activity_group_id`, `organizer_id`, product, `category`, `series_guid` or null, `address_id`, start, contacts, registration, details, website) → at least `{guid}` |
-| Reschedule (edit)           | `PATCH core/tournament/{guid}/` with the create body, new dates                                    |
+| Edit, reschedule            | `PATCH core/tournament/{guid}/` with the create body (changed fields applied to a fresh read)      |
 | Cancel                      | `PATCH core/tournament/{guid}/` `{application_state: "cancelled"}` (delete is admin-only)          |
 | Premier series              | `GET core/users/{sub}/activity_groups/{ag}/series/` (window per country)                           |
 | Formats                     | `GET core/products?country=XX`                                                                     |
@@ -430,7 +430,7 @@ interface PlayToolsGateway {
   listFormats(country: string): Promise<Format[]>;       // {product, categories}
   listVenues(groupId: string): Promise<Venue[]>;         // {id, name, formattedAddress, country, timeZone}
   createTournament(t: NewTournament): Promise<{ tournamentId: string }>;
-  rescheduleTournament(id: string, startsAt: Instant, registration?: Window): Promise<'rescheduled'>;
+  editTournament(id: string, changes: TournamentChanges): Promise<'edited'>; // changed fields over a fresh read; reschedule = a date change
   cancelTournament(id: string): Promise<'cancelled' | 'already_cancelled'>;
   validateResults(displayId: string, tdf: string): Promise<{ uploadId: string; errors: ResultsError[] }>;
   fetchResultsFile(displayId: string): Promise<{ filename: string; content: string } | null>; // latest accepted tdf upload
@@ -495,6 +495,7 @@ erDiagram
   TOURNAMENT_TEMPLATE ||--o{ SCAFFOLD_SLOT : "fills"
   TOURNAMENT_SCAFFOLD ||--o{ TOURNAMENT_SCHEDULE : "repeated by"
   TOURNAMENT_SCHEDULE ||--o{ PLANNED_TOURNAMENT : "plans"
+  TOURNAMENT_SCHEDULE ||--o{ TOURNAMENT_SCHEDULE_OVERRIDE : "edited across (M9)"
   TOURNAMENT_TEMPLATE ||--o{ PLANNED_TOURNAMENT : "settings for"
   LEAGUE ||--o{ TOURNAMENT_RESULT_UPLOAD : "uploads results (M9)"
   SUBMISSION ||--o{ SUBMISSION_TOURNAMENT_ITEM : "tournament jobs (M9)"
@@ -678,8 +679,8 @@ erDiagram
     text organizer_player_id "a connected professor; created as them (ADR-0009)"
     text product "tcg|vg|pgo"
     text category "e.g. tcg_std"
-    text event_type "custom|premier"
-    text series_match "premier: text the series name contains"
+    text event_type "custom|premier: as picked from the live play-tools type list"
+    text series_match "premier: from the picked series' name; resolved per date against listSeries"
     text venue_id "organizer's address-book guid"
     text venue_label
     text venue_time_zone
@@ -725,11 +726,21 @@ erDiagram
     date local_date
     text start_time
     text series_override "a picked series guid when the match was ambiguous"
+    text overrides "json: fields edited on this row before creation (ADR-0010 decision 11)"
     text state "planned|skipped|creating|created|failed|cancelled"
     text tournament_id "upstream guid once created or adopted"
     text display_id
     text upstream_status "approval-pending|sanctioned|sanctioning-error|cancelled|complete…"
     text error_code
+  }
+  TOURNAMENT_SCHEDULE_OVERRIDE {
+    int id PK
+    int schedule_id FK
+    int slot_position "the scaffold slot it applies to"
+    date effective_from "applies to the schedule's dates from here on"
+    text fields "json: the changed fields carried over (never the date)"
+    text created_by
+    datetime created_at
   }
   TOURNAMENT_RESULT_UPLOAD {
     int id PK
@@ -756,7 +767,7 @@ erDiagram
     int planned_tournament_id "nullable"
     text tournament_id
     text label
-    text outcome "created|already_exists|refused|rescheduled|already_rescheduled|cancelled|already_cancelled|uploaded|processing|processing_failed|failed|skipped"
+    text outcome "created|already_exists|refused|edited|already_applied|cancelled|already_cancelled|uploaded|processing|processing_failed|failed|skipped"
     text error_code
     text error "upstream message + correlation id for refusals"
   }
@@ -1196,7 +1207,11 @@ sequenceDiagram
   locally (`date_too_far_past`). Two days fits play-tools' back-dating limit (72 h in its form, 84 h in its code; S8; ADR-0010 decision 6).
 - **Create through date…** on a schedule materialises it up to the chosen date, lists what it will create, and on
   confirm starts the same job for all of them (at most 60).
-- **Reschedule** is one `PATCH` of the date. It keeps the tournament, its registrations and staff, and moves local
+- **Edit** any field with **Edit…**: only changed fields are applied over a fresh read and sent (`PATCH`), as a
+  `tournament_edit` job. For a tournament from a schedule, the change can go to this one, this and later, or all in
+  the schedule. Each changed field is ticked (the date never carries over), a before → after preview lists every
+  tournament, and tournaments not created yet get it as stored overrides (ADR-0010 decision 11).
+- **Reschedule** is an edit of the date: one `PATCH`. It keeps the tournament, its registrations and staff, and moves local
   assignments to the new date. It refuses a premier event moved outside its series window (ADR-0010 decision 8).
 - **Cancel** needs a confirm from a fresh read, plus a typed display id when anyone is registered.
 - **Results** are previewed (local checks, then upstream's validate) and confirmed as a job. A file that fails
@@ -1242,14 +1257,14 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `POST /sessions/{date}/staff/apply-all` → 202 (#76) · `GET /sessions/{date}/staff/apply-all` · `GET /staff-batches/{id}` | Start a staff batch for `{ tournamentIds }` (1–20, distinct, run in that order) → `{ batchId }`: one `kind = 'staff'` job per tournament in turn, each as its organizer, under one hold of the lease (§6.4). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`, 503 `shutting_down`; a tournament's own refusal is its row's `refusal`, not an error. `GET …/apply-all` is the date's running batch or 204; `GET /staff-batches/{id}` is `{ id, sessionDate, status, startedBy, startedAt, finishedAt, rows: [{ position, tournamentId, label, organizerName, status, submissionId, progress, counts, refusal }] }`, 404 for another league's |
 | `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ tournamentId }` → `{ submissionId }` (§6.4), run and recorded as the tournament's organizer (ADR-0009); follow it like a submission (`/submissions/{id}`, its events, retry). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`/`not_connected`/`organizer_not_connected`/`needs_reconnect` (`data.professorPlayerId`), 422 `nothing_to_apply`/`unknown_tournament`/`tournament_locked`/`unknown_role`, 503 `shutting_down`. A staff job's items carry `role`, `errorCode` and `suggestedPlayerId` (null for other kinds), its summary `tournamentLabel` (null for other kinds) |
 | `GET /tournaments/upcoming?from=&to=` (M9, proposed) | Materialise schedules, then the planned and upstream tournaments by date with status, organizer and actions; `from` defaults to today − 2 days (the creatable window's start) |
-| `GET/POST /tournament-templates` · `PATCH/DELETE /tournament-templates/{id}` (M9) | Templates; `DELETE` archives. `GET /tournament-templates/options?professor=` reads formats, series and venues live as that professor |
+| `GET/POST /tournament-templates` · `PATCH/DELETE /tournament-templates/{id}` (M9) | Templates; `DELETE` archives. `GET /tournament-templates/options?professor=&date=` reads tournament types (Custom + the premier series play-tools offers for that date, or across the template's upcoming dates without one), formats and venues live as that professor (cached ≤ 10 min); the app holds no list of types |
 | `GET/POST /tournament-scaffolds` · `PATCH/DELETE /tournament-scaffolds/{id}` (M9) | Scaffolds and their slots |
 | `GET/POST /tournament-schedules` · `PATCH/DELETE /tournament-schedules/{id}` · `POST /tournament-schedules/preview` (M9) | Schedules; preview lists the next dates for a rule without saving |
 | `POST /planned-tournaments` · `PATCH /planned-tournaments/{id}` (M9) | One-off planned tournament from a template and date; edit date, time or series pick, or `{skipped}` (only while not in play-tools). The date may be up to 2 days in the past (league `TZ`); earlier is 422 `date_too_far_past` |
 | `POST /tournaments/create` → 202 (M9) | `{plannedIds}` (1–60) → a `tournament_create` job |
 | `GET /tournament-schedules/{id}/create-through?date=` · `POST /tournament-schedules/{id}/create-through` → 202 (M9) | Preview what the schedule would create up to the date (materialised past its horizon; lists what is left out and why), then `{date}` → one `tournament_create` job; 422 `too_many_tournaments` (> 60) or a date more than 12 months ahead |
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
-| `POST /tournaments/{id}/reschedule` → 202 (M9) | `{date, startTime}` → a `tournament_reschedule` job; 422 `outside_series_window`/`tournament_locked`/`date_too_far_past` |
+| `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found` |
 | `GET /tournaments/{id}/tdf` (M9, ADR-0012 decision 7) | **Download TDF** for a tournament: the archived results file (the corrected one if the organizer was replaced), else play-tools' own copy fetched as the organizer (`triumph`), archived, then served. `Content-Disposition: attachment`, `no-store`, one audit log line; 404 `no_tdf`, 409 `organizer_not_connected`/`needs_reconnect`/`submission_running` (only when it must fetch) |
 | `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; SHA-256s on upload rows stay). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
 | `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB) → `{uploadId, warnings: [{code, message, players?}], attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_wrong_tournament`/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`/play-tools' validation codes) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`; 409 `submission_running`. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
@@ -1267,7 +1282,7 @@ Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submi
 | Page (`app/pages/`) | Contents                                                                                                                      |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `index.vue` This week | Date picker (`?date=` query; defaults to today in the browser's timezone); TDF dropzone (`UFileUpload`) with a preview diff modal; a **Find a known player** search (`PlayerSearch`: from 2 characters, debounced, `GET /players?q=&limit=20`; picking a player adds them by hand, picking a regular marks them present like the tick does; present regulars and players already listed show disabled with a tag); session-player `UTable` (add by ID + name); regulars count with expander and "present" ticks (optimistic; disabled for a regular in an imported TDF); big **Submit attendance** button → `SubmitDialog` (session pick/confirm) → progress drawer; a **Staff** section (M8, `StaffSection`): one `StaffCard` per tournament of the selected league on the date, whichever connected professor organizes it (listed from play-tools' tournaments, not the play sessions; ADR-0009). Each card says "Organized by …"; one whose organizer can't act says why ("Connect Professor …'s Pokémon account" / "Reconnect …") with **Open Settings** and no actions. Above the cards, one warning per professor in `unread`: **Open Settings** for a refused login, **Try again** otherwise; the global banner stays tied to the submitting professor. It is read in the browser only and never retried on its own, so a play-tools failure shows **Try again** (or **Open Settings**) without holding up the rest of the page. Each card has assignment rows (player, role select, state, remove; "In play-tools as … ; changes on the next apply" while `appliedRole` differs) and play-tools-only staff shown read-only. A tournament past its window, or no longer listed (`missing`), has no actions. Its `StaffSearch` searches `GET /staff?q=` and every known player side by side (staff list first, from 2 characters, debounced), with add-by-ID (`AddStaffForm`) for a first-time staffer; picking adds them at once in their last role (Judge for a first staffer). Players the tournament already lists, or already staffed locally, show disabled with how they are listed ("… in play-tools", "Playing", "Staffing as …"); the tournament's organizer shows disabled as "Organizer". **Assign staff in play-tools** (`StaffApplyDialog`) says it is assigned as the tournament's organizer, opens the same progress view as Submit and lists every staffer needing attention with the server's reason; a `merged_player_id` suggestion is shown, never applied. Above the cards, with two or more tournaments to apply, **Assign staff for all tournaments** (`StaffBatchDialog`, #76) opens one dialog with a row per tournament (status, organizer, progress or counts, why not started, Details), not dismissable by accident while it runs (Close leaves it running, and the section offers it again, after a reload too); at the end it toasts, refreshes every card and offers **Retry failed**; a **Danger zone** with **Clear session…** → `ClearSessionDialog` (session pick, preview, type the date, progress), shown only once a submission has resolved the date's play session (`playSessionId` on `GET /sessions/{date}`; play-tools is not read to decide) |
-| `tournaments.vue` (M9, proposed) | Tabs **Upcoming** (planned and play-tools tournaments by date: Create in play-tools, Skip, Reschedule…, Cancel…, Download TDF, New tournament), **Templates** (form choices read live as the template's organizer) and **Schedules** (scaffold slots, recurrence, a preview of the next dates, and **Create through date…**, confirmed against the list it would create). On This week (M9) each Staff card becomes a tournament card with its status, Staff, and a **Results** section where a dropped `.tdf` previews the upload and the attendance import together, with **Download TDF** once the tournament has results; planned tournaments not yet created show with **Create in play-tools** |
+| `tournaments.vue` (M9, proposed) | Tabs **Upcoming** (planned and play-tools tournaments by date: Create in play-tools, Skip, Edit… (any field; rescheduling included; optionally across the schedule), Cancel…, Download TDF, New tournament), **Templates** (form choices read live as the template's organizer) and **Schedules** (scaffold slots, recurrence, a preview of the next dates, and **Create through date…**, confirmed against the list it would create). On This week (M9) each Staff card becomes a tournament card with its status, Staff, and a **Results** section where a dropped `.tdf` previews the upload and the attendance import together, with **Download TDF** once the tournament has results; planned tournaments not yet created show with **Create in play-tools** |
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**, **Staff** (M8, #50: the staff list from `GET /staff` with times staffed, last staffed, and the last role's label from `GET /staff/roles` (fetched once); the page's search box searches it; an inline rename (`PATCH /players/{id}`, one row at a time) since a seeded play-tools name can be a dead name. The Staff tab never calls `/players`, and the other tabs never call `/staff`) (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
 | `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …", "Staff import") |
