@@ -717,6 +717,9 @@ erDiagram
     int player_count
     text upstream_upload_id "triumph upload_guid"
     text upstream_errors "json"
+    text warnings "json: local checks, upstream errors, unknown players (id + name)"
+    text acknowledged_by "who chose Upload anyway; null when there were no warnings"
+    datetime acknowledged_at
     text state "previewed|confirming|processing|complete|failed"
     int submission_id FK "its tdf_upload job"
     datetime created_at
@@ -1151,10 +1154,10 @@ sequenceDiagram
   Note over O,G: after the event, on This week
   O->>W: drop tournament.tdf on its card
   W->>S: POST /api/sessions/{date}/tournaments/{id}/results
-  S->>S: parse; check id, organizer, staff-also-playing
+  S->>S: parse; blocks (unreadable, can't take an upload) vs warnings (id, organizer, game, staff also playing, players new to the app)
   S->>G: getTournament + participants; validateResults (as organizer)
-  S-->>W: preview: upstream errors + attendance diff
-  O->>W: Upload results
+  S-->>W: preview: blocks, warnings (incl. play-tools' errors) + attendance diff
+  O->>W: Upload results (or Upload anyway, after the warning)
   W->>S: POST …/results/{uploadId}/confirm {importAttendance}
   J->>G: confirmResults; poll getTournament until complete / upload_failed
 ```
@@ -1168,8 +1171,10 @@ sequenceDiagram
 - **Reschedule** is one `PATCH` of the date. It keeps the tournament, its registrations and staff, and moves local
   assignments to the new date. It refuses a premier event moved outside its series window (ADR-0010 decision 8).
 - **Cancel** needs a confirm from a fresh read, plus a typed display id when anyone is registered.
-- **Results** are previewed (local checks, then upstream's validate) and confirmed as a job. The raw file is never
-  stored (ADR-0011).
+- **Results** are previewed (local checks, then upstream's validate) and confirmed as a job. A file that fails
+  validation may still be sent: the dialog lists every warning (play-tools' errors, mismatches, and players new to the
+  app as possible mis-keyed ids) and the organizer must choose **Upload anyway**, which the server also requires. The
+  raw file is never stored (ADR-0011).
 
 ## 7. HTTP API (Nitro server routes)
 
@@ -1217,7 +1222,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /tournament-schedules/{id}/create-through?date=` · `POST /tournament-schedules/{id}/create-through` → 202 (M9) | Preview what the schedule would create up to the date (materialised past its horizon; lists what is left out and why), then `{date}` → one `tournament_create` job; 422 `too_many_tournaments` (> 60) or a date more than 12 months ahead |
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
 | `POST /tournaments/{id}/reschedule` → 202 (M9) | `{date, startTime}` → a `tournament_reschedule` job; 422 `outside_series_window`/`tournament_locked`/`date_too_far_past` |
-| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB; 422 `tdf_wrong_tournament`/`tdf_wrong_organizer`/`tdf_staff_also_playing`/`results_not_accepted`/`results_already_uploaded`) and confirm `{importAttendance}` → a `tdf_upload` job |
+| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB) → `{uploadId, warnings: [{code, message, players?}], attendance}`; warnings (`tdf_wrong_tournament`/`tdf_wrong_organizer`/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`/play-tools' validation codes) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`; 409 `submission_running`. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
 | `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name }` sets or clears the display name (≤ 60 characters, `''`/null clears; display only, never sent to Pokémon) and answers the connection. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream?professor=` · `GET /settings` · `PUT /settings` | Pick the submitting professor and their activity group, timezone, thresholds, batch delay. As built: `GET /leagues/upstream` lists the leagues every connected professor shares (#75), named as that professor sees them, with `selectedId` and `excluded` (professors left out because they need a reconnect; any other failure is 502/503); `PUT` refuses a league outside that set with 404 `league_not_found`; `GET /settings` is `{ thresholds }`; `PUT` takes `{ professorPlayerId?, activityGroupId?, thresholds? }` (the professor and league together; `{}` changes nothing; 404 `connection_not_found` or `league_not_found`) and answers with what it changed, `{ connection?, thresholds? }` |
 
