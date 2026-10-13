@@ -101,6 +101,23 @@ export interface SessionStaff {
   unread: UnreadProfessor[];
 }
 
+/** How reading one connected professor's tournaments went: read only when every call for them succeeded. */
+export type ProfessorReadOutcome = { status: 'read' } | { status: 'unread'; code: string };
+
+/** The date as an integration sees it (#115): only tournaments play-tools returned, with live assignments. */
+export interface DaySnapshot {
+  timeZone: string;
+  /** In start order; each tournament once, however many professors list it. */
+  tournaments: {
+    tournament: Tournament;
+    organizerPlayerId: PlayerId;
+    /** Live (not tombstoned) assignments, oldest first, with local names and the wanted role. */
+    staff: { playerId: PlayerId; name: string; role: string }[];
+  }[];
+  /** Every connected professor, in connection order. */
+  professors: { connectionId: number; outcome: ProfessorReadOutcome }[];
+}
+
 /** The professor a staff job for a tournament runs as: always its organizer (#75). */
 export interface ActingProfessor {
   connectionId: number;
@@ -155,6 +172,12 @@ export interface StaffingService {
    * @throws StaffingError `league_not_selected`, PokemonUpstreamError `not_connected`
    */
   sessionStaff(leagueId: string, date: SessionDate): Promise<SessionStaff>;
+  /**
+   * The same reads as `sessionStaff` (seeding included), as domain values: the tournaments play-tools
+   * returned and how each connected professor's read went (#115).
+   * @throws StaffingError `league_not_selected`, PokemonUpstreamError `not_connected`
+   */
+  daySnapshot(leagueId: string, date: SessionDate): Promise<DaySnapshot>;
   /** The staff list: most recently staffed first, then most often; `q` matches part of a name or player id. */
   searchStaff(leagueId: string, opts: { q?: string; limit?: number }): StaffListEntry[];
   /**
@@ -355,6 +378,47 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
     }
     if (failures.length) throw failures[0];
     return null;
+  }
+
+  type DayRead = { tournament: Tournament; details: TournamentDetails; participants: TournamentParticipant[] };
+  type DayOutcome = { connection: ActingConnection; outcome: ProfessorReadOutcome; message?: string };
+
+  /**
+   * The date's tournaments in this league, read one professor at a time, each with their own login (play-tools
+   * lists only the caller's tournaments), seeding the staff list. A professor counts as read only when every call
+   * for them succeeded; otherwise none of their tournaments are kept.
+   */
+  async function readDay(leagueId: string, date: SessionDate) {
+    const groupId = leagueGroup(leagueId);
+    const conns = acting();
+    const reads: DayRead[] = [];
+    const outcomes: DayOutcome[] = [];
+    for (const c of conns) {
+      if (c.status === 'needs_reconnect') {
+        outcomes.push({ connection: c, outcome: { status: 'unread', code: 'needs_reconnect' }, message: 'This Pokémon login needs a reconnect in Settings.' });
+        continue;
+      }
+      const gateway = deps.staffGateway(c.id);
+      const theirs: DayRead[] = [];
+      try {
+        const listed = await gateway.listTournaments(localDay(date, timeZone));
+        for (const tournament of listed) {
+          if (tournament.groupId !== groupId || reads.some((r) => r.tournament.id === tournament.id)) continue;
+          const read = await readTournament(gateway, tournament.id);
+          if (!read) continue;
+          recordUpstreamStaff(leagueId, read.details, read.participants);
+          theirs.push({ tournament, ...read });
+        }
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        outcomes.push({ connection: c, outcome: { status: 'unread', code: err.code }, message: err.message });
+        continue;
+      }
+      reads.push(...theirs);
+      outcomes.push({ connection: c, outcome: { status: 'read' } });
+    }
+    reads.sort((a, b) => byStart(a.tournament, b.tournament));
+    return { conns, reads, outcomes };
   }
 
   const isEditable = (t: Pick<Tournament, 'editableUntil'>) => t.editableUntil !== null && now() < t.editableUntil;
@@ -590,36 +654,10 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
     },
 
     async sessionStaff(leagueId, date) {
-      const groupId = leagueGroup(leagueId);
-      const conns = acting();
-      type Read = { tournament: Tournament; details: TournamentDetails; participants: TournamentParticipant[] };
-      const reads: Read[] = [];
-      const unread: UnreadProfessor[] = [];
-      // One professor at a time, each read with their own login: play-tools lists only the caller's tournaments.
-      for (const c of conns) {
-        if (c.status === 'needs_reconnect') {
-          unread.push({ professor: professorOf(c), code: 'needs_reconnect', message: 'This Pokémon login needs a reconnect in Settings.' });
-          continue;
-        }
-        const gateway = deps.staffGateway(c.id);
-        const theirs: Read[] = [];
-        try {
-          const listed = await gateway.listTournaments(localDay(date, timeZone));
-          for (const tournament of listed) {
-            if (tournament.groupId !== groupId || reads.some((r) => r.tournament.id === tournament.id)) continue;
-            const read = await readTournament(gateway, tournament.id);
-            if (!read) continue;
-            recordUpstreamStaff(leagueId, read.details, read.participants);
-            theirs.push({ tournament, ...read });
-          }
-        } catch (err) {
-          if (!(err instanceof PokemonUpstreamError)) throw err;
-          unread.push({ professor: professorOf(c), code: err.code, message: err.message });
-          continue;
-        }
-        reads.push(...theirs);
-      }
-      reads.sort((a, b) => byStart(a.tournament, b.tournament));
+      const { conns, reads, outcomes } = await readDay(leagueId, date);
+      const unread: UnreadProfessor[] = outcomes.flatMap(({ connection, outcome, message }) =>
+        outcome.status === 'unread' ? [{ professor: professorOf(connection), code: outcome.code, message: message! }] : [],
+      );
 
       const rows = assignmentsOn(leagueId, date);
       const upstreamStaff = reads.flatMap((r) => r.participants.filter((p) => p.isStaff));
@@ -663,6 +701,23 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
         });
       }
       return { timeZone, tournaments, unread };
+    },
+
+    async daySnapshot(leagueId, date) {
+      const { reads, outcomes } = await readDay(leagueId, date);
+      const live = assignmentsOn(leagueId, date).filter((r) => r.removedAt === null);
+      const names = namesOf(leagueId, live.map((r) => r.playerId as PlayerId));
+      return {
+        timeZone,
+        tournaments: reads.map(({ tournament, details }) => ({
+          tournament,
+          organizerPlayerId: details.organizerPlayerId,
+          staff: live
+            .filter((r) => r.tournamentId === tournament.id)
+            .map((r) => ({ playerId: r.playerId as PlayerId, name: names.get(r.playerId) ?? '', role: r.role })),
+        })),
+        professors: outcomes.map(({ connection, outcome }) => ({ connectionId: connection.id, outcome })),
+      };
     },
 
     searchStaff(leagueId, { q, limit } = {}) {

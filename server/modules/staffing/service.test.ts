@@ -479,6 +479,113 @@ describe('sessionStaff with several professors (#75)', () => {
   });
 });
 
+// #115: the day as an integration sees it. A professor is read only when every call for them succeeded,
+// so a consumer can tell a cancelled tournament from one whose organizer couldn't be read.
+describe('daySnapshot', () => {
+  const WED = '2026-10-14' as SessionDate;
+  const BROCK = { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison' };
+  const assign = (row: { tournamentId: string; playerId: string; role?: string; state?: string; removedAt?: number }) =>
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, state, removed_at, created_by, created_at)
+         values (?, ?, ?, 'Stored label', ?, ?, ?, ?, 'organizer', 0)`,
+      )
+      .run(L, WED, row.tournamentId, row.playerId, row.role ?? 'judge', row.removedAt ? 'removing' : (row.state ?? 'pending'), row.removedAt ?? null);
+
+  beforeEach(() => {
+    upstream.addProfessor(BROCK);
+    roster.ensurePlayers(L, [{ playerId: id('00123'), name: 'Ash' }, { playerId: id('00456'), name: 'Misty' }, { playerId: id('00777'), name: 'Gone' }]);
+    upstream.state.tournaments = [
+      tournament('olives', { startsAt: new Date('2026-10-14T23:30:00Z'), name: 'Olive Cup', displayId: '26-10-000001' }),
+      tournament('brocks', { startsAt: new Date('2026-10-14T22:00:00Z'), organizer: '0000222', name: null, displayId: null }),
+      tournament('brocks-elsewhere', { startsAt: new Date('2026-10-14T21:00:00Z'), organizer: '0000222', groupId: 'another-store' }),
+    ];
+  });
+
+  it("returns the read tournaments by start with their play-tools fields, organizer and live staff, and every professor read", async () => {
+    assign({ tournamentId: 'olives', playerId: '00456', role: 'scorekeeper', state: 'assigned' });
+    assign({ tournamentId: 'olives', playerId: '00123', role: 'judge', state: 'failed' });
+    assign({ tournamentId: 'olives', playerId: '00777', role: 'judge', removedAt: 1 });
+    upstream.state.participants.set('olives', [staffer('9999991', 'organizer'), staffer('00888', 'judge', 'Only Upstream')]);
+
+    const day = await staffing.daySnapshot(L, WED);
+
+    expect(day.timeZone).toBe(TZ);
+    expect(day.tournaments.map((t) => [t.tournament.id, t.tournament.name, t.tournament.displayId, t.tournament.products, t.organizerPlayerId])).toEqual([
+      ['brocks', null, null, ['tcg'], '0000222'],
+      ['olives', 'Olive Cup', '26-10-000001', ['tcg'], '9999991'],
+    ]);
+    expect(day.tournaments[1]!.tournament.startsAt).toEqual(new Date('2026-10-14T23:30:00Z'));
+    expect(day.tournaments[1]!.staff).toEqual([
+      { playerId: '00456', name: 'Misty', role: 'scorekeeper' },
+      { playerId: '00123', name: 'Ash', role: 'judge' },
+    ]);
+    expect(day.tournaments[0]!.staff).toEqual([]);
+    expect(day.professors).toEqual([
+      { connectionId: 1, outcome: { status: 'read' } },
+      { connectionId: 2, outcome: { status: 'read' } },
+    ]);
+  });
+
+  it('leaves out assignments on tournaments no read returned', async () => {
+    assign({ tournamentId: 'cancelled', playerId: '00123' });
+    const day = await staffing.daySnapshot(L, WED);
+    expect(day.tournaments.map((t) => t.tournament.id)).toEqual(['brocks', 'olives']);
+  });
+
+  it('marks a professor who already needs a reconnect unread, without calling as them', async () => {
+    upstream.addProfessor({ ...BROCK, status: 'needs_reconnect' });
+    const day = await staffing.daySnapshot(L, WED);
+    expect(day.tournaments.map((t) => t.tournament.id)).toEqual(['olives']);
+    expect(day.professors).toEqual([
+      { connectionId: 1, outcome: { status: 'read' } },
+      { connectionId: 2, outcome: { status: 'unread', code: 'needs_reconnect' } },
+    ]);
+    expect(upstream.state.callsAs.filter((c) => c.as === 2)).toEqual([]);
+  });
+
+  it.each([
+    ['their listing', 'listTournaments', 'unavailable'],
+    ['a tournament’s details', 'getTournament', 'rate_limited'],
+    ['a tournament’s participants', 'listTournamentParticipants', 'needs_reconnect'],
+  ] as const)('drops all of a professor’s tournaments and marks them unread when %s fails', async (_l, method, code) => {
+    upstream.state.tournaments.push(tournament('brocks-2', { startsAt: new Date('2026-10-14T20:00:00Z'), organizer: '0000222' }));
+    // Fail the professor's last call, so a tournament of theirs was already read before it.
+    let seen = 0;
+    upstream.state.before = (call, as) => {
+      if (as !== 2 || !call.startsWith(method)) return;
+      if (method === 'listTournaments' || ++seen === 2) throw new PokemonUpstreamError(code, 'failed');
+    };
+
+    const day = await staffing.daySnapshot(L, WED);
+    expect(day.tournaments.map((t) => t.tournament.id)).toEqual(['olives']);
+    expect(day.professors).toEqual([
+      { connectionId: 1, outcome: { status: 'read' } },
+      { connectionId: 2, outcome: { status: 'unread', code } },
+    ]);
+  });
+
+  it('skips a listed tournament play-tools no longer has, and the professor stays read', async () => {
+    upstream.state.gone.add('brocks');
+    const day = await staffing.daySnapshot(L, WED);
+    expect(day.tournaments.map((t) => t.tournament.id)).toEqual(['olives']);
+    expect(day.professors.map((p) => p.outcome.status)).toEqual(['read', 'read']);
+  });
+
+  it('returns a tournament two connections list once', async () => {
+    upstream.addProfessor({ id: 4, professorPlayerId: null, upstreamAs: '9999991' });
+    const day = await staffing.daySnapshot(L, WED);
+    expect(day.tournaments.map((t) => t.tournament.id)).toEqual(['brocks', 'olives']);
+    expect(day.professors.map((p) => p.connectionId)).toEqual([1, 2, 4]);
+  });
+
+  it('refuses before reading when no league is chosen', async () => {
+    upstream.state.connection = { ...upstream.state.connection, league: null };
+    await expect(staffing.daySnapshot(L, WED)).rejects.toEqual(expect.objectContaining({ code: 'league_not_selected' }));
+    expect(upstream.state.calls).toEqual([]);
+  });
+});
+
 describe('addAssignment', () => {
   const WED = '2026-10-14' as never;
   const add = (body: { tournamentId?: string; playerId: string; role?: string; name?: string }) =>
