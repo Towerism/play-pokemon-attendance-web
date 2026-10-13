@@ -5,8 +5,8 @@
 #           with an optional Litestream supervisor (ADR-0002)
 #   spikes  M0 spike tooling with an hourly S2 token refresh (supercronic)
 
-ARG NODE_IMAGE=node:22.23.3-alpine3.23
-ARG NODE_SLIM_IMAGE=node:22.23.3-slim
+ARG NODE_IMAGE=node:24.21.0-alpine3.23
+ARG NODE_SLIM_IMAGE=node:24.21.0-slim
 ARG PNPM_VERSION=10.18.2
 
 # ---------------------------------------------------------------- spikes ----
@@ -14,7 +14,7 @@ ARG PNPM_VERSION=10.18.2
 FROM ${NODE_IMAGE} AS base
 ARG PNPM_VERSION
 WORKDIR /app
-# corepack in this Node line ships stale npm signing keys, so install pnpm directly.
+# Install pnpm directly, pinned, instead of through corepack (older corepacks ship stale npm signing keys).
 RUN npm install -g pnpm@${PNPM_VERSION} && npm cache clean --force
 COPY package.json pnpm-lock.yaml ./
 # No lifecycle scripts: spikes need neither `nuxt prepare` nor native SQLite.
