@@ -13,6 +13,9 @@
 - Updated: 2026-10-13 ([#91](https://github.com/Towerism/play-pokemon-attendance-web/issues/91), building the module):
   a template keeps its venue's country, schedules are archived rather than deleted, archiving what is still used is
   refused, and a schedule doesn't plan an event a planned row already holds. See [Update (#91)](#update-91-what-the-module-keeps).
+- Updated: 2026-10-13 ([#92](https://github.com/Towerism/play-pokemon-attendance-web/issues/92), building creation):
+  adoption reads a candidate's details for its format, which a listing doesn't carry. See
+  [Update (#92)](#update-92-adoption-reads-the-format).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
@@ -636,6 +639,30 @@ Building the `tournaments` module filled four gaps the decisions above left open
   schedule likewise doesn't plan an occurrence when a row that isn't cancelled already holds the same template, local
   date and start time, so a one-off followed by a schedule can't create two tournaments. Two identical slots of one
   scaffold still plan two rows (decision 5).
+
+## Update (#92): adoption reads the format
+
+Decision 5 adopts a live tournament with the same start instant, product, **format** and name, and says an `unknown`
+row is linked on read "with no extra call". But the organizer's listing (`core/activities`, S6 and S8) carries no
+format: only a tournament's details (`getTournament`) do. So:
+
+- **A candidate is read once.** A listed tournament that already matches on start, product, league and name, and
+  isn't linked to a planned row, is read with `getTournament` to compare its format. Candidates are tried in `guid`
+  order. Usually there is none, so most creates add no call; a match costs one read.
+- **In a create job, a failed details read is not "no match".** The item fails `listing_unavailable` and nothing is
+  sent, the same as when the listing itself fails, because a duplicate can't be ruled out.
+- **On read** (Upcoming, the create-through list), a candidate whose details can't be read leaves the row `unknown`.
+  The read still answers.
+- The listing is asked for the tournament's start instant only, so the job reads one page in the usual case.
+
+Building the job also settled what decision 5 left to it:
+
+- A create job's History label is "Create N tournaments" (or "Create <scaffold> through <X>"), and its professor is
+  the organizer when every tournament shares one.
+- **Retry** from History re-creates only the job's rows still `planned` or `failed`. `unknown` rows need **Retry create**,
+  and a row that has become short notice since the job ran refuses the retry (`short_notice_not_acknowledged`).
+- A held row the job never sent goes back to `unknown` if an earlier create was sent for it, else to `planned`.
+- The schedule's "in play-tools through X" moves forward only when a create-through job succeeds, never back.
 
 ## Consequences
 
