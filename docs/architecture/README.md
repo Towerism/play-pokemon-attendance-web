@@ -751,7 +751,7 @@ erDiagram
   }
   REQUIREMENT_MANUAL_COVER {
     int requirement_id FK
-    date period_start "with requirement_id: unique"
+    date period_start "first day of the cadence period (calendar month or quarter, league TZ; #102); with requirement_id: unique"
     text note "e.g. run by an unconnected professor, its display id"
     text created_by
     datetime created_at
@@ -1230,12 +1230,17 @@ sequenceDiagram
 
 - **Create** adopts before it creates (never a tournament already linked to another planned row). After a 5xx or a timeout it re-lists for the settle window and **never resends on its own**: no match means `unknown`, linked on a later read if it shows up, and created again only by **Retry create**. The creatable window is checked again just before each send (ADR-0010 decision 5, #100).
 - **Required events** (ADR-0010 decision 12): a League Cup per quarter and a League Challenge per month, for each
-  of TCG, GO and VGC (seeded requirements, editable). Coverage is computed on read from every connected professor's
-  tournaments (series from cached details) and the planned ones. Each requirement and period is `sanctioned`,
-  `pending`, `planned`, `problem` or `missing`, and **at risk**, **short notice** (past the 7-day sanction-by date), **last chance** (the 2-day back-dating grace) or
-  **missed**. A Required events grid on Tournaments, an undismissable banner on This week and a nav badge make it
-  impossible to overlook. **Plan one…** fixes a gap in one click, and **Mark as covered…** records an event the app
-  can't see.
+  of TCG, GO and VGC (seeded requirements, editable). A period is always the requirement's calendar month or quarter
+  in the league `TZ`. A matching series window only sets the period's **latest date** (the earlier of the two ends),
+  which the urgency counts from (#102). Coverage is computed on read from every connected professor's
+  tournaments (series from cached details) and the planned ones. Each professor's listing is cached for 5 minutes,
+  failures aren't cached, and **Refresh** reads again. Each requirement and period is `sanctioned`, `pending`,
+  `planned`, `problem`, `missing` or **`unknown`**. `unknown` means a professor's tournaments couldn't be read, and it
+  names them. A failed read never shows as `missing`, and a seen cover is never lost to one. Each is also **at risk**,
+  **short notice** (past the 7-day sanction-by date), **last chance** (the 2-day back-dating grace) or
+  **missed**. A Required events grid on Tournaments, an undismissable banner on This week (worded "can't confirm" for
+  `unknown`, with a Reconnect or Retry line per unread professor) and a nav badge make it impossible to overlook.
+  **Plan one…** fixes a gap in one click, and **Mark as covered…** records an event the app can't see.
 - **Back-dated sanctioning:** a tournament held in the last 2 days (league `TZ`) can still be created, from a schedule,
   one-off or by **Create through date…**, so it can be sanctioned and its TDF uploaded. Earlier dates are refused
   locally (`date_too_far_past`). Two days fits play-tools' back-dating limit (72 h in its form, 84 h in its code; S8; ADR-0010 decision 6).
@@ -1299,7 +1304,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `PATCH /sessions/{date}/staff/{assignmentId}` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | `PATCH { role }` → 200 `{ assignment }`; for an applied assignment `appliedRole` keeps the upstream role until the staff job sends the change. `DELETE` → 204: gone at once if it never reached play-tools, otherwise tombstoned for the next apply. Both 404 for an unknown or removed assignment or another date, 422 `unknown_role`/`tournament_locked` (applied assignments on a tournament past its window), 409 `organizer_not_connected`/`needs_reconnect` for an applied assignment whose organizer can't act, and send nothing upstream; a pending one changes with no upstream call whoever organizes it |
 | `POST /sessions/{date}/staff/apply-all` → 202 (#76) · `GET /sessions/{date}/staff/apply-all` · `GET /staff-batches/{id}` | Start a staff batch for `{ tournamentIds }` (1–20, distinct, run in that order) → `{ batchId }`: one `kind = 'staff'` job per tournament in turn, each as its organizer, under one hold of the lease (§6.4). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`, 503 `shutting_down`; a tournament's own refusal is its row's `refusal`, not an error. `GET …/apply-all` is the date's running batch or 204; `GET /staff-batches/{id}` is `{ id, sessionDate, status, startedBy, startedAt, finishedAt, rows: [{ position, tournamentId, label, organizerName, status, submissionId, progress, counts, refusal }] }`, 404 for another league's |
 | `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ tournamentId }` → `{ submissionId }` (§6.4), run and recorded as the tournament's organizer (ADR-0009); follow it like a submission (`/submissions/{id}`, its events, retry). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`/`not_connected`/`organizer_not_connected`/`needs_reconnect` (`data.professorPlayerId`), 422 `nothing_to_apply`/`unknown_tournament`/`tournament_locked`/`unknown_role`, 503 `shutting_down`. A staff job's items carry `role`, `errorCode` and `suggestedPlayerId` (null for other kinds), its summary `tournamentLabel` (null for other kinds) |
-| `GET /tournaments/requirements` · `GET/POST/PATCH /tournament-requirements` · `PUT/DELETE /tournament-requirements/{id}/covers/{periodStart}` (M9) | Coverage grid: every active requirement × the current and next periods, with status, urgency, covering tournament or manual cover, and the suggested action; the `GET` also feeds This week's banner and the nav badge. Requirements are edited (match, product, cadence, warning lead, on/off); a manual cover takes `{note}` |
+| `GET /tournaments/requirements` · `GET/POST/PATCH /tournament-requirements` · `PUT/DELETE /tournament-requirements/{id}/covers/{periodStart}` (M9) | Coverage grid: every active requirement × the current and next cadence periods (calendar month or quarter, league `TZ`), with status (`sanctioned`/`covered_manual`/`pending`/`planned`/`problem`/`missing`/`unknown`), urgency counted from the period's latest date (the earlier of its end and its matching series window's end), covering tournament or manual cover, and the suggested action; the `GET` also feeds This week's banner and the nav badge. A professor whose listing failed (`needs_reconnect`/`upstream_unavailable`/`refused`) turns every uncovered cell `unknown` naming them (`unreadProfessors`, `bestKnown`), never `missing`, and the answer is still 200 when every read failed. Listings are cached for 5 minutes (failures not cached), and `?refresh=1` reads again (400 for any other value). Requirements are edited (match, product, cadence, warning lead, on/off); a manual cover takes `{note}` |
 | `GET /tournaments/upcoming?from=&to=` (M9) | Materialise schedules, then the planned and upstream tournaments by date with status, organizer and actions; `from` defaults to today − 2 days (the creatable window's start) |
 | `GET/POST /tournament-templates` · `PATCH/DELETE /tournament-templates/{id}` (M9) | Templates; `DELETE` archives. `GET /tournament-templates/options?professor=&date=` reads tournament types (Custom + the premier series play-tools offers for that date, or across the template's upcoming dates without one), formats and venues live as that professor (cached ≤ 10 min); the app holds no list of types |
 | `GET/POST /tournament-scaffolds` · `PATCH/DELETE /tournament-scaffolds/{id}` (M9) | Scaffolds and their slots |

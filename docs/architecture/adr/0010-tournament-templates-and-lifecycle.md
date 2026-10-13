@@ -10,6 +10,8 @@
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
+- Amended by: [#102](https://github.com/Towerism/play-pokemon-attendance-web/issues/102): required-events coverage on
+  failed reads (`unknown`, never `missing`) and cadence periods (decision 12)
 - Upstream contract: spike S8 ([spikes.md](../spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)), part 1 done, live capture pending
 
 ## Context
@@ -473,11 +475,19 @@ schedules: a schedule is how events usually get planned, and coverage is the che
   (decision 6): a requirement whose match finds no play-tools series for a period says so ("play-tools offers no
   series matching 'League Cup' for GO this quarter"), so a renamed type is noticed instead of silently counting as
   missing.
-- **Periods.** A period is the matching series' own window from `listSeries`, for the venue's country, when play-tools
-  has one (League Cup series run "October - December"). Otherwise it is the calendar month or quarter in the league
-  `TZ`. Coverage looks at the current period and what follows: the next 3 months, and the current and next quarter.
-- **What counts.** A tournament covers a requirement's period when its product matches, its series matches, and its
-  start falls in the period. Tournaments are taken:
+- **Periods come from the cadence** (#102). A requirement's period is always its cadence's calendar period in the
+  league `TZ`: the calendar month for `month`, and the calendar quarter (Jan–Mar, Apr–Jun, Jul–Sep, Oct–Dec) for
+  `quarter`. A series window never widens, narrows or replaces it, so a League Challenge series that runs a whole
+  quarter still leaves each month needing its own Challenge. Coverage looks at the current period and what follows:
+  the next 3 months, and the current and next quarter. A manual cover's `period_start` is the period's first day.
+- **The series window says how late, not which period.** For each period, the **latest date** a covering tournament
+  can be held is the earlier of the period's end and the end of the latest matching series window (product, the
+  league's country) that overlaps it. Urgency counts from the latest date (below), and **Plan one…** suggests dates
+  inside both the period and a matching series window. When no matching window overlaps the period, the cell says
+  "play-tools offers no series matching 'League Cup' for GO in Q4", and its urgency counts from the period's end.
+- **What counts.** A tournament covers a requirement's period when its product matches, its series name matches, and
+  its start's local date in the league `TZ` falls in the period. The series window isn't consulted for a tournament
+  play-tools already holds: play-tools sanctioned it in that series. Tournaments are taken:
   - from play-tools: every connected professor's tournaments in the league's activity group (ADR-0009), with each
     tournament's series from its details. The details are read once per tournament and cached by `guid`, since a
     professor can't change a series;
@@ -487,29 +497,44 @@ schedules: a schedule is how events usually get planned, and coverage is the che
   - `pending`: the best is `approval-pending`;
   - `planned`: only a planned tournament in the app, not yet in play-tools;
   - `problem`: the only match is `sanctioning-error`, which doesn't count;
-  - `missing`: nothing.
+  - `missing`: nothing;
+  - `unknown`: a connected professor's tournaments couldn't be read (below), so the app can't tell.
 
   Cancelled, deleted and invalidated tournaments never count.
-- **Urgency**, worked out from today in the league `TZ`, getting louder:
+- **A failed read is `unknown`, never `missing`** (#102; organizer, 2026-10-13). Each professor's listing is either
+  read or failed (`needs_reconnect`, `upstream_unavailable` for a 5xx or timeout, `refused` for another 4xx). A
+  period that is `sanctioned` or has a manual cover keeps that status whatever failed, because a cover that has been
+  seen can't be taken away. Any other period becomes `unknown` while any read failed. It names each professor whose
+  read failed and why, and gives the status the readable tournaments alone would give as a hint ("can't confirm;
+  known: approval pending"). The same applies to a tournament whose details couldn't be read: the cell names it. The
+  route still answers 200, even when every read failed.
+- **Urgency**, worked out from today in the league `TZ`, counting from the period's **latest date** (above), getting
+  louder:
   - **open:** the period has started or is ahead, and it isn't covered yet;
-  - **at risk:** it isn't `sanctioned` and the period ends within the warning lead (default 21 days for monthly, 45
-    for quarterly, editable per requirement). `planned`, `pending` and `problem` are at risk too: a planned tournament
-    isn't in play-tools, and approval can be refused. The cell names the **sanction-by date** for a tournament on the
-    period's last day (its end − 7 days);
+  - **at risk:** it isn't `sanctioned` and the latest date is within the warning lead (default 21 days for monthly,
+    45 for quarterly, editable per requirement). `planned`, `pending` and `problem` are at risk too: a planned
+    tournament isn't in play-tools, and approval can be refused. The cell names the **sanction-by date** for a
+    tournament on the latest date (the latest date − 7 days);
   - **short notice:** that sanction-by date has passed and it still isn't covered. A tournament can still be
-    sanctioned before the period ends, with the short-notice warning (decision 6). The banner says so and gives the
+    sanctioned by the latest date, with the short-notice warning (decision 6). The banner says so and gives the
     latest dates left;
-  - **last chance:** the period has ended less than 2 days ago and isn't covered. A tournament held in its last 2 days
-    can still be sanctioned (decision 6), and the warning says which dates qualify;
-  - **missed:** the period ended more than 2 days ago uncovered. It stays on record and in the grid's history.
+  - **last chance:** the latest date passed less than 2 days ago and it isn't covered. A tournament held in its last
+    2 days can still be sanctioned (decision 6), and the warning says which dates qualify;
+  - **missed:** the latest date passed more than 2 days ago uncovered. It stays on record and in the grid's history.
+
+  An `unknown` period keeps the urgency it would have had, so a professor whose read keeps failing never hides a
+  deadline.
 - **Impossible to overlook:**
   - a **Required events** grid at the top of the Tournaments page: requirements × periods, each cell showing its
-    status, the covering tournament (display id, date, organizer), or the action to take;
+    status, the covering tournament (display id, date, organizer), or the action to take, with **Refresh**;
   - on **This week**, a banner whenever anything is **at risk**, **short notice**, **last chance** or **missed** (one line per
-    requirement and period, most urgent first), and **problem** whenever a tournament comes back `sanctioning-error`;
+    requirement and period, most urgent first), and **problem** whenever a tournament comes back `sanctioning-error`.
+    An `unknown` period at risk or louder is worded "can't confirm" ("Can't confirm a League Cup for TCG this quarter:
+    Professor Ash's tournaments couldn't be read (needs reconnect). The last date is Dec 31."). There is also one line
+    per professor whose read failed, with **Reconnect** for `needs_reconnect` and **Retry** for the others;
   - a count badge on the Tournaments nav link while anything is at risk or worse.
 
-  The banner can't be dismissed. It goes away only when the cause does.
+  The banner can't be dismissed. It goes away only when the cause does: the read succeeds, or a cover is found.
 - **One click to fix.** A cell that isn't covered offers **Plan one…**: a one-off **New tournament** with the type
   and game set, and a date inside the period. It uses a template that matches if there is one, and otherwise opens the
   form with play-tools' choices for that date. A `planned` cell offers **Create in play-tools**, and a `problem` cell
@@ -519,13 +544,18 @@ schedules: a schedule is how events usually get planned, and coverage is the che
   covered…** records a manual cover for that requirement and period, with a note (e.g. "run by Professor X, 0123-…"),
   who and when. It shows as `covered (manual)`, never as `sanctioned`, and can be removed. Connecting that professor
   (ADR-0008) makes it automatic.
-- **Pure and testable.** Coverage is a pure function in `shared/requirements/`: requirements, periods, tournaments and
-  manual covers, plus today, in; statuses and urgencies out, with no clock and no I/O. It is unit-tested across period
-  edges, DST, the 2-day grace, series windows that differ from calendar quarters, and cancelled or errored
-  tournaments.
-- **Read on demand.** The grid and the banner are computed when the page is read, from the same per-professor
-  listings the Upcoming tab and This week already make. Nothing is scheduled, and no notification leaves the app
-  (email or push would be a later decision).
+- **Pure and testable.** Coverage is a pure function in `shared/requirements/`: requirements, each professor's read
+  result (tournaments, or why it failed), planned tournaments, manual covers, series windows, the league `TZ` and
+  today, in; statuses and urgencies out, with no clock and no I/O. It is unit-tested across period edges by local
+  date, DST, the 2-day grace, series windows that differ from calendar periods, failed reads (never `missing` while
+  any read failed), and cancelled or errored tournaments.
+- **Read on demand, cached briefly** (#102; organizer, 2026-10-13). The grid and the banner are computed when the
+  page is read. Each professor's listing for the coverage range is kept in memory for 5 minutes and shared by
+  coverage, the Upcoming tab and This week, as play sessions are (§4.1). A failed read isn't kept. **Refresh**
+  (`?refresh=1`) reads again, and a professor's cached listing is dropped when a tournament job of theirs (create,
+  edit, cancel) ends. A warm cache makes no listing calls, and a cold one makes one per connected professor, plus one
+  details read per tournament not seen before. Nothing is scheduled, and no notification leaves the app (email or
+  push would be a later decision).
 
 ## Update (#100): no duplicate creates, no wiped fields
 
@@ -616,7 +646,7 @@ overwritten fields, both had holes in the default path. The fixes are folded int
 | Q5 | Production date format (`start_date_v2` UTC or naive `start_date`), create's response and initial status, and server-side refusals | **Open: S8 part 2** |
 | Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Answered (organizer, 2026-10-12): out of scope.** Connected accounts are assumed to have the right permissions. A refusal shows support details for Pokémon support (decision 7) |
 | Q7 | Which events must the league hold? | **Answered (organizer, 2026-10-12):** a League Cup per quarter and a League Challenge per month, for each of TCG, GO and VGC (decision 12) |
-| Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Coverage uses the series window when one exists, else the calendar period |
+| Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Its answer no longer changes coverage periods, which always follow the requirement's cadence (#102); a series window only sets a period's latest date |
 | Q9 | Should a missed or at-risk requirement also notify outside the app (email, push)? | **Open: organizer.** Designed as in-app only (banner, grid, badge) |
 | Q10 | Is the 7-day lead a hard rule? | **Answered (organizer, 2026-10-12):** no. Tournaments not yet held should be sanctioned 7 days ahead, as a guideline: a short-notice warning to acknowledge, never a refusal (decision 6) |
 | Q11 | When can a tournament be rescheduled? | **Answered (organizer, 2026-10-12):** from 3 days before its start to 90 days after (decision 8) |
