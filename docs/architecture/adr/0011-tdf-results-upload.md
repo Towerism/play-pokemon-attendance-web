@@ -350,7 +350,7 @@ Option 3.
 | Q5 | May a file that fails validation be sent at all? | **Answered (organizer, 2026-10-12):** yes, after a warning; Pokémon support resolves it from there. Players new to the app are called out as possible mis-keyed ids |
 | Q6 | Exact shape of TOM's `<organizer>` element | **Answered (organizer, 2026-10-12):** `<organizer popid="…" name="…"/>` inside `<data>` (decision 3). Parser fixtures use made-up values |
 | Q7 | Should the app also fill in an empty `<id/>` with the tournament's display id, like it fixes the organizer? | **Answered (organizer, 2026-10-12):** yes, with a cautionary warning; only when empty (decision 8) |
-| Q8 | `gametype` spellings for TCG and VGC files | **Partly answered (S8 part 2):** `TRADING_CARD_GAME` was accepted for a `tcg` tournament. VGC is still open: an organizer can't download past files (403), so it needs a real VGC file. `GO` → `pgo` is known |
+| Q8 | `gametype` spellings for TCG and VGC files | **Answered (S8 part 2, 2026-10-13, from the league's real files):** `TRADING_CARD_GAME` → `tcg` (accepted upstream for a `tcg` tournament), `VIDEO_GAME` → `vg`, `GO` → `pgo` |
 
 ## Tests these decisions need
 

@@ -588,11 +588,31 @@ The 42 calls are sanitized fixtures in `server/modules/pokemon/adapters/play-too
    **no organizer download**. Size limit and before-start upload are not tried.
 7. **Assistant roles:** not tried; that needs a second account.
 
+**Real TDF files (2026-10-13).** The organizer shared 9 of the league's TDFs, written by TOM 1.82–1.86. They were
+read for structure only; no names, ids or dates were copied out. What they show:
+
+| Game | `gametype` | root `type` | `mode` |
+| ---- | ---------- | ----------- | ------ |
+| TCG | `TRADING_CARD_GAME` | `2` | `CUSTOM` (friendly events), `LEAGUECHALLENGE` |
+| VGC | `VIDEO_GAME` | `3` | `VGCPREMIER` |
+| GO | `GO` | `3` | `GOPREMIER` (Challenge and Cup alike) |
+
+- **Common to every file:**
+  - `<?xml version="1.0" encoding="UTF-8"?>`, no BOM, no DOCTYPE;
+  - `<startdate>` as `MM/DD/YYYY`;
+  - the same `<data>` fields: `name`, `id`, `city`, `state`, `country`, `roundtime`, `finalsroundtime`,
+    `organizer[popid,name]`, `startdate`, `lessswiss`, `autotablenumber`, `overflowtablestart`.
+- **Two GO Challenge files have an empty `<id>`.** That is the "empty id" case `correctTdf` handles (#87).
+- **Optional player elements:**
+  - three files list `<dropped>` (`round`, `status`, `timestamp`) under a player;
+  - one has `seed`, `order` and `staticseat`;
+  - one has `staticseat` on match players.
+
+  A parser must not require any of them.
+- **The phony upload file** had `mode="CUSTOM"`, and validate accepted it for a custom event.
+
 **Still open:**
 
-- the TCG and VGC `gametype` spellings in real files. The download is 403, so the phony TCG file used
-  `TRADING_CARD_GAME`. Validate accepted it for a `tcg` tournament, echoing `product: "TRADING_CARD_GAME"`.
-  VGC is unconfirmed.
 - a premier event's initial status;
 - edits before a start;
 - larger back-dating;
