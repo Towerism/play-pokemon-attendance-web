@@ -86,9 +86,8 @@ Option 3.
      <organizer popid="1234567" name="Alex Example"/>
      ```
 
-     - **`<id/>` can be empty**: TOM may write a file with no tournament id. An empty id is its own warning,
-       `tdf_missing_tournament_id` ("the file has no tournament id; play-tools will likely refuse it"), not a
-       mismatch. It can still be uploaded anyway (Q7).
+     - **`<id/>` can be empty**: TOM may write a file with no tournament id. The app fills it in with the
+       tournament's display id, and warns (decision 8, `tdf_tournament_id_filled`).
      - **Game type to product:** `gametype` `GO` is play-tools' `pgo`. The `TCG` and `VGC` spellings are taken from
        real files of each game before `tdf_wrong_game` is built (Q8). An unknown spelling gives no game warning
        rather than a false one.
@@ -102,8 +101,10 @@ Option 3.
    - **Warnings: the file may fail validation, and the organizer decides.** Each warning names what is wrong and
      what play-tools is likely to do:
      - **the app's own checks, against the fresh read:**
-       - the file's tournament id isn't the card's display id (`tdf_wrong_tournament`), or is empty
-         (`tdf_missing_tournament_id`);
+       - the file's tournament id is **empty**: the app **fills it in** and warns (decision 8,
+         `tdf_tournament_id_filled`);
+       - the file's tournament id is **set but different** from the card's display id (`tdf_wrong_tournament`). This
+         is a warning only, and the app never overwrites an id TOM wrote;
        - its organizer id isn't the tournament's organizer. The app **fixes this in the file** rather than only
          warning (decision 8): `tdf_organizer_replaced`, or `tdf_wrong_organizer` when it can't;
        - its game type doesn't match the tournament's product (`tdf_wrong_game`);
@@ -180,13 +181,27 @@ Option 3.
 6. **Not uploading twice.** The app refuses an upload for a tournament with player records (upstream allows it only
    to admins). A second preview of the same file for the same tournament reuses the open preview.
 
-8. **Fix the organizer in the file** (organizer, 2026-10-12). When the file's organizer player id (`organizer@popid`,
+8. **Fill in an empty tournament id** (organizer, 2026-10-12). When the file's `<data><id/>` is empty (`<id/>`,
+   `<id></id>` or only whitespace), the app writes the tournament's display id into it, as `<id>XX-XX-XXXXXX</id>`:
+   - **Warn, to be cautious.** The warning reads: "The TDF's tournament id is empty. It will be sent with this
+     tournament's id, <display id>. Check that this file is for <tournament name> on <date>." It is acknowledged like
+     every warning (decision 4), and the button reads **Fill in id and upload** when it is the only one.
+   - **Only when empty.** An id that is present but different is never overwritten. It stays the
+     `tdf_wrong_tournament` warning, for the organizer to check.
+   - **Only a well-formed id.** The display id must match `^\d{2}-\d{2}-\d{6}$`. Otherwise nothing is filled in,
+     and the warning says the file has no id and play-tools will likely refuse it.
+   - **The same kind of edit as the organizer fix:** a minimal text edit of that one element by the same pure
+     function in `shared/tdf` (now `correctTdf(xml, {tournamentId?, organizer?})`). Every other byte is unchanged,
+     the result is parsed again to check it, play-tools validates the corrected file, and only the corrected file is
+     kept (below and ADR-0012). The upload records `tournament_id_filled`.
+
+   **Fix the organizer in the file** (organizer, 2026-10-12). When the file's organizer player id (`organizer@popid`,
    compared as text) isn't the tournament's organizer (`organizer.player_id` from the fresh read), the app replaces
    it, so nobody has to edit the file in a text editor:
    - **What changes:** only the two attribute values of the `<organizer popid="…" name="…"/>` element inside
      `<data>` (the shape above): `popid`, set to the tournament organizer's player id, and `name`. The file's incorrect organizer name is **replaced too**, with the tournament organizer's full name as
      play-tools has it (organizer, 2026-10-12), confirmed once and saved (below). It is a minimal text edit by a pure function in `shared/tdf`
-     (`replaceOrganizer(xml, {playerId, name})`). The name is XML-escaped, every other byte of the file stays as TOM
+     (`correctTdf(xml, {organizer: {playerId, name}})`, as above). The name is XML-escaped, every other byte of the file stays as TOM
      wrote it (no re-serialising), and the result is parsed again to check it. If the file has no single
      `<organizer>` element to edit, nothing is changed, and the old warning `tdf_wrong_organizer` stands, with
      **Upload anyway** as before.
@@ -210,9 +225,10 @@ Option 3.
      that was validated and sent, so the archive holds exactly what play-tools received. The dropped original is
      deleted as soon as the corrected file replaces it. Only the original's SHA-256 stays on the upload row, so the
      same file dropped again is still recognised. The `tdf_organizer_replaced` record (old and new popid and name)
-     says what was changed. The attendance import reads the corrected file, whose players are the same.
-   - **Only the organizer.** The app never rewrites anything else in a TDF: player ids, names, the tournament id and
-     the game type stay as warnings for the organizer to fix in TOM.
+     and `tournament_id_filled` say what was changed. This applies to either correction or both. The attendance import reads the corrected file, whose players are the same.
+   - **Only the organizer and an empty id.** The app never rewrites anything else in a TDF. Player ids, names, a
+     tournament id that is present but different, and the game type stay as warnings for the organizer to fix in
+     TOM.
 
 9. **Ports.** `PlayToolsGateway` gains `validateResults(displayId, file)` → `{uploadId, errors}` and
    `confirmResults(uploadId, tournament)`. `getTournament` gains `applicationState`, `activityState`, `organizerName` (first + last) and
@@ -256,6 +272,6 @@ Option 3.
 | Q3 | Should the attendance import be ticked by default when a TDF is dropped on a tournament card? | **Answered (organizer, 2026-10-12):** yes, ticked |
 | Q4 | Does `PUT triumph/{upload_guid}/confirm/` accept an upload whose validation returned errors, or refuse it? | **Open: S8 part 2.** Either way the app warns first; a refusal is recorded with support details (decision 4) |
 | Q6 | Exact shape of TOM's `<organizer>` element | **Answered (organizer, 2026-10-12):** `<organizer popid="…" name="…"/>` inside `<data>` (decision 3). Parser fixtures use made-up values |
-| Q7 | Should the app also fill in an empty `<id/>` with the tournament's display id, like it fixes the organizer? | **Open: organizer.** Designed as a warning only |
+| Q7 | Should the app also fill in an empty `<id/>` with the tournament's display id, like it fixes the organizer? | **Answered (organizer, 2026-10-12):** yes, with a cautionary warning; only when empty (decision 8) |
 | Q8 | `gametype` spellings for TCG and VGC files | **Open:** from a real file of each game; `GO` → `pgo` is known |
 | Q5 | May a file that fails validation be sent at all? | **Answered (organizer, 2026-10-12):** yes, after a warning; Pokémon support resolves it from there. Players new to the app are called out as possible mis-keyed ids |
