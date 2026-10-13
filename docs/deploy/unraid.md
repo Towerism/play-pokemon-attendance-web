@@ -133,7 +133,9 @@ container at startup, and the log names the bad entry.
 
 Back up the **whole appdata folder**: the database and `secrets/` together.
 `secrets/` plus `app.db` can decrypt your saved Pokémon login, so keep backups
-somewhere only you can read.
+somewhere only you can read. Once the app keeps TDF files (M9, ADR-0012), the
+same backup also holds the TDF key next to the encrypted files, so anyone with it
+can open every stored TDF, players' birthdates included. Many players are minors.
 
 ### Appdata Backup plugin (recommended)
 

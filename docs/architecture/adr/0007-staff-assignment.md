@@ -6,6 +6,7 @@
 - Amended by: [ADR-0009](0009-tournaments-as-their-organizer.md): tournaments are listed as every connected professor and acted on only as their organizer (#75)
 - Amended by: [ADR-0011](0011-tdf-results-upload.md): a staffer the TDF lists as playing may be removed from staff on the organizer's explicit request, even if added in play-tools (update below)
 - Amended by: [ADR-0010](0010-tournament-templates-and-lifecycle.md): creating, cancelling and rescheduling tournaments, and uploading their results ([ADR-0011](0011-tdf-results-upload.md)), move into scope (M9)
+- Amended by: [#101](https://github.com/Towerism/play-pokemon-attendance-web/issues/101) (2026-10-13): **Remove from staff** is checked on the server before any job starts (update below)
 
 ## Context
 
@@ -337,7 +338,10 @@ and 12). It is narrow:
 
 - it happens only on the organizer's explicit **Remove from staff** in the TDF preview, per person (or for all the
   people listed, after one confirm that names each of them);
-- it removes only the staff record of a player **the TDF lists as playing**, on that tournament;
+- it removes only the staff record of a player **the TDF lists as playing**, on that tournament. The server checks
+  this before any job starts (#101): each id must be a player in the upload's archived file (parsed again) and listed
+  as staff in a fresh read as the organizer. Otherwise the answer is 422 `not_removable` with each failing id and its
+  reason (`not_in_file`, `not_staff`, `organizer`), and nothing starts;
 - the staff job re-reads the records first, and sends `DELETE` only if that player is still listed as staff. The
   outcome is `removed` or `already_removed`, and History records it like any other removal;
 - it never removes the tournament's `organizer` record.

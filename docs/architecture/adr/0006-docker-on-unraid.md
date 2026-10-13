@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-10-10
+- Amended by: [#101](https://github.com/Towerism/play-pokemon-attendance-web/issues/101) (2026-10-13): interrupted jobs
+  are resumed from History, not on boot (wording fix)
 
 ## Context
 
@@ -84,8 +86,8 @@ what we design, document and test for.
 - A `HEALTHCHECK` on `GET /healthz`, so the Docker tab shows health.
 - It honours `TZ`. The keep-alive cron and "today's session date" use it.
 - **Graceful shutdown.** On `SIGTERM` the app stops taking new submission
-  batches, marks running jobs `interrupted` (they resume on boot, per
-  ADR-0004), checkpoints the WAL and closes SQLite. The default 10 s stop
+  batches, marks running jobs `interrupted` (the organizer resumes them
+  from History after boot, per ADR-0004; corrected by #101), checkpoints the WAL and closes SQLite. The default 10 s stop
   timeout is enough. This keeps *Appdata Backup* snapshots consistent.
 
 ### Configuration: nothing required
