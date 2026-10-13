@@ -75,9 +75,10 @@ Option 4.
      upload. If play-tools has forgotten the `upload_guid` by confirm time, or a retry needs it, the job runs
      validate again from the archive. The organizer never has to drop the file again. Confirm still sends only the
      `upload_guid`.
-   - **One drop, one stored file**, whichever features use it. A file the app corrected before sending (the
-     organizer replaced, ADR-0011 decision 8) is a second stored file, kept alongside the original, so the archive
-     holds both what TOM wrote and what play-tools received.
+   - **One drop, one stored file**, whichever features use it. When the app corrects a file before sending (the
+     organizer replaced, ADR-0011 decision 8), **only the corrected file is kept** (organizer, 2026-10-12). It replaces
+     the dropped original, which is deleted, and the archive holds what play-tools received. The original's SHA-256 is
+     kept on the upload row, so a re-drop of it is still recognised.
 
 5. **Handled with care.**
    - **Who can read it:** only a logged-in organizer, through `GET /tdf-files/{id}/download`. It answers with

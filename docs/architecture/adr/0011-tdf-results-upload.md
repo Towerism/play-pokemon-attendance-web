@@ -162,7 +162,8 @@ Option 3.
      data), and `getTournament` gains `organizerName` for it. It is stored on the professor's Pokémon connection, like
      the display name (`professor_full_name`, ≤ 100 characters), set in Settings beside the display name, or here:
      - **known:** the preview replaces the organizer straight away, and validates the corrected file;
-     - **not known yet:** the preview stores the file, skips validate, and answers `needsOrganizerFullName: {playerId,
+     - **not known yet:** the preview holds the dropped file in the archive as a pending preview, skips validate,
+       and answers `needsOrganizerFullName: {playerId,
        playToolsName}`. The dialog asks "<organizer>'s full name, as it should appear in the TDF", **pre-filled with
        play-tools' name** (first and last). The organizer confirms it, or corrects it once. `POST
        …/results/{uploadId}/organizer {fullName}` saves it on the connection for next time, then replaces the
@@ -172,9 +173,11 @@ Option 3.
        Settings.
    - **Acknowledged, like a warning** (decision 4): `tdf_organizer_replaced` names the old popid and name, and the
      new ones.
-   - **Both files are kept** in the encrypted archive (ADR-0012): the file as dropped, and the corrected file that
-     was validated and sent. The upload row points at both, so bookkeeping shows exactly what play-tools received.
-     The attendance import uses the players, which are the same in both.
+   - **Only the corrected file is kept** in the encrypted archive (organizer, 2026-10-12; ADR-0012). It is the file
+     that was validated and sent, so the archive holds exactly what play-tools received. The dropped original is
+     deleted as soon as the corrected file replaces it. Only the original's SHA-256 stays on the upload row, so the
+     same file dropped again is still recognised. The `tdf_organizer_replaced` record (old and new popid and name)
+     says what was changed. The attendance import reads the corrected file, whose players are the same.
    - **Only the organizer.** The app never rewrites anything else in a TDF: player ids, names, the tournament id and
      the game type stay as warnings for the organizer to fix in TOM.
 
@@ -204,9 +207,10 @@ Option 3.
 - (−) "New to the app" is only a hint. A real first-timer is listed too, and a mis-keyed id that happens to be another
   known player's id isn't caught.
 - (+) A TDF naming the wrong organizer no longer means editing XML by hand. The app fixes it, says so, and keeps
-  both versions.
+  the corrected file that play-tools received.
 - (−) The app now edits a file before sending it to play-tools. The edit is limited to the organizer element, tested
-  as a pure function, re-parsed, acknowledged by the organizer, and both versions are kept.
+  as a pure function, re-parsed and acknowledged by the organizer. The original isn't kept, so only the record of
+  the old popid and name shows what TOM wrote.
 - (−) The parser now reads three more fields from the file (tournament id, organizer id, game type). None is personal
   data beyond a professor's player id.
 

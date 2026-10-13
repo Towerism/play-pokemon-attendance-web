@@ -734,10 +734,9 @@ erDiagram
     text tournament_id
     text display_id
     text filename
-    int tdf_file_id FK "the archived file as dropped (ADR-0012); null once the organizer deletes it"
-    int sent_tdf_file_id FK "the corrected file actually validated and sent, when the organizer was replaced (ADR-0011 decision 8)"
+    int tdf_file_id FK "the archived file (ADR-0012): as dropped, or only the corrected one when the organizer was replaced (ADR-0011 decision 8); null once the organizer deletes it"
     text organizer_replaced "json {fromPlayerId, fromName, toPlayerId, toName}; null when the file's organizer matched"
-    text sha256 "kept even after the file is deleted"
+    text sha256 "of the file as dropped; kept even after the file is deleted or replaced by its corrected copy"
     int player_count
     text upstream_upload_id "triumph upload_guid"
     text upstream_errors "json"
