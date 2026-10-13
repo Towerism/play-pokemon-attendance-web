@@ -10,6 +10,8 @@
   ends `validate_unknown` (decision 7); the lease is released after confirm, and processing is followed on read
   (decision 4); a correction re-points attendance imports to the corrected file (decision 8); **Remove from staff** is
   checked on the server (decision 3)
+- Amended by: [#107](https://github.com/Towerism/play-pokemon-attendance-web/issues/107) (2026-10-13, from spike S8
+  part 2): **Download TDF** serves only the archived copy, never play-tools' (decisions 1, 4; ADR-0012 decision 7)
 - Builds on: [ADR-0009](0009-tournaments-as-their-organizer.md), [ADR-0010](0010-tournament-templates-and-lifecycle.md)
   (the `tournaments` module and its job kinds)
 - Upstream contract: spike S8 ([spikes.md](../spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)), part 1 done, live capture pending
@@ -73,8 +75,9 @@ Option 3.
 1. **Where.** Each This week tournament card (ADR-0010 decision 10) gets a **Results** section under Staff, showing
    the tournament's upload state from play-tools: *Awaiting results*, *Processing*, *Complete*, *Upload failed*, or
    why an upload isn't possible (not sanctioned yet, organizer not connected, past the window, players already
-   recorded). Once the tournament has results, the section offers **Download TDF** (ADR-0012 decision 7): the
-   archived file, or play-tools' copy when the app has none.
+   recorded). Once the app holds the tournament's results file, the section offers **Download TDF** (ADR-0012
+   decision 7, #107). A tournament with results in play-tools but no file in the app says "Results are in
+   play-tools. This app has no copy of the TDF.", with no action: play-tools won't give an organizer the file back.
 
 2. **One drop, both jobs.** Dropping a `.tdf` on a card previews **both** the results upload and the attendance
    import (M3) for that date. The attendance import is ticked by default (organizer, 2026-10-12), and the organizer
@@ -184,7 +187,8 @@ Option 3.
      happens even when the results are not accepted, because attendance doesn't depend on play-tools accepting the
      results. A job that stops before validating commits nothing, so the next confirm does both.
    - **Then it ends, and the lease is released** (#101). The job doesn't wait for play-tools to finish processing,
-     which can take minutes, so attendance submissions, staff jobs and **Download TDF** aren't held up. A confirmed
+     which can take minutes, so attendance submissions and staff jobs aren't held up (**Download TDF** makes no upstream call, so the lease
+     never holds it; #107). A confirmed
      upload ends the item `processing`.
    - **Processing is followed on read.** Every read of the tournament (the This week card, its Results section, the
      upload's History row) checks `activity_state`, and moves the upload from `processing` to `complete` once
