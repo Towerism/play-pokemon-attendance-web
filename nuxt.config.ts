@@ -80,7 +80,7 @@ export default defineNuxtConfig({
     // asyncContext: the request id reaches every log record a request causes,
     // module and job logs included (architecture §10).
     experimental: { tasks: true, asyncContext: true },
-    scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] },
+    scheduledTasks: { '0 * * * *': ['pokemon:keepalive', 'tdf:expire'] },
   },
 
   typescript: {
