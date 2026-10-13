@@ -425,42 +425,52 @@ and [ADR-0011](adr/0011-tdf-results-upload.md).
 
 | Purpose                     | Method & path (under `services/`)                                                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------- |
-| Create                      | `POST core/tournament` (name, `activity_group_id`, `organizer_id`, product, `category`, `series_guid` or null, `address_id`, start, contacts, registration, details, website) → at least `{guid}` |
-| Edit, reschedule            | `PATCH core/tournament/{guid}/`: the raw fresh read with only the changed fields replaced, every other field passed through (ADR-0010 decision 11, #100) |
-| Cancel                      | `PATCH core/tournament/{guid}/` `{application_state: "cancelled"}` (delete is admin-only)          |
-| Premier series              | `GET core/users/{sub}/activity_groups/{ag}/series/` (window per country)                           |
+| Create                      | `POST core/tournament` (name, `activity_group_id`, `organizer_id` (the professor's user guid: `sub`, hyphenated), product, `category`, `series_guid` or null, `address_id`, `start_date_v2`, `contact_information`, `activity_division_info` (one empty entry per division; `null` is refused), and registration, admission, details and websites when set) → 201 `{guid}` |
+| Edit, reschedule            | `PATCH core/tournament/{guid}/` with **only the changed fields** → 204: a partial body changes only what it sends (S8 part 2; ADR-0010 update #90) |
+| Cancel                      | `PATCH core/tournament/{guid}/` `{application_state: "cancelled"}` → 204 (delete is admin-only)     |
+| Premier series              | `GET core/users/{sub}/activity_groups/{ag}/series/` (under `results`; window per country)          |
 | Formats                     | `GET core/products?country=XX`                                                                     |
-| Venues                      | `GET core/v2/users/{organizerGuid}/address_book?country=&activity_group_id=`                       |
-| A tournament's TDF uploads  | `GET triumph/tournament/{display_id}/uploads/`: a bare list, rejected validations included (S8 part 2). ADR-0011 decision 7 may read it to settle `validate_unknown`. The file read, `GET triumph/tdf/{uploadGuid}`, is 403 for organizers and isn't used (#107) |
-| Validate a TDF              | `POST triumph/tdf/` `{kind: "tdf", tournament_id: <display_id>, payload: <base64>}` → `{upload_guid, errors}` |
-| Confirm a TDF               | `PUT triumph/{upload_guid}/confirm/`                                                               |
+| Venues                      | `GET core/v2/users/{userGuid}/address_book?country=&activity_group_id=` (under `results`)          |
+| A tournament's TDF uploads  | `GET triumph/tournament/{display_id}/uploads/`: a bare list, rejected and unconfirmed validations included (S8 part 2). ADR-0011 decision 7 may read it to settle `validate_unknown`. The file read, `GET triumph/tdf/{uploadGuid}`, is 403 for organizers and isn't used (#107) |
+| Validate a TDF              | `POST triumph/tdf/` `{kind: "tdf", tournament_id: <display_id>, payload: <base64>}` → 200 `{upload_guid, errors: [{type, message}]}` |
+| Confirm a TDF               | `PUT triumph/{upload_guid}/confirm/` `{tournament_id: <tournament guid>}` → 202                    |
 
 ```ts
 interface PlayToolsGateway {
   // … attendance, tournament and staff methods above …
-  listSeries(groupId: string): Promise<Series[]>;        // {id, name, product, categories, windows: {[country]: {from, to}}}
-  listFormats(country: string): Promise<Format[]>;       // {product, categories}
-  listVenues(groupId: string): Promise<Venue[]>;         // {id, name, formattedAddress, country, timeZone}
+  listSeries(groupId: string): Promise<Series[]>;   // {id, name, product, categories, tags, playTemplate, windows: {[country]: {from, to}}}; disabled ones left out
+  listFormats(country: string): Promise<Format[]>;  // {product, categories}
+  listVenues(groupId: string, country: string): Promise<Venue[]>; // {id, name, formattedAddress, country, timeZone}
   createTournament(t: NewTournament): Promise<{ tournamentId: string }>;
-  editTournament(id: string, changes: TournamentChanges): Promise<'edited'>; // changed fields over the raw fresh read, all else passed through (#100); reschedule = a date change
-  cancelTournament(id: string): Promise<'cancelled' | 'already_cancelled'>;
+  editTournament(id: string, changes: TournamentChanges): Promise<'edited'>; // only the changed fields; reschedule = a date change
+  cancelTournament(id: string): Promise<'cancelled'>; // "already cancelled" is the caller's, from its fresh read
   validateResults(displayId: string, tdf: string): Promise<{ uploadId: string; errors: ResultsError[] }>;
-  confirmResults(uploadId: string, tournament: { id: string; displayId: string }): Promise<'confirmed'>;
-  // getTournament gains applicationState, activityState, organizerName (first + last, for a TDF organizer fix),
-  // venue time zone and the editable fields reschedule resends.
+  confirmResults(uploadId: string, tournamentId: string): Promise<'confirmed'>; // the guid, not the display id
+  listResultsUploads(displayId: string): Promise<ResultsUpload[]>; // {uploadId, accepted, errors, uploadedAt}, oldest first
+  // getTournament also returns applicationState, activityState, organizerName (first + last, for a TDF organizer fix),
+  // category, series, venue ({id, timeZone} only when the read's `address` names it; its shape wasn't recorded),
+  // contact, registration, onSiteAdmission, thirdPartyRegistrationUrl, details and eventWebsite.
 }
+// TournamentSettings = {name, category, venueId, startsAt, contact: {email, phone}, registration?, onSiteAdmission?,
+//   thirdPartyRegistrationUrl?, details?, eventWebsite?}; NewTournament adds {groupId, product, seriesId | null};
+//   TournamentChanges = Partial<TournamentSettings>. ResultsError = {code, message (readable), detail (upstream's)}.
 ```
 
-- **The date wire format is behind a play-tools flag** (`start_date_v2` in UTC, or naive local `start_date`). The
-  adapter owns that choice. Callers pass an instant and the venue's time zone.
-- **Errors:** create, edit and cancel carry no codes (S8). A 4xx maps to `refused` with upstream's message and its
-  `x-correlation-id`. Permissions are assumed (ADR-0010 decision 7): the app models no roles. Every refusal,
-  401/403 included, carries **support details** for Pokémon support: action, time, league and tournament display ids,
-  the professor's player id, HTTP status, play-tools' code and message, and the correlation id, never a token or
-  body. A 5xx or timeout throws `unavailable`, and the caller re-reads. A 423 is `tournament_locked`,
-  as for staff. TDF validation codes map to readable messages through an adapter constant.
-- **Validated locally:** ids as for staff, names ≤ 80, product and category from `listFormats`, and no request body
-  is logged (`payload` is redacted).
+- **Dates:** production takes `start_date_v2` in UTC (S8 part 2), so the adapter sends only that. Callers pass instants.
+- **Errors:** create, edit and cancel carry no codes (S8). 401/403 → `forbidden`, 404 → `not_found`, 423 →
+  `tournament_locked` (as for staff), 429 → `rate_limited`, and any other 4xx → `refused`. A 5xx, a network failure
+  or a write that outlives `writeTimeoutMs` (an adapter option, default 60 s) throws `unavailable`: the write may have
+  landed, so the caller re-reads. Writes are never retried. Every error carries `details.upstream`: play-tools' code,
+  its message with any field errors appended, and the `x-correlation-id`, never a token or a body. That is the
+  adapter's part of the **support details** (ADR-0010 decision 7); the job adds the action, time, league and
+  tournament display ids, and the professor. Permissions are assumed: the app models no roles. TDF validation codes
+  map to readable messages through an adapter constant (`TDF_ERROR_MESSAGES`); an unknown code is shown as is.
+- **Validated locally,** before a token is fetched: ids as for staff, display ids `NN-NN-NNNNNN`, country codes,
+  product, format slug, names 1–80 characters, details ≤ 30,000, a contact email or phone, valid dates, a
+  registration that ends after it starts, an edit with at least one change, a non-empty TDF. Whether the format is
+  one `listFormats` or the series offers is the caller's check. No request body is logged (`payload` is redacted).
+- **The fake** serves all of these (`series`, `formats`, `venues`, `tdfErrors`, `refuseOnce`, `finishUpload`), and
+  answers `GET triumph/tdf/{guid}` with 403 as play-tools does.
 
 ### 4.4 Resolving "which play session?" from a date
 
@@ -1276,7 +1286,7 @@ sequenceDiagram
 - **Create through date…** on a schedule materialises it up to the chosen date, lists what it will create, and on
   confirm starts the same job for all of them (at most 60).
 - **Edit** any field with **Edit…**: only changed fields are applied over a fresh read and sent (`PATCH`), as a
-  `tournament_edit` job. A full body is the raw read with every unchanged field passed through, never the create body, so fields the app doesn't model (`activity_division_info`) survive; an unmappable field is 422 `edit_body_unmappable` (#100). For a tournament from a schedule, the change can go to this one, this and later, or all in
+  `tournament_edit` job. The `PATCH` holds only the changed fields, never the create body, so fields the app doesn't model (`activity_division_info`) are never touched (#100; ADR-0010 update #90). For a tournament from a schedule, the change can go to this one, this and later, or all in
   the schedule. Each changed field is ticked (the date never carries over), a before → after preview lists every
   tournament, and tournaments not created yet get it as stored overrides (ADR-0010 decision 11).
 - **Reschedule** is an edit of the date: one `PATCH`, attempted only from 3 days before the start to 90 days after
@@ -1343,7 +1353,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `POST /tournaments/create` → 202 (M9) | `{plannedIds, acknowledgeShortNotice?, retryUnknown?}` (1–60) → a `tournament_create` job; 422 `short_notice_not_acknowledged` when any is less than 7 days ahead and unacknowledged (the same flag on create-through and edit); 422 `retry_not_confirmed` when an `unknown` row (a create that may have landed) is sent without `retryUnknown: true` (**Retry create**, #100) |
 | `GET /tournament-schedules/{id}/create-through?date=` · `POST /tournament-schedules/{id}/create-through` → 202 (M9) | Preview what the schedule would create up to the date (materialised past its horizon; lists what is left out and why), then `{date}` → one `tournament_create` job; 422 `too_many_tournaments` (> 60) or a date more than 12 months ahead |
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
-| `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`reschedule_window_not_open`/`reschedule_window_closed`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found`/`edit_body_unmappable` (a field of the raw read the adapter can't map; #100). With `updateTemplate`, preview also returns `shadowedBy: [{scheduleId, from, fields}]` (overrides that would still win) and warnings such as `another_planned_at_time`; apply takes `clearShadowingOverrides` (default false) |
+| `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`reschedule_window_not_open`/`reschedule_window_closed`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found`. With `updateTemplate`, preview also returns `shadowedBy: [{scheduleId, from, fields}]` (overrides that would still win) and warnings such as `another_planned_at_time`; apply takes `clearShadowingOverrides` (default false) |
 | `GET /tournaments/{id}/tdf` (M9, ADR-0012 decision 7) | **Download TDF** for a tournament, from the archive only (#107): the file of its latest confirmed results upload (`processing` or `complete`; the corrected one if the app corrected it), else the next-latest confirmed upload whose file still exists. No upstream call, so no organizer connection or lease is needed. `Content-Disposition: attachment`, `no-store`, one audit log line; 404 `no_tdf` (no archived file: results uploaded outside the app, before it kept TDFs, none yet, or deleted), 409 `tdf_key_mismatch` |
 | `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; answers `{referencedBy}`, and those rows keep their SHA-256 and show "file deleted"; automatic deletes skip any file a row points at, #101). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
 | `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB; local checks and fresh reads only, nothing sent) → `{uploadId, warnings: [{code, message, players?}], fingerprint, attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_tournament_id_filled` (an empty `<id/>` filled with the tournament's display id)/`tdf_wrong_tournament` (an id present but different; never overwritten)/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`. `POST …/results/{uploadId}/remove-staff {playerIds}` → 202 removes those players from the tournament's staff, in a staff job as its organizer (even records added in play-tools), then the preview re-runs its local checks. The server first checks each id is a player in the upload's archived file (parsed again), is listed as staff in a fresh read, and isn't the organizer's own record; otherwise 422 `not_removable` with `{playerId, reason: not_in_file|not_staff|organizer}` per failing id, and nothing starts (#101). Confirm `{importAttendance, acknowledgedWarnings}` (the preview's warnings fingerprint, required even with no warnings) → a `tdf_upload` job that re-checks the warnings (`warnings_changed`, nothing sent, if they differ), validates (the send: Pokémon support gets a copy) and confirms only if play-tools accepts it, else ends `not_accepted` with play-tools' errors (`validate_unknown` after a 5xx or timeout); the job ends after confirm and processing is followed on read. 409 `submission_running`/`results_already_uploaded`; 422 `warnings_not_acknowledged` with the current `{warnings, fingerprint}` when the fingerprint isn't the preview's (#101). A `tdf_upload` is never resumed or retried from History; **Upload again…** re-runs the preview and the send dialog |

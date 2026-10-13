@@ -7,6 +7,9 @@
   pass every field they don't change through from the raw read; adoption skips tournaments already linked; rows a job
   holds are `creating`; the back-dating window is checked at send time; template updates name the overrides that
   shadow them. See [Update (#100)](#update-100-no-duplicate-creates-no-wiped-fields).
+- Updated: 2026-10-13 ([#90](https://github.com/Towerism/play-pokemon-attendance-web/issues/90), from S8 part 2): an
+  edit sends only the changed fields, which replaces the raw-read passthrough and `edit_body_unmappable`. See
+  [Update (#90)](#update-90-the-edit-body-is-only-the-changed-fields).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
@@ -328,7 +331,7 @@ in place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it). O
   core/tournament/{guid}/` with the new start. The registration window moves by the same amount, so its offsets from
   the start are kept. The body is built as decision 11 says: the raw fresh read with only the dates changed and
   every other field passed through as play-tools returned it, unless the live capture shows a partial body is
-  accepted (Q1).
+  accepted (Q1). *It did: the body is only the new dates ([Update (#90)](#update-90-the-edit-body-is-only-the-changed-fields)).*
 - **Same tournament.** The `guid`, display id, registrations and staff stay. The planned tournament and its wanted
   staff assignments move to the new date locally. No staff call is needed.
 - **Refused locally** before any call, from the fresh read:
@@ -403,7 +406,9 @@ schedule can have the change applied to other tournaments in the schedule.
   a fresh read of each tournament, then sends `PATCH core/tournament/{guid}/`: the full body, or only the changed
   fields if S8 part 2 shows a partial body is accepted (Q1). An edit made meanwhile in play-tools to another field is
   never overwritten.
-- **The full body is the raw read, not the create body** (#100). The app doesn't model every field: per-division
+- *Superseded by [Update (#90)](#update-90-the-edit-body-is-only-the-changed-fields): S8 part 2 showed a partial
+  body is accepted, so only the changed fields are sent, and `edit_body_unmappable` is gone.*
+  **The full body is the raw read, not the create body** (#100). The app doesn't model every field: per-division
   times and costs (`activity_division_info`) are out of scope, and the create body sends them as `null`. So a full
   body is built **inside the adapter** from the raw `GET` of that tournament: the changed fields are replaced, and
   every other field is sent back with the value play-tools returned, including ones the app doesn't know. If the raw
@@ -419,7 +424,7 @@ schedule can have the change applied to other tournaments in the schedule.
     A tournament play-tools sends back to `approval-pending` says so;
   - refused locally, before any call: `tournament_locked`, `date_too_far_past` (checked again just before the
     `PATCH`), `outside_series_window` (decision 8), `format_not_in_series` (a premier event's format must be one of
-    its series' formats), `venue_not_found`, `edit_body_unmappable` (above).
+    its series' formats), `venue_not_found` (`edit_body_unmappable` was dropped by Update #90).
 - **Applying it across the schedule.** When the tournament came from a schedule, the dialog asks where the change
   goes:
   - **This tournament only** (the default);
@@ -583,13 +588,33 @@ overwritten fields, both had holes in the default path. The fixes are folded int
   - **Retry create** adopts the late tournament, or sends one `POST` if it never landed;
   - 409 `already_planned`;
   - a schedule edit while a create is held at a gate on the fake keeps the row.
-- **Contract:** against a recorded S8 part 2 read with every field set, only the changed fields differ in the edit
-  body, and an unmapped field is refused before any request.
+- **Contract:** every recorded S8 part 2 `PATCH` body is exactly what the adapter builds from the same changes
+  (Update #90 replaced the raw-read check).
 - **Determinism:** every time-dependent case uses an injected clock, never a wall-clock wait: the settle window, the
   late landing, midnight, the DST days in `America/Chicago`, and "how long ago".
 - **Behaviour over mocks:** assertions read the fake's request log and the database, never mock call counts.
 - **Coverage, by risk:** 100% branch coverage on the matcher, the edit-body merge and the window check, and at least
   90% on the job state machine and override resolution.
+
+## Update (#90): the edit body is only the changed fields
+
+**Context.** Decisions 8 and 11 built the edit body from the raw fresh read, with the changed fields replaced. Both
+left an opening: "or only the changed fields if S8 part 2 shows a partial body is accepted (Q1)". S8 part 2 showed
+it is. A `PATCH` with `details` or `start_date_v2` alone answered 204, and the other 32 fields read back identical.
+It also showed that the read isn't the write shape: it has `series` (an object) where create takes `series_guid`,
+and `address` where create takes `address_id`.
+
+**Decision.** `editTournament` sends `PATCH core/tournament/{guid}/` with only the changed fields, under their wire
+names, and doesn't read first. The jobs still read fresh before they send, for `already_applied` and the local
+refusals (decisions 8 and 11). The raw-read passthrough and its `edit_body_unmappable` refusal are dropped. So is
+the #100 test of an unmapped field. The contract test checks instead that each recorded `PATCH` body is exactly
+what the adapter builds from the same changes.
+
+**Trade-offs.**
+- (+) A field the app doesn't model can't be wiped or echoed back stale, because it is never sent.
+- (+) There is no read-to-write mapping to keep in step with play-tools.
+- (−) This rests on a custom event edited after its start. If play-tools ever wants the full body for a premier
+  event or an earlier edit, the refusal (`refused`, with play-tools' message) shows it.
 
 ## Consequences
 
@@ -599,8 +624,7 @@ overwritten fields, both had holes in the default path. The fixes are folded int
 - (+) No duplicate tournaments from the app on its own: every create is preceded by a fresh listing and adoption,
   and a create that may have landed is never resent automatically. It becomes `unknown`, is linked if it shows up,
   and is sent again only by **Retry create**, whose dialog warns that the earlier attempt may still land (#100).
-- (+) An edit never wipes a field the app doesn't model: the body is the raw read with only the changed fields
-  replaced, and an unmappable field refuses the edit (#100).
+- (+) An edit never wipes a field the app doesn't model: the body holds only the changed fields (#100, Update #90).
 - (+) Nothing reaches play-tools without a click. Even "create through a date" lists every tournament it will make
   and creates nothing past that date, so a wrong template can't multiply on its own.
 - (+) A regular tournament such as "3rd Tuesday monthly" is created for months ahead in one click.
@@ -622,8 +646,6 @@ overwritten fields, both had holes in the default path. The fixes are folded int
   tournaments that were never linked.
 - (−) An `unknown` create needs the organizer's attention: a click to retry, or nothing if it shows up on its own. A
   retry while the earlier attempt is still in flight can still make a duplicate; the dialog says so (#100).
-- (−) An edit of a tournament whose read has a field the adapter can't map is refused until the adapter learns it.
-  That is safer than wiping the field (#100).
 - (−) Upstream gives no error codes on create, so a refusal shows play-tools' message and a correlation id, not
   advice.
 - (−) The date wire format depends on a play-tools feature flag (S8). The adapter must handle both, and the live
