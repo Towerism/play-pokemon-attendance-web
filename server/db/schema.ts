@@ -462,3 +462,31 @@ export const staffHistory = sqliteTable(
     index('staff_history_league_player_idx').on(t.leagueId, t.playerId),
   ],
 );
+
+/**
+ * Bearer tokens another app reads the integrations API with (#115, ADR-0013): Tournament Genie's day import.
+ * Only the SHA-256 of the secret is stored; the secret is shown once. Owned by the integrations module.
+ */
+export const integrationToken = sqliteTable(
+  'integration_token',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** What the organizer called it, e.g. "Tournament Genie". */
+    label: text('label').notNull(),
+    /** Lowercase hex SHA-256 of the secret. */
+    tokenHash: text('token_hash').notNull().unique(),
+    /** `ppa_int_…` plus the secret's last 4 characters, to tell tokens apart. */
+    tokenHint: text('token_hint').notNull(),
+    /** The only scope in v1: read the integrations API. */
+    scope: text('scope').notNull().default('integrations:read'),
+    /** Organizer username. */
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    /** The last call it authenticated; null until then. */
+    lastUsedAt: integer('last_used_at', { mode: 'timestamp' }),
+  },
+  (t) => [index('integration_token_league_idx').on(t.leagueId)],
+);
