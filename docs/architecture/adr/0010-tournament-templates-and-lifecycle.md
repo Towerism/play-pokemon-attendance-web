@@ -19,7 +19,10 @@ too, all of it features play-tools already has:
   a quarter), so the app should scaffold them instead of the organizer filling play-tools' four-step form each time;
 - **back-to-back scaffolds**: some tournaments are always held together (for example a TCG Cup and a VGC Cup on
   the same afternoon), so one scaffold should produce the whole set;
-- **submitting the TDF** after the event, on This week, in the same card as staff (ADR-0011).
+- **submitting the TDF** after the event, on This week, in the same card as staff (ADR-0011);
+- **never missing a required event** (organizer, 2026-10-12): every quarter needs a **League Cup** for each of the three
+  games (TCG, GO, VGC), and every month a **League Challenge** for each. A league can get into trouble if one is
+  missed (decision 12).
 
 The organizer on rescheduling (2026-10-12): removing a tournament means **cancelling** it. If play-tools lets a
 professor change the date, **reschedule with that edit** rather than cancelling and creating again.
@@ -360,6 +363,74 @@ schedule can have the change applied to other tournaments in the schedule.
 - **A date change** moves the tournament's local staff assignments with it (decision 8). Other fields don't touch
   staff.
 
+### 12. Required events: never miss a League Cup or a League Challenge
+
+The organizer (2026-10-12): every quarter needs a League Cup for each of TCG, GO and VGC, and every month a League
+Challenge for each. Missing one can get the league into trouble. So the app tracks this as **coverage**, separate from
+schedules: a schedule is how events usually get planned, and coverage is the check that nothing slipped through.
+
+- **Requirements are data, seeded with the organizer's six.** A `TOURNAMENT_REQUIREMENT` row holds:
+  - the tournament type, as a series match against play-tools' series names ("League Cup", "League Challenge");
+  - the product: `tcg`, `pgo` (GO) or `vg` (VGC);
+  - the cadence: `month` or `quarter`;
+  - the minimum count (1);
+  - an on/off switch.
+
+  The seeds are League Cup × {TCG, GO, VGC} quarterly and League Challenge × {TCG, GO, VGC} monthly. They are edited
+  on the Tournaments page, and a league that doesn't run a game turns its rows off. Types stay play-tools' own
+  (decision 6): a requirement whose match finds no play-tools series for a period says so ("play-tools offers no
+  series matching 'League Cup' for GO this quarter"), so a renamed type is noticed instead of silently counting as
+  missing.
+- **Periods.** A period is the matching series' own window from `listSeries`, for the venue's country, when play-tools
+  has one (League Cup series run "October - December"). Otherwise it is the calendar month or quarter in the league
+  `TZ`. Coverage looks at the current period and what follows: the next 3 months, and the current and next quarter.
+- **What counts.** A tournament covers a requirement's period when its product matches, its series matches, and its
+  start falls in the period. Tournaments are taken:
+  - from play-tools: every connected professor's tournaments in the league's activity group (ADR-0009), with each
+    tournament's series from its details. The details are read once per tournament and cached by `guid`, since a
+    professor can't change a series;
+  - from the app: planned tournaments not yet created, whose template and date resolve to a matching series.
+- **Status of each requirement in each period,** best first:
+  - `sanctioned`: a live tournament is sanctioned (or already complete);
+  - `pending`: the best is `approval-pending`;
+  - `planned`: only a planned tournament in the app, not yet in play-tools;
+  - `problem`: the only match is `sanctioning-error`, which doesn't count;
+  - `missing`: nothing.
+
+  Cancelled, deleted and invalidated tournaments never count.
+- **Urgency**, worked out from today in the league `TZ`, getting louder:
+  - **open:** the period has started or is ahead, and it isn't covered yet;
+  - **at risk:** it isn't `sanctioned` and the period ends within the warning lead (default 21 days for monthly, 45
+    for quarterly, editable per requirement). `planned`, `pending` and `problem` are at risk too: a planned tournament
+    isn't in play-tools, and approval can be refused;
+  - **last chance:** the period has ended less than 2 days ago and isn't covered. A tournament held in its last 2 days
+    can still be sanctioned (decision 6), and the warning says which dates qualify;
+  - **missed:** the period ended more than 2 days ago uncovered. It stays on record and in the grid's history.
+- **Impossible to overlook:**
+  - a **Required events** grid at the top of the Tournaments page: requirements × periods, each cell showing its
+    status, the covering tournament (display id, date, organizer), or the action to take;
+  - on **This week**, a banner whenever anything is **at risk**, **last chance** or **missed** (one line per
+    requirement and period, most urgent first), and **problem** whenever a tournament comes back `sanctioning-error`;
+  - a count badge on the Tournaments nav link while anything is at risk or worse.
+
+  The banner can't be dismissed. It goes away only when the cause does.
+- **One click to fix.** A cell that isn't covered offers **Plan one…**: a one-off **New tournament** with the type
+  and game set, and a date inside the period. It uses a template that matches if there is one, and otherwise opens the
+  form with play-tools' choices for that date. A `planned` cell offers **Create in play-tools**, and a `problem` cell
+  links the tournament in play-tools.
+- **Covered somewhere the app can't see.** play-tools lists only the tournaments a connected professor organizes (S6).
+  A Cup run by another professor of the league whose account isn't connected would show as missing. **Mark as
+  covered…** records a manual cover for that requirement and period, with a note (e.g. "run by Professor X, 0123-…"),
+  who and when. It shows as `covered (manual)`, never as `sanctioned`, and can be removed. Connecting that professor
+  (ADR-0008) makes it automatic.
+- **Pure and testable.** Coverage is a pure function in `shared/requirements/`: requirements, periods, tournaments and
+  manual covers, plus today, in; statuses and urgencies out, with no clock and no I/O. It is unit-tested across period
+  edges, DST, the 2-day grace, series windows that differ from calendar quarters, and cancelled or errored
+  tournaments.
+- **Read on demand.** The grid and the banner are computed when the page is read, from the same per-professor
+  listings the Upcoming tab and This week already make. Nothing is scheduled, and no notification leaves the app
+  (email or push would be a later decision).
+
 ## Consequences
 
 - (+) A regular tournament is set up once. After that it's a reminder and one click per batch of dates, with no
@@ -373,6 +444,10 @@ schedule can have the change applied to other tournaments in the schedule.
 - (+) Rescheduling keeps the tournament: its display id, registrations and staff survive the move.
 - (+) Any field can be edited from the app, and a change to a regular event (a new venue, cost or contact) is made
   once for the whole schedule, with a before → after preview of every tournament it touches.
+- (+) A missing League Cup or League Challenge, for any game, shows weeks ahead on the pages the organizer already
+  uses, with a one-click fix, and stays visible until it's dealt with.
+- (−) Coverage depends on seeing every tournament. One run by an unconnected professor needs **Mark as covered**,
+  and a type play-tools renames needs the requirement's match updated. Both are flagged rather than silently missed.
 - (−) Overrides add a layer (template → schedule overrides → row overrides) that creation must resolve. The planned
   tournament view shows which settings come from where.
 - (+) Staff follow a tournament through a reschedule, so staff credits keep working.
@@ -403,3 +478,6 @@ schedule can have the change applied to other tournaments in the schedule.
 | Q4 | Is there any case for automatic creation (e.g. weekly locals), or always a click? | **Answered (organizer, 2026-10-12):** "create everything up to date X" on a schedule, one click (decision 5); no background creation |
 | Q5 | Production date format (`start_date_v2` UTC or naive `start_date`), create's response and initial status, and server-side refusals | **Open: S8 part 2** |
 | Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Open: S8 part 2** |
+| Q7 | Which events must the league hold? | **Answered (organizer, 2026-10-12):** a League Cup per quarter and a League Challenge per month, for each of TCG, GO and VGC (decision 12) |
+| Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Coverage uses the series window when one exists, else the calendar period |
+| Q9 | Should a missed or at-risk requirement also notify outside the app (email, push)? | **Open: organizer.** Designed as in-app only (banner, grid, badge) |
