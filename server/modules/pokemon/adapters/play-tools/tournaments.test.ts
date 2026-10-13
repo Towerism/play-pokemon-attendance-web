@@ -309,7 +309,6 @@ describe('createTournament (S8 recording 16)', () => {
       newTournament({
         groupId: r.activity_group_id,
         name: r.name,
-        venueId: r.address_id,
         startsAt: new Date(r.start_date_v2),
         contact: r.contact_information,
       }),
@@ -319,7 +318,8 @@ describe('createTournament (S8 recording 16)', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]!.method).toBe('POST');
     expect(path(seen[0]!)).toBe('/services/core/tournament');
-    expect(await sentJson(seen[0]!)).toEqual(recorded.request);
+    // The sanitizer redacted the recorded venue id, which the local check would refuse; a real-shaped one stands in.
+    expect(await sentJson(seen[0]!)).toEqual({ ...recorded.request, address_id: newTournament().venueId });
   });
 
   it('sends the optional settings under their play-tools names, and nothing else', async () => {
@@ -448,6 +448,173 @@ describe('confirmResults (S8 recording 39)', () => {
 
     expect(seen.map((s) => [s.method, path(s)])).toEqual([['PUT', `/services/triumph/${UPLOAD}/confirm/`]]);
     expect(await sentJson(seen[0]!)).toEqual(recording('39').request);
+  });
+});
+
+/** Every write, answering with whatever `reply` gives for any tournament or TDF path. */
+const writes: [string, () => Promise<unknown>][] = [
+  ['createTournament', () => gateway().createTournament(newTournament())],
+  ['editTournament', () => gateway().editTournament(T, { details: 'x' })],
+  ['cancelTournament', () => gateway().cancelTournament(T)],
+  ['validateResults', () => gateway().validateResults(DISPLAY_ID, tdfFile())],
+  ['confirmResults', () => gateway().confirmResults(UPLOAD, T)],
+];
+const everywhere = (reply: () => Response | Promise<Response>) => upstream.use(http.all(`${API}*`, reply));
+const CORRELATION = { 'x-correlation-id': 'corr-123' };
+
+describe('refusals and failures on every write', () => {
+  it('a refused create (recording 15) is `refused` with play-tools\' message, its field errors and the correlation id', async () => {
+    const recorded = recording('15');
+    upstream.use(http.post(`${API}core/tournament`, () => HttpResponse.json(recorded.response, { status: 400, headers: CORRELATION })));
+
+    const err = await upstreamError(gateway().createTournament(newTournament()));
+
+    expect(err.code).toBe('refused');
+    expect(err.retryable).toBe(false);
+    expect(err.details.status).toBe(400);
+    expect(err.details.upstream).toEqual({
+      code: 'op.generic.bad_request',
+      message: 'Invalid request. (activity_division_info: This field may not be null.)',
+      correlationId: 'corr-123',
+    });
+    expect(err.message).toContain('This field may not be null.');
+  });
+
+  const matrix: [number, string][] = [
+    [401, 'forbidden'],
+    [403, 'forbidden'],
+    [404, 'not_found'],
+    [409, 'refused'],
+    [422, 'refused'],
+    [423, 'tournament_locked'],
+    [429, 'rate_limited'],
+    [500, 'unavailable'],
+    [503, 'unavailable'],
+  ];
+  describe.each(writes)('%s', (_, call) => {
+    it.each(matrix)('HTTP %i is %s, with the status and correlation id, after one request', async (status, code) => {
+      everywhere(() => HttpResponse.json({ code: 'op.generic.x', message: 'No.' }, { status, headers: CORRELATION }));
+
+      const err = await upstreamError(call());
+
+      expect(err.code).toBe(code);
+      expect(err.details.status).toBe(status);
+      expect(err.details.upstream).toEqual({ code: 'op.generic.x', message: 'No.', correlationId: 'corr-123' });
+      expect(seen).toHaveLength(1);
+    });
+
+    it('a 400 that is not JSON is refused, with only the correlation id', async () => {
+      everywhere(() => new HttpResponse('<h1>Bad Request</h1>', { status: 400, headers: { 'content-type': 'text/html', ...CORRELATION } }));
+
+      const err = await upstreamError(call());
+
+      expect(err.code).toBe('refused');
+      expect(err.details.upstream).toEqual({ correlationId: 'corr-123' });
+    });
+
+    it('a network failure is unavailable', async () => {
+      everywhere(() => HttpResponse.error());
+
+      expect((await upstreamError(call())).code).toBe('unavailable');
+    });
+  });
+
+  it.each(writes.map(([name]) => name))('%s: a write play-tools never answers times out as unavailable', async (name) => {
+    everywhere(() => new Promise<Response>(() => {}));
+    const call: Record<string, () => Promise<unknown>> = {
+      createTournament: () => gateway({ writeTimeoutMs: 20 }).createTournament(newTournament()),
+      editTournament: () => gateway({ writeTimeoutMs: 20 }).editTournament(T, { details: 'x' }),
+      cancelTournament: () => gateway({ writeTimeoutMs: 20 }).cancelTournament(T),
+      validateResults: () => gateway({ writeTimeoutMs: 20 }).validateResults(DISPLAY_ID, tdfFile()),
+      confirmResults: () => gateway({ writeTimeoutMs: 20 }).confirmResults(UPLOAD, T),
+    };
+
+    const err = await upstreamError(call[name]!());
+
+    expect(err.code).toBe('unavailable');
+    expect(err.retryable).toBe(true);
+  });
+
+  it('a 400 from validate without an upload id is refused', async () => {
+    upstream.use(http.post(`${API}triumph/tdf/`, () => HttpResponse.json({ code: 'op.generic.bad_request', message: 'Invalid request.' }, { status: 400 })));
+
+    expect((await upstreamError(gateway().validateResults(DISPLAY_ID, tdfFile()))).code).toBe('refused');
+  });
+
+  it('a validate error of an unknown shape fails loudly', async () => {
+    upstream.use(http.post(`${API}triumph/tdf/`, () => HttpResponse.json({ ...body('37'), errors: [42] })));
+
+    expect((await upstreamError(gateway().validateResults(DISPLAY_ID, tdfFile()))).code).toBe('unexpected_shape');
+  });
+
+  it('a create answered without its id fails loudly, logging only the outline', async () => {
+    upstream.use(http.post(`${API}core/tournament`, () => HttpResponse.json({ status: 'secret-value' }, { status: 201 })));
+
+    expect((await upstreamError(gateway().createTournament(newTournament({ name: 'Private Name' })))).code).toBe('unexpected_shape');
+
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(log.warn.mock.calls[0]);
+    expect(logged).toContain('status');
+    expect(logged).not.toContain('secret-value');
+    expect(logged).not.toContain('Private Name');
+  });
+
+  it('a token failure is passed through, with nothing sent', async () => {
+    getAccessToken.mockRejectedValueOnce(new PokemonUpstreamError('needs_reconnect', 'Reconnect.'));
+
+    expect((await upstreamError(gateway().createTournament(newTournament()))).code).toBe('needs_reconnect');
+    expect(seen).toHaveLength(0);
+  });
+});
+
+describe('inputs checked before anything is sent', () => {
+  const long = (n: number) => 'x'.repeat(n);
+  const refusedLocally: [string, () => Promise<unknown>][] = [
+    ['a tournament id that could change the path', () => gateway().editTournament('../x', { details: 'x' })],
+    ['a cancel of a malformed tournament id', () => gateway().cancelTournament('a/b')],
+    ['a malformed league id (create)', () => gateway().createTournament(newTournament({ groupId: 'a b' }))],
+    ['a malformed series id', () => gateway().createTournament(newTournament({ seriesId: 'a/b' }))],
+    ['a malformed venue id', () => gateway().createTournament(newTournament({ venueId: '' }))],
+    ['a malformed venue id (edit)', () => gateway().editTournament(T, { venueId: 'a?b' })],
+    ['a malformed upload id', () => gateway().confirmResults('a/b', T)],
+    ['a malformed tournament id (confirm)', () => gateway().confirmResults(UPLOAD, '../x')],
+    ['a malformed display id (validate)', () => gateway().validateResults('26-10-90004', tdfFile())],
+    ['a malformed display id (uploads)', () => gateway().listResultsUploads('L5012')],
+    ['a malformed league id (series)', () => gateway().listSeries('a/b')],
+    ['a malformed league id (venues)', () => gateway().listVenues('a/b', 'US')],
+    ['a malformed country (venues)', () => gateway().listVenues(GROUP, 'us')],
+    ['a malformed country (formats)', () => gateway().listFormats('USA')],
+    ['an unknown product', () => gateway().createTournament(newTournament({ product: 'mtg' as never }))],
+    ['a malformed format', () => gateway().createTournament(newTournament({ category: 'TCG STD' }))],
+    ['a malformed format (edit)', () => gateway().editTournament(T, { category: '' })],
+    ['an empty name', () => gateway().createTournament(newTournament({ name: '   ' }))],
+    ['a name over 80 characters', () => gateway().createTournament(newTournament({ name: long(81) }))],
+    ['a name over 80 characters (edit)', () => gateway().editTournament(T, { name: long(81) })],
+    ['details over 30,000 characters', () => gateway().editTournament(T, { details: long(30_001) })],
+    ['a contact with neither email nor phone', () => gateway().createTournament(newTournament({ contact: { email: null, phone: '' } }))],
+    ['a contact with neither email nor phone (edit)', () => gateway().editTournament(T, { contact: { email: '', phone: null } })],
+    ['an invalid start', () => gateway().createTournament(newTournament({ startsAt: new Date('nope') }))],
+    ['an invalid start (edit)', () => gateway().editTournament(T, { startsAt: new Date(Number.NaN) })],
+    [
+      'a registration that ends before it starts',
+      () => gateway().editTournament(T, { registration: { startsAt: new Date('2026-10-12T05:00:00Z'), endsAt: new Date('2026-10-12T05:00:00Z') } }),
+    ],
+    ['an edit with no changes', () => gateway().editTournament(T, {})],
+    ['an empty TDF', () => gateway().validateResults(DISPLAY_ID, '')],
+  ];
+
+  it.each(refusedLocally)('%s throws TypeError, with no token fetched and nothing sent', async (_, call) => {
+    await expect(call()).rejects.toBeInstanceOf(TypeError);
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(seen).toHaveLength(0);
+  });
+
+  it('takes a name of exactly 80 characters and details of exactly 30,000', async () => {
+    upstream.use(http.post(`${API}core/tournament`, () => HttpResponse.json({ guid: T }, { status: 201 })));
+
+    await gateway().createTournament(newTournament({ name: long(80), details: long(30_000) }));
+
+    expect(seen).toHaveLength(1);
   });
 });
 
