@@ -353,6 +353,11 @@ export const pokemonConnection = sqliteTable('pokemon_connection', {
   professorPlayerId: text('professor_player_id').unique(),
   /** Null when upstream offers no name. */
   professorName: text('professor_name'),
+  /**
+   * The professor's full name as play-tools has it, set by the organizer (ADR-0011 decision 8); never written from
+   * Pokémon data. Written into a TDF only when the app replaces its organizer. Null until set.
+   */
+  professorFullName: text('professor_full_name'),
   /** Access-token `sub`: the OP user id (S5). */
   ptcUserId: text('ptc_user_id').notNull(),
   /** AES-256-GCM blob from the token vault; never leaves the server. */
