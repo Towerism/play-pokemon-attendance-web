@@ -279,11 +279,15 @@ in place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it). O
 - **Same tournament.** The `guid`, display id, registrations and staff stay. The planned tournament and its wanted
   staff assignments move to the new date locally. No staff call is needed.
 - **Refused locally** before any call, from the fresh read:
-  - **outside the reschedule window**: a reschedule can be attempted until **start − 3 days + 90 days** (87 days
-    after the tournament's current start, in the league `TZ`; organizer, 2026-10-12). That is play-tools' 90-day edit
-    window less a 3-day margin, so the attempt isn't cut off mid-flight. Later is `reschedule_window_closed`. Edits
-    that don't change the date keep the full 90 days (`tournament_locked`, decision 11). A tournament not in a state
-    play-tools lets a professor edit is refused as well;
+  - **outside the reschedule window**: a reschedule can be attempted **from 3 days before the tournament's current
+    start to 90 days after it** (in the league `TZ`; organizer, 2026-10-12):
+    - earlier is `reschedule_window_not_open`. The dialog says the date it opens, and that **Cancel…** and a new
+      tournament are the way to move it sooner;
+    - later is `reschedule_window_closed`.
+
+    Edits that don't change the date aren't bound by this window. They keep play-tools' own 90 days
+    (`tournament_locked`, decision 11). A tournament not in a state play-tools lets a professor edit is refused as
+    well;
   - for a premier event, a new date outside its series' window for the venue's country (`outside_series_window`).
     A professor can't change the series, so moving a League Cup into another quarter means cancelling it and making
     a new one, which the dialog says;
@@ -328,7 +332,7 @@ schedule can have the change applied to other tournaments in the schedule.
 
 - **Edit…** is offered on any tournament of the league that a connected professor organizes, made here or in
   play-tools, while play-tools lets a professor edit it (within start + 90 d, not cancelled or complete; S8; a date
-  change only until start − 3 d + 90 d, decision 8). The
+  change only from start − 3 d to start + 90 d, decision 8). The
   form is the template form, pre-filled from a fresh `getTournament` as the organizer:
   - **editable:** name, format, venue, date and start time, registration (on-site window and admission, or
     third-party URL), contact email and phone, details, event website;
@@ -504,6 +508,6 @@ schedules: a schedule is how events usually get planned, and coverage is the che
 | Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Open: S8 part 2** |
 | Q7 | Which events must the league hold? | **Answered (organizer, 2026-10-12):** a League Cup per quarter and a League Challenge per month, for each of TCG, GO and VGC (decision 12) |
 | Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Coverage uses the series window when one exists, else the calendar period |
-| Q11 | Until when can a tournament be rescheduled? | **Answered (organizer, 2026-10-12):** "within start − 3 days + 90 days", read as until 87 days after its start (decision 8). **To confirm:** if it means from 3 days before the start to 90 days after, the window changes, not the design |
+| Q11 | When can a tournament be rescheduled? | **Answered (organizer, 2026-10-12):** from 3 days before its start to 90 days after (decision 8) |
 | Q10 | Is the 7-day lead a hard rule? | **Answered (organizer, 2026-10-12):** no. Tournaments not yet held should be sanctioned 7 days ahead, as a guideline: a short-notice warning to acknowledge, never a refusal (decision 6) |
 | Q9 | Should a missed or at-risk requirement also notify outside the app (email, push)? | **Open: organizer.** Designed as in-app only (banner, grid, badge) |
