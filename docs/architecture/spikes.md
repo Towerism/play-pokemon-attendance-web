@@ -396,7 +396,7 @@ This decides the tournament methods on `PlayToolsGateway` for M9 ([ADR-0010](adr
    and the step chunks), `TournamentConfirmation` + `toApiTournamentPayload` (`index-CYarp5OL.js`) and
    `TournamentDetail` (`index-DmdtsX0M.js`, `index-DUXOMxqq.js`). Findings below; *(inferred)* marks claims the
    bundle doesn't show directly.
-2. **Live capture.** Still to do, with the organizer's go-ahead (questions at the end).
+2. **Live capture.** Done 2026-10-13 with `pnpm spike:s8-live` ([part 2](#part-2-live-capture-2026-10-13)).
 
 **Calls.** All are under `https://api.play.pokemon.com/services/`, JSON, `Authorization: Bearer …` only.
 
@@ -477,6 +477,148 @@ times. There is no template or recurrence for tournaments upstream (recurrence e
    takes the `guid` or the `display_id`; the size limit; how long `upload_in_progress` lasts; whether an upload
    before the start date is accepted; how long an unconfirmed `upload_guid` stays valid.
 7. What the league assistant roles (Enhanced, Specialist) may create, cancel and upload.
+
+#### Part 2: live capture (2026-10-13)
+
+This ran with `pnpm spike:s8-live` (#85) against the organizer's league, from the organizer's own login, with their
+go-ahead before every write. The organizer chose the actions:
+
+- **One tournament**, created for the spike: a TCG custom event starting 24 h in the past. It was edited and
+  restored, then got a phony TDF the organizer built (4 Masters).
+- **A real cancel:** a 2026-09-01 event that never happened.
+- **Not covered:** a premier event, and edits before a start.
+
+The 42 calls are sanitized fixtures in `server/modules/pokemon/adapters/play-tools/__fixtures__/s8/`
+(`NN.METHOD.path.json`, in the order they ran). The sanitizer also redacts:
+
+- the TDF, as `{tdf, bytes, gametype, elements}`;
+- venue location fields;
+- player ids inside messages;
+- the league's display id;
+- every real id the run collected.
+
+**Write contract (confirmed).** All paths are under `https://api.play.pokemon.com/services/`.
+
+| Call | Request | Response |
+| ---- | ------- | -------- |
+| Create | `POST core/tournament`: name, `activity_group_id`, `organizer_id` (the user guid, the same as the token's `sub`), `product`, `category`, `series_guid: null`, `address_id`, `start_date_v2` (UTC), `contact_information`, `activity_division_info` | **201 `{"guid"}`**, nothing else |
+| Create, `activity_division_info: null` | same | **400** `{"code":"op.generic.bad_request","message":"Invalid request.","errors":{"activity_division_info":["This field may not be null."]}}`. `errors` is keyed by field **directly**, not under `errors.body` as for staff |
+| Edit (partial body) | `PATCH core/tournament/{guid}/` `{"details": …}` or `{"start_date_v2": …}` alone | **204**, empty. Only that field changes: the other 32 fields read back identical. `version` goes up by 2 per PATCH |
+| Cancel | `PATCH core/tournament/{guid}/` `{"application_state":"cancelled"}` | **204**, empty. Reads back `application_state: "cancelled"`, and `core/activities` shows `status: "cancelled"` |
+| TDF validate | `POST triumph/tdf/` `{"kind":"tdf","tournament_id":<display_id>,"payload":<base64>}` | **200** `{name, id, upload_guid, player_count, start_date, product, errors: []}`: a preview read from the file |
+| TDF confirm | `PUT triumph/{upload_guid}/confirm/` `{"tournament_id": <tournament guid>}` | **202**, accepted at once; the `display_id` form wasn't needed |
+
+- **`activity_division_info` is required.** The organizer's own tournaments send `{"juniors":null,"masters":null,"seniors":null,"all":null}`
+  (one empty entry per division), and so did the create that worked. The bundle sometimes sends `null`; the server refuses it.
+- **Dates:** production takes `start_date_v2` in UTC. The read gives `start_date_v2` and `start_date_actual` in UTC,
+  and `start_date` as local wall-clock time stamped `Z`, as S6 found.
+- **A date PATCH carries through:** moving `start_date_v2` by 1 h moved `start_date_actual` and the local `start_date`
+  with it.
+- **`details` is trimmed** (`" ."` was stored as `"."`). Setting it back to `""` leaves `""`, not the original `null`.
+
+**Statuses.**
+
+- **A new custom event is `sanctioned` straight away**, with `activity_state: "pending"` and no approval step. A
+  premier event's initial status is **not tried**.
+- **A date change after the start kept it `sanctioned`:** it wasn't sent back for approval. A date change before
+  the start is not tried.
+- **After a confirmed upload,** the tournament reads `status: "complete"`, `activity_state: "completed"` and
+  `application_state: "sanctioned"`, with `player_count` per division and `report_date` set.
+
+**Server refusals (part 1 question 4).**
+
+- **Back-dating by 24 h was accepted.** Larger back-dating, overlaps and series quotas were not probed.
+- **The refusal envelope** is the one shown above: `op.generic.bad_request`, with field errors keyed by field name.
+
+**Cancel (question 5).**
+
+- 204, as above.
+- **Allowed 42 days after the start**, for an event still `sanctioned`/`pending`.
+- Cancel by a non-organizer, and cancel during an upload, were not tried.
+
+**TDF (question 6).**
+
+- **The plain path works.** `POST triumph/tdf/` then `PUT …/confirm/` succeeded, so whatever `triumph-scalability`
+  says, the plain path is live for organizers. The presigned-URL path wasn't needed.
+- **Validate is a preview.** Its response echoes the file's `name`, `id`, `start_date` (`MM/DD/YYYY`), `product` (the
+  file's gametype, e.g. `TRADING_CARD_GAME`) and
+  `player_count`, plus `errors`.
+- **Validate does not compare dates.** The file's start date was a day off from the tournament's, and validate
+  still returned no errors.
+- **`errors` is a list of `{type, message}`**, from upload history, e.g. `{"type":"ORGANIZER_ID_MISMATCH","message":"<id> !== <id>"}`.
+  The message names player ids.
+- **Confirm takes the tournament `guid`** (202). The display-id form wasn't needed.
+- **`upload_in_progress` is short.** At most about 15 s: confirm returned at 06:09:35Z, and the first read after it
+  (06:09:50Z) was already `completed`. Watching every 30 s is more than enough.
+- **Upload history:** `GET triumph/tournament/{display_id}/uploads/` returns a **bare list** (not paged) of
+  `{guid, tournament_id, kind, accepted, errors, uploader, upload_timestamp (ms), upload_expiration (s)}`.
+  - Rejected validations are listed too, with `accepted: false`.
+  - `upload_expiration` is the upload time + 390 days. That looks like retention, not a confirm deadline.
+  - How long an unconfirmed upload stays valid was not probed.
+- **An organizer can't download a TDF.** `GET triumph/tdf/{upload guid}` → **403** `{"code":"op.generic.forbidden","message":"Request not
+  authorized for attempted action."}`. That held for two older uploads, and for the one this run had just made
+  through the API.
+- **Not probed:** the size limit, and an upload before the start date.
+
+**Reads.**
+
+- **`core/products?country=US`** returns `{results: ["pgo","tcg","vg"], product_categories: {tcg: [7], vg: [4], pgo: [3]}}`.
+  - The category lists are plain strings: `tcg_std`, `tcg_exp`, `tcg_glc`, `tcg_lim`, `tcg_lim_ditto`, `tcg_unl`,
+    `tcg_other`; `vg_mod`, `vg_fun_sin`, `vg_fun_multi`, `vg_fun_other`; `pgo_std`, `pgo_limited_meta`, `pgo_other`.
+- **Series** (`GET core/users/{sub}/activity_groups/{ag}/series/`) are paged under `results`. Each has
+  `category_slugs`, `tags` (`league_challenge`, `league_cup`, `prerelease`, `championship_series`), a
+  `play_template` (`LEAGUECHALLENGE`, `TCG1DAY`, `VGCPREMIER`, `PRERELEASE`) and a per-country `schedule`.
+  - **Windows are monthly** for TCG, VGC and GO League Challenges (2026-11-01 → 11-30).
+  - TCG also has a 09-01 → 11-30 window, which is quarterly, and a 10-24 → 11-01 prerelease window.
+- **The address book** is paged under `results`. The league's own entry has `timezone` and `op_country`.
+- **`api/epoch/cycle` is 404** under `services/`. The play cycle lives on another base; nothing in M9 needs it yet.
+- **Tournament detail** has 34 fields, including `play_template`, `divisionless`, `series`, `allowed_age_divisions`,
+  `on_site_admission` and `version` / `version_complete` / `version_complete_synced`.
+
+**Answers to the part 1 questions.**
+
+1. **Date format:** `start_date_v2` (UTC). The flag is effectively on.
+2. **Create:** 201 `{guid}`. A custom event starts `sanctioned`; premier is not tried.
+3. **Edit:** a partial `PATCH` works and changes only the fields sent. A date change after the start stays
+   `sanctioned`. Reschedule can edit in place (ADR-0010 decision 8). The full-body passthrough of decision 11 isn't
+   needed to avoid wiping fields, though it does no harm.
+4. **Refusals:** `null` division info → 400 with field errors; 24 h back-dating is accepted. The rest is not tried.
+5. **Cancel:** 204, allowed after the start. Non-organizer and during-upload are not tried.
+6. **TDF:** plain path; `errors: [{type, message}]`; confirm by guid → 202; `upload_in_progress` lasts seconds;
+   **no organizer download**. Size limit and before-start upload are not tried.
+7. **Assistant roles:** not tried; that needs a second account.
+
+**Real TDF files (2026-10-13).** The organizer shared 9 of the league's TDFs, written by TOM 1.82–1.86. They were
+read for structure only; no names, ids or dates were copied out. What they show:
+
+| Game | `gametype` | root `type` | `mode` |
+| ---- | ---------- | ----------- | ------ |
+| TCG | `TRADING_CARD_GAME` | `2` | `CUSTOM` (friendly events), `LEAGUECHALLENGE` |
+| VGC | `VIDEO_GAME` | `3` | `VGCPREMIER` |
+| GO | `GO` | `3` | `GOPREMIER` (Challenge and Cup alike) |
+
+- **Common to every file:**
+  - `<?xml version="1.0" encoding="UTF-8"?>`, no BOM, no DOCTYPE;
+  - `<startdate>` as `MM/DD/YYYY`;
+  - the same `<data>` fields: `name`, `id`, `city`, `state`, `country`, `roundtime`, `finalsroundtime`,
+    `organizer[popid,name]`, `startdate`, `lessswiss`, `autotablenumber`, `overflowtablestart`.
+- **Two GO Challenge files have an empty `<id>`.** That is the "empty id" case `correctTdf` handles (#87).
+- **Optional player elements:**
+  - three files list `<dropped>` (`round`, `status`, `timestamp`) under a player;
+  - one has `seed`, `order` and `staticseat`;
+  - one has `staticseat` on match players.
+
+  A parser must not require any of them.
+- **The phony upload file** had `mode="CUSTOM"`, and validate accepted it for a custom event.
+
+**Still open:**
+
+- a premier event's initial status;
+- edits before a start;
+- larger back-dating;
+- the size limit;
+- the confirm deadline;
+- assistant roles.
 
 ## Design changes triggered (apply in M4/M5)
 

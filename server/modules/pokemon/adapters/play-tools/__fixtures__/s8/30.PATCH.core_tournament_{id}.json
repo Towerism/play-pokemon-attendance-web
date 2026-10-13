@@ -1,0 +1,10 @@
+{
+  "method": "PATCH",
+  "path": "/services/core/tournament/00000000-0000-4000-8000-000000000016/",
+  "query": {},
+  "status": 204,
+  "request": {
+    "application_state": "cancelled"
+  },
+  "response": null
+}

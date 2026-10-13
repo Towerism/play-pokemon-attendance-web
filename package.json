@@ -26,6 +26,8 @@
     "spike:s6-live": "tsx spikes/s6-live.ts",
     "spike:s6-cert": "tsx spikes/s6-cert.ts",
     "spike:s7": "tsx spikes/s7-professor-name.ts",
+    "spike:s8-live": "tsx spikes/s8-live.ts",
+    "spike:s8": "tsx spikes/s8-fixtures.ts",
     "spike:fixtures":"tsx spikes/sanitize-fixtures.ts"
   },
   "dependencies": {

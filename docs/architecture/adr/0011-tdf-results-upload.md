@@ -343,14 +343,14 @@ Option 3.
 
 | #  | Question | Status |
 | -- | -------- | ------ |
-| Q1 | Validate response shape, the shape of `errors`, confirm's id (`guid` or `display_id`), size limit, `triumph-scalability` flag | **Open: S8 part 2**, from a real upload the organizer was going to make anyway (validating sends the file to Pokémon support, decision 7) |
-| Q2 | Can an upload be made before the start date? How long does `upload_in_progress` last? | **Open: S8 part 2** |
+| Q1 | Validate response shape, the shape of `errors`, confirm's id (`guid` or `display_id`), size limit, `triumph-scalability` flag | **Answered (S8 part 2, 2026-10-13):** validate → 200 `{name, id, upload_guid, player_count, start_date, product, errors}`, a preview of the file. `errors` items are `{type, message}` (e.g. `ORGANIZER_ID_MISMATCH`, `"<id> !== <id>"`). Confirm takes the tournament **guid** → 202. The plain path works, so the `triumph-scalability` path isn't needed. Size limit not probed |
+| Q2 | Can an upload be made before the start date? How long does `upload_in_progress` last? | **Partly answered (S8 part 2):** `upload_in_progress` lasts seconds (completed within about 15 s of confirm). An upload before the start is not tried |
 | Q3 | Should the attendance import be ticked by default when a TDF is dropped on a tournament card? | **Answered (organizer, 2026-10-12):** yes, ticked |
 | Q4 | Does `PUT triumph/{upload_guid}/confirm/` accept an upload whose validation returned errors, or refuse it? | **Answered (organizer, 2026-10-12):** that attempt is not accepted, but Pokémon support can access its file. A later file that passes validation is accepted as usual. The app doesn't confirm a failed one (`not_accepted`, decision 7) |
 | Q5 | May a file that fails validation be sent at all? | **Answered (organizer, 2026-10-12):** yes, after a warning; Pokémon support resolves it from there. Players new to the app are called out as possible mis-keyed ids |
 | Q6 | Exact shape of TOM's `<organizer>` element | **Answered (organizer, 2026-10-12):** `<organizer popid="…" name="…"/>` inside `<data>` (decision 3). Parser fixtures use made-up values |
 | Q7 | Should the app also fill in an empty `<id/>` with the tournament's display id, like it fixes the organizer? | **Answered (organizer, 2026-10-12):** yes, with a cautionary warning; only when empty (decision 8) |
-| Q8 | `gametype` spellings for TCG and VGC files | **Open:** from a real file of each game; `GO` → `pgo` is known |
+| Q8 | `gametype` spellings for TCG and VGC files | **Answered (S8 part 2, 2026-10-13, from the league's real files):** `TRADING_CARD_GAME` → `tcg` (accepted upstream for a `tcg` tournament), `VIDEO_GAME` → `vg`, `GO` → `pgo` |
 
 ## Tests these decisions need
 

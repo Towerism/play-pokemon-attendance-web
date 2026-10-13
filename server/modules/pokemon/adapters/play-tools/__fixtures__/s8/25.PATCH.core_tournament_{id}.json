@@ -1,0 +1,10 @@
+{
+  "method": "PATCH",
+  "path": "/services/core/tournament/00000000-0000-4000-8000-000000000057/",
+  "query": {},
+  "status": 204,
+  "request": {
+    "start_date_v2": "2026-10-12T05:00:00Z"
+  },
+  "response": null
+}

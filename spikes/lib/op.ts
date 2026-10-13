@@ -28,7 +28,7 @@ const KEPT_HEADERS = /^(content-type|retry-after|x-ratelimit-.*|ratelimit.*|x-re
  * before committing) and, for known kinds, validated against the wire schema.
  */
 export async function op(
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   /** `quiet`: don't print the request line (the caller prints a masked one). */
   opts: { query?: Record<string, string | number>; body?: unknown; recordAs?: RecordAs; quiet?: boolean } = {},

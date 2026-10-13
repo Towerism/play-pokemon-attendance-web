@@ -1,0 +1,35 @@
+{
+  "method": "GET",
+  "path": "/services/core/v2/users/00000000-0000-4000-8000-000000000043/address_book",
+  "query": {
+    "country": "US",
+    "activity_group_id": "00000000-0000-4000-8000-000000000002"
+  },
+  "status": 200,
+  "request": null,
+  "response": {
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000051",
+        "type": "geolocated_formatted_address",
+        "name": "<redacted>",
+        "formatted_address": "<redacted>",
+        "address1": null,
+        "address2": null,
+        "city": null,
+        "state": "TX",
+        "country": "US",
+        "op_country": "US",
+        "postal_code": "<redacted>",
+        "place_id": "<redacted>",
+        "latitude": "<redacted>",
+        "longitude": "<redacted>",
+        "timezone": "America/Chicago",
+        "source": {
+          "origin": "address_book",
+          "user": null
+        }
+      }
+    ]
+  }
+}

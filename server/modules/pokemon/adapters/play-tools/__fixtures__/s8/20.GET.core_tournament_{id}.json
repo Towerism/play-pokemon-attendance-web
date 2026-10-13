@@ -1,0 +1,77 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournament/00000000-0000-4000-8000-000000000057",
+  "query": {},
+  "status": 200,
+  "request": null,
+  "response": {
+    "guid": "00000000-0000-4000-8000-000000000057",
+    "display_id": "26-10-900041",
+    "name": "<redacted>",
+    "organizer": {
+      "guid": "00000000-0000-4000-8000-000000000043",
+      "first_name": "<redacted>",
+      "last_name": "<redacted>",
+      "country": "US",
+      "display_name": null,
+      "player_id": "9999992"
+    },
+    "play_template": null,
+    "divisionless": false,
+    "product": "tcg",
+    "series": null,
+    "activity_group": {
+      "guid": "00000000-0000-4000-8000-000000000002",
+      "display_id": "L900001",
+      "group_type": "league",
+      "name": null,
+      "display_name": "<redacted>",
+      "owner": {
+        "guid": "00000000-0000-4000-8000-000000000003",
+        "player_id": "9999991"
+      }
+    },
+    "start_date": "2026-10-12T00:00:00Z",
+    "start_date_v2": "2026-10-12T05:00:00Z",
+    "start_date_actual": "2026-10-12T05:00:00Z",
+    "created": "2026-10-13T06:01:26.201687Z",
+    "activity_state": "pending",
+    "application_state": "sanctioned",
+    "status": "sanctioned",
+    "category": "tcg_std",
+    "address": "<redacted>",
+    "event_website": null,
+    "on_site_registration_datetime_full": null,
+    "on_site_registration_duration": null,
+    "registration_start_date_v2": null,
+    "registration_end_date_v2": null,
+    "details": "<redacted>",
+    "third_party_registration_website": null,
+    "contact_information": {
+      "email": "<redacted>",
+      "phone": "<redacted>"
+    },
+    "on_site_admission": null,
+    "activity_division_info": {
+      "juniors": null,
+      "masters": null,
+      "seniors": null,
+      "all": null
+    },
+    "allowed_age_divisions": [
+      "juniors",
+      "seniors",
+      "masters"
+    ],
+    "player_count": {
+      "juniors": 0,
+      "seniors": 0,
+      "masters": 0,
+      "unknown": 0
+    },
+    "version": 4,
+    "version_complete": null,
+    "version_complete_synced": null,
+    "report_date": null
+  }
+}

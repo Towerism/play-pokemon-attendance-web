@@ -5,6 +5,7 @@
  * status and JSON bodies are kept, then pseudonymised with `Sanitizer`.
  */
 import { Sanitizer, findLeaks } from './sanitize';
+import { summarizeTdf } from './tdf-summary';
 
 export interface ApiCall {
   method: string;
@@ -62,9 +63,15 @@ export function loadCalls(json: unknown): ApiCall[] {
   });
 }
 
+export interface SanitizeOptions {
+  /** Real ids collected during a run (sub, league, display ids…); any survivor blocks the write. */
+  knownOriginals?: readonly string[];
+}
+
 /** Pseudonymises all calls with one Sanitizer, so ids stay consistent across them. */
-export function sanitizeCalls(calls: readonly ApiCall[]): { calls: ApiCall[]; leaks: string[] } {
+export function sanitizeCalls(input: readonly ApiCall[], opts: SanitizeOptions = {}): { calls: ApiCall[]; leaks: string[] } {
   const s = new Sanitizer();
+  const calls = input.map((c) => ({ ...c, request: redactFiles(c.request), response: redactFiles(c.response) }));
   const firstPass = calls.map((c) => ({
     ...c,
     query: Object.fromEntries(
@@ -83,7 +90,30 @@ export function sanitizeCalls(calls: readonly ApiCall[]): { calls: ApiCall[]; le
     response: JSON.parse(s.replaceKnownIds(JSON.stringify(c.response))) as unknown,
   }));
   const events = pseudonymiseEvents(out);
-  return { calls: events.calls, leaks: findLeaks(JSON.stringify(events.calls), [...s.originals, ...events.originals]) };
+  const originals = [...s.originals, ...events.originals, ...(opts.knownOriginals ?? [])];
+  return { calls: events.calls, leaks: [...new Set(findLeaks(JSON.stringify(events.calls), originals))] };
+}
+
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const MIN_ENCODED_FILE = 256;
+
+/**
+ * A TDF (raw XML or base64) becomes its summary: names and birthdates inside it
+ * are invisible to key-based redaction. Any other long base64 string could be an
+ * encoded file too, so it is dropped with its size.
+ */
+function redactFiles(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactFiles);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactFiles(v)]));
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  const encoded = trimmed.length >= MIN_ENCODED_FILE && BASE64.test(trimmed);
+  if (!encoded && !trimmed.startsWith('<')) return value;
+  try {
+    return summarizeTdf(value);
+  } catch {
+    return encoded ? { base64: '<redacted>', bytes: Buffer.from(trimmed, 'base64').length } : value;
+  }
 }
 
 /** Event free text and store websites identify a place and its people. */

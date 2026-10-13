@@ -1,0 +1,33 @@
+{
+  "method": "POST",
+  "path": "/services/triumph/tdf/",
+  "query": {},
+  "status": 200,
+  "request": {
+    "kind": "tdf",
+    "tournament_id": "26-10-900041",
+    "payload": {
+      "tdf": "<redacted>",
+      "bytes": 4784,
+      "gametype": "TRADING_CARD_GAME",
+      "elements": [
+        "tournament",
+        "data",
+        "timeelapsed",
+        "players",
+        "pods",
+        "standings",
+        "finalsoptions"
+      ]
+    }
+  },
+  "response": {
+    "name": "<redacted>",
+    "id": "26-10-900041",
+    "upload_guid": "00000000-0000-4000-8000-000000000067",
+    "player_count": 4,
+    "start_date": "10/13/2026",
+    "product": "TRADING_CARD_GAME",
+    "errors": []
+  }
+}

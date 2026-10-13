@@ -1,0 +1,11 @@
+{
+  "method": "GET",
+  "path": "/services/triumph/tdf/00000000-0000-4000-8000-000000000052",
+  "query": {},
+  "status": 403,
+  "request": null,
+  "response": {
+    "code": "op.generic.forbidden",
+    "message": "Request not authorized for attempted action."
+  }
+}

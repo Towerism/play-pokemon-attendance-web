@@ -55,6 +55,36 @@ describe('Sanitizer', () => {
     expect(out).toEqual({ address: '<redacted>', participant: { display_first_name: '<redacted>', display_last_name: null } });
   });
 
+  it('pseudonymises dashless 32-hex ids (the user sub) like GUIDs, consistently with their dashed form', () => {
+    const sub = '93763009eecc499080dd46172f420fee';
+    const dashed = '93763009-eecc-4990-80dd-46172f420fee';
+    const s = new Sanitizer();
+    const out = s.sanitize({ path: `/services/core/users/${sub}/activity_groups/`, owner: dashed, sha: 'a'.repeat(64) }) as Record<string, string>;
+
+    expect(out.path).toBe('/services/core/users/00000000000040008000000000000001/activity_groups/');
+    expect(out.owner).toBe('00000000-0000-4000-8000-000000000001');
+    expect(out.sha).toBe('a'.repeat(64));
+    expect(findLeaks(JSON.stringify(out), s.originals)).toEqual([]);
+    expect(findLeaks(`{"x":"${sub}"}`, s.originals)).toEqual([sub]);
+    expect(findLeaks(`{"x":"${dashed}"}`, s.originals)).toEqual([dashed]);
+  });
+
+  it('redacts what pins a venue (postal code, place id, coordinates, city), keeping state, country and timezone', () => {
+    const out = new Sanitizer().sanitize({
+      venue: { city: 'Humble', state: 'TX', postal_code: '77338', zip: '77338', place_id: 'ChIJcwOntVWyQIYRIwLaheJbsrs', latitude: 30.0056867, longitude: -95.2633, lat: 30, lng: -95, country: 'US', timezone: 'America/Chicago' },
+    });
+    expect(out).toEqual({
+      venue: { city: '<redacted>', state: 'TX', postal_code: '<redacted>', zip: '<redacted>', place_id: '<redacted>', latitude: '<redacted>', longitude: '<redacted>', lat: '<redacted>', lng: '<redacted>', country: 'US', timezone: 'America/Chicago' },
+    });
+  });
+
+  it('pseudonymises a league display id (L5012) consistently', () => {
+    const s = new Sanitizer();
+    const out = s.sanitize({ activity_group: { display_id: 'L5012' }, other: { display_id: 'L5012' }, note: 'league L5012' }) as Record<string, unknown>;
+    expect(out).toEqual({ activity_group: { display_id: 'L900001' }, other: { display_id: 'L900001' }, note: 'league L900001' });
+    expect(s.originals).toContain('L5012');
+  });
+
   it('findLeaks reports surviving originals', () => {
     expect(findLeaks(`{"x":"${GROUP.toUpperCase()}"}`, [GROUP])).toEqual([GROUP]);
   });

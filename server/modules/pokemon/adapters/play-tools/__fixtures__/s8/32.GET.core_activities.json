@@ -1,0 +1,1119 @@
+{
+  "method": "GET",
+  "path": "/services/core/activities",
+  "query": {
+    "type": "tournament",
+    "role": "organizer",
+    "sort_by": "-start_date",
+    "page": "1"
+  },
+  "status": 200,
+  "request": null,
+  "response": {
+    "count": 118,
+    "next": "https://api.play.pokemon.com/services/core/activities?page=2&role=organizer&sort_by=-start_date&type=tournament",
+    "previous": null,
+    "results": [
+      {
+        "guid": "00000000-0000-4000-8000-000000000001",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900001",
+        "product": "tcg",
+        "start_date": "2026-10-25T16:30:00Z",
+        "start_date_v2": "2026-10-25T21:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "sanctioned",
+        "status": "sanctioned"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000004",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900002",
+        "product": "tcg",
+        "start_date": "2026-10-25T12:30:00Z",
+        "start_date_v2": "2026-10-25T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "sanctioned",
+        "status": "sanctioned"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000005",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900003",
+        "product": "vg",
+        "start_date": "2026-10-18T15:30:00Z",
+        "start_date_v2": "2026-10-18T20:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "sanctioned",
+        "status": "sanctioned"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000006",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900004",
+        "product": "vg",
+        "start_date": "2026-10-18T12:30:00Z",
+        "start_date_v2": "2026-10-18T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "sanctioned",
+        "status": "sanctioned"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000057",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900041",
+        "product": "tcg",
+        "start_date": "2026-10-12T00:00:00Z",
+        "start_date_v2": "2026-10-12T05:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "sanctioned",
+        "status": "sanctioned"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000007",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900005",
+        "product": "pgo",
+        "start_date": "2026-10-11T14:30:00Z",
+        "start_date_v2": "2026-10-11T19:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000008",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900006",
+        "product": "pgo",
+        "start_date": "2026-10-11T12:30:00Z",
+        "start_date_v2": "2026-10-11T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000009",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900007",
+        "product": "tcg",
+        "start_date": "2026-10-11T12:30:00Z",
+        "start_date_v2": "2026-10-11T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000010",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900008",
+        "product": "tcg",
+        "start_date": "2026-10-06T19:00:00Z",
+        "start_date_v2": "2026-10-07T00:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000011",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-10-900009",
+        "product": "tcg",
+        "start_date": "2026-10-04T12:30:00Z",
+        "start_date_v2": "2026-10-04T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000012",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-09-900010",
+        "product": "tcg",
+        "start_date": "2026-09-29T18:00:00Z",
+        "start_date_v2": "2026-09-29T23:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000013",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-09-900011",
+        "product": "vg",
+        "start_date": "2026-09-15T19:00:00Z",
+        "start_date_v2": "2026-09-16T00:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000014",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-09-900012",
+        "product": "pgo",
+        "start_date": "2026-09-13T12:30:00Z",
+        "start_date_v2": "2026-09-13T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000015",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-09-900013",
+        "product": "tcg",
+        "start_date": "2026-09-08T18:30:00Z",
+        "start_date_v2": "2026-09-08T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000016",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-09-900014",
+        "product": "tcg",
+        "start_date": "2026-09-01T18:30:00Z",
+        "start_date_v2": "2026-09-01T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "cancelled",
+        "status": "cancelled"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000017",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900015",
+        "product": "pgo",
+        "start_date": "2026-08-25T19:00:00Z",
+        "start_date_v2": "2026-08-26T00:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000018",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900016",
+        "product": "vg",
+        "start_date": "2026-08-25T19:00:00Z",
+        "start_date_v2": "2026-08-26T00:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000019",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900017",
+        "product": "tcg",
+        "start_date": "2026-08-25T17:00:00Z",
+        "start_date_v2": "2026-08-25T22:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000020",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900018",
+        "product": "tcg",
+        "start_date": "2026-08-18T18:00:00Z",
+        "start_date_v2": "2026-08-18T23:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000021",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900019",
+        "product": "pgo",
+        "start_date": "2026-08-11T18:00:00Z",
+        "start_date_v2": "2026-08-11T23:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000022",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900020",
+        "product": "tcg",
+        "start_date": "2026-08-04T18:30:00Z",
+        "start_date_v2": "2026-08-04T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "cancelled",
+        "status": "cancelled"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000023",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900021",
+        "product": "tcg",
+        "start_date": "2026-08-04T18:30:00Z",
+        "start_date_v2": "2026-08-04T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000024",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-08-900022",
+        "product": "tcg",
+        "start_date": "2026-08-04T18:00:00Z",
+        "start_date_v2": "2026-08-04T23:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000025",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900023",
+        "product": "tcg",
+        "start_date": "2026-07-28T18:30:00Z",
+        "start_date_v2": "2026-07-28T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000026",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900024",
+        "product": "pgo",
+        "start_date": "2026-07-28T18:00:00Z",
+        "start_date_v2": "2026-07-28T23:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000027",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900025",
+        "product": "pgo",
+        "start_date": "2026-07-26T12:30:00Z",
+        "start_date_v2": "2026-07-26T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000028",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900026",
+        "product": "tcg",
+        "start_date": "2026-07-14T18:30:00Z",
+        "start_date_v2": "2026-07-14T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000029",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900027",
+        "product": "tcg",
+        "start_date": "2026-07-12T14:45:00Z",
+        "start_date_v2": "2026-07-12T19:45:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000030",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900028",
+        "product": "tcg",
+        "start_date": "2026-07-12T13:00:00Z",
+        "start_date_v2": "2026-07-12T18:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000031",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900029",
+        "product": "tcg",
+        "start_date": "2026-07-07T18:30:00Z",
+        "start_date_v2": "2026-07-07T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "cancelled",
+        "status": "cancelled"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000032",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-07-900030",
+        "product": "tcg",
+        "start_date": "2026-07-04T00:00:00Z",
+        "start_date_v2": "2026-07-04T05:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "cancelled",
+        "status": "cancelled"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000033",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-06-900031",
+        "product": "tcg",
+        "start_date": "2026-06-16T18:30:00Z",
+        "start_date_v2": "2026-06-16T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000034",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-06-900032",
+        "product": "tcg",
+        "start_date": "2026-06-07T12:30:00Z",
+        "start_date_v2": "2026-06-07T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000035",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900033",
+        "product": "tcg",
+        "start_date": "2026-05-26T18:30:00Z",
+        "start_date_v2": "2026-05-26T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000036",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900034",
+        "product": "pgo",
+        "start_date": "2026-05-24T15:30:00Z",
+        "start_date_v2": "2026-05-24T20:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000037",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900035",
+        "product": "pgo",
+        "start_date": "2026-05-24T12:30:00Z",
+        "start_date_v2": "2026-05-24T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000038",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900036",
+        "product": "tcg",
+        "start_date": "2026-05-19T18:30:00Z",
+        "start_date_v2": "2026-05-19T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000039",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900037",
+        "product": "tcg",
+        "start_date": "2026-05-17T16:00:00Z",
+        "start_date_v2": "2026-05-17T21:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000040",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900038",
+        "product": "tcg",
+        "start_date": "2026-05-17T16:00:00Z",
+        "start_date_v2": "2026-05-17T21:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000041",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900039",
+        "product": "tcg",
+        "start_date": "2026-05-17T12:30:00Z",
+        "start_date_v2": "2026-05-17T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000042",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900040",
+        "product": "vg",
+        "start_date": "2026-05-03T15:30:00Z",
+        "start_date_v2": null,
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "cancelled",
+        "status": "cancelled"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000058",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-05-900042",
+        "product": "vg",
+        "start_date": "2026-05-03T12:30:00Z",
+        "start_date_v2": "2026-05-03T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000059",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-04-900043",
+        "product": "tcg",
+        "start_date": "2026-04-28T18:30:00Z",
+        "start_date_v2": "2026-04-28T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000060",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-04-900044",
+        "product": "tcg",
+        "start_date": "2026-04-26T12:00:00Z",
+        "start_date_v2": "2026-04-26T17:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000061",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-04-900045",
+        "product": "pgo",
+        "start_date": "2026-04-14T19:00:00Z",
+        "start_date_v2": "2026-04-15T00:00:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000062",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-04-900046",
+        "product": "vg",
+        "start_date": "2026-04-14T18:30:00Z",
+        "start_date_v2": null,
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "cancelled",
+        "status": "cancelled"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000063",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-04-900047",
+        "product": "tcg",
+        "start_date": "2026-04-12T12:30:00Z",
+        "start_date_v2": "2026-04-12T17:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000064",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-04-900048",
+        "product": "tcg",
+        "start_date": "2026-04-07T18:30:00Z",
+        "start_date_v2": "2026-04-07T23:30:00Z",
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000065",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-03-900049",
+        "product": "tcg",
+        "start_date": "2026-03-31T18:30:00Z",
+        "start_date_v2": null,
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "completed",
+        "application_state": "sanctioned",
+        "status": "complete"
+      },
+      {
+        "guid": "00000000-0000-4000-8000-000000000066",
+        "activity_type": "tournament",
+        "name": "<redacted>",
+        "display_id": "26-03-900050",
+        "product": "tcg",
+        "start_date": "2026-03-29T12:00:00Z",
+        "start_date_v2": null,
+        "address": "<redacted>",
+        "activity_group": {
+          "guid": "00000000-0000-4000-8000-000000000002",
+          "group_type": "league",
+          "name": null,
+          "owner": {
+            "guid": "00000000-0000-4000-8000-000000000003",
+            "player_id": "9999991"
+          }
+        },
+        "activity_state": "pending",
+        "application_state": "cancelled",
+        "status": "cancelled"
+      }
+    ]
+  }
+}

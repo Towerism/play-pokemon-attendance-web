@@ -1,0 +1,38 @@
+{
+  "method": "GET",
+  "path": "/services/core/products",
+  "query": {
+    "country": "US"
+  },
+  "status": 200,
+  "request": null,
+  "response": {
+    "results": [
+      "pgo",
+      "tcg",
+      "vg"
+    ],
+    "product_categories": {
+      "pgo": [
+        "pgo_std",
+        "pgo_limited_meta",
+        "pgo_other"
+      ],
+      "tcg": [
+        "tcg_std",
+        "tcg_exp",
+        "tcg_lim",
+        "tcg_lim_ditto",
+        "tcg_unl",
+        "tcg_glc",
+        "tcg_other"
+      ],
+      "vg": [
+        "vg_mod",
+        "vg_fun_sin",
+        "vg_fun_multi",
+        "vg_fun_other"
+      ]
+    }
+  }
+}

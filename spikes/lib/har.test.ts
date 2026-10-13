@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiCalls, loadCalls, sanitizeCalls } from './har';
+import { type ApiCall, apiCalls, loadCalls, sanitizeCalls } from './har';
 
 const API = 'https://api.play.pokemon.com/services';
 const TOURNAMENT = 'b5e0c6c2-1111-4aaa-8bbb-0123456789ab';
@@ -149,6 +149,56 @@ describe('sanitizeCalls', () => {
     );
     expect(leaks).toEqual([]);
     expect(calls[0]?.response).toEqual({ errors: { detail: 'Player 9999991 is already staff' } });
+  });
+});
+
+describe('sanitizeCalls: TDFs and known originals', () => {
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<tournament gametype="TRADING_CARD_GAME"><data><id>26-10-000123</id><organizer popid="7654321" name="Pat Organizer" /></data>
+<players><player userid="1234567"><firstname>Ash</firstname><birthdate>01/02/2012</birthdate></player></players></tournament>
+`;
+  const base64 = Buffer.from(xml).toString('base64');
+  const summary = { tdf: '<redacted>', bytes: Buffer.byteLength(xml), gametype: 'TRADING_CARD_GAME', elements: ['tournament', 'data', 'players'] };
+  const call = (over: Partial<ApiCall>): ApiCall => ({ method: 'GET', path: '/services/x', query: {}, status: 200, request: null, response: null, ...over });
+
+  it('replaces a TDF in an upload body, and in a download as base64 or raw XML, with its summary', () => {
+    const { calls, leaks } = sanitizeCalls([
+      call({ method: 'POST', path: '/services/triumph/tdf/', request: { kind: 'tdf', tournament_id: '26-10-000123', payload: base64 }, response: { upload_guid: TOURNAMENT, errors: [] } }),
+      call({ path: `/services/triumph/tdf/${RECORD}`, response: { payload: base64 } }),
+      call({ path: `/services/triumph/tdf/${RECORD}`, response: xml }),
+    ]);
+    const json = JSON.stringify(calls);
+
+    expect(leaks).toEqual([]);
+    expect(calls[0]?.request).toEqual({ kind: 'tdf', tournament_id: '26-10-900001', payload: summary });
+    expect(calls[1]?.response).toEqual({ payload: summary });
+    expect(calls[2]?.response).toEqual(summary);
+    expect(json).not.toContain(base64.slice(0, 40));
+    expect(json).not.toMatch(/<tournament|<player|Ash|01\/02\/2012|1234567|7654321/);
+  });
+
+  it('pseudonymises player ids inside upload error messages, which no key names', () => {
+    const { calls, leaks } = sanitizeCalls([
+      call({ response: [{ errors: [{ type: 'ORGANIZER_ID_MISMATCH', message: '4589085 !== 4942060' }], upload_timestamp: 1789926304744 }] }),
+    ]);
+    expect(leaks).toEqual([]);
+    expect(calls[0]?.response).toEqual([{ errors: [{ type: 'ORGANIZER_ID_MISMATCH', message: '9999991 !== 9999992' }], upload_timestamp: 1789926304744 }]);
+  });
+
+  it('redacts any other long base64 string, which could be an encoded file', () => {
+    const blob = Buffer.from('PK\u0003\u0004'.padEnd(400, 'x')).toString('base64');
+    const { calls } = sanitizeCalls([call({ response: { file: blob } })]);
+    expect(calls[0]?.response).toEqual({ file: { base64: '<redacted>', bytes: 400 } });
+  });
+
+  it('refuses when a known original survives under a key no rule redacts, counting it without echoing it', () => {
+    const { leaks } = sanitizeCalls([call({ response: { note: 'moved from Ettin Games' } })], { knownOriginals: ['Ettin Games', 'never-seen'] });
+    expect(leaks).toEqual(['Ettin Games']);
+  });
+
+  it('accepts the run when no known original survives', () => {
+    const { leaks } = sanitizeCalls([call({ response: { display_id: '26-10-021965' } })], { knownOriginals: ['26-10-021965'] });
+    expect(leaks).toEqual([]);
   });
 });
 

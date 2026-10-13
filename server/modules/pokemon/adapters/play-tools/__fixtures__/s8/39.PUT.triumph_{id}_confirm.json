@@ -1,0 +1,10 @@
+{
+  "method": "PUT",
+  "path": "/services/triumph/00000000-0000-4000-8000-000000000067/confirm/",
+  "query": {},
+  "status": 202,
+  "request": {
+    "tournament_id": "00000000-0000-4000-8000-000000000057"
+  },
+  "response": null
+}
