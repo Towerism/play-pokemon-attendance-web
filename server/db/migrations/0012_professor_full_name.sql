@@ -1,0 +1,1 @@
+ALTER TABLE `pokemon_connection` ADD `professor_full_name` text;

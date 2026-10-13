@@ -2,6 +2,8 @@
 export interface ProfessorConnectionJson {
   professorPlayerId: string | null;
   professorName: string | null;
+  /** The full name written into a TDF whose organizer the app replaces (ADR-0011 decision 8). */
+  professorFullName: string | null;
   status: 'connected' | 'needs_reconnect';
   reason: string | null;
   connectedAt: string;

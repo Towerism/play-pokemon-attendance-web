@@ -134,6 +134,7 @@ interface Row {
   id: number;
   professor_player_id: string | null;
   professor_name: string | null;
+  professor_full_name: string | null;
   refresh_token_ciphertext: Buffer;
   status: string;
   status_reason: string | null;
@@ -238,6 +239,7 @@ describe('connect flow (§4.1, paste-back)', () => {
         id: idOf(ASH),
         professorPlayerId: '0012345',
         professorName: null,
+        professorFullName: null,
         status: 'connected',
         reason: null,
         connectedAt: clock,
@@ -391,9 +393,17 @@ describe('several professors', () => {
 
   it("keeps the organizer's display name across a reconnect", async () => {
     await connect(ASH);
-    service.setProfessorName(L, ASH.playerId, 'Ash K.');
+    service.renameProfessor(L, ASH.playerId, { name: 'Ash K.' });
     await connect(ASH);
     expect(rowOf(ASH.playerId)!.professor_name).toBe('Ash K.');
+  });
+
+  it("keeps the professor's full name across a reconnect, and never takes one from Pokémon", async () => {
+    await connect(ASH);
+    expect(rowOf(ASH.playerId)!.professor_full_name).toBeNull();
+    service.renameProfessor(L, ASH.playerId, { fullName: 'Ash Ketchum' });
+    await connect(ASH);
+    expect(rowOf(ASH.playerId)!.professor_full_name).toBe('Ash Ketchum');
   });
 
   it('lists the connections sorted by display name, unnamed ones by player id, marking the one that submits for the league', async () => {
@@ -401,8 +411,8 @@ describe('several professors', () => {
     await connect(ASH);
     professors.set('sub-misty', { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [] });
     await connect(professors.get('sub-misty')!);
-    service.setProfessorName(L, BROCK.playerId, 'Brock Harrison');
-    service.setProfessorName(L, ASH.playerId, 'Ash Ketchum');
+    service.renameProfessor(L, BROCK.playerId, { name: 'Brock Harrison' });
+    service.renameProfessor(L, ASH.playerId, { name: 'Ash Ketchum' });
     expect(service.listConnections(L).map((c) => [c.professorName ?? c.professorPlayerId, c.submitsForLeague])).toEqual([
       ['Ash Ketchum', false],
       ['Brock Harrison', true],
@@ -681,7 +691,7 @@ describe('league binding', () => {
     professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
     await connect(ASH);
     await connect(BROCK);
-    service.setProfessorName(L, BROCK.playerId, 'Brock Harrison');
+    service.renameProfessor(L, BROCK.playerId, { name: 'Brock Harrison' });
     markNeedsReconnect(BROCK);
     leagueCalls = [];
 
@@ -758,7 +768,7 @@ describe('listActingConnections (who can read and act upstream)', () => {
   it('lists every connection with its professor and status, never a token', async () => {
     await connect(ASH);
     await connect(BROCK);
-    service.setProfessorName(L, BROCK.playerId, 'Brock Harrison');
+    service.renameProfessor(L, BROCK.playerId, { name: 'Brock Harrison' });
     database.sqlite.prepare("update pokemon_connection set status = 'needs_reconnect' where professor_player_id = ?").run(BROCK.playerId);
 
     const listed = service.listActingConnections();
@@ -899,10 +909,10 @@ describe('edge cases', () => {
     await connect(ASH);
     const callsBefore = oauth.refreshCalls.length + profileCalls.length;
 
-    expect(service.setProfessorName(L, ASH.playerId, 'Ash Ketchum')).toMatchObject({ professorPlayerId: ASH.playerId, professorName: 'Ash Ketchum' });
+    expect(service.renameProfessor(L, ASH.playerId, { name: 'Ash Ketchum' })).toMatchObject({ professorPlayerId: ASH.playerId, professorName: 'Ash Ketchum' });
     expect(service.getStatus(L).professor).toEqual({ playerId: ASH.playerId, name: 'Ash Ketchum' });
-    expect(service.setProfessorName(L, ASH.playerId, 'Ash K.').professorName).toBe('Ash K.');
-    expect(service.setProfessorName(L, ASH.playerId, null).professorName).toBeNull();
+    expect(service.renameProfessor(L, ASH.playerId, { name: 'Ash K.' }).professorName).toBe('Ash K.');
+    expect(service.renameProfessor(L, ASH.playerId, { name: null }).professorName).toBeNull();
 
     expect(rowOf(ASH.playerId)!.professor_name).toBeNull();
     expect(oauth.refreshCalls.length + profileCalls.length).toBe(callsBefore);
@@ -911,13 +921,41 @@ describe('edge cases', () => {
   it('lets two professors share a display name (it identifies nobody)', async () => {
     await connect(ASH);
     await connect(BROCK);
-    service.setProfessorName(L, ASH.playerId, 'Prof');
-    service.setProfessorName(L, BROCK.playerId, 'Prof');
+    service.renameProfessor(L, ASH.playerId, { name: 'Prof' });
+    service.renameProfessor(L, BROCK.playerId, { name: 'Prof' });
     expect(rows().map((r) => r.professor_name)).toEqual(['Prof', 'Prof']);
   });
 
   it('refuses to name a professor nobody connected', () => {
-    expect(() => service.setProfessorName(L, '999', 'Nobody')).toThrow(ConnectionNotFoundError);
+    expect(() => service.renameProfessor(L, '999', { name: 'Nobody' })).toThrow(ConnectionNotFoundError);
+    expect(() => service.renameProfessor(L, '999', { fullName: 'Nobody' })).toThrow(ConnectionNotFoundError);
+    expect(rows()).toEqual([]);
+  });
+
+  it('sets and clears the full name on its own, leaving the display name as it is, and sends it nowhere', async () => {
+    await connect(ASH);
+    service.renameProfessor(L, ASH.playerId, { name: 'Ash K.' });
+    const callsBefore = oauth.refreshCalls.length + profileCalls.length;
+
+    expect(service.renameProfessor(L, ASH.playerId, { fullName: 'Ash Ketchum' })).toMatchObject({
+      professorName: 'Ash K.',
+      professorFullName: 'Ash Ketchum',
+    });
+    expect(service.listConnections(L)).toEqual([expect.objectContaining({ professorName: 'Ash K.', professorFullName: 'Ash Ketchum' })]);
+    expect(service.renameProfessor(L, ASH.playerId, { fullName: null })).toMatchObject({ professorName: 'Ash K.', professorFullName: null });
+
+    expect(rowOf(ASH.playerId)).toMatchObject({ professor_name: 'Ash K.', professor_full_name: null });
+    expect(oauth.refreshCalls.length + profileCalls.length).toBe(callsBefore);
+  });
+
+  it('changes the display name alone without touching the full name, or both at once', async () => {
+    await connect(ASH);
+    service.renameProfessor(L, ASH.playerId, { name: 'Ash K.', fullName: 'Ash Ketchum' });
+    expect(service.renameProfessor(L, ASH.playerId, { name: 'Ash' })).toMatchObject({ professorName: 'Ash', professorFullName: 'Ash Ketchum' });
+    expect(service.renameProfessor(L, ASH.playerId, { name: null, fullName: 'Satoshi Ketchum' })).toMatchObject({
+      professorName: null,
+      professorFullName: 'Satoshi Ketchum',
+    });
   });
 
   it("keeps the professor's own display name when a carried-over twin merges into them", async () => {
@@ -928,7 +966,7 @@ describe('edge cases', () => {
     service.resealCarriedOver(L);
     professors.set('sub-ash-again', { ...ASH, sub: 'sub-ash-again' });
     await connect(professors.get('sub-ash-again')!);
-    service.setProfessorName(L, ASH.playerId, 'Ash Ketchum');
+    service.renameProfessor(L, ASH.playerId, { name: 'Ash Ketchum' });
 
     await service.identifyCarriedOver();
 

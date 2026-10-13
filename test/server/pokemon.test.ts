@@ -23,6 +23,7 @@ const ProfessorConnection = z
   .object({
     professorPlayerId: z.string().nullable(),
     professorName: z.string().nullable(),
+    professorFullName: z.string().nullable(),
     status: z.enum(['connected', 'needs_reconnect']),
     reason: z.string().nullable(),
     connectedAt: z.string().datetime(),
@@ -168,6 +169,7 @@ describe('Pokémon connections API', () => {
         connection: {
           professorPlayerId: FAKE_PLAYER_ID,
           professorName: null,
+          professorFullName: null,
           status: 'connected',
           reason: null,
           connectedAt: expect.any(String),
@@ -451,7 +453,7 @@ describe('Pokémon connections API', () => {
       ['61 characters', { name: 'a'.repeat(61) }],
       ['a control character', { name: 'Brock\u0000' }],
       ['a number', { name: 42 }],
-      ['no name field', {}],
+      ['neither name', {}],
     ])('is 400 for %s', async (_l, json) => {
       expect((await rename('0000222', json)).status).toBe(400);
       expect((await connections()).connections[0]?.professorName).toBeNull();
@@ -462,6 +464,66 @@ describe('Pokémon connections API', () => {
       const res = await rename('999', { name: 'X' });
       expect(res.status).toBe(404);
       expect(res.json().data).toEqual({ code: 'connection_not_found' });
+    });
+  
+    describe('the full name for TDFs', () => {
+      const brock = async () => (await connections()).connections[0]!;
+
+      it('sets a trimmed full name on its own, keeping the display name, without sending it to Pokémon', async () => {
+        await rename('0000222', { name: 'Brock' });
+        fake.requests.length = 0;
+        const res = await rename('0000222', { fullName: '  Brock Harrison  ' });
+        expect(res.status).toBe(200);
+        expect(ProfessorConnection.parse(res.json())).toMatchObject({ professorName: 'Brock', professorFullName: 'Brock Harrison' });
+        expect(await brock()).toMatchObject({ professorName: 'Brock', professorFullName: 'Brock Harrison' });
+        expect(fake.requests).toEqual([]);
+      });
+
+      it('keeps the full name when only the display name changes', async () => {
+        await rename('0000222', { name: 'Brock', fullName: 'Brock Harrison' });
+        expect((await rename('0000222', { name: 'Brocko' })).json()).toMatchObject({ professorName: 'Brocko', professorFullName: 'Brock Harrison' });
+      });
+
+      it.each([
+        ['an empty string', { fullName: '' }],
+        ['null', { fullName: null }],
+      ])('clears the full name with %s, keeping the display name', async (_l, json) => {
+        await rename('0000222', { name: 'Brock', fullName: 'Brock Harrison' });
+        const res = await rename('0000222', json);
+        expect(res.status).toBe(200);
+        expect(res.json()).toMatchObject({ professorName: 'Brock', professorFullName: null });
+      });
+
+      it('takes 100 characters, and markup-looking text as it is', async () => {
+        expect((await rename('0000222', { fullName: 'a'.repeat(100) })).status).toBe(200);
+        expect((await rename('0000222', { fullName: "O'Brien & <Co>" })).json().professorFullName).toBe("O'Brien & <Co>");
+      });
+
+      it.each([
+        ['101 characters', { fullName: 'a'.repeat(101) }],
+        ['a control character', { fullName: 'Brock\u0000' }],
+        ['a newline', { fullName: 'Brock\nHarrison' }],
+        ['a number', { fullName: 42 }],
+        ['an invalid display name beside it', { name: 'a'.repeat(61), fullName: 'Brock Harrison' }],
+      ])('is 400 for %s, changing neither name', async (_l, json) => {
+        await rename('0000222', { name: 'Brock', fullName: 'Brock H.' });
+        expect((await rename('0000222', json)).status).toBe(400);
+        expect(await brock()).toMatchObject({ professorName: 'Brock', professorFullName: 'Brock H.' });
+      });
+
+      it('is 404 connection_not_found for an unknown professor', async () => {
+        const res = await rename('999', { fullName: 'Nobody' });
+        expect(res.status).toBe(404);
+        expect(res.json().data).toEqual({ code: 'connection_not_found' });
+      });
+
+      it('keeps it across a reconnect and league discovery, and sends it to Pokémon on neither', async () => {
+        await rename('0000222', { fullName: 'Brock Harrison' });
+        await connect(browser, fake.accounts[1]!.code);
+        await api('/leagues/upstream?professor=0000222');
+        expect(fake.requests.map((r) => JSON.stringify(r)).filter((r) => r.includes('Brock Harrison'))).toEqual([]);
+        expect((await brock()).professorFullName).toBe('Brock Harrison');
+      });
     });
   });
 

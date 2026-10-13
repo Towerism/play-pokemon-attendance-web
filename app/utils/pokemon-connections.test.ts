@@ -16,6 +16,7 @@ const at = '2026-10-12T04:00:00.000Z';
 const conn = (over: Partial<ProfessorConnectionJson> = {}): ProfessorConnectionJson => ({
   professorPlayerId: '0012345',
   professorName: 'Ash Ketchum',
+  professorFullName: null,
   status: 'connected',
   reason: null,
   connectedAt: at,

@@ -60,6 +60,7 @@ describe('upgrade to plural Pokémon connections', () => {
         id: 1,
         professor_player_id: null,
         professor_name: null,
+        professor_full_name: null,
         ptc_user_id: 'sub-1',
         refresh_token_ciphertext: CIPHERTEXT,
         status: 'needs_reconnect',

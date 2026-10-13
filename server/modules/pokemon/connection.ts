@@ -15,6 +15,8 @@ export interface ProfessorConnection {
   /** Null only for a connection carried over from v1 that hasn't been identified yet. */
   professorPlayerId: string | null;
   professorName: string | null;
+  /** The professor's full name for TDFs (ADR-0011 decision 8): set by the organizer, never from Pokémon. */
+  professorFullName: string | null;
   status: 'connected' | 'needs_reconnect';
   /** Why a reconnect is needed; null otherwise. */
   reason: string | null;
@@ -110,8 +112,12 @@ export interface PokemonConnectionService extends TokenProvider {
   startConnect(userId: number): { authorizeUrl: string; expiresAt: Date };
   /** Adds the professor the pasted login belongs to, or reconnects them. @throws ConnectError, PokemonUpstreamError */
   completeConnect(leagueId: string, userId: number, pastedUrl: string): Promise<{ connection: ProfessorConnection; outcome: 'added' | 'reconnected' }>;
-  /** The organizer's display name for a professor (ADR-0008): display only, never from or to Pokémon; null clears it. @throws ConnectionNotFoundError */
-  setProfessorName(leagueId: string, professorPlayerId: string, name: string | null): ProfessorConnection;
+  /**
+   * Sets a professor's display name (ADR-0008: display only, never from or to Pokémon), full name (ADR-0011 decision 8:
+   * set by the organizer, never from Pokémon), or both. A name left out stays as it is; null clears it.
+   * @throws ConnectionNotFoundError
+   */
+  renameProfessor(leagueId: string, professorPlayerId: string, names: { name?: string | null; fullName?: string | null }): ProfessorConnection;
   /**
    * The leagues every connected professor shares (#75), each read as that professor. A professor who needs a
    * reconnect is left out and named; any other failure throws, so a league is never chosen from a partial set.
@@ -211,6 +217,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       id: r.id,
       professorPlayerId: r.professorPlayerId,
       professorName: r.professorName,
+      professorFullName: r.professorFullName,
       status: r.status,
       reason: r.statusReason,
       connectedAt: r.connectedAt,
@@ -538,9 +545,15 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       return { connection: professorView(load(id)!, bindingOf(leagueId)), outcome };
     },
 
-    setProfessorName(leagueId, professorPlayerId, name) {
+    renameProfessor(leagueId, professorPlayerId, { name, fullName }) {
       const r = requireByPlayer(professorPlayerId);
-      db.update(pokemonConnection).set({ professorName: name }).where(eq(pokemonConnection.id, r.id)).run();
+      // Drizzle leaves an undefined field out of the update, so a name that wasn't sent stays as it is.
+      if (name !== undefined || fullName !== undefined) {
+        db.update(pokemonConnection)
+          .set({ professorName: name, professorFullName: fullName })
+          .where(eq(pokemonConnection.id, r.id))
+          .run();
+      }
       return professorView(load(r.id)!, bindingOf(leagueId));
     },
 

@@ -123,13 +123,16 @@ async function saveLeague() {
   }
 }
 
-// The organizer's display name for a professor (ADR-0008): display only, never sent to Pokémon.
+// The organizer's display name for a professor (ADR-0008): display only, never sent to Pokémon. Beside it, their
+// full name, written into a TDF only when the app replaces the file's organizer (ADR-0011 decision 8).
 const renaming = ref<string | null>(null);
 const nameDraft = ref('');
+const fullNameDraft = ref('');
 
 function startRename(c: ProfessorConnectionJson) {
   renaming.value = c.professorPlayerId;
   nameDraft.value = c.professorName ?? '';
+  fullNameDraft.value = c.professorFullName ?? '';
 }
 
 async function saveName() {
@@ -138,13 +141,13 @@ async function saveName() {
   try {
     const saved = await $fetch<ProfessorConnectionJson>(`/api/pokemon/connections/${renaming.value}`, {
       method: 'PATCH',
-      body: { name: nameDraft.value },
+      body: { name: nameDraft.value, fullName: fullNameDraft.value },
     });
     renaming.value = null;
     await refreshPokemonConnection();
-    toast.add({ color: 'success', title: saved.professorName ? 'Name saved' : 'Name cleared' });
+    toast.add({ color: 'success', title: saved.professorName || saved.professorFullName ? 'Names saved' : 'Names cleared' });
   } catch (err) {
-    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not save the name.') });
+    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not save the names.') });
   } finally {
     busy.value = false;
   }
@@ -194,19 +197,35 @@ async function disconnect(c: ProfessorConnectionJson) {
           </div>
           <p v-if="c.status === 'needs_reconnect'" class="text-warning">{{ c.reason ?? 'Pokémon no longer accepts this login.' }}</p>
           <p class="text-muted">Last refreshed {{ formatDate(c.lastRefreshedAt) }}</p>
-          <form v-if="renaming && renaming === c.professorPlayerId" class="flex flex-col sm:flex-row gap-2" @submit.prevent="saveName">
-            <UInput
-              v-model="nameDraft"
-              class="flex-1"
-              maxlength="60"
-              :placeholder="`Professor ${c.professorPlayerId}`"
-              :aria-label="`Display name for ${professorLabel(c)}`"
-              autocomplete="off"
-            />
-            <UButton type="submit" size="sm" :loading="busy">Save name</UButton>
-            <UButton size="sm" variant="ghost" color="neutral" @click="renaming = null">Cancel</UButton>
+          <p v-if="c.professorFullName" class="text-muted">Full name in TDFs: {{ c.professorFullName }}</p>
+          <form v-if="renaming && renaming === c.professorPlayerId" class="space-y-2" @submit.prevent="saveName">
+            <UFormField label="Display name" help="Shown in this app only; Pokémon never sees it. Leave empty to show the player ID.">
+              <UInput
+                v-model="nameDraft"
+                class="w-full"
+                maxlength="60"
+                :placeholder="`Professor ${c.professorPlayerId}`"
+                :aria-label="`Display name for ${professorLabel(c)}`"
+                autocomplete="off"
+              />
+            </UFormField>
+            <UFormField
+              label="Full name for TDFs"
+              help="As play-tools has it. Written into a TDF only when the app replaces the file's organizer; that's the only way Pokémon gets it."
+            >
+              <UInput
+                v-model="fullNameDraft"
+                class="w-full"
+                maxlength="100"
+                :aria-label="`Full name for ${professorLabel(c)}`"
+                autocomplete="off"
+              />
+            </UFormField>
+            <div class="flex gap-2">
+              <UButton type="submit" size="sm" :loading="busy">Save names</UButton>
+              <UButton size="sm" variant="ghost" color="neutral" @click="renaming = null">Cancel</UButton>
+            </div>
           </form>
-          <p v-if="renaming && renaming === c.professorPlayerId" class="text-xs text-muted">Shown in this app only; Pokémon never sees it. Leave empty to show the player ID.</p>
           <div class="flex flex-wrap gap-2">
             <UButton
               size="sm"

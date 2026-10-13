@@ -105,8 +105,10 @@ test('a second professor: added next to the first, then chosen to submit for the
   // Name him: display only, so the app shows it and Pokémon never sees it.
   await page.getByRole('button', { name: 'Rename Professor 0000222' }).click();
   await page.getByLabel('Display name for Professor 0000222').fill('Brock Harrison');
-  await page.getByRole('button', { name: 'Save name' }).click();
+  await page.getByLabel('Full name for Professor 0000222').fill('Brock T. Harrison');
+  await page.getByRole('button', { name: 'Save names' }).click();
   await expect(page.getByRole('button', { name: 'Reconnect Brock Harrison (0000222)' })).toBeVisible();
+  await expect(professors.getByRole('listitem').filter({ hasText: 'Brock Harrison (0000222)' })).toContainText('Full name in TDFs: Brock T. Harrison');
   await expect(page.getByRole('button', { name: 'Disconnect Brock Harrison (0000222)' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Disconnect Professor 9999991' })).toBeVisible();
   await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 9999991' })).toContainText('Submits attendance');
@@ -125,7 +127,7 @@ test('a second professor: added next to the first, then chosen to submit for the
   // The submit dialog says who attendance goes in as, and looks up sessions as Brock, in his league.
   const added = await page.request.post(`/api/sessions/${TUESDAY}/players`, { data: { playerId: '4000001', name: 'Walk In' } });
   expect(added.status()).toBe(201);
-  expect(fake.requests.filter((r) => JSON.stringify(r).includes('Brock Harrison')), 'naming and choosing Brock sent his name nowhere').toEqual([]);
+  expect(fake.requests.filter((r) => /Brock (T\. )?Harrison/.test(JSON.stringify(r))), 'naming and choosing Brock sent his names nowhere').toEqual([]);
   fake.requests.length = 0;
   await page.goto(`/?date=${TUESDAY}`);
   await page.getByRole('button', { name: 'Submit attendance' }).click();
