@@ -15,7 +15,9 @@ import { SECRETS_DIR, readSecretJson } from './lib/secrets';
 const OUT_DIR = join(import.meta.dirname, '..', 'server/modules/pokemon/adapters/play-tools/__fixtures__/s8');
 
 run(async () => {
-  const files = process.argv.slice(2).sort();
+  // In the order they were recorded: `s8-<step>.<time>.json`.
+  const stamp = (f: string) => f.split('.').at(-2) ?? '';
+  const files = process.argv.slice(2).sort((a, b) => stamp(a).localeCompare(stamp(b)));
   if (files.length === 0) throw new Error('Usage: pnpm spike:s8 spikes/.secrets/raw/s8-*.json');
   const knownOriginals = readSecretJson<string[]>(join(SECRETS_DIR, 's8-originals.json')) ?? [];
   if (knownOriginals.length === 0) throw new Error('No .secrets/s8-originals.json: run the live steps first');

@@ -190,6 +190,28 @@ activity group has `owner.player_id`.
 The output is paths and types only. Name-like fields show their first letter and length, so it
 is safe to paste into the issue. The raw `/me` response goes to `.secrets/raw/misc.userinfo.json`.
 
+### S8: tournament lifecycle and TDF upload (WRITES). `pnpm spike:s8-live <step>`
+
+For M9 (#85). Needs a connected spike login (S1). Each step records every call it makes into
+`.secrets/raw/s8-<step>.<time>.json`, and the run's real ids (sub, league, organizer, venue, display ids) into
+`.secrets/s8-originals.json`. Writes are at least 10 s apart, and each needs `--confirm`:
+
+| Step | Writes | Code |
+| ---- | ------ | ---- |
+| `reads` | none: products, series, address book, tournament details, upload history; writes `.secrets/s8-plan.template.json` | — |
+| `create --plan <file> [--date-format naive]` | one `POST core/tournament`, never resent; without `--confirm` it is a dry run that prints the body and the code | last 6 hex of the plan file's sha256 |
+| `edit --tournament <guid>` | details and start changed and put back (4 PATCHes), then a restore check; only on a tournament in `.secrets/s8-ledger.json` | last 6 of the guid |
+| `cancel --tournament <display_id>` | `{"application_state":"cancelled"}`; an organizer **can't undo it** | last 6 of the guid |
+| `tdf-validate --tournament <display_id> --file <x.tdf>` | `POST triumph/tdf/`: **sends the file to Pokémon support**; checks the file against the tournament first; without `--confirm` it only checks | last 6 of the guid |
+| `tdf-confirm --tournament <display_id>` | `PUT triumph/{upload}/confirm/` (guid, then the display id once on a 4xx) | last 6 of the guid |
+| `tdf-watch --tournament <display_id>` | none: polls every 30 s for up to 90 min, then reads the upload history | — |
+
+1. `pnpm spike:s8-live reads`, then copy the template to `.secrets/s8-plan.json` and fill in the event's name.
+2. Run each write step without `--confirm` first, read what it will send, then rerun it with the code.
+3. `pnpm spike:s8 spikes/.secrets/raw/s8-*.json` writes `server/modules/pokemon/adapters/play-tools/__fixtures__/s8/`.
+   It refuses to write anything if a collected real id survives sanitisation. TDFs become a summary (size,
+   `gametype`, element names). **Read every file before committing.**
+
 ### Fixtures: `pnpm spike:fixtures`
 
 Copies `.secrets/raw/<kind>.<label>.json` into

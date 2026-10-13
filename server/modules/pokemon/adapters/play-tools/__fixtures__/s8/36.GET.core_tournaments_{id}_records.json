@@ -1,0 +1,18 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournaments/00000000-0000-4000-8000-000000000057/records",
+  "query": {
+    "player": "true",
+    "page_size": "1"
+  },
+  "status": 200,
+  "request": null,
+  "response": {
+    "count": 0,
+    "next": null,
+    "previous": null,
+    "results": [],
+    "standings_upper_bound": 0,
+    "player_count": 0
+  }
+}

@@ -408,7 +408,17 @@ Across these calls:
 #### Tournament lifecycle and results (M9; contract from spike S8 part 1)
 
 Read from the public play-tools bundle ([spikes.md](spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)).
-**Nothing here is built until S8 part 2 records fixtures.** See [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)
+S8 part 2 (2026-10-13) recorded the fixtures in `__fixtures__/s8/` and corrected this table in
+[spikes.md](spikes.md#part-2-live-capture-2026-10-13). In short:
+
+- create returns 201 `{guid}`, and `activity_division_info` must not be null;
+- edits and cancel return 204 with an empty body, and a partial `PATCH` changes only the fields sent;
+- confirm takes the tournament guid and returns 202;
+- create, edit and cancel errors are keyed by field directly;
+- **`GET triumph/tdf/{uploadGuid}` is 403 for the organizer**, so the fetch-back below doesn't work, and ADR-0012
+  decision 7 needs revising (#107).
+
+See [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)
 and [ADR-0011](adr/0011-tdf-results-upload.md).
 
 | Purpose                     | Method & path (under `services/`)                                                                 |
@@ -1470,7 +1480,7 @@ flowchart LR
 | S4 | `_bulk` semantics: response shape, partial failures, posting an already-present player (error or no-op?)          | Bulk-add to a throwaway session, then undo                                                     |
 | S5 | `userId` for `users/{id}/activity_groups/`: JWT `sub` or a separate profile ID?                                    | Decode the JWT and compare it with play-tools network calls                                    |
 | S6 | Staff (M8): which calls the tournament page's staff section makes, the role list, how a date's tournaments are listed (a separate resource from play sessions), how a tournament lists its participants and organizer, so "already listed" can be checked | ✅ Done 2026-10-11: a live probe (`pnpm spike:s6-live`) removed and restored one staffer on the organizer's tournament; sanitized into fixtures ([spikes.md](spikes.md#s6-staff-assignment-done-2026-10-11)) |
-| S8 | Tournaments (M9): create, edit date, cancel, series and venues, TDF validate and confirm | Part 1 (bundle) done 2026-10-12 ([spikes.md](spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)). Part 2: capture a real creation, reschedule and cancel the organizer wants anyway, and a real TDF upload, with their go-ahead |
+| S8 | Tournaments (M9): create, edit date, cancel, series and venues, TDF validate and confirm | Part 1 (bundle) done 2026-10-12 ([spikes.md](spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)). Part 2 (live capture, `pnpm spike:s8-live`) done 2026-10-13 ([spikes.md](spikes.md#part-2-live-capture-2026-10-13)), fixtures in `__fixtures__/s8/` |
 
 Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions they trigger are in [spikes.md](spikes.md).
 

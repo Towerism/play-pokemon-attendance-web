@@ -1,0 +1,19 @@
+{
+  "method": "GET",
+  "path": "/services/triumph/tournament/26-10-900041/uploads/",
+  "query": {},
+  "status": 200,
+  "request": null,
+  "response": [
+    {
+      "upload_expiration": 1825567738.358,
+      "accepted": true,
+      "guid": "00000000-0000-4000-8000-000000000067",
+      "tournament_id": "26-10-900041",
+      "errors": [],
+      "upload_timestamp": 1791871738358,
+      "uploader": "00000000-0000-4000-8000-000000000043",
+      "kind": "tdf"
+    }
+  ]
+}

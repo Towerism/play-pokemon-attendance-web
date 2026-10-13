@@ -1,0 +1,34 @@
+{
+  "method": "GET",
+  "path": "/services/triumph/tournament/26-09-900011/uploads/",
+  "query": {},
+  "status": 200,
+  "request": null,
+  "response": [
+    {
+      "guid": "00000000-0000-4000-8000-000000000053",
+      "accepted": false,
+      "tournament_id": "26-09-900011",
+      "upload_expiration": 1823225388.079,
+      "upload_timestamp": 1789529388079,
+      "uploader": "00000000-0000-4000-8000-000000000043",
+      "kind": "tdf",
+      "errors": [
+        {
+          "type": "ORGANIZER_ID_MISMATCH",
+          "message": "9999993 !== 9999992"
+        }
+      ]
+    },
+    {
+      "upload_expiration": 1823225424.92,
+      "guid": "00000000-0000-4000-8000-000000000054",
+      "upload_timestamp": 1789529424920,
+      "accepted": true,
+      "tournament_id": "26-09-900011",
+      "errors": [],
+      "uploader": "00000000-0000-4000-8000-000000000043",
+      "kind": "tdf"
+    }
+  ]
+}

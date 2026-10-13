@@ -171,7 +171,7 @@ Option 4.
 | -- | -------- | ------ |
 | Q1 | Should stored TDFs expire automatically after some time (e.g. after the season, or N years), or stay until deleted? | **Open: organizer.** Designed as kept until deleted |
 | Q2 | Should TDFs already imported before this change be recoverable? | **Partly:** the app never kept them, but a tournament whose results reached play-tools can be fetched back from play-tools on download (decision 7) |
-| Q3 | Shapes and permissions of `triumph/tournament/{display_id}/uploads/` and `triumph/tdf/{uploadGuid}` for an organizer | **Open: S8 part 2** |
+| Q3 | Shapes and permissions of `triumph/tournament/{display_id}/uploads/` and `triumph/tdf/{uploadGuid}` for an organizer | **Answered (S8 part 2, 2026-10-13):** the uploads list works for the organizer. It is a bare list of `{guid, tournament_id, kind, accepted, errors, uploader, upload_timestamp, upload_expiration}`, rejected validations included. **`triumph/tdf/{uploadGuid}` is 403 `op.generic.forbidden` for the organizer**, even for an upload they just made, so decision 7's fetch-back and Q2's "fetched back from play-tools" don't work as designed. Follow-up: #107 |
 
 ## Tests these decisions need
 

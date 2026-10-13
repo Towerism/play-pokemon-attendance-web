@@ -1,0 +1,11 @@
+{
+  "method": "GET",
+  "path": "/services/api/epoch/cycle",
+  "query": {},
+  "status": 404,
+  "request": null,
+  "response": {
+    "code": "op.generic.not_found",
+    "message": "The requested resource could not be found."
+  }
+}

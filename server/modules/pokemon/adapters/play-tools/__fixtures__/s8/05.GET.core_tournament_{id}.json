@@ -1,0 +1,248 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournament/00000000-0000-4000-8000-000000000006",
+  "query": {},
+  "status": 200,
+  "request": null,
+  "response": {
+    "guid": "00000000-0000-4000-8000-000000000006",
+    "display_id": "26-10-900004",
+    "name": "<redacted>",
+    "organizer": {
+      "guid": "00000000-0000-4000-8000-000000000043",
+      "first_name": "<redacted>",
+      "last_name": "<redacted>",
+      "country": "US",
+      "display_name": null,
+      "player_id": "9999992"
+    },
+    "play_template": null,
+    "divisionless": false,
+    "product": "vg",
+    "series": {
+      "id": 1248972,
+      "name": "<redacted>",
+      "guid": "00000000000040008000000000000046",
+      "product": "vg",
+      "tags": [
+        "championship_series",
+        "league_cup"
+      ],
+      "schedule": {
+        "US": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "CA": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "AR": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "AU": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "AT": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "BE": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "BR": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "CL": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "CO": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "CZ": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "DK": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "FI": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "FR": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "DE": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "GR": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "GG": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "IE": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "IM": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "IT": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "JE": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "LU": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "MX": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "NL": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "NZ": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "NO": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "PE": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "PL": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "PT": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "ZA": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "ES": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "SE": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "CH": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "GB": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "BG": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        },
+        "RO": {
+          "start_date": "2026-09-01",
+          "end_date": "2026-11-30"
+        }
+      },
+      "category_slugs": [
+        "vg_mod"
+      ],
+      "cycle": {
+        "name": "<redacted>",
+        "start_date": "2026-09-01",
+        "end_date": "2027-08-31",
+        "league_start_date": "2026-09-01",
+        "league_end_date": "2027-08-31",
+        "age_division_year": 2025
+      },
+      "actual_cycle": "2027",
+      "translations": {},
+      "supported_types": [
+        "tournament"
+      ],
+      "is_enabled": true,
+      "min_attendance_needed": 0,
+      "play_points_value": 1,
+      "play_template": "VGCPREMIER"
+    },
+    "activity_group": {
+      "guid": "00000000-0000-4000-8000-000000000002",
+      "display_id": "L900001",
+      "group_type": "league",
+      "name": null,
+      "display_name": "<redacted>",
+      "owner": {
+        "guid": "00000000-0000-4000-8000-000000000003",
+        "player_id": "9999991"
+      }
+    },
+    "start_date": "2026-10-18T12:30:00Z",
+    "start_date_v2": "2026-10-18T17:30:00Z",
+    "start_date_actual": "2026-10-18T17:30:00Z",
+    "created": "2026-09-27T21:03:51.549088Z",
+    "activity_state": "pending",
+    "application_state": "sanctioned",
+    "status": "sanctioned",
+    "category": "vg_mod",
+    "address": "<redacted>",
+    "event_website": "<redacted>",
+    "on_site_registration_datetime_full": "2026-10-18T12:00:00Z",
+    "on_site_registration_duration": 30,
+    "registration_start_date_v2": "2026-10-18T17:00:00Z",
+    "registration_end_date_v2": "2026-10-18T17:30:00Z",
+    "details": null,
+    "third_party_registration_website": null,
+    "contact_information": {
+      "email": "<redacted>",
+      "phone": "<redacted>"
+    },
+    "on_site_admission": "10",
+    "activity_division_info": {
+      "juniors": null,
+      "masters": null,
+      "seniors": null,
+      "all": null
+    },
+    "allowed_age_divisions": [
+      "juniors",
+      "seniors",
+      "masters"
+    ],
+    "player_count": {
+      "juniors": 0,
+      "seniors": 0,
+      "masters": 0,
+      "unknown": 0
+    },
+    "version": 3,
+    "version_complete": null,
+    "version_complete_synced": null,
+    "report_date": null
+  }
+}

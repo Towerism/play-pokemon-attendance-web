@@ -1,0 +1,311 @@
+{
+  "method": "GET",
+  "path": "/services/core/tournament/00000000-0000-4000-8000-000000000001",
+  "query": {},
+  "status": 200,
+  "request": null,
+  "response": {
+    "guid": "00000000-0000-4000-8000-000000000001",
+    "display_id": "26-10-900001",
+    "name": "<redacted>",
+    "organizer": {
+      "guid": "00000000-0000-4000-8000-000000000043",
+      "first_name": "<redacted>",
+      "last_name": "<redacted>",
+      "country": "US",
+      "display_name": null,
+      "player_id": "9999992"
+    },
+    "play_template": null,
+    "divisionless": false,
+    "product": "tcg",
+    "series": {
+      "id": 1248922,
+      "name": "<redacted>",
+      "guid": "00000000000040008000000000000044",
+      "product": "tcg",
+      "tags": [
+        "prerelease"
+      ],
+      "category_slugs": [
+        "tcg_lim"
+      ],
+      "cycle": {
+        "name": "<redacted>",
+        "start_date": "2026-09-01",
+        "end_date": "2027-08-31",
+        "league_start_date": "2026-09-01",
+        "league_end_date": "2027-08-31",
+        "age_division_year": 2025
+      },
+      "actual_cycle": "2027",
+      "translations": {},
+      "supported_types": [
+        "tournament"
+      ],
+      "is_enabled": true,
+      "min_attendance_needed": 0,
+      "play_points_value": 1,
+      "schedule": {
+        "US": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "CA": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "AU": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "AT": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "BE": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "BO": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "BR": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "BG": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "CR": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "CZ": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "DK": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "DO": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "EC": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "SV": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "FI": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "FR": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "DE": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "GR": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "GT": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "GG": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "HU": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "IE": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "IM": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "IT": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "JP": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "JE": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "LU": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "MT": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "NL": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "NZ": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "NI": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "NO": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "PA": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "PY": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "PL": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "PT": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "RO": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "SK": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "ZA": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "ES": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "SE": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "CH": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "AE": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "GB": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "UY": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "AR": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "CL": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "CO": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "MX": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "PE": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        },
+        "TT": {
+          "start_date": "2026-10-24",
+          "end_date": "2026-11-01"
+        }
+      },
+      "play_template": "PRERELEASE"
+    },
+    "activity_group": {
+      "guid": "00000000-0000-4000-8000-000000000002",
+      "display_id": "L900001",
+      "group_type": "league",
+      "name": null,
+      "display_name": "<redacted>",
+      "owner": {
+        "guid": "00000000-0000-4000-8000-000000000003",
+        "player_id": "9999991"
+      }
+    },
+    "start_date": "2026-10-25T16:30:00Z",
+    "start_date_v2": "2026-10-25T21:30:00Z",
+    "start_date_actual": "2026-10-25T21:30:00Z",
+    "created": "2026-10-05T15:22:48.208109Z",
+    "activity_state": "pending",
+    "application_state": "sanctioned",
+    "status": "sanctioned",
+    "category": "tcg_lim",
+    "address": "<redacted>",
+    "event_website": null,
+    "on_site_registration_datetime_full": "2026-10-25T16:00:00Z",
+    "on_site_registration_duration": 30,
+    "registration_start_date_v2": "2026-10-25T21:00:00Z",
+    "registration_end_date_v2": "2026-10-25T21:30:00Z",
+    "details": null,
+    "third_party_registration_website": null,
+    "contact_information": {
+      "email": null,
+      "phone": "<redacted>"
+    },
+    "on_site_admission": "35",
+    "activity_division_info": {
+      "juniors": null,
+      "masters": null,
+      "seniors": null,
+      "all": null
+    },
+    "allowed_age_divisions": [
+      "juniors",
+      "seniors",
+      "masters"
+    ],
+    "player_count": {
+      "juniors": 0,
+      "seniors": 0,
+      "masters": 0,
+      "unknown": 0
+    },
+    "version": 4,
+    "version_complete": null,
+    "version_complete_synced": null,
+    "report_date": null
+  }
+}

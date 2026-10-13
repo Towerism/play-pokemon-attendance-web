@@ -1,0 +1,29 @@
+{
+  "method": "POST",
+  "path": "/services/core/tournament",
+  "query": {},
+  "status": 201,
+  "request": {
+    "name": "<redacted>",
+    "activity_group_id": "00000000-0000-4000-8000-000000000002",
+    "organizer_id": "00000000-0000-4000-8000-000000000043",
+    "product": "tcg",
+    "category": "tcg_std",
+    "series_guid": null,
+    "address_id": "<redacted>",
+    "start_date_v2": "2026-10-12T05:00:00Z",
+    "contact_information": {
+      "email": "<redacted>",
+      "phone": "<redacted>"
+    },
+    "activity_division_info": {
+      "juniors": null,
+      "masters": null,
+      "seniors": null,
+      "all": null
+    }
+  },
+  "response": {
+    "guid": "00000000-0000-4000-8000-000000000057"
+  }
+}
