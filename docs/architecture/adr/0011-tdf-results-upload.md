@@ -189,8 +189,11 @@ Option 3.
      (decision 4).
    - **Errors:** the job **does not confirm**, because play-tools wouldn't accept it. It ends `not_accepted`, with each
      of play-tools' errors in readable words (an adapter constant from the S8 table; an unknown code shown as is). It
-     says plainly: "play-tools did not accept this file. Pokémon support has received a copy of it." The support
+     says plainly: "play-tools did not accept this file. Pokémon support can access the file from this failed attempt." The support
      details are shown, and the tournament's Results section shows *Not accepted*.
+   - **A failed attempt blocks nothing** (organizer, 2026-10-12). The tournament still has no results, so it can
+     take an upload. A corrected file that passes validation is accepted as usual. The failed attempt stays in
+     History, with its support details, as the file support can look at.
    - **Fixing it:** after a fix in TOM, the organizer drops the corrected file and uploads again. After a fix in the
      app (**Remove from staff**), they retry, which validates the archived file again (decision 5). Either way the new
      attempt is a new send.
@@ -289,7 +292,7 @@ Option 3.
 | Q1 | Validate response shape, the shape of `errors`, confirm's id (`guid` or `display_id`), size limit, `triumph-scalability` flag | **Open: S8 part 2**, from a real upload the organizer was going to make anyway (validating sends the file to Pokémon support, decision 7) |
 | Q2 | Can an upload be made before the start date? How long does `upload_in_progress` last? | **Open: S8 part 2** |
 | Q3 | Should the attendance import be ticked by default when a TDF is dropped on a tournament card? | **Answered (organizer, 2026-10-12):** yes, ticked |
-| Q4 | Does `PUT triumph/{upload_guid}/confirm/` accept an upload whose validation returned errors, or refuse it? | **Answered (organizer, 2026-10-12):** a file that fails validation is not accepted, but Pokémon support has a copy by then. The app doesn't confirm it (`not_accepted`, decision 7) |
+| Q4 | Does `PUT triumph/{upload_guid}/confirm/` accept an upload whose validation returned errors, or refuse it? | **Answered (organizer, 2026-10-12):** that attempt is not accepted, but Pokémon support can access its file. A later file that passes validation is accepted as usual. The app doesn't confirm a failed one (`not_accepted`, decision 7) |
 | Q6 | Exact shape of TOM's `<organizer>` element | **Answered (organizer, 2026-10-12):** `<organizer popid="…" name="…"/>` inside `<data>` (decision 3). Parser fixtures use made-up values |
 | Q7 | Should the app also fill in an empty `<id/>` with the tournament's display id, like it fixes the organizer? | **Answered (organizer, 2026-10-12):** yes, with a cautionary warning; only when empty (decision 8) |
 | Q8 | `gametype` spellings for TCG and VGC files | **Open:** from a real file of each game; `GO` → `pgo` is known |
