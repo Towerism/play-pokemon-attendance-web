@@ -23,7 +23,7 @@ export function useSessions(): SessionsService {
 }
 
 export function useTdfImports(): TdfImportService {
-  tdfImports ??= createTdfImportService({ db: useDb(), roster: useRoster(), sightings: useSightings() });
+  tdfImports ??= createTdfImportService({ db: useDb(), roster: useRoster(), sightings: useSightings(), archive: useTdfArchive() });
   return tdfImports;
 }
 

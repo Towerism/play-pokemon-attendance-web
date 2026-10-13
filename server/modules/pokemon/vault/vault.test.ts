@@ -11,6 +11,12 @@ describe('token vault (AES-256-GCM, ADR-0003)', () => {
     expect(vault.decrypt(vault.encrypt(SECRET, 'default'), 'default')).toBe(SECRET);
   });
 
+  it('still opens a blob sealed before the vault was generalised (unchanged on the wire)', () => {
+    const golden = 'AbfWiVVN/vKVhQd5fhK97rvVWexlQ/aJWBkQm0/HHmiMFV/pGXag4c/7v87dxW5W8JFbEplJMVk=';
+    const vault = createTokenVault(Buffer.alloc(32, 7).toString('base64'));
+    expect(vault.decrypt(Buffer.from(golden, 'base64'), 'default')).toBe('ory_rt_golden-refresh-token');
+  });
+
   it('never stores the plaintext and uses a fresh IV every time', () => {
     const vault = createTokenVault(key());
     const a = vault.encrypt(SECRET, 'default');

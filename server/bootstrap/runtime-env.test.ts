@@ -20,6 +20,8 @@ describe('prepareRuntimeEnv', () => {
     expect(Buffer.from(env.NUXT_TOKEN_VAULT_KEY!, 'base64')).toHaveLength(32);
     expect(statSync(join(dataDir, 'secrets', 'session-password')).isFile()).toBe(true);
     expect(statSync(join(dataDir, 'secrets', 'token-vault.key')).isFile()).toBe(true);
+    expect(Buffer.from(env.NUXT_TDF_VAULT_KEY!, 'base64')).toHaveLength(32);
+    expect(statSync(join(dataDir, 'secrets', 'tdf-vault.key')).isFile()).toBe(true);
   });
 
   it('keeps the secrets stable across restarts', () => {
@@ -28,6 +30,7 @@ describe('prepareRuntimeEnv', () => {
 
     expect(second.NUXT_SESSION_PASSWORD).toBe(first.NUXT_SESSION_PASSWORD);
     expect(second.NUXT_TOKEN_VAULT_KEY).toBe(first.NUXT_TOKEN_VAULT_KEY);
+    expect(second.NUXT_TDF_VAULT_KEY).toBe(first.NUXT_TDF_VAULT_KEY);
   });
 
   it('logs where each secret came from without ever logging a value', () => {
@@ -35,9 +38,11 @@ describe('prepareRuntimeEnv', () => {
 
     expect(log.join('\n')).toMatch(/session password.*generated/i);
     expect(log.join('\n')).toMatch(/token vault key.*generated/i);
+    expect(log.join('\n')).toMatch(/TDF vault key.*generated/i);
     for (const line of log) {
       expect(line).not.toContain(env.NUXT_SESSION_PASSWORD);
       expect(line).not.toContain(env.NUXT_TOKEN_VAULT_KEY);
+      expect(line).not.toContain(env.NUXT_TDF_VAULT_KEY);
     }
   });
 

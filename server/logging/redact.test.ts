@@ -21,12 +21,12 @@ describe('redact', () => {
     'authorization', 'Proxy-Authorization', 'cookie', 'set-cookie', 'password', 'sessionPassword',
     'NUXT_SESSION_PASSWORD', 'secret', 'client_secret', 'secretAccessKey', 'LITESTREAM_SECRET_ACCESS_KEY',
     'tokenVaultKey', 'NUXT_TOKEN_VAULT_KEY', 'code_verifier', 'authorizationCode', 'birthdate',
-    'birth_date', 'dateOfBirth', 'DOB',
+    'birth_date', 'dateOfBirth', 'DOB', 'content', 'payload', 'tdfVaultKey', 'NUXT_TDF_VAULT_KEY',
   ])('hides %s', (key) => {
     expect(redact({ [key]: 'value' })).toEqual({ [key]: REDACTED });
   });
 
-  it.each(['tokenCount', 'tokenExpiresAt', 'tokenType', 'passwordSetAt', 'cookieName', 'code', 'state', 'playerId'])(
+  it.each(['tokenCount', 'tokenExpiresAt', 'tokenType', 'passwordSetAt', 'cookieName', 'code', 'state', 'playerId', 'contentType', 'contentLength', 'payloadSize'])(
     'leaves the look-alike %s alone',
     (key) => {
       expect(redact({ [key]: 'value' })).toEqual({ [key]: 'value' });

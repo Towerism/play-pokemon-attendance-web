@@ -2,9 +2,10 @@ import { SessionDateParam } from '#shared/schemas/sessions';
 import { TDF_MAX_BODY_BYTES, TdfUploadBody } from '#shared/schemas/tdf';
 import { TdfError } from '#shared/tdf/parse';
 
-/** Preview a `.tdf` for the date: who is new, known, a regular or already listed. Imports nothing. */
+/** Preview a `.tdf` for the date: who is new, known, a regular or already listed. Keeps the file in the encrypted archive; imports nothing. */
 export default defineEventHandler(async (event) => {
   const leagueId = await requireLeague(event);
+  const { user } = await requireUserSession(event);
   const { date } = await getValidatedRouterParams(event, SessionDateParam.parse);
 
   // Refuse oversized bodies before reading them into memory.
@@ -14,7 +15,7 @@ export default defineEventHandler(async (event) => {
 
   const body = await readValidatedBody(event, TdfUploadBody.parse);
   try {
-    return useTdfImports().preview(leagueId, date, body);
+    return useTdfImports().preview(leagueId, date, { ...body, by: user.username });
   } catch (err) {
     if (err instanceof TdfError) {
       throw createError({ statusCode: err.code === 'too_large' ? 413 : 422, message: err.message, data: { code: err.code } });

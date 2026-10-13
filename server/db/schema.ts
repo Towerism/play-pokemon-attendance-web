@@ -87,8 +87,38 @@ export const sessionPlayer = sqliteTable(
 );
 
 /**
- * A `.tdf` previewed for a session, then committed. Only the tournament's name
- * and date are kept; the raw file is discarded after parsing (architecture §9).
+ * Every `.tdf` the organizer drops, kept whole for bookkeeping (ADR-0012): gzip,
+ * then AES-256-GCM with the TDF key, AAD `tdf_file:<league_id>:<sha256>`. Owned
+ * by the `tdf-archive` module; no birthdate ever leaves `ciphertext`.
+ */
+export const tdfFile = sqliteTable(
+  'tdf_file',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** Of the file's text as stored. */
+    sha256: text('sha256').notNull(),
+    filename: text('filename').notNull(),
+    /** UTF-8 bytes before compression. */
+    byteSize: integer('byte_size').notNull(),
+    ciphertext: blob('ciphertext', { mode: 'buffer' }).notNull(),
+    tournamentName: text('tournament_name'),
+    tournamentDate: text('tournament_date'),
+    /** The file's `data/id`. */
+    tournamentDisplayId: text('tournament_display_id'),
+    /** JSON set of `attendance` / `results`; empty while only previewed (expires after a day). */
+    keptFor: text('kept_for').notNull().default('[]'),
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [unique('tdf_file_league_sha256_unique').on(t.leagueId, t.sha256)],
+);
+
+/**
+ * A `.tdf` previewed for a session, then committed. The file itself lives in
+ * the encrypted archive (`tdf_file`); commit parses it again from there.
  */
 export const tdfUpload = sqliteTable(
   'tdf_upload',
@@ -98,8 +128,10 @@ export const tdfUpload = sqliteTable(
       .notNull()
       .references(() => sessionDraft.id, { onDelete: 'cascade' }),
     filename: text('filename').notNull(),
-    /** Of the file's text; re-uploading the same file for the date is a no-op. */
+    /** Of the file's text as dropped; re-uploading the same file for the date is a no-op. Kept when the row is re-pointed or the file deleted. */
     sha256: text('sha256').notNull(),
+    /** The archived file; re-pointed to a corrected copy (ADR-0012), null once the organizer deletes it. */
+    tdfFileId: integer('tdf_file_id').references(() => tdfFile.id, { onDelete: 'set null' }),
     tournamentName: text('tournament_name'),
     tournamentDate: text('tournament_date'),
     playerCount: integer('player_count').notNull(),
@@ -110,20 +142,6 @@ export const tdfUpload = sqliteTable(
     committedAt: integer('committed_at', { mode: 'timestamp' }),
   },
   (t) => [unique('tdf_upload_draft_sha256_unique').on(t.draftId, t.sha256)],
-);
-
-/** The players a TDF listed (name and ID only), held between preview and commit. */
-export const tdfUploadPlayer = sqliteTable(
-  'tdf_upload_player',
-  {
-    uploadId: integer('upload_id')
-      .notNull()
-      .references(() => tdfUpload.id, { onDelete: 'cascade' }),
-    playerId: text('player_id').notNull(),
-    /** Empty when the file had no name. */
-    name: text('name').notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.uploadId, t.playerId] })],
 );
 
 /** Evidence that a player attended a session; curation metrics come from these (ADR-0005). */
