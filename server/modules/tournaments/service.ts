@@ -12,7 +12,8 @@ import type {
   TemplateBody,
   TemplatePatch,
 } from '../../../shared/schemas/tournaments';
-import { LocalTimeError, dateIn, localInstant } from '../../../shared/time/local-time';
+import { LocalTimeError, dateIn, localDay, localInstant } from '../../../shared/time/local-time';
+import type { SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import {
   plannedTournament,
@@ -23,12 +24,14 @@ import {
   tournamentTemplate,
 } from '../../db/schema';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
-import type { PlayToolsGateway, Series } from '../pokemon/ports/play-tools-gateway';
-import { addDays, type LocalDate } from './dates';
+import { PokemonUpstreamError } from '../pokemon/ports/errors';
+import type { PlayToolsGateway, Series, Tournament } from '../pokemon/ports/play-tools-gateway';
+import { addDays, addMonths, type LocalDate, timeIn } from './dates';
 import { TournamentsError } from './errors';
+import { createLiveReads } from './live-reads';
 import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, planSchedule, type PlannedRowState } from './plan';
 import { type RegistrationSettings, type SettingsOverrides, type TemplateVenue, resolveSettings } from './settings';
-import { type TemplateType, type TypeResolution, resolveSeries } from './series';
+import { type TemplateType, type TypeResolution, offeredOn, resolveSeries } from './series';
 import { checkCreatable, creatableWindow, sanctionBy } from './window';
 
 export interface Template {
@@ -196,6 +199,21 @@ export interface TournamentsService {
    * @throws TournamentsError `invalid_range`
    */
   upcoming(leagueId: string, range: { from?: LocalDate; to?: LocalDate }): Promise<Upcoming>;
+  /**
+   * A form's live choices as one professor: Custom and the premier series play-tools offers for the date (or
+   * the coming 12 months), formats and venues. Each read is kept for 10 minutes.
+   * @throws TournamentsError `connection_not_found`, `needs_reconnect`, `league_not_selected`; PokemonUpstreamError
+   */
+  options(leagueId: string, query: { professor: string; country: string; date?: LocalDate }): Promise<TournamentOptions>;
+}
+
+export interface TournamentOptions {
+  types: (
+    | { kind: 'custom' }
+    | { kind: 'premier'; seriesId: string; name: string; product: string; categories: string[]; window: { from: LocalDate; to: LocalDate } }
+  )[];
+  formats: { product: string; categories: string[] }[];
+  venues: { id: string; label: string; country: string | null; timeZone: string | null }[];
 }
 
 /** The play-tools reads this module makes, as one professor. */
@@ -339,6 +357,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   }
 
   const today = () => dateIn(now(), deps.timeZone);
+  const live = createLiveReads({ gateway: deps.gateway, now });
 
   function scheduleActive(schedule: ScheduleRow): boolean {
     if (schedule.paused || schedule.archivedAt) return false;
@@ -429,14 +448,14 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   /** What the rows being listed refer to, loaded once. */
   interface EntryContext {
     templates: Map<number, TemplateRow>;
-    schedules: Map<number, ScheduleRow & { active: boolean; positions: Set<number> }>;
+    schedules: Map<number, ScheduleRow & { rule: ScheduleRule; active: boolean; positions: Set<number> }>;
     overrides: (typeof tournamentScheduleOverride.$inferSelect)[];
     conns: readonly ActingConnection[];
     /** Each organizer's series by player id: null when the read failed; absent when not read. */
     series: Map<string, readonly Series[] | null>;
   }
 
-  function contextFor(rows: readonly PlannedRow[], series: EntryContext['series'] = new Map()): EntryContext {
+  function contextFor(rows: readonly PlannedRow[]): EntryContext {
     const templateIds = [...new Set(rows.map((r) => r.templateId))];
     const scheduleIds = [...new Set(rows.flatMap((r) => (r.scheduleId === null ? [] : [r.scheduleId])))];
     const schedules = scheduleIds.length === 0 ? [] : db.select().from(tournamentSchedule).where(inArray(tournamentSchedule.id, scheduleIds)).all();
@@ -449,6 +468,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
           s.id,
           {
             ...s,
+            rule: s.rule as ScheduleRule,
             active: scheduleActive(s),
             positions: new Set(db.select({ p: scaffoldSlot.position }).from(scaffoldSlot).where(eq(scaffoldSlot.scaffoldId, s.scaffoldId)).all().map((x) => x.p)),
           },
@@ -456,7 +476,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       ),
       overrides: scheduleIds.length === 0 ? [] : db.select().from(tournamentScheduleOverride).where(inArray(tournamentScheduleOverride.scheduleId, scheduleIds)).all(),
       conns: deps.connections.listActingConnections(),
-      series,
+      series: new Map(),
     };
   }
 
@@ -523,6 +543,93 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       upstreamStatus: row.upstreamStatus,
       errorCode: row.errorCode,
       actions: [...(creatable ? (['create'] as const) : []), ...(replannable ? (['skip'] as const) : []), ...(row.state === 'skipped' ? (['unskip'] as const) : [])],
+    };
+  }
+
+  /**
+   * The league's tournaments starting in the range, as each connected professor (they list only their own,
+   * ADR-0009), one call each. A professor who can't be read is named; the rest still count.
+   */
+  async function listLeagueTournaments(conns: readonly ActingConnection[], group: string, from: LocalDate, to: LocalDate) {
+    const range = { from: localDay(from as SessionDate, deps.timeZone).from, to: localDay(to as SessionDate, deps.timeZone).to };
+    const tournaments: { tournament: Tournament; organizer: ActingConnection }[] = [];
+    const unread: UnreadProfessor[] = [];
+    const seen = new Set<string>();
+    for (const c of conns) {
+      const professor = { playerId: c.professorPlayerId, name: c.professorName };
+      if (c.status === 'needs_reconnect') {
+        unread.push({ professor, code: 'needs_reconnect', message: `Reconnect ${c.professorName ?? 'this professor'} in Settings to see their tournaments.` });
+        continue;
+      }
+      try {
+        for (const t of await deps.gateway(c.id).listTournaments(range)) {
+          if (t.groupId !== group || t.startsAt === null || seen.has(t.id)) continue;
+          seen.add(t.id);
+          tournaments.push({ tournament: t, organizer: c });
+        }
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        unread.push({ professor, code: err.code, message: err.message });
+      }
+    }
+    return { tournaments, unread };
+  }
+
+  /** Each organizer's series, for the rows whose type needs them: null when they can't be read. */
+  async function seriesByOrganizer(
+    rows: readonly PlannedRow[],
+    templates: ReadonlyMap<number, TemplateRow>,
+    conns: readonly ActingConnection[],
+    group: string | null,
+  ) {
+    const needing = new Set<string>();
+    for (const r of rows) {
+      const t = templates.get(r.templateId)!;
+      const resolvable = REPLANNABLE.has(r.state) || r.state === 'creating' || r.state === 'unknown';
+      if (resolvable && r.seriesOverride !== 'custom' && (r.seriesOverride !== null || t.eventType === 'premier')) needing.add(t.organizerPlayerId);
+    }
+    const series = new Map<string, readonly Series[] | null>();
+    for (const playerId of needing) {
+      const c = conns.find((x) => x.professorPlayerId === playerId && x.status === 'connected');
+      if (!c || group === null) {
+        series.set(playerId, null);
+        continue;
+      }
+      try {
+        series.set(playerId, await live.series(c.id, group));
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        series.set(playerId, null);
+      }
+    }
+    return series;
+  }
+
+  /** A play-tools tournament no planned row holds. */
+  function upstreamEntry(t: Tournament, organizer: OrganizerView): UpcomingEntry {
+    const localDate = dateIn(t.startsAt!, deps.timeZone);
+    return {
+      plannedId: null,
+      tournamentId: t.id,
+      scheduleId: null,
+      slotPosition: null,
+      occurrenceDate: null,
+      templateId: null,
+      name: t.name ?? t.displayId ?? t.id,
+      localDate,
+      startTime: timeIn(t.startsAt!, deps.timeZone),
+      startsAt: t.startsAt!.toISOString(),
+      sanctionBy: sanctionBy(localDate),
+      state: 'upstream',
+      inSchedule: null,
+      organizer,
+      product: t.products.length === 1 ? t.products[0]! : null,
+      category: null,
+      type: null,
+      displayId: t.displayId,
+      upstreamStatus: t.status,
+      errorCode: null,
+      actions: [],
     };
   }
 
@@ -793,11 +900,70 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         .from(plannedTournament)
         .where(and(eq(plannedTournament.leagueId, leagueId), gte(plannedTournament.localDate, from), lte(plannedTournament.localDate, to)))
         .all();
+      const conns = deps.connections.listActingConnections();
+      const group = conns.length === 0 ? null : (deps.connections.getStatus(leagueId).league?.id ?? null);
+      const read = conns.length === 0 ? 'not_connected' : group === null ? 'league_not_selected' : 'read';
+      const listed = group === null ? { tournaments: [], unread: [] } : await listLeagueTournaments(conns, group, from, to);
       const ctx = contextFor(rows);
-      const tournaments = rows
-        .map((r) => entryOf(r, ctx))
-        .sort((a, b) => a.localDate.localeCompare(b.localDate) || a.startTime.localeCompare(b.startTime) || (a.plannedId ?? 0) - (b.plannedId ?? 0));
-      return { timeZone: deps.timeZone, from, to, tournaments, upstream: 'read', unread: [] };
+      ctx.series = await seriesByOrganizer(rows, ctx.templates, conns, group);
+
+      const byId = new Map(listed.tournaments.map((l) => [l.tournament.id, l.tournament]));
+      const linked = new Set(
+        listed.tournaments.length === 0
+          ? []
+          : db
+              .select({ id: plannedTournament.tournamentId })
+              .from(plannedTournament)
+              .where(and(eq(plannedTournament.leagueId, leagueId), inArray(plannedTournament.tournamentId, [...byId.keys()])))
+              .all()
+              .map((r) => r.id),
+      );
+      const planned = rows.map((r) => {
+        const entry = entryOf(r, ctx);
+        const upstreamOne = r.tournamentId === null ? undefined : byId.get(r.tournamentId);
+        return upstreamOne ? { ...entry, displayId: upstreamOne.displayId ?? entry.displayId, upstreamStatus: upstreamOne.status } : entry;
+      });
+      const others = listed.tournaments
+        .filter((l) => !linked.has(l.tournament.id))
+        .map((l) => upstreamEntry(l.tournament, organizerOf(l.organizer.professorPlayerId!, conns)))
+        .filter((e) => e.localDate >= from && e.localDate <= to);
+      const tournaments = [...planned, ...others].sort(
+        (a, b) => a.localDate.localeCompare(b.localDate) || (a.startsAt ?? a.startTime).localeCompare(b.startsAt ?? b.startTime) || (a.plannedId ?? 0) - (b.plannedId ?? 0),
+      );
+      return { timeZone: deps.timeZone, from, to, tournaments, upstream: read, unread: listed.unread };
+    },
+
+    async options(leagueId, query) {
+      const c = deps.connections.listActingConnections().find((x) => x.professorPlayerId === query.professor);
+      if (!c) throw new TournamentsError('connection_not_found', `Professor ${query.professor} isn't connected.`);
+      if (c.status === 'needs_reconnect') {
+        throw new TournamentsError('needs_reconnect', `Reconnect ${c.professorName ?? `Professor ${query.professor}`} in Settings to read play-tools' choices.`, {
+          professorPlayerId: query.professor,
+        });
+      }
+      const group = deps.connections.getStatus(leagueId).league?.id;
+      if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
+      const list = await live.series(c.id, group);
+      const formats = await live.formats(c.id, query.country);
+      const venues = await live.venues(c.id, group, query.country);
+      const offered = query.date
+        ? offeredOn(list, { country: query.country, date: query.date })
+        : offeredOn(list, { country: query.country, range: { from: today(), to: addMonths(today(), 12) } });
+      return {
+        types: [
+          { kind: 'custom' },
+          ...offered.map((s) => ({
+            kind: 'premier' as const,
+            seriesId: s.id,
+            name: s.name,
+            product: s.product,
+            categories: [...s.categories],
+            window: s.windows[query.country]!,
+          })),
+        ],
+        formats: formats.map((f) => ({ product: f.product, categories: [...f.categories] })),
+        venues: venues.map((v) => ({ id: v.id, label: v.name ?? v.formattedAddress ?? v.id, country: v.country, timeZone: v.timeZone })),
+      };
     },
   };
 }

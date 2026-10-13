@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fillNameTokens, resolveSettings, type TemplateSettings } from './settings';
+import { fillNameTokens, resolveSettings, type SettingsOverrides, type TemplateSettings } from './settings';
 
 const TEMPLATE: TemplateSettings = {
   name: 'League Challenge {month} {year}',
@@ -48,7 +48,7 @@ describe('settings at creation: template, then schedule overrides, then the row'
     const settings = resolveSettings(
       TEMPLATE,
       [{ effectiveFrom: '2026-11-01', fields: { startTime: '13:00', localDate: '2026-12-25' } as never }],
-      { localDate: '2026-11-20' },
+      { localDate: '2026-11-20' } as SettingsOverrides,
       { occurrenceDate: '2026-11-10', localDate: '2026-11-10' },
     );
     expect(settings.startTime).toBe('13:00');

@@ -1,10 +1,15 @@
 import { scheduleRuleSchema } from '../schedule/rule';
 import { z } from '../zod';
 import { playerId } from './roster';
-import { sessionDate } from './sessions';
 
-/** A calendar date, `YYYY-MM-DD`. */
-const localDate = sessionDate;
+/** A calendar date, `YYYY-MM-DD` (no Feb 30), as a plain string: tournament dates aren't session dates. */
+const localDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(s);
+  }, 'Not a calendar date');
 /** `HH:MM`, 24-hour, local to the venue. */
 export const localTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour)');
 

@@ -11,6 +11,11 @@ export function addDays(date: LocalDate, days: number): LocalDate {
   return new Date(Date.UTC(y, m - 1, d) + days * DAY_MS).toISOString().slice(0, 10);
 }
 
+/** `HH:MM` on the 24-hour wall clock of `timeZone` at `instant`. */
+export function timeIn(instant: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(instant);
+}
+
 /** `date` moved by whole months; a day the target month lacks becomes its last day (Feb 29 → Feb 28). */
 export function addMonths(date: LocalDate, months: number): LocalDate {
   const [y, m, d] = parseLocalDate(date);
