@@ -414,7 +414,7 @@ and [ADR-0011](adr/0011-tdf-results-upload.md).
 | Purpose                     | Method & path (under `services/`)                                                                 |
 | --------------------------- | ------------------------------------------------------------------------------------------------- |
 | Create                      | `POST core/tournament` (name, `activity_group_id`, `organizer_id`, product, `category`, `series_guid` or null, `address_id`, start, contacts, registration, details, website) → at least `{guid}` |
-| Edit, reschedule            | `PATCH core/tournament/{guid}/` with the create body (changed fields applied to a fresh read)      |
+| Edit, reschedule            | `PATCH core/tournament/{guid}/`: the raw fresh read with only the changed fields replaced, every other field passed through (ADR-0010 decision 11, #100) |
 | Cancel                      | `PATCH core/tournament/{guid}/` `{application_state: "cancelled"}` (delete is admin-only)          |
 | Premier series              | `GET core/users/{sub}/activity_groups/{ag}/series/` (window per country)                           |
 | Formats                     | `GET core/products?country=XX`                                                                     |
@@ -430,7 +430,7 @@ interface PlayToolsGateway {
   listFormats(country: string): Promise<Format[]>;       // {product, categories}
   listVenues(groupId: string): Promise<Venue[]>;         // {id, name, formattedAddress, country, timeZone}
   createTournament(t: NewTournament): Promise<{ tournamentId: string }>;
-  editTournament(id: string, changes: TournamentChanges): Promise<'edited'>; // changed fields over a fresh read; reschedule = a date change
+  editTournament(id: string, changes: TournamentChanges): Promise<'edited'>; // changed fields over the raw fresh read, all else passed through (#100); reschedule = a date change
   cancelTournament(id: string): Promise<'cancelled' | 'already_cancelled'>;
   validateResults(displayId: string, tdf: string): Promise<{ uploadId: string; errors: ResultsError[] }>;
   fetchResultsFile(displayId: string): Promise<{ filename: string; content: string } | null>; // latest accepted tdf upload
@@ -733,8 +733,9 @@ erDiagram
     text start_time
     text series_override "a picked series guid when the match was ambiguous"
     text overrides "json: fields edited on this row before creation (ADR-0010 decision 11)"
-    text state "planned|skipped|creating|created|failed|cancelled"
-    text tournament_id "upstream guid once created or adopted"
+    text state "planned|skipped|creating (held by a job)|created|failed|cancelled|unknown (a create may have landed; #100)"
+    text tournament_id "upstream guid once created or adopted; unique per league when set (#100)"
+    datetime last_attempt_at "when a create was last sent (#100)"
     text display_id
     text upstream_status "approval-pending|sanctioned|sanctioning-error|cancelled|complete…"
     text error_code
@@ -751,7 +752,7 @@ erDiagram
   }
   REQUIREMENT_MANUAL_COVER {
     int requirement_id FK
-    date period_start "with requirement_id: unique"
+    date period_start "first day of the cadence period (calendar month or quarter, league TZ; #102); with requirement_id: unique"
     text note "e.g. run by an unconnected professor, its display id"
     text created_by
     datetime created_at
@@ -793,7 +794,8 @@ erDiagram
     int planned_tournament_id "nullable"
     text tournament_id
     text label
-    text outcome "created|already_exists|refused|edited|already_applied|cancelled|already_cancelled|uploaded|not_accepted|warnings_changed|validate_unknown|processing|processing_failed|failed|skipped"
+    text outcome "created|already_exists|refused|unknown|date_too_far_past|edited|already_applied|cancelled|already_cancelled|uploaded|not_accepted|warnings_changed|validate_unknown|processing|processing_failed|failed|skipped"
+    datetime sent_at "set just before the POST or PATCH; boot recovery reads it (#100)"
     text error_code
     text error "upstream message + correlation id for refusals"
   }
@@ -845,7 +847,7 @@ Key modelling decisions:
   never reverted. The app shows the local name everywhere, and doesn't store the upstream name alongside it.
 - **TDF privacy.** The parser reads `userid`, `firstname`, `lastname` and tournament metadata only (from M9 also the file's tournament id, organizer player id and game type). Birthdates and other fields are never put in a column, a log or an API response. Until M9 the raw file is discarded after parsing.
 - **The TDF archive** (M9, [ADR-0012](adr/0012-encrypted-tdf-archive.md)): every dropped `.tdf` is kept whole in `TDF_FILE` for bookkeeping, **gzip-compressed and AES-256-GCM encrypted with its own key** (`NUXT_TDF_VAULT_KEY` / `/data/secrets/tdf-vault.key`), deduplicated by SHA-256, and decrypted only in memory: to parse, validate or download. The `tdf-archive` module owns it, and `sessions` and `tournaments` use its service. The M3 preview → commit re-parses from the archive, so `TDF_UPLOAD_PLAYER` is dropped. A file only previewed is deleted after a day. A committed or uploaded one is kept until the organizer deletes it.
-- **Tournaments are planned locally, created on a click** (M9, [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)). Schedules are materialised into `PLANNED_TOURNAMENT` rows on read, inside each schedule's horizon. A planned tournament takes its template's settings when it is created. Every create is preceded by a listing as the organizer, and a live tournament with the same start, product, format and name is adopted instead of created. **Create through date…** on a schedule creates every planned row up to a chosen date (≤ 12 months, ≤ 60 tournaments) in one job, after listing them; nothing is created in the background. Editing a schedule replans only rows not in play-tools. A created tournament is cancelled or rescheduled only by an explicit action.
+- **Tournaments are planned locally, created on a click** (M9, [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)). Schedules are materialised into `PLANNED_TOURNAMENT` rows on read, inside each schedule's horizon. A planned tournament takes its template's settings when it is created. Every create is preceded by a listing as the organizer, and a live tournament with the same start, product, format and name, not already linked to another planned row, is adopted instead of created. A create that may have landed is never resent automatically (`unknown`; #100). **Create through date…** on a schedule creates every planned row up to a chosen date (≤ 12 months, ≤ 60 tournaments) in one job, after listing them; nothing is created in the background. Editing a schedule replans only `planned`, `skipped` and `failed` rows; rows a job holds (`creating`), `unknown` and `created` ones are kept. A created tournament is cancelled or rescheduled only by an explicit action.
 
 ### Metrics (SQL views, computed on read — the data is small)
 
@@ -1192,8 +1194,8 @@ Both come from a fresh read, not from upstream refusing the call.
 ### 6.5 Tournaments and results (M9)
 
 See [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md) and [ADR-0011](adr/0011-tdf-results-upload.md).
-Every write below runs as a job on the submission rails (lease, events, History, retry that re-reads, recovery), as
-the tournament's organizer, one call at a time, at least `NUXT_TOURNAMENT_DELAY_MS` apart.
+Every write below runs as a job on the submission rails (lease, events, History, retry that re-reads, recovery;
+a `tdf_upload` is sent again only through **Upload again…** and its send dialog, ADR-0011), as the tournament's organizer, one call at a time, at least `NUXT_TOURNAMENT_DELAY_MS` apart.
 
 ```mermaid
 sequenceDiagram
@@ -1232,14 +1234,19 @@ sequenceDiagram
   W->>S: later reads of the card follow processing → complete / failed
 ```
 
-- **Create** adopts before it creates, and re-reads after a 5xx before any resend (ADR-0010 decision 5).
+- **Create** adopts before it creates (never a tournament already linked to another planned row). After a 5xx or a timeout it re-lists for the settle window and **never resends on its own**: no match means `unknown`, linked on a later read if it shows up, and created again only by **Retry create**. The creatable window is checked again just before each send (ADR-0010 decision 5, #100).
 - **Required events** (ADR-0010 decision 12): a League Cup per quarter and a League Challenge per month, for each
-  of TCG, GO and VGC (seeded requirements, editable). Coverage is computed on read from every connected professor's
-  tournaments (series from cached details) and the planned ones. Each requirement and period is `sanctioned`,
-  `pending`, `planned`, `problem` or `missing`, and **at risk**, **short notice** (past the 7-day sanction-by date), **last chance** (the 2-day back-dating grace) or
-  **missed**. A Required events grid on Tournaments, an undismissable banner on This week and a nav badge make it
-  impossible to overlook. **Plan one…** fixes a gap in one click, and **Mark as covered…** records an event the app
-  can't see.
+  of TCG, GO and VGC (seeded requirements, editable). A period is always the requirement's calendar month or quarter
+  in the league `TZ`. A matching series window only sets the period's **latest date** (the earlier of the two ends),
+  which the urgency counts from (#102). Coverage is computed on read from every connected professor's
+  tournaments (series from cached details) and the planned ones. Each professor's listing is cached for 5 minutes,
+  failures aren't cached, and **Refresh** reads again. Each requirement and period is `sanctioned`, `pending`,
+  `planned`, `problem`, `missing` or **`unknown`**. `unknown` means a professor's tournaments couldn't be read, and it
+  names them. A failed read never shows as `missing`, and a seen cover is never lost to one. Each is also **at risk**,
+  **short notice** (past the 7-day sanction-by date), **last chance** (the 2-day back-dating grace) or
+  **missed**. A Required events grid on Tournaments, an undismissable banner on This week (worded "can't confirm" for
+  `unknown`, with a Reconnect or Retry line per unread professor) and a nav badge make it impossible to overlook.
+  **Plan one…** fixes a gap in one click, and **Mark as covered…** records an event the app can't see.
 - **Back-dated sanctioning:** a tournament held in the last 2 days (league `TZ`) can still be created, from a schedule,
   one-off or by **Create through date…**, so it can be sanctioned and its TDF uploaded. Earlier dates are refused
   locally (`date_too_far_past`). Two days fits play-tools' back-dating limit (72 h in its form, 84 h in its code; S8; ADR-0010 decision 6).
@@ -1250,7 +1257,7 @@ sequenceDiagram
 - **Create through date…** on a schedule materialises it up to the chosen date, lists what it will create, and on
   confirm starts the same job for all of them (at most 60).
 - **Edit** any field with **Edit…**: only changed fields are applied over a fresh read and sent (`PATCH`), as a
-  `tournament_edit` job. For a tournament from a schedule, the change can go to this one, this and later, or all in
+  `tournament_edit` job. A full body is the raw read with every unchanged field passed through, never the create body, so fields the app doesn't model (`activity_division_info`) survive; an unmappable field is 422 `edit_body_unmappable` (#100). For a tournament from a schedule, the change can go to this one, this and later, or all in
   the schedule. Each changed field is ticked (the date never carries over), a before → after preview lists every
   tournament, and tournaments not created yet get it as stored overrides (ADR-0010 decision 11).
 - **Reschedule** is an edit of the date: one `PATCH`, attempted only from 3 days before the start to 90 days after
@@ -1307,16 +1314,16 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `PATCH /sessions/{date}/staff/{assignmentId}` · `DELETE /sessions/{date}/staff/{assignmentId}` (M8) | `PATCH { role }` → 200 `{ assignment }`; for an applied assignment `appliedRole` keeps the upstream role until the staff job sends the change. `DELETE` → 204: gone at once if it never reached play-tools, otherwise tombstoned for the next apply. Both 404 for an unknown or removed assignment or another date, 422 `unknown_role`/`tournament_locked` (applied assignments on a tournament past its window), 409 `organizer_not_connected`/`needs_reconnect` for an applied assignment whose organizer can't act, and send nothing upstream; a pending one changes with no upstream call whoever organizes it |
 | `POST /sessions/{date}/staff/apply-all` → 202 (#76) · `GET /sessions/{date}/staff/apply-all` · `GET /staff-batches/{id}` | Start a staff batch for `{ tournamentIds }` (1–20, distinct, run in that order) → `{ batchId }`: one `kind = 'staff'` job per tournament in turn, each as its organizer, under one hold of the lease (§6.4). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`, 503 `shutting_down`; a tournament's own refusal is its row's `refusal`, not an error. `GET …/apply-all` is the date's running batch or 204; `GET /staff-batches/{id}` is `{ id, sessionDate, status, startedBy, startedAt, finishedAt, rows: [{ position, tournamentId, label, organizerName, status, submissionId, progress, counts, refusal }] }`, 404 for another league's |
 | `POST /sessions/{date}/staff/apply` → 202 (M8)            | Start a `kind = 'staff'` job for `{ tournamentId }` → `{ submissionId }` (§6.4), run and recorded as the tournament's organizer (ADR-0009); follow it like a submission (`/submissions/{id}`, its events, retry). 400 for a malformed body or date, 409 `submission_running`/`league_not_selected`/`not_connected`/`organizer_not_connected`/`needs_reconnect` (`data.professorPlayerId`), 422 `nothing_to_apply`/`unknown_tournament`/`tournament_locked`/`unknown_role`, 503 `shutting_down`. A staff job's items carry `role`, `errorCode` and `suggestedPlayerId` (null for other kinds), its summary `tournamentLabel` (null for other kinds) |
-| `GET /tournaments/requirements` · `GET/POST/PATCH /tournament-requirements` · `PUT/DELETE /tournament-requirements/{id}/covers/{periodStart}` (M9) | Coverage grid: every active requirement × the current and next periods, with status, urgency, covering tournament or manual cover, and the suggested action; the `GET` also feeds This week's banner and the nav badge. Requirements are edited (match, product, cadence, warning lead, on/off); a manual cover takes `{note}` |
+| `GET /tournaments/requirements` · `GET/POST/PATCH /tournament-requirements` · `PUT/DELETE /tournament-requirements/{id}/covers/{periodStart}` (M9) | Coverage grid: every active requirement × the current and next cadence periods (calendar month or quarter, league `TZ`), with status (`sanctioned`/`covered_manual`/`pending`/`planned`/`problem`/`missing`/`unknown`), urgency counted from the period's latest date (the earlier of its end and its matching series window's end), covering tournament or manual cover, and the suggested action; the `GET` also feeds This week's banner and the nav badge. A professor whose listing failed (`needs_reconnect`/`upstream_unavailable`/`refused`) turns every uncovered cell `unknown` naming them (`unreadProfessors`, `bestKnown`), never `missing`, and the answer is still 200 when every read failed. Listings are cached for 5 minutes (failures not cached), and `?refresh=1` reads again (400 for any other value). Requirements are edited (match, product, cadence, warning lead, on/off); a manual cover takes `{note}` |
 | `GET /tournaments/upcoming?from=&to=` (M9) | Materialise schedules, then the planned and upstream tournaments by date with status, organizer and actions; `from` defaults to today − 2 days (the creatable window's start) |
 | `GET/POST /tournament-templates` · `PATCH/DELETE /tournament-templates/{id}` (M9) | Templates; `DELETE` archives. `GET /tournament-templates/options?professor=&date=` reads tournament types (Custom + the premier series play-tools offers for that date, or across the template's upcoming dates without one), formats and venues live as that professor (cached ≤ 10 min); the app holds no list of types |
 | `GET/POST /tournament-scaffolds` · `PATCH/DELETE /tournament-scaffolds/{id}` (M9) | Scaffolds and their slots |
 | `GET/POST /tournament-schedules` · `PATCH/DELETE /tournament-schedules/{id}` · `POST /tournament-schedules/preview` (M9) | Schedules; preview lists the next dates for a rule without saving |
-| `POST /planned-tournaments` · `PATCH /planned-tournaments/{id}` (M9) | One-off planned tournament from a template and date; edit date, time or series pick, or `{skipped}` (only while not in play-tools). The date may be up to 2 days in the past (league `TZ`); earlier is 422 `date_too_far_past` |
-| `POST /tournaments/create` → 202 (M9) | `{plannedIds, acknowledgeShortNotice?}` (1–60) → a `tournament_create` job; 422 `short_notice_not_acknowledged` when any is less than 7 days ahead and unacknowledged (the same flag on create-through and edit) |
+| `POST /planned-tournaments` · `PATCH /planned-tournaments/{id}` (M9) | One-off planned tournament from a template and date; edit date, time or series pick, or `{skipped}` (only while not in play-tools). The date may be up to 2 days in the past (league `TZ`); earlier is 422 `date_too_far_past`. 409 `already_planned` (with `plannedTournamentId`) when a planned row of the same template, date and start already exists (#100) |
+| `POST /tournaments/create` → 202 (M9) | `{plannedIds, acknowledgeShortNotice?, retryUnknown?}` (1–60) → a `tournament_create` job; 422 `short_notice_not_acknowledged` when any is less than 7 days ahead and unacknowledged (the same flag on create-through and edit); 422 `retry_not_confirmed` when an `unknown` row (a create that may have landed) is sent without `retryUnknown: true` (**Retry create**, #100) |
 | `GET /tournament-schedules/{id}/create-through?date=` · `POST /tournament-schedules/{id}/create-through` → 202 (M9) | Preview what the schedule would create up to the date (materialised past its horizon; lists what is left out and why), then `{date}` → one `tournament_create` job; 422 `too_many_tournaments` (> 60) or a date more than 12 months ahead |
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
-| `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`reschedule_window_not_open`/`reschedule_window_closed`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found` |
+| `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`reschedule_window_not_open`/`reschedule_window_closed`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found`/`edit_body_unmappable` (a field of the raw read the adapter can't map; #100). With `updateTemplate`, preview also returns `shadowedBy: [{scheduleId, from, fields}]` (overrides that would still win) and warnings such as `another_planned_at_time`; apply takes `clearShadowingOverrides` (default false) |
 | `GET /tournaments/{id}/tdf` (M9, ADR-0012 decision 7) | **Download TDF** for a tournament: the archived results file (the corrected one if the organizer was replaced), else play-tools' own copy fetched as the organizer (`triumph`), archived, then served. `Content-Disposition: attachment`, `no-store`, one audit log line; 404 `no_tdf`, 409 `organizer_not_connected`/`needs_reconnect`/`submission_running` (only when it must fetch) |
 | `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; answers `{referencedBy}`, and those rows keep their SHA-256 and show "file deleted"; automatic deletes skip any file a row points at, #101). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
 | `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB; local checks and fresh reads only, nothing sent) → `{uploadId, warnings: [{code, message, players?}], fingerprint, attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_tournament_id_filled` (an empty `<id/>` filled with the tournament's display id)/`tdf_wrong_tournament` (an id present but different; never overwritten)/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`. `POST …/results/{uploadId}/remove-staff {playerIds}` → 202 removes those players from the tournament's staff, in a staff job as its organizer (even records added in play-tools), then the preview re-runs its local checks. The server first checks each id is a player in the upload's archived file (parsed again), is listed as staff in a fresh read, and isn't the organizer's own record; otherwise 422 `not_removable` with `{playerId, reason: not_in_file|not_staff|organizer}` per failing id, and nothing starts (#101). Confirm `{importAttendance, acknowledgedWarnings}` (the preview's warnings fingerprint, required even with no warnings) → a `tdf_upload` job that re-checks the warnings (`warnings_changed`, nothing sent, if they differ), validates (the send: Pokémon support gets a copy) and confirms only if play-tools accepts it, else ends `not_accepted` with play-tools' errors (`validate_unknown` after a 5xx or timeout); the job ends after confirm and processing is followed on read. 409 `submission_running`/`results_already_uploaded`; 422 `warnings_not_acknowledged` with the current `{warnings, fingerprint}` when the fingerprint isn't the preview's (#101). A `tdf_upload` is never resumed or retried from History; **Upload again…** re-runs the preview and the send dialog |
@@ -1447,7 +1454,7 @@ flowchart LR
 | play-tools changes the staff contract or the role list (M8) | Low | Med | All of it sits in the adapter, behind S6 contract tests on recorded fixtures; unexpected shapes fail loudly |
 | `core/activities` keeps ignoring date filters while a league's tournaments grow (M8) | Low | Low | Newest-first paging stops once past the date; one or two pages for a current date |
 | A staffer is already listed on the tournament (as a player or another staff role) | Med | Low | Never sent: the job re-reads before every assign and skips any listed player id (`already_listed`, ADR-0007 decision 8). Never change or delete an existing record |
-| A duplicate tournament from a retry or a crash (M9) | Low | High | Every create lists the organizer's tournaments on the date first and adopts a match; a 5xx is re-read before any resend (ADR-0010 decision 5) |
+| A duplicate tournament from a retry or a crash (M9) | Low | High | Every create lists the organizer's tournaments on the date first and adopts a match not linked elsewhere; a create that may have landed (5xx, timeout) is never resent automatically but becomes `unknown`, is linked on read if it shows up, and is retried only by a click that warns the earlier attempt may still land (ADR-0010 decision 5, #100) |
 | A required League Cup or League Challenge is missed (M9) | Med | High | Coverage grid and an undismissable This week banner from the warning lead on, with last-chance dates inside the 2-day grace; one-click **Plan one…**; manual cover for events the app can't see (ADR-0010 decision 12) |
 | A wrong template creates many wrong tournaments (M9) | Low | Med | Creation is always a click, and **Create through date…** lists every tournament before it creates them; at most 60 per job and 12 months ahead; templates are read at creation, so a fix applies to everything not yet created |
 | play-tools' tournament form or TDF upload changes (M9) | Med | Med | All of it in the adapter, behind S8 contract tests; the date format flag is handled both ways |
@@ -1480,7 +1487,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 | M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47), the Players → Staff tab (#50), the This week Staff card with `StaffSearch` (#49) and the staff import (#48) and staff batches for every tournament on a date (#76) are built ([ADR-0007](adr/0007-staff-assignment.md), #41). Accepted |
-| M9 Tournaments                | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine and the parser's new fields; the `tournaments` module (templates, scaffolds, schedules, planned tournaments); create, cancel and reschedule jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload); the encrypted TDF archive (`tdf-archive` module, `TDF_FILE`, the TDF key, download and delete, M3 import moved onto it and `tdf_upload_player` dropped). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md), [ADR-0012](adr/0012-encrypted-tdf-archive.md) |
+| M9 Tournaments                | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine and the parser's new fields; the `tournaments` module (templates, scaffolds, schedules, planned tournaments); create, edit (reschedule included) and cancel jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload); the encrypted TDF archive (`tdf-archive` module, `TDF_FILE`, the TDF key, download and delete, M3 import moved onto it and `tdf_upload_player` dropped). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md), [ADR-0012](adr/0012-encrypted-tdf-archive.md) |
 
 ## 14. Architecture Decision Records
 

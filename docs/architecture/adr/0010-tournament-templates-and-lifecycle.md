@@ -2,9 +2,16 @@
 
 - Status: Accepted (2026-10-12, M9)
 - Date: 2026-10-12
+- Updated: 2026-10-13 ([#100](https://github.com/Towerism/play-pokemon-attendance-web/issues/100), from the PR #83 review;
+  accepted by the organizer when its PR merges): an uncertain create is never resent automatically (`unknown`); edits
+  pass every field they don't change through from the raw read; adoption skips tournaments already linked; rows a job
+  holds are `creating`; the back-dating window is checked at send time; template updates name the overrides that
+  shadow them. See [Update (#100)](#update-100-no-duplicate-creates-no-wiped-fields).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
+- Amended by: [#102](https://github.com/Towerism/play-pokemon-attendance-web/issues/102): required-events coverage on
+  failed reads (`unknown`, never `missing`) and cadence periods (decision 12)
 - Upstream contract: spike S8 ([spikes.md](../spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)), part 1 done, live capture pending
 
 ## Context
@@ -133,9 +140,14 @@ in the **venue's** timezone through the existing `local-time` helpers, moved to 
   date), so a tournament held yesterday that was never sanctioned is still there to create. Planning needs no scheduled task, and nothing depends on the server
   having been up. **Create through a date** (decision 5) materialises the same way, up to its date even when that is
   past the horizon.
-- **Editing a schedule or scaffold** replans only what hasn't reached play-tools: `planned` and `skipped` rows that
-  no longer fit are deleted, new ones added. **A created tournament is never cancelled, moved or recreated because
-  a schedule changed.** It is shown as "no longer in the schedule", with Cancel and Reschedule offered.
+- **Editing a schedule or scaffold** replans only what hasn't reached play-tools: `planned`, `skipped` and `failed`
+  rows that no longer fit are deleted, new ones added. Rows in `creating` (held by a running job), `unknown` (a create
+  may have landed) or `created` are kept, and shown as "no longer in the schedule" when they don't fit (#100). **A
+  created tournament is never cancelled, moved or recreated because a schedule changed.** It is shown as "no longer
+  in the schedule", with Cancel and Reschedule offered.
+- **One planned row per event.** A one-off planned tournament (**New tournament**, **Plan one…**) with the same
+  template, local date and start time as a planned row that isn't cancelled is refused (409 `already_planned`, naming
+  that row) (#100).
 - **Skipping** a date (a holiday) is local: the row becomes `skipped` and is never created.
 - **Templates are read at creation time.** A planned tournament takes the template's settings when it is created, so
   editing a template changes every tournament not created yet, and none that exist.
@@ -149,25 +161,48 @@ tournaments, or **Create through date…** on a schedule (below). Both run the s
 
 **Create in play-tools** takes 1–60 planned tournaments and starts one job of `kind = 'tournament_create'` on the
 submission rails. Each is created as its template's organizer. A planned tournament whose organizer can't act is not
-started (`organizer_not_connected`, `needs_reconnect`), as for staff.
+started (`organizer_not_connected`, `needs_reconnect`), as for staff. Every planned row the job takes becomes
+`creating` in the same transaction that starts the job, so replanning can't delete it (decision 4).
 
 - **Plan.** For each planned tournament, as its organizer:
   - list their tournaments on that date in the league's activity group (`listTournaments`);
   - **adopt instead of create:** a live (not `cancelled`, `deleted` or `invalidated`) tournament with the same start
-    instant, product, format and name (compared case-insensitively) is that planned tournament. Its `guid` is
+    instant, product, format and name (compared case-insensitively) is that planned tournament, **unless its `guid`
+    is already linked to another planned tournament of the league that isn't cancelled** (#100). Its `guid` is
     stored and the item is `already_exists`. Nothing is sent. This is how a retry, a crash or a tournament the
-    organizer made in play-tools by hand never produces a second one;
+    organizer made in play-tools by hand never produces a second one. A `guid` is linked to at most one planned
+    tournament (a unique index), so two identical slots create two tournaments, and one tournament never shows as
+    two;
   - resolve the series and venue (decision 6). Anything unresolved fails that item before any call.
 - **Execute.** One `POST core/tournament` at a time, at least `NUXT_TOURNAMENT_DELAY_MS` apart (default 5 s, never
   under 2 s). The token is fetched for each call.
-  - **A 5xx or a timeout means "may have landed"** (as for `_bulk`, ADR-0004 update). The job re-lists for a settle
-    window (default 3 min) and adopts a match. It sends again only when the settle window ends with no match, and
-    at most once.
+  - **The creatable window is checked again just before each `POST`**, with the job's clock and the league `TZ` at
+    that moment (#100). A job that runs past midnight can push an item out of it. That item ends
+    `date_too_far_past`, and nothing is sent for it.
+  - **A 5xx, a timeout or a dropped connection means "may have landed"** (as for `_bulk`, ADR-0004 update). The job
+    re-lists for a settle window (default 3 min) and adopts a match. **It never sends that create again** (#100):
+    ADR-0004 saw a failed call land a minute later, and nothing bounds that. With no match by the end of the window,
+    or if the re-listing itself fails, the item is `unknown` and the planned tournament becomes `unknown`. Its
+    support details say the tournament may still appear in play-tools.
   - **A 4xx is that item's outcome**, `refused`, with upstream's message and the correlation id (S8 found no codes).
     The job goes on with the rest. A 401 or 403 stops the job (`forbidden`).
 - **Reconcile.** Re-read each created tournament (`getTournament`) and store its `guid`, `display_id` and status.
   `approval-pending` and `sanctioning-error` are shown as they are; the app doesn't chase approval.
-- **Outcomes:** `created`, `already_exists`, `refused`, `failed`, `skipped`.
+- **Outcomes:** `created`, `already_exists`, `refused`, `failed`, `skipped`, `unknown`, `date_too_far_past`.
+- **An `unknown` tournament** (#100):
+  - **is linked on read.** Every read that already lists the organizer's tournaments for its date (Upcoming, This
+    week, the create-through list, a create job's plan step) runs adoption for it. A match is linked and the row
+    becomes `created`, with no upstream write and no extra call;
+  - **is created again only by a click.** **Retry create** starts an ordinary create job, which lists and adopts
+    first. Its dialog says when the earlier attempt was sent and that it may still land (organizer, 2026-10-13:
+    allowed at any time, with that warning). The route takes `retryUnknown: true` for `unknown` rows, else 422
+    `retry_not_confirmed`;
+  - **after a rename upstream** isn't matched. The retry dialog lists the organizer's tournaments on that date, so a
+    copy made under another name is seen before anything is sent;
+  - **when skipped** locally is still linked if it later appears, and shows as "in play-tools, skipped here" with
+    Cancel offered. It is never cancelled automatically.
+- **Boot recovery.** An interrupted job's `creating` rows become `unknown` if their `POST` was sent (`sent_at` is
+  set just before it), and `planned` if it wasn't.
 
 **Create through a date.** On a schedule, **Create through date…** takes a date X and creates every tournament the
 schedule plans from the creatable window's start (today − 2 days, decision 6) up to and including X, in one
@@ -226,7 +261,8 @@ for each date).
     tournament** from a template, and **Create through date…** (decision 5). So does a reschedule (decision 8);
   - Upcoming, This week (its date picker already reaches back), the reminder and the create-through list show
     planned tournaments from that start;
-  - a date before it is refused locally (`date_too_far_past`) before any call;
+  - a date before it is refused locally (`date_too_far_past`) before any call. A job checks it again just before
+    each send, so an item that falls out of the window while the job runs (past midnight) is refused then (#100);
   - it fits upstream's own limit: S8 found play-tools' form takes a start up to 72 h in the past (its message), and
     its code allows 84 h. The start of today − 2 days is less than 72 h before any moment today, and at most 73 h
     across a DST fall-back, still inside 84 h. S8 part 2 confirms what the server enforces (Q5);
@@ -290,8 +326,9 @@ in place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it). O
 
 - **One call, as the organizer.** The job reads the tournament fresh (`getTournament`), then sends `PATCH
   core/tournament/{guid}/` with the new start. The registration window moves by the same amount, so its offsets from
-  the start are kept. The body is the create body built from that fresh read with only the dates changed, as
-  play-tools' edit form does, unless the live capture shows a partial body is accepted (Q1).
+  the start are kept. The body is built as decision 11 says: the raw fresh read with only the dates changed and
+  every other field passed through as play-tools returned it, unless the live capture shows a partial body is
+  accepted (Q1).
 - **Same tournament.** The `guid`, display id, registrations and staff stay. The planned tournament and its wanted
   staff assignments move to the new date locally. No staff call is needed.
 - **Refused locally** before any call, from the fresh read:
@@ -307,7 +344,11 @@ in place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it). O
   - for a premier event, a new date outside its series' window for the venue's country (`outside_series_window`).
     A professor can't change the series, so moving a League Cup into another quarter means cancelling it and making
     a new one, which the dialog says;
-  - a new date before the creatable window (today − 2 days, decision 6): `date_too_far_past`.
+  - a new date before the creatable window (today − 2 days, decision 6): `date_too_far_past`. The job checks it
+    again just before the `PATCH`, with its own clock (#100).
+- **Another planned tournament at the new time.** When another planned row of the same template already holds the
+  new date and start, the preview warns ("another planned tournament is at that time", `another_planned_at_time`).
+  It doesn't block (#100).
 - **Re-read, never re-send blindly.** A tournament already at the new start is `already_applied`, and nothing is
   sent. After a 5xx the job re-reads, and the edit counts as landed when the start matches.
 - **Status afterwards.** If play-tools moves the tournament back to `approval-pending` (or `sanctioning-error`), the
@@ -328,7 +369,8 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
 
 - **A new Tournaments page** (`tournaments.vue`, in the nav), with three tabs:
   - **Upcoming:** planned and upstream tournaments from 2 days ago through the coming weeks, by date. Each shows its status (planned,
-    skipped, in play-tools, approval pending, sanctioning error, cancelled) and offers
+    skipped, in play-tools, approval pending, sanctioning error, cancelled, or **unknown**: a create that may have
+    landed, with **Retry create**; decision 5) and offers
     **Create in play-tools** (one, or every selected), **Skip**, **Edit…** (decision 11; rescheduling is editing the
     date), **Cancel…** and **Download TDF**. A one-off
     **New tournament** comes from a template and a date, which may be up to 2 days in the past.
@@ -357,17 +399,26 @@ schedule can have the change applied to other tournaments in the schedule.
 
   A planned tournament not yet in play-tools is edited locally, with no upstream call.
 - **Only what changed is sent.** The form is compared with the fresh read. The job applies just the changed fields onto
-  a fresh read of each tournament, then sends `PATCH core/tournament/{guid}/`: the full create body, or only the changed
+  a fresh read of each tournament, then sends `PATCH core/tournament/{guid}/`: the full body, or only the changed
   fields if S8 part 2 shows a partial body is accepted (Q1). An edit made meanwhile in play-tools to another field is
   never overwritten.
+- **The full body is the raw read, not the create body** (#100). The app doesn't model every field: per-division
+  times and costs (`activity_division_info`) are out of scope, and the create body sends them as `null`. So a full
+  body is built **inside the adapter** from the raw `GET` of that tournament: the changed fields are replaced, and
+  every other field is sent back with the value play-tools returned, including ones the app doesn't know. If the raw
+  read has a field the adapter can't map from its read shape to its write shape, the edit is refused before any call
+  (`edit_body_unmappable`, naming the field), never sent with that field dropped or `null`. The port stays
+  `editTournament(id, changes)`, and no raw shape leaves the adapter. A contract test against a recorded S8 part 2
+  read with every field set (non-null `activity_division_info` included) checks that only the changed fields differ.
 - **A `tournament_edit` job,** as the organizer, one tournament at a time, paced like creation:
   - re-read, then send;
   - every changed field already at its new value is `already_applied`, and nothing is sent;
   - after a 5xx, re-read and compare before anything else;
   - outcomes: `edited`, `already_applied`, `refused` (upstream's message and correlation id), `failed`, `skipped`.
     A tournament play-tools sends back to `approval-pending` says so;
-  - refused locally, before any call: `tournament_locked`, `date_too_far_past`, `outside_series_window` (decision 8),
-    `format_not_in_series` (a premier event's format must be one of its series' formats), `venue_not_found`.
+  - refused locally, before any call: `tournament_locked`, `date_too_far_past` (checked again just before the
+    `PATCH`), `outside_series_window` (decision 8), `format_not_in_series` (a premier event's format must be one of
+    its series' formats), `venue_not_found`, `edit_body_unmappable` (above).
 - **Applying it across the schedule.** When the tournament came from a schedule, the dialog asks where the change
   goes:
   - **This tournament only** (the default);
@@ -398,7 +449,10 @@ schedule can have the change applied to other tournaments in the schedule.
     them too. At creation, the settings are the template, then the schedule's overrides in effect for that date, then
     the row's own.
   - **The template is untouched** unless the organizer also ticks **Update the template**. That changes future
-    creation for every schedule using it, and those schedules are listed first.
+    creation for every schedule using it, and those schedules are listed first, **except where an override of the
+    same field wins** (#100). The preview lists each schedule and date range whose schedule or row overrides shadow
+    the change. **Also clear these overrides** removes those override fields in the same apply. It is **off by
+    default** (organizer, 2026-10-13), since overrides are usually deliberate.
 - **A tournament made in play-tools** (not from a schedule) is edited on its own. There is no schedule to apply to.
 - **A date change** moves the tournament's local staff assignments with it (decision 8). Other fields don't touch
   staff.
@@ -421,11 +475,19 @@ schedules: a schedule is how events usually get planned, and coverage is the che
   (decision 6): a requirement whose match finds no play-tools series for a period says so ("play-tools offers no
   series matching 'League Cup' for GO this quarter"), so a renamed type is noticed instead of silently counting as
   missing.
-- **Periods.** A period is the matching series' own window from `listSeries`, for the venue's country, when play-tools
-  has one (League Cup series run "October - December"). Otherwise it is the calendar month or quarter in the league
-  `TZ`. Coverage looks at the current period and what follows: the next 3 months, and the current and next quarter.
-- **What counts.** A tournament covers a requirement's period when its product matches, its series matches, and its
-  start falls in the period. Tournaments are taken:
+- **Periods come from the cadence** (#102). A requirement's period is always its cadence's calendar period in the
+  league `TZ`: the calendar month for `month`, and the calendar quarter (Jan–Mar, Apr–Jun, Jul–Sep, Oct–Dec) for
+  `quarter`. A series window never widens, narrows or replaces it, so a League Challenge series that runs a whole
+  quarter still leaves each month needing its own Challenge. Coverage looks at the current period and what follows:
+  the next 3 months, and the current and next quarter. A manual cover's `period_start` is the period's first day.
+- **The series window says how late, not which period.** For each period, the **latest date** a covering tournament
+  can be held is the earlier of the period's end and the end of the latest matching series window (product, the
+  league's country) that overlaps it. Urgency counts from the latest date (below), and **Plan one…** suggests dates
+  inside both the period and a matching series window. When no matching window overlaps the period, the cell says
+  "play-tools offers no series matching 'League Cup' for GO in Q4", and its urgency counts from the period's end.
+- **What counts.** A tournament covers a requirement's period when its product matches, its series name matches, and
+  its start's local date in the league `TZ` falls in the period. The series window isn't consulted for a tournament
+  play-tools already holds: play-tools sanctioned it in that series. Tournaments are taken:
   - from play-tools: every connected professor's tournaments in the league's activity group (ADR-0009), with each
     tournament's series from its details. The details are read once per tournament and cached by `guid`, since a
     professor can't change a series;
@@ -435,29 +497,44 @@ schedules: a schedule is how events usually get planned, and coverage is the che
   - `pending`: the best is `approval-pending`;
   - `planned`: only a planned tournament in the app, not yet in play-tools;
   - `problem`: the only match is `sanctioning-error`, which doesn't count;
-  - `missing`: nothing.
+  - `missing`: nothing;
+  - `unknown`: a connected professor's tournaments couldn't be read (below), so the app can't tell.
 
   Cancelled, deleted and invalidated tournaments never count.
-- **Urgency**, worked out from today in the league `TZ`, getting louder:
+- **A failed read is `unknown`, never `missing`** (#102; organizer, 2026-10-13). Each professor's listing is either
+  read or failed (`needs_reconnect`, `upstream_unavailable` for a 5xx or timeout, `refused` for another 4xx). A
+  period that is `sanctioned` or has a manual cover keeps that status whatever failed, because a cover that has been
+  seen can't be taken away. Any other period becomes `unknown` while any read failed. It names each professor whose
+  read failed and why, and gives the status the readable tournaments alone would give as a hint ("can't confirm;
+  known: approval pending"). The same applies to a tournament whose details couldn't be read: the cell names it. The
+  route still answers 200, even when every read failed.
+- **Urgency**, worked out from today in the league `TZ`, counting from the period's **latest date** (above), getting
+  louder:
   - **open:** the period has started or is ahead, and it isn't covered yet;
-  - **at risk:** it isn't `sanctioned` and the period ends within the warning lead (default 21 days for monthly, 45
-    for quarterly, editable per requirement). `planned`, `pending` and `problem` are at risk too: a planned tournament
-    isn't in play-tools, and approval can be refused. The cell names the **sanction-by date** for a tournament on the
-    period's last day (its end − 7 days);
+  - **at risk:** it isn't `sanctioned` and the latest date is within the warning lead (default 21 days for monthly,
+    45 for quarterly, editable per requirement). `planned`, `pending` and `problem` are at risk too: a planned
+    tournament isn't in play-tools, and approval can be refused. The cell names the **sanction-by date** for a
+    tournament on the latest date (the latest date − 7 days);
   - **short notice:** that sanction-by date has passed and it still isn't covered. A tournament can still be
-    sanctioned before the period ends, with the short-notice warning (decision 6). The banner says so and gives the
+    sanctioned by the latest date, with the short-notice warning (decision 6). The banner says so and gives the
     latest dates left;
-  - **last chance:** the period has ended less than 2 days ago and isn't covered. A tournament held in its last 2 days
-    can still be sanctioned (decision 6), and the warning says which dates qualify;
-  - **missed:** the period ended more than 2 days ago uncovered. It stays on record and in the grid's history.
+  - **last chance:** the latest date passed less than 2 days ago and it isn't covered. A tournament held in its last
+    2 days can still be sanctioned (decision 6), and the warning says which dates qualify;
+  - **missed:** the latest date passed more than 2 days ago uncovered. It stays on record and in the grid's history.
+
+  An `unknown` period keeps the urgency it would have had, so a professor whose read keeps failing never hides a
+  deadline.
 - **Impossible to overlook:**
   - a **Required events** grid at the top of the Tournaments page: requirements × periods, each cell showing its
-    status, the covering tournament (display id, date, organizer), or the action to take;
+    status, the covering tournament (display id, date, organizer), or the action to take, with **Refresh**;
   - on **This week**, a banner whenever anything is **at risk**, **short notice**, **last chance** or **missed** (one line per
-    requirement and period, most urgent first), and **problem** whenever a tournament comes back `sanctioning-error`;
+    requirement and period, most urgent first), and **problem** whenever a tournament comes back `sanctioning-error`.
+    An `unknown` period at risk or louder is worded "can't confirm" ("Can't confirm a League Cup for TCG this quarter:
+    Professor Ash's tournaments couldn't be read (needs reconnect). The last date is Dec 31."). There is also one line
+    per professor whose read failed, with **Reconnect** for `needs_reconnect` and **Retry** for the others;
   - a count badge on the Tournaments nav link while anything is at risk or worse.
 
-  The banner can't be dismissed. It goes away only when the cause does.
+  The banner can't be dismissed. It goes away only when the cause does: the read succeeds, or a cover is found.
 - **One click to fix.** A cell that isn't covered offers **Plan one…**: a one-off **New tournament** with the type
   and game set, and a date inside the period. It uses a template that matches if there is one, and otherwise opens the
   form with play-tools' choices for that date. A `planned` cell offers **Create in play-tools**, and a `problem` cell
@@ -467,21 +544,62 @@ schedules: a schedule is how events usually get planned, and coverage is the che
   covered…** records a manual cover for that requirement and period, with a note (e.g. "run by Professor X, 0123-…"),
   who and when. It shows as `covered (manual)`, never as `sanctioned`, and can be removed. Connecting that professor
   (ADR-0008) makes it automatic.
-- **Pure and testable.** Coverage is a pure function in `shared/requirements/`: requirements, periods, tournaments and
-  manual covers, plus today, in; statuses and urgencies out, with no clock and no I/O. It is unit-tested across period
-  edges, DST, the 2-day grace, series windows that differ from calendar quarters, and cancelled or errored
-  tournaments.
-- **Read on demand.** The grid and the banner are computed when the page is read, from the same per-professor
-  listings the Upcoming tab and This week already make. Nothing is scheduled, and no notification leaves the app
-  (email or push would be a later decision).
+- **Pure and testable.** Coverage is a pure function in `shared/requirements/`: requirements, each professor's read
+  result (tournaments, or why it failed), planned tournaments, manual covers, series windows, the league `TZ` and
+  today, in; statuses and urgencies out, with no clock and no I/O. It is unit-tested across period edges by local
+  date, DST, the 2-day grace, series windows that differ from calendar periods, failed reads (never `missing` while
+  any read failed), and cancelled or errored tournaments.
+- **Read on demand, cached briefly** (#102; organizer, 2026-10-13). The grid and the banner are computed when the
+  page is read. Each professor's listing for the coverage range is kept in memory for 5 minutes and shared by
+  coverage, the Upcoming tab and This week, as play sessions are (§4.1). A failed read isn't kept. **Refresh**
+  (`?refresh=1`) reads again, and a professor's cached listing is dropped when a tournament job of theirs (create,
+  edit, cancel) ends. A warm cache makes no listing calls, and a cold one makes one per connected professor, plus one
+  details read per tournament not seen before. Nothing is scheduled, and no notification leaves the app (email or
+  push would be a later decision).
+
+## Update (#100): no duplicate creates, no wiped fields
+
+The adversarial review of PR #83 found that the two promises this ADR leads with, no duplicate tournaments and no
+overwritten fields, both had holes in the default path. The fixes are folded into the decisions above, marked
+(#100), and summarised here:
+
+| Gap | Fix | Where |
+| --- | --- | ----- |
+| A create that got a 5xx was resent after a fixed 3-min settle window, but a late landing isn't bounded by 3 min | Never resent automatically: `unknown`, linked on read, retried only by a click | decision 5 |
+| The edit body was the create body, which sends `activity_division_info: null` and wipes per-division settings | Built in the adapter from the raw read, every unchanged field passed through; an unmappable field refuses the edit | decisions 8, 11 |
+| Two planned rows could adopt the same tournament | Adoption skips `guid`s already linked; a unique index; a duplicate one-off is 409 `already_planned`; an edit onto another row's time warns | decisions 4, 5, 8 |
+| Replanning could delete rows a running job was working on | Rows a job takes are `creating`; replanning deletes only `planned`, `skipped` and `failed` | decisions 4, 5 |
+| The back-dating window was checked only at plan time | Checked again just before each send, with the job's clock | decisions 5, 6, 8 |
+| **Update the template** was silently shadowed by overrides | The preview lists the shadowing overrides; **Also clear these overrides**, off by default | decision 11 |
+
+**Tests the build issues (#91, #92, #93) carry**, with the logic pushed down:
+
+- **Unit:** the adoption matcher, override resolution and the creatable-window check.
+- **Module** (in-memory DB and the gateway fake): the row state machine (`planned → creating → created | unknown |
+  failed | date_too_far_past`) and boot recovery.
+- **Server** (`test/server`, `fake-pokemon.ts`):
+  - a 500 whose tournament lands 4 minutes later still gets exactly one `POST`;
+  - **Retry create** adopts the late tournament, or sends one `POST` if it never landed;
+  - 409 `already_planned`;
+  - a schedule edit while a create is held at a gate on the fake keeps the row.
+- **Contract:** against a recorded S8 part 2 read with every field set, only the changed fields differ in the edit
+  body, and an unmapped field is refused before any request.
+- **Determinism:** every time-dependent case uses an injected clock, never a wall-clock wait: the settle window, the
+  late landing, midnight, the DST days in `America/Chicago`, and "how long ago".
+- **Behaviour over mocks:** assertions read the fake's request log and the database, never mock call counts.
+- **Coverage, by risk:** 100% branch coverage on the matcher, the edit-body merge and the window check, and at least
+  90% on the job state machine and override resolution.
 
 ## Consequences
 
 - (+) A regular tournament is set up once. After that it's a reminder and one click per batch of dates, with no
   four-step form.
 - (+) Back-to-back events are one scaffold, created together.
-- (+) No duplicate tournaments: every create is preceded by a fresh listing and adoption, and a 5xx is re-read before
-  any resend.
+- (+) No duplicate tournaments from the app on its own: every create is preceded by a fresh listing and adoption,
+  and a create that may have landed is never resent automatically. It becomes `unknown`, is linked if it shows up,
+  and is sent again only by **Retry create**, whose dialog warns that the earlier attempt may still land (#100).
+- (+) An edit never wipes a field the app doesn't model: the body is the raw read with only the changed fields
+  replaced, and an unmappable field refuses the edit (#100).
 - (+) Nothing reaches play-tools without a click. Even "create through a date" lists every tournament it will make
   and creates nothing past that date, so a wrong template can't multiply on its own.
 - (+) A regular tournament such as "3rd Tuesday monthly" is created for months ahead in one click.
@@ -495,11 +613,16 @@ schedules: a schedule is how events usually get planned, and coverage is the che
 - (−) Overrides add a layer (template → schedule overrides → row overrides) that creation must resolve. The planned
   tournament view shows which settings come from where.
 - (+) Staff follow a tournament through a reschedule, so staff credits keep working.
-- (−) A new module with five tables (templates, scaffold slots, schedules, planned tournaments, result uploads), four
-  new job kinds and a new item table.
+- (−) A new module with nine tables (templates, scaffolds, scaffold slots, schedules, schedule overrides, planned
+  tournaments, requirements, manual covers, result uploads), four new job kinds and a new item table
+  (`submission_tournament_item`).
 - (−) Adoption matches on start, product, format and name. A tournament edited in play-tools after creation (renamed
   or moved) is no longer matched, and the app would plan it again. Its `guid` is stored, so this only affects
   tournaments that were never linked.
+- (−) An `unknown` create needs the organizer's attention: a click to retry, or nothing if it shows up on its own. A
+  retry while the earlier attempt is still in flight can still make a duplicate; the dialog says so (#100).
+- (−) An edit of a tournament whose read has a field the adapter can't map is refused until the adapter learns it.
+  That is safer than wiping the field (#100).
 - (−) Upstream gives no error codes on create, so a refusal shows play-tools' message and a correlation id, not
   advice.
 - (−) The date wire format depends on a play-tools feature flag (S8). The adapter must handle both, and the live
@@ -523,7 +646,9 @@ schedules: a schedule is how events usually get planned, and coverage is the che
 | Q5 | Production date format (`start_date_v2` UTC or naive `start_date`), create's response and initial status, and server-side refusals | **Open: S8 part 2** |
 | Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Answered (organizer, 2026-10-12): out of scope.** Connected accounts are assumed to have the right permissions. A refusal shows support details for Pokémon support (decision 7) |
 | Q7 | Which events must the league hold? | **Answered (organizer, 2026-10-12):** a League Cup per quarter and a League Challenge per month, for each of TCG, GO and VGC (decision 12) |
-| Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Coverage uses the series window when one exists, else the calendar period |
-| Q11 | When can a tournament be rescheduled? | **Answered (organizer, 2026-10-12):** from 3 days before its start to 90 days after (decision 8) |
-| Q10 | Is the 7-day lead a hard rule? | **Answered (organizer, 2026-10-12):** no. Tournaments not yet held should be sanctioned 7 days ahead, as a guideline: a short-notice warning to acknowledge, never a refusal (decision 6) |
+| Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Its answer no longer changes coverage periods, which always follow the requirement's cadence (#102); a series window only sets a period's latest date |
 | Q9 | Should a missed or at-risk requirement also notify outside the app (email, push)? | **Open: organizer.** Designed as in-app only (banner, grid, badge) |
+| Q10 | Is the 7-day lead a hard rule? | **Answered (organizer, 2026-10-12):** no. Tournaments not yet held should be sanctioned 7 days ahead, as a guideline: a short-notice warning to acknowledge, never a refusal (decision 6) |
+| Q11 | When can a tournament be rescheduled? | **Answered (organizer, 2026-10-12):** from 3 days before its start to 90 days after (decision 8) |
+| Q12 | May **Retry create** on an `unknown` tournament run at once, or only after a wait? | **Answered (organizer, 2026-10-13, #100):** at any time, with a warning that says when the earlier attempt was sent (decision 5) |
+| Q13 | Should **Also clear these overrides** be on by default when the template is updated? | **Answered (organizer, 2026-10-13, #100):** off by default (decision 11) |
