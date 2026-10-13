@@ -307,7 +307,7 @@ describe('what a player import leaves alone', () => {
     roster.updatePlayer(L, id('0000100'), { isRegular: true, notes: 'Brings snacks' });
     sightings.record(L, '2026-10-06' as never, 'tdf', [id('0000100')]);
     upstream.add(tournament('t-1'), playing('0000100', 'Ash Ketchum'), playing('0000200', 'Brock Harrison'), staffer('0000900', 'judge'));
-    const metrics = createMetricsService({ db: database.db, roster, submissions: { timesSubmitted: () => 0 } });
+    const metrics = createMetricsService({ db: database.db, roster, submissions: { timesSubmitted: () => new Map() } });
     const snapshot = () => ({
       sightings: database.sqlite.prepare('select * from sighting order by player_id').all(),
       staff: database.sqlite.prepare('select * from staff_history').all(),
