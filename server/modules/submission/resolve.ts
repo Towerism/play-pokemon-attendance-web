@@ -3,7 +3,8 @@ import type { ConnectionView, PokemonConnectionService } from '../pokemon/connec
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { PlaySession, PlaySessionStatus, PlayToolsGateway } from '../pokemon/ports/play-tools-gateway';
 import { SubmissionError } from './errors';
-import { localDay, sessionLabel } from './local-time';
+import { localDay } from '../../../shared/time/local-time';
+import { sessionLabel } from './local-time';
 
 export interface PlaySessionCandidate {
   id: string;

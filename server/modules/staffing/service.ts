@@ -11,7 +11,7 @@ import type {
   TournamentParticipant,
 } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
-import { dateIn, localDay } from '../submission/local-time';
+import { dateIn, localDay } from '../../../shared/time/local-time';
 import { StaffingError } from './errors';
 
 /** A tournament as seeding needs it: its start (null when play-tools has none) and its organizer. */

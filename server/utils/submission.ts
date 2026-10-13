@@ -1,6 +1,6 @@
 import { StaffingError } from '../modules/staffing/errors';
 import { SubmissionError, type SubmissionErrorCode } from '../modules/submission/errors';
-import { dateIn } from '../modules/submission/local-time';
+import { dateIn } from '../../shared/time/local-time';
 import { type PlaySessionResolver, createPlaySessionResolver } from '../modules/submission/resolve';
 import { type SubmissionService, createSubmissionService } from '../modules/submission/service';
 
