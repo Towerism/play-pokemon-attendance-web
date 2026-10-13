@@ -192,8 +192,8 @@ describe('sanitizeCalls: TDFs and known originals', () => {
   });
 
   it('refuses when a known original survives under a key no rule redacts, counting it without echoing it', () => {
-    const { leaks } = sanitizeCalls([call({ response: { note: 'moved from L5012 venue' } })], { knownOriginals: ['L5012', 'never-seen'] });
-    expect(leaks).toEqual(['L5012']);
+    const { leaks } = sanitizeCalls([call({ response: { note: 'moved from Ettin Games' } })], { knownOriginals: ['Ettin Games', 'never-seen'] });
+    expect(leaks).toEqual(['Ettin Games']);
   });
 
   it('accepts the run when no known original survives', () => {

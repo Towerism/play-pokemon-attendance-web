@@ -69,6 +69,22 @@ describe('Sanitizer', () => {
     expect(findLeaks(`{"x":"${dashed}"}`, s.originals)).toEqual([dashed]);
   });
 
+  it('redacts what pins a venue (postal code, place id, coordinates, city), keeping state, country and timezone', () => {
+    const out = new Sanitizer().sanitize({
+      venue: { city: 'Humble', state: 'TX', postal_code: '77338', zip: '77338', place_id: 'ChIJcwOntVWyQIYRIwLaheJbsrs', latitude: 30.0056867, longitude: -95.2633, lat: 30, lng: -95, country: 'US', timezone: 'America/Chicago' },
+    });
+    expect(out).toEqual({
+      venue: { city: '<redacted>', state: 'TX', postal_code: '<redacted>', zip: '<redacted>', place_id: '<redacted>', latitude: '<redacted>', longitude: '<redacted>', lat: '<redacted>', lng: '<redacted>', country: 'US', timezone: 'America/Chicago' },
+    });
+  });
+
+  it('pseudonymises a league display id (L5012) consistently', () => {
+    const s = new Sanitizer();
+    const out = s.sanitize({ activity_group: { display_id: 'L5012' }, other: { display_id: 'L5012' }, note: 'league L5012' }) as Record<string, unknown>;
+    expect(out).toEqual({ activity_group: { display_id: 'L900001' }, other: { display_id: 'L900001' }, note: 'league L900001' });
+    expect(s.originals).toContain('L5012');
+  });
+
   it('findLeaks reports surviving originals', () => {
     expect(findLeaks(`{"x":"${GROUP.toUpperCase()}"}`, [GROUP])).toEqual([GROUP]);
   });
