@@ -1,6 +1,6 @@
 # ADR-0012: Keep TDF files, encrypted at rest
 
-- Status: Proposed (M9)
+- Status: Accepted (2026-10-12, M9)
 - Date: 2026-10-12
 - Amends: architecture §5 ("TDF privacy"), §9 (minors' PII, malicious TDF) and §10 (secrets, backups); the
   CLAUDE.md security rule "never persist TDF birthdates or raw TDF files"; [ADR-0011](0011-tdf-results-upload.md)

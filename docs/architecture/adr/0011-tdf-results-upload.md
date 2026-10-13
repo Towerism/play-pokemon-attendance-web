@@ -1,9 +1,9 @@
 # ADR-0011: Upload a tournament's TDF to play-tools from its This week card
 
-- Status: Proposed (M9)
+- Status: Accepted (2026-10-12, M9)
 - Date: 2026-10-12
 - Amends: architecture §5 "TDF privacy" and §9 (the raw TDF now travels on to play-tools)
-- Amended by (proposed): [ADR-0012](0012-encrypted-tdf-archive.md): the file is kept, encrypted at rest (decision 5)
+- Amended by: [ADR-0012](0012-encrypted-tdf-archive.md): the file is kept, encrypted at rest (decision 5)
 - Builds on: [ADR-0009](0009-tournaments-as-their-organizer.md), [ADR-0010](0010-tournament-templates-and-lifecycle.md)
   (the `tournaments` module and its job kinds)
 - Upstream contract: spike S8 ([spikes.md](../spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)), part 1 done, live capture pending

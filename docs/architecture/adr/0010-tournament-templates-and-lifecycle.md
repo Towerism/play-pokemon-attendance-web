@@ -1,6 +1,6 @@
 # ADR-0010: Tournament templates, schedules and lifecycle (create, cancel, reschedule)
 
-- Status: Proposed (M9)
+- Status: Accepted (2026-10-12, M9)
 - Date: 2026-10-12
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
