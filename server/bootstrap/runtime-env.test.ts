@@ -75,6 +75,8 @@ describe('prepareRuntimeEnv', () => {
       'NUXT_AUTH_RATE_LIMIT_LOGIN_WINDOW_MS',
       'NUXT_AUTH_RATE_LIMIT_SETUP_MAX',
       'NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS',
+      'NUXT_INTEGRATION_RATE_LIMIT_MAX',
+      'NUXT_INTEGRATION_RATE_LIMIT_WINDOW_MS',
     ];
 
     it.each(VARS.flatMap((name) => ['0', '-1', 'abc', '1.5', '10x'].map((value) => [name, value])))(

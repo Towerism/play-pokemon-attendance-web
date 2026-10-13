@@ -38,6 +38,9 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useStaffing()',
     'requireLeague(e)',
     "useLogger('x')",
+    'useIntegrationTokens()',
+    'useIntegrationDays()',
+    'requireIntegrationToken(e)',
   ])(
     'rejects the auto-imported call %s',
     async (call) => {

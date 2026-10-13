@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-14",
+  "timezone": "America/Chicago",
+  "tournaments": [
+    {
+      "id": "brocks",
+      "name": "Brock Cup",
+      "displayId": "26-10-000002",
+      "startsAt": "2026-10-14T22:00:00.000Z",
+      "game": "vgc",
+      "organizer": { "playerId": "0000222", "name": "Brock Harrison" },
+      "staff": []
+    },
+    {
+      "id": "olives",
+      "name": "Olive Cup",
+      "displayId": "26-10-000001",
+      "startsAt": "2026-10-14T23:30:00.000Z",
+      "game": "tcg",
+      "organizer": { "playerId": "9999991", "name": "Olive Oak" },
+      "staff": [
+        { "playerId": "00888", "name": "Misty Waterflower", "role": "scorekeeper" },
+        { "playerId": "00777", "name": "Ash Ketchum", "role": "judge" }
+      ]
+    }
+  ],
+  "professors": [
+    { "playerId": "9999991", "name": "Olive Oak", "status": "read" },
+    { "playerId": "0000222", "name": "Brock Harrison", "status": "read" }
+  ]
+}

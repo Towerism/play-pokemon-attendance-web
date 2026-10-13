@@ -59,6 +59,9 @@ export default defineNuxtConfig({
       login: { max: 10, windowMs: 900_000 },
       setup: { max: 5, windowMs: 900_000 },
     },
+    // Per-token limit on integrations day reads (#115, ADR-0013): each reads play-tools live, so a misbehaving
+    // client can't turn into heavy upstream traffic. NUXT_INTEGRATION_RATE_LIMIT_*: optional, not in the template.
+    integrationRateLimit: { max: 30, windowMs: 900_000 },
     // Peers whose X-Forwarded-For is believed (NUXT_TRUSTED_PROXIES): loopback and
     // Docker's bridge pool cover Caddy on the same Unraid box. Blank = this default.
     trustedProxies: DEFAULT_TRUSTED_PROXIES,

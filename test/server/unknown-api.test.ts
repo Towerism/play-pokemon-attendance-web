@@ -54,6 +54,8 @@ describe('unknown /api paths', () => {
     '/api/',
     '/api/does-not-exist?x=1',
     '/api/Settings',
+    '/api/integrations/v1/nope',
+    '/api/integrations/v2/days/2026-10-14',
   ])('answers a JSON 404 for %s', async (path) => {
     await expectJson404(await browser.request(path));
   });
