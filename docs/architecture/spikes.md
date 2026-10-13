@@ -467,8 +467,10 @@ times. There is no template or recurrence for tournaments upstream (recurrence e
 
 1. Is `play-pokemon-program-configuration` on (`start_date_v2` in UTC) or off (naive `start_date`)?
 2. `POST core/tournament`: status code, full body, initial status of a custom vs. a premier-series event.
-3. Does a professor's `PATCH` of the date work, or does it invalidate or re-queue the tournament? (The organizer
-   reports rescheduling means removing and re-creating; see ADR-0010 Q1.)
+3. Does a professor's `PATCH` of the date work, or does it invalidate or re-queue the tournament? Does it accept a
+   partial body? Record a full read with every field set (non-null `activity_division_info` included) for the
+   edit-body contract test. ADR-0010 decision 8 edits the date in place; cancel + recreate is only the fallback if
+   the `PATCH` is refused (ADR-0010 Q1, #100).
 4. What does the server refuse that the client doesn't (back-dating, overlaps, series quotas), and with what envelope?
 5. Cancel's status code; cancel by a non-organizer; cancel during a TDF upload.
 6. TDF: is `triumph-scalability` on; the exact `triumph/tdf/` response; the shape of `errors`; whether confirm
