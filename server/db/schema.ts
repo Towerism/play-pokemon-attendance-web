@@ -192,9 +192,10 @@ export const submission = sqliteTable(
      * `undo` removes the records another submission added; `clear` removes every player record in the play session (M7).
      * `staff` applies a tournament's staff assignments (M8): `play_session_id` then holds the tournament GUID and
      * `play_session_label` "Staff for <tournament>". `staff_import` reads every tournament the account organizes
-     * into the staff list (M8): `play_session_id` is '' and `play_session_label` "Staff import".
+     * into the staff list (M8): `play_session_id` is '' and `play_session_label` "Staff import". `player_import` reads
+     * the same tournaments into the league's players (#35): `play_session_label` "Player import".
      */
-    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import'] }).notNull().default('submit'),
+    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import'] }).notNull().default('submit'),
     /** For an undo: the submission whose added records it removes. */
     undoOf: integer('undo_of'),
   },
