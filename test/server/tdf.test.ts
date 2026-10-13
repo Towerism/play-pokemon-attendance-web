@@ -171,6 +171,19 @@ describe('TDF import API', () => {
       expect(again).toMatchObject({ uploadId, alreadyImported: true });
     });
 
+    it('409 tdf_file_deleted when the organizer deleted the file before committing, importing nothing', async () => {
+      const { uploadId } = await (await upload(NEXT_WED, tdf([{ userid: '0055', first: 'Gone', last: 'File' }], 'Deleted Cup'), 'gone.tdf')).json();
+      const { files } = await (await api('/tdf-files')).json();
+      const file = files.find((f: { filename: string }) => f.filename === 'gone.tdf');
+      expect((await api(`/tdf-files/${file.id}`, { method: 'DELETE' })).status).toBe(200);
+
+      const res = await commit(NEXT_WED, uploadId);
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).data).toEqual({ code: 'tdf_file_deleted' });
+      expect((await (await api('/players?q=0055')).json()).players).toEqual([]);
+    });
+
     it('404 for an unknown upload', async () => {
       expect((await commit(WED, 999999)).status).toBe(404);
     });

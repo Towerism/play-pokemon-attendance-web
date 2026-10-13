@@ -29,6 +29,7 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useRoster()',
     'useSessions()',
     'useTdfImports()',
+    'useTdfArchive()',
     'usePokemon()',
     'useSightings()',
     'useSubmissions()',

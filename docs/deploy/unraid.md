@@ -13,6 +13,7 @@ Everything the app keeps lives in one appdata folder,
 | `/data/app.db` (plus `app.db-wal`, `app.db-shm`) | The SQLite database: regulars, players, sightings, submission history, settings | Back up and restore the three files together |
 | `/data/secrets/session-password` | Signs login cookies | Generated on first boot, mode 0600. Absent if you set `NUXT_SESSION_PASSWORD` |
 | `/data/secrets/token-vault.key` | Encrypts the saved Pokémon login | Generated on first boot, mode 0600. Absent if you set `NUXT_TOKEN_VAULT_KEY` |
+| `/data/secrets/tdf-vault.key` | Encrypts the stored tournament files (`.tdf`), which hold players' birthdates (ADR-0012) | Generated on first boot, mode 0600. Absent if you set `NUXT_TDF_VAULT_KEY` (env only, not in the template). **Losing it loses the stored files** |
 
 ## Install
 
@@ -133,9 +134,12 @@ container at startup, and the log names the bad entry.
 
 Back up the **whole appdata folder**: the database and `secrets/` together.
 `secrets/` plus `app.db` can decrypt your saved Pokémon login, so keep backups
-somewhere only you can read. Once the app keeps TDF files (M9, ADR-0012), the
-same backup also holds the TDF key next to the encrypted files, so anyone with it
-can open every stored TDF, players' birthdates included. Many players are minors.
+somewhere only you can read. The app also keeps every `.tdf` you drop, encrypted
+in `app.db` with its own key (ADR-0012). The same backup holds that key
+(`secrets/tdf-vault.key`) next to the encrypted files, so anyone with the backup
+can open every stored TDF, players' birthdates included, and many players are
+minors. Encryption protects a copy of `app.db` on its own and the Litestream
+replica, not an appdata backup.
 
 ### Appdata Backup plugin (recommended)
 
@@ -198,6 +202,10 @@ What to expect:
 
 - A lost token vault key means one Pokémon reconnect in *Settings*: the saved
   login can't be decrypted any more. No attendance data is lost.
+- A lost **TDF vault key loses the stored tournament files**: a new key is
+  generated, and the old files can't be opened with it (they can still be
+  listed and deleted). play-tools still holds any results you uploaded, and
+  attendance, regulars and history are unaffected.
 - A lost session password logs everyone out: sign in again. No attendance data
   is lost either.
 - A lost database with `secrets/` intact is a fresh install: the setup code is
@@ -305,6 +313,10 @@ Steps:
    - [ ] *Regulars* shows the regulars you expect.
    - [ ] *History* shows your most recent submissions up to the backup date.
    - [ ] *Settings* shows the Pokémon account as connected, as on the live app.
+   - [ ] `http://tower:3100/api/tdf-files` lists the tournament files you
+     imported, and `http://tower:3100/api/tdf-files/<id>/download` downloads one
+     that opens in a text editor. A `409` there means `secrets/` didn't come
+     back with `app.db`.
 5. **Tear it down** before the hour is up: *Docker* tab → drill container →
    *Stop*, then *Remove*. Then delete the drill folder:
 

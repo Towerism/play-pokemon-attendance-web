@@ -42,6 +42,7 @@ export default defineNuxtConfig({
     migrationsDir: 'server/db/migrations',
     // Filled from env or /data/secrets/ by server/bootstrap/launcher.ts.
     tokenVaultKey: '',
+    tdfVaultKey: '',
     // Empty means the real Pokémon hosts. Only test doubles set these
     // (NUXT_POKEMON_ACCESS_URL / NUXT_POKEMON_API_URL); see test/server/fake-pokemon.ts.
     pokemon: { accessUrl: '', apiUrl: '' },
@@ -79,7 +80,7 @@ export default defineNuxtConfig({
     // asyncContext: the request id reaches every log record a request causes,
     // module and job logs included (architecture §10).
     experimental: { tasks: true, asyncContext: true },
-    scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] },
+    scheduledTasks: { '0 * * * *': ['pokemon:keepalive', 'tdf:expire'] },
   },
 
   typescript: {

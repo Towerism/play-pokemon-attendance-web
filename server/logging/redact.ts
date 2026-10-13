@@ -27,11 +27,16 @@ export const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'litestreamsecretaccesskey',
   'tokenvaultkey',
   'nuxttokenvaultkey',
+  'tdfvaultkey',
+  'nuxttdfvaultkey',
   'codeverifier',
   'authorizationcode',
   'birthdate',
   'dateofbirth',
   'dob',
+  // A TDF's body holds every player's birthdate (ADR-0012).
+  'content',
+  'payload',
 ]);
 
 const MAX_DEPTH = 8;
