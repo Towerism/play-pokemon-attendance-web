@@ -297,6 +297,160 @@ describe('listResultsUploads (S8 recordings 12 and 41)', () => {
   });
 });
 
+const sentJson = async (r: Request) => (await r.clone().json()) as Record<string, unknown>;
+
+describe('createTournament (S8 recording 16)', () => {
+  it('sends the recorded create body as the professor and returns the new tournament id', async () => {
+    const recorded = recording('16');
+    upstream.use(http.post(`${API}core/tournament`, () => HttpResponse.json(recorded.response, { status: 201 })));
+    const r = recorded.request as Record<string, never>;
+
+    const created = await gateway().createTournament(
+      newTournament({
+        groupId: r.activity_group_id,
+        name: r.name,
+        venueId: r.address_id,
+        startsAt: new Date(r.start_date_v2),
+        contact: r.contact_information,
+      }),
+    );
+
+    expect(created).toEqual({ tournamentId: T });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.method).toBe('POST');
+    expect(path(seen[0]!)).toBe('/services/core/tournament');
+    expect(await sentJson(seen[0]!)).toEqual(recorded.request);
+  });
+
+  it('sends the optional settings under their play-tools names, and nothing else', async () => {
+    upstream.use(http.post(`${API}core/tournament`, () => HttpResponse.json({ guid: T }, { status: 201 })));
+
+    await gateway().createTournament(
+      newTournament({
+        seriesId: '00000000000040008000000000000048',
+        registration: { startsAt: new Date('2026-10-12T04:00:00.000Z'), endsAt: new Date('2026-10-12T04:30:00.000Z') },
+        onSiteAdmission: 'FREE',
+        thirdPartyRegistrationUrl: 'https://register.example',
+        details: 'Bring a deck',
+        eventWebsite: 'https://shop.example',
+      }),
+    );
+
+    expect(await sentJson(seen[0]!)).toEqual({
+      name: 'Tuesday League Challenge',
+      activity_group_id: GROUP,
+      organizer_id: USER_GUID,
+      product: 'tcg',
+      category: 'tcg_std',
+      series_guid: '00000000000040008000000000000048',
+      address_id: '00000000-0000-4000-8000-000000000051',
+      start_date_v2: '2026-10-12T05:00:00Z',
+      contact_information: { email: 'league@example.com', phone: null },
+      activity_division_info: { juniors: null, masters: null, seniors: null, all: null },
+      registration_start_date_v2: '2026-10-12T04:00:00Z',
+      registration_end_date_v2: '2026-10-12T04:30:00Z',
+      on_site_admission: 'FREE',
+      third_party_registration_website: 'https://register.example',
+      details: 'Bring a deck',
+      event_website: 'https://shop.example',
+    });
+  });
+});
+
+describe('editTournament (S8 recordings 19–25: a partial PATCH changes only what it sends)', () => {
+  it.each(['19', '21', '23', '25'])('sends recording %s\'s body alone, with no read first', async (n) => {
+    const recorded = recording(n);
+    upstream.use(http.patch(`${API}core/tournament/:t/`, () => new HttpResponse(null, { status: 204 })));
+    const r = recorded.request as Record<string, string>;
+    const changes = 'details' in r ? { details: r.details } : { startsAt: new Date(r.start_date_v2!) };
+
+    expect(await gateway().editTournament(T, changes)).toBe('edited');
+
+    expect(seen.map((s) => [s.method, path(s)])).toEqual([['PATCH', `/services/core/tournament/${T}/`]]);
+    expect(await sentJson(seen[0]!)).toEqual(recorded.request);
+  });
+
+  it('sends a cleared registration, a new contact and a new venue under their play-tools names', async () => {
+    upstream.use(http.patch(`${API}core/tournament/:t/`, () => new HttpResponse(null, { status: 204 })));
+
+    await gateway().editTournament(T, { registration: null, contact: { email: null, phone: '555-0100' }, venueId: 'venue-2' });
+
+    expect(await sentJson(seen[0]!)).toEqual({
+      registration_start_date_v2: null,
+      registration_end_date_v2: null,
+      contact_information: { email: null, phone: '555-0100' },
+      address_id: 'venue-2',
+    });
+  });
+
+  it('moves a tournament and its registration window together (a reschedule)', async () => {
+    upstream.use(http.patch(`${API}core/tournament/:t/`, () => new HttpResponse(null, { status: 204 })));
+
+    await gateway().editTournament(T, {
+      startsAt: new Date('2026-10-19T23:00:00Z'),
+      registration: { startsAt: new Date('2026-10-19T22:00:00Z'), endsAt: new Date('2026-10-19T22:30:00Z') },
+    });
+
+    expect(await sentJson(seen[0]!)).toEqual({
+      start_date_v2: '2026-10-19T23:00:00Z',
+      registration_start_date_v2: '2026-10-19T22:00:00Z',
+      registration_end_date_v2: '2026-10-19T22:30:00Z',
+    });
+  });
+});
+
+describe('cancelTournament (S8 recording 30)', () => {
+  it('sends the recorded cancel and nothing else', async () => {
+    upstream.use(http.patch(`${API}core/tournament/:t/`, () => new HttpResponse(null, { status: 204 })));
+
+    expect(await gateway().cancelTournament(T)).toBe('cancelled');
+
+    expect(seen.map((s) => [s.method, path(s)])).toEqual([['PATCH', `/services/core/tournament/${T}/`]]);
+    expect(await sentJson(seen[0]!)).toEqual(recording('30').request);
+  });
+});
+
+/** A made-up TDF; the player's name is not ASCII, so the encoding is checked. */
+const tdfFile = () => '<?xml version="1.0" encoding="UTF-8"?><tournament><data><id>26-10-900041</id></data><player><firstname>Zoë</firstname></player></tournament>';
+
+describe('validateResults (S8 recording 37)', () => {
+  it('sends the file as base64 of its UTF-8 bytes for the display id and returns the upload id', async () => {
+    upstream.use(http.post(`${API}triumph/tdf/`, () => HttpResponse.json(body('37'))));
+
+    const result = await gateway().validateResults(DISPLAY_ID, tdfFile());
+
+    expect(result).toEqual({ uploadId: UPLOAD, errors: [] });
+    expect(path(seen[0]!)).toBe('/services/triumph/tdf/');
+    const sent = await sentJson(seen[0]!);
+    expect(sent).toEqual({ kind: 'tdf', tournament_id: DISPLAY_ID, payload: expect.any(String) });
+    expect(Buffer.from(sent.payload as string, 'base64').toString('utf8')).toBe(tdfFile());
+  });
+
+  it.each([200, 400])('reads a validation that found errors (HTTP %i) in readable words', async (status) => {
+    const errors = [{ type: 'STAFF_PLAYERS_ERROR', message: 'x' }, 'SOME_NEW_ERROR'];
+    upstream.use(http.post(`${API}triumph/tdf/`, () => HttpResponse.json({ ...body('37'), errors }, { status })));
+
+    const result = await gateway().validateResults(DISPLAY_ID, tdfFile());
+
+    expect(result.uploadId).toBe(UPLOAD);
+    expect(result.errors).toEqual([
+      { code: 'STAFF_PLAYERS_ERROR', message: 'Someone in the file is on the tournament staff.', detail: 'x' },
+      { code: 'SOME_NEW_ERROR', message: 'SOME_NEW_ERROR', detail: null },
+    ]);
+  });
+});
+
+describe('confirmResults (S8 recording 39)', () => {
+  it('confirms the upload with the tournament id, not its display id', async () => {
+    upstream.use(http.put(`${API}triumph/:upload/confirm/`, () => new HttpResponse(null, { status: 202 })));
+
+    expect(await gateway().confirmResults(UPLOAD, T)).toBe('confirmed');
+
+    expect(seen.map((s) => [s.method, path(s)])).toEqual([['PUT', `/services/triumph/${UPLOAD}/confirm/`]]);
+    expect(await sentJson(seen[0]!)).toEqual(recording('39').request);
+  });
+});
+
 /** Made-up settings for a new tournament, overridable per test. */
 export function newTournament(overrides: Partial<NewTournament> = {}): NewTournament {
   return {

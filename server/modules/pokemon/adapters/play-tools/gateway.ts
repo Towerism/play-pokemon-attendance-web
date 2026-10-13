@@ -28,7 +28,14 @@ import { OP_API_BASE, OP_API_HEADERS, STAFF_ROLES, TDF_ERROR_MESSAGES, lifecycle
 import {
   ActivitiesPage,
   AddressBookList,
+  CreateTournamentResponse,
   ProductsResponse,
+  ValidateResponse,
+  cancelTournamentBody,
+  confirmResultsBody,
+  createTournamentBody,
+  editTournamentBody,
+  validateResultsBody,
   SeriesList,
   type TdfError,
   UploadsList,
@@ -160,7 +167,7 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
   }
 
   /** A JSON write with a fresh token; the caller reads the status. */
-  async function writeJson(method: 'POST' | 'PATCH' | 'DELETE', path: string, payload: unknown, what: string): Promise<{ res: Response; url: URL }> {
+  async function writeJson(method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, payload: unknown, what: string): Promise<{ res: Response; url: URL }> {
     const token = await accessToken();
     const url = new URL(path, base);
     const res = await fetchUpstream(
@@ -173,6 +180,23 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
       what,
     );
     return { res, url };
+  }
+
+  /**
+   * A tournament or TDF write (S8): one request, never retried. Answers `{url, json}` for a 2xx, or for a status
+   * `accept` takes as an answer; anything else throws.
+   */
+  async function lifecycleWrite(
+    method: 'POST' | 'PATCH' | 'PUT',
+    path: string,
+    payload: unknown,
+    what: string,
+    accept: (res: Response, json: unknown) => boolean = () => false,
+  ): Promise<{ url: URL; json: unknown }> {
+    const { res, url } = await writeJson(method, path, payload, what);
+    const json = await jsonOrUndefined(res);
+    if (res.ok || accept(res, json)) return { url, json };
+    throw throttleOrServerError(res, what) ?? clientError(res.status, what);
   }
 
   /** Every page of a DRF list, following `next` only within the OP API's own origin. */
@@ -378,6 +402,42 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
         country: v.op_country ?? v.country ?? null,
         timeZone: v.timezone ?? null,
       }));
+    },
+
+    async createTournament(tournament) {
+      const what = 'Creating a tournament';
+      const organizer = userGuid((await accessToken()).subject);
+      const { url, json } = await lifecycleWrite('POST', lifecyclePaths.create(), createTournamentBody(tournament, organizer), what);
+      const parsed = CreateTournamentResponse.safeParse(json);
+      if (!parsed.success) throw unexpected(what, url, json, parsed.error);
+      return { tournamentId: parsed.data.guid };
+    },
+
+    async editTournament(tournamentId, changes) {
+      await lifecycleWrite('PATCH', lifecyclePaths.edit(tournamentGuid(tournamentId)), editTournamentBody(changes), 'Editing a tournament');
+      return 'edited';
+    },
+
+    async cancelTournament(tournamentId) {
+      await lifecycleWrite('PATCH', lifecyclePaths.edit(tournamentGuid(tournamentId)), cancelTournamentBody(), 'Cancelling a tournament');
+      return 'cancelled';
+    },
+
+    async validateResults(displayId, tdf) {
+      const what = 'Validating a TDF';
+      // A validation that finds errors may answer 400 with the same body (unrecorded), so a 400 with an upload id is a result.
+      const { url, json } = await lifecycleWrite('POST', lifecyclePaths.validate(), validateResultsBody(displayIdParam(displayId), tdf), what, (res, body) =>
+        res.status === 400 && ValidateResponse.safeParse(body).success,
+      );
+      const parsed = ValidateResponse.safeParse(json);
+      if (!parsed.success) throw unexpected(what, url, json, parsed.error);
+      return { uploadId: parsed.data.upload_guid, errors: parsed.data.errors.map(resultsError) };
+    },
+
+    async confirmResults(uploadId, tournamentId) {
+      const path = lifecyclePaths.confirm(guidParam(uploadId, 'upload'));
+      await lifecycleWrite('PUT', path, confirmResultsBody(tournamentGuid(tournamentId)), 'Confirming a TDF');
+      return 'confirmed';
     },
 
     async listResultsUploads(displayId): Promise<ResultsUpload[]> {
