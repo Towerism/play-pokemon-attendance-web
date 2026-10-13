@@ -45,7 +45,7 @@ echo "first boot"
 start
 check "app.db created and owned by PUID:PGID" \
   test "$(in_container stat -c '%u:%g' /data/app.db)" = "$PUID:$PGID"
-for f in session-password token-vault.key; do
+for f in session-password token-vault.key tdf-vault.key; do
   check "secrets/$f is 0600 and owned by PUID" \
     test "$(in_container stat -c '%a %u' /data/secrets/$f)" = "600 $PUID"
 done
