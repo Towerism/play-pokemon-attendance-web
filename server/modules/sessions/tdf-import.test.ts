@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { tomTdf } from '../../../shared/tdf/__fixtures__/tom';
 import { TdfError } from '../../../shared/tdf/parse';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
@@ -103,6 +104,15 @@ describe('preview', () => {
     const dump = JSON.stringify(database.sqlite.prepare('select * from tdf_upload').all()) +
       JSON.stringify(database.sqlite.prepare('select * from tdf_upload_player').all());
     expect(dump).not.toMatch(/2012|birth|<tournament|<player/);
+  });
+
+  it("shows only the tournament's name and date, never the file's organizer or id", () => {
+    const content = tomTdf({ organizerElement: '<organizer popid="5550001" name="Pat Organizer"/>' });
+
+    const preview = imports.preview(L, WED, { filename: 'cup.tdf', content });
+
+    expect(preview.tournament).toEqual({ name: 'Wednesday League Challenge', date: '2026-10-14' });
+    expect(JSON.stringify(preview)).not.toMatch(/5550001|Pat Organizer|popid|26-10-000123/);
   });
 
   it('throws TdfError for a file that is not a tournament', () => {

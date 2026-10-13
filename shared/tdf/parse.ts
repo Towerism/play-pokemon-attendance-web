@@ -24,8 +24,44 @@ export interface TdfInvalidRow {
   reason: string;
 }
 
+/**
+ * What the results upload checks against the tournament (ADR-0011): kept apart from `tournament`, which the
+ * attendance preview sends to the browser.
+ */
+export interface TdfOrganizer {
+  /** `data/organizer@popid` as text: leading zeros kept, not checked as a player ID. */
+  playerId: string;
+  /** `data/organizer@name`, tidied; '' when missing. */
+  name: string;
+}
+
+export interface TdfHeader {
+  /** `data/id`, trimmed; null when it's missing, empty or not plain text. TOM may write `<id/>`. */
+  tournamentId: string | null;
+  /** Null unless `data` has exactly one organizer with a popid. */
+  organizer: TdfOrganizer | null;
+  game: {
+    /** `tournament@gametype`, trimmed. */
+    gametype: string | null;
+    /** `tournament@mode`, trimmed. */
+    mode: string | null;
+    /** play-tools' product for the gametype; null for a spelling not seen in real files. */
+    product: TdfProduct | null;
+  };
+}
+
+export type TdfProduct = 'tcg' | 'vg' | 'pgo';
+
+/** TOM's spellings, from real files of each game (spikes.md S8 part 2). */
+const PRODUCT_BY_GAMETYPE: Record<string, TdfProduct> = {
+  TRADING_CARD_GAME: 'tcg',
+  VIDEO_GAME: 'vg',
+  GO: 'pgo',
+};
+
 export interface ParsedTdf {
   tournament: TdfTournament;
+  header: TdfHeader;
   /** One entry per player ID, in file order. */
   players: TdfPlayer[];
   invalid: TdfInvalidRow[];
@@ -104,10 +140,36 @@ export function parseTdf(xml: string): ParsedTdf {
       name: tidy(tournament.data?.name) || null,
       date: usDate(tournament.data?.startdate),
     },
+    header: {
+      tournamentId: tidy(tournament.data?.id) || null,
+      organizer: organizerOf(tournament.data?.organizer),
+      game: gameOf(tournament.gametype, tournament.mode),
+    },
     players: [...byId.values()],
     invalid,
     duplicates,
   };
+}
+
+/** A repeated element parses as an array, which isn't a single organizer. */
+function organizerOf(el: unknown): TdfOrganizer | null {
+  if (!el || typeof el !== 'object' || Array.isArray(el)) return null;
+  const { popid, name } = el as { popid?: unknown; name?: unknown };
+  const playerId = typeof popid === 'string' ? unescapeXml(popid).trim() : '';
+  return playerId ? { playerId, name: tidy(name) } : null;
+}
+
+function gameOf(gametypeAttr: unknown, modeAttr: unknown): TdfHeader['game'] {
+  const gametype = attrText(gametypeAttr);
+  return {
+    gametype,
+    mode: attrText(modeAttr),
+    product: (gametype && Object.hasOwn(PRODUCT_BY_GAMETYPE, gametype) && PRODUCT_BY_GAMETYPE[gametype]) || null,
+  };
+}
+
+function attrText(v: unknown): string | null {
+  return (typeof v === 'string' && unescapeXml(v).trim()) || null;
 }
 
 const notTdf = () => new TdfError('not_tdf', 'This is not a tournament file (.tdf).');
