@@ -123,8 +123,9 @@ in the **venue's** timezone through the existing `local-time` helpers, moved to 
 
 ### 4. Planning is local and on read
 
-- **Materialised on read.** Reading the upcoming tournaments upserts each active schedule's occurrences inside its
-  horizon (unique on schedule, slot and date). Planning needs no scheduled task, and nothing depends on the server
+- **Materialised on read.** Reading the upcoming tournaments upserts each active schedule's occurrences from the
+  **creatable window's start** (today − 2 days, decision 6) to the end of its horizon (unique on schedule, slot and
+  date), so a tournament held yesterday that was never sanctioned is still there to create. Planning needs no scheduled task, and nothing depends on the server
   having been up. **Create through a date** (decision 5) materialises the same way, up to its date even when that is
   past the horizon.
 - **Editing a schedule or scaffold** replans only what hasn't reached play-tools: `planned` and `skipped` rows that
@@ -133,7 +134,7 @@ in the **venue's** timezone through the existing `local-time` helpers, moved to 
 - **Skipping** a date (a holiday) is local: the row becomes `skipped` and is never created.
 - **Templates are read at creation time.** A planned tournament takes the template's settings when it is created, so
   editing a template changes every tournament not created yet, and none that exist.
-- **Reminders.** This week shows "N planned tournaments in the next 2 weeks aren't in play-tools yet", with a
+- **Reminders.** This week shows "N planned tournaments from 2 days ago to 2 weeks ahead aren't in play-tools yet", with a
   button to create them. A schedule shows how far it has been created ("in play-tools through 2026-12-31").
 
 ### 5. Creating: a `tournament_create` job
@@ -164,13 +165,14 @@ started (`organizer_not_connected`, `needs_reconnect`), as for staff.
 - **Outcomes:** `created`, `already_exists`, `refused`, `failed`, `skipped`.
 
 **Create through a date.** On a schedule, **Create through date…** takes a date X and creates every tournament the
-schedule plans from today up to and including X, in one `tournament_create` job. Example: monthly, 3rd Tuesday,
+schedule plans from the creatable window's start (today − 2 days, decision 6) up to and including X, in one
+`tournament_create` job. Example: monthly, 3rd Tuesday,
 through 2026-12-31 creates October's, November's and December's 3rd-Tuesday tournaments (every slot of the scaffold
 for each date).
 
 - **Explicit and listed first.** X is required, at most 12 months ahead. The schedule is materialised up to X (past
   its planning horizon if need be), and the dialog lists every tournament it will create, with the ones it leaves
-  out: `skipped`, already in play-tools, or past. Skipping a date in the list leaves it out. Nothing is created until
+  out: `skipped`, already in play-tools, or before the creatable window. Skipping a date in the list leaves it out. Nothing is created until
   the organizer confirms.
 - **One job, up to 60 tournaments**, oldest first, run like any other create: adopt before create, as each template's
   organizer, paced, under the lease, in History as "Create <scaffold name> through <X>". More than 60 is refused
@@ -195,9 +197,21 @@ for each date).
   tournament (a stored override). A `quarterly` schedule therefore follows the new series each quarter with no edit.
 - **Venue.** The template keeps the address-book id. A venue no longer in the organizer's address book is
   `venue_not_found`, and the organizer picks another on the template.
-- **Dates.** The app doesn't mirror upstream's date rules (series windows, cycle end, back-dating). Like eligibility
-  for staff (ADR-0007 decision 10), they are upstream's call. The planner shows the series window it found, and
-  refuses only a date more than 72 h in the past.
+- **Dates.** The app doesn't mirror upstream's series windows or cycle end. Like eligibility for staff (ADR-0007
+  decision 10), they are upstream's call, and the planner shows the series window it found.
+- **Sanctioning after the event: the last 2 days** (organizer, 2026-10-12). A tournament held in the last 2 days that
+  was never put in play-tools can still be created, so it can be sanctioned and its TDF uploaded. The **creatable
+  window** starts at **today − 2 days**, in the league `TZ`, and has no end before the 12-month limit:
+  - every way of creating takes a date in it: **Create in play-tools** on a planned tournament, a one-off **New
+    tournament** from a template, and **Create through date…** (decision 5). So does a reschedule (decision 8);
+  - Upcoming, This week (its date picker already reaches back), the reminder and the create-through list show
+    planned tournaments from that start;
+  - a date before it is refused locally (`date_too_far_past`) before any call;
+  - it fits upstream's own limit: S8 found play-tools' form takes a start up to 72 h in the past (its message), and
+    its code allows 84 h. The start of today − 2 days is less than 72 h before any moment today, and at most 73 h
+    across a DST fall-back, still inside 84 h. S8 part 2 confirms what the server enforces (Q5);
+  - a back-dated tournament is created like any other (adopt before create, as the organizer, paced). If play-tools
+    refuses it anyway, the refusal is the item's outcome (`refused`), as for any create.
 
 ### 7. Same rails as every other job
 
@@ -234,7 +248,7 @@ place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it):
   - for a premier event, a new date outside its series' window for the venue's country (`outside_series_window`).
     A professor can't change the series, so moving a League Cup into another quarter means cancelling it and making
     a new one, which the dialog says;
-  - more than 72 h in the past.
+  - a new date before the creatable window (today − 2 days, decision 6): `date_too_far_past`.
 - **Re-read, never re-send blindly.** A tournament already at the new start is `already_rescheduled`, and nothing is
   sent. After a 5xx the job re-reads, and the edit counts as landed when the start matches.
 - **Status afterwards.** If play-tools moves the tournament back to `approval-pending` (or `sanctioning-error`), the
@@ -254,10 +268,10 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
 ### 10. Where the organizer does it
 
 - **A new Tournaments page** (`tournaments.vue`, in the nav), with three tabs:
-  - **Upcoming:** planned and upstream tournaments for the coming weeks, by date. Each shows its status (planned,
+  - **Upcoming:** planned and upstream tournaments from 2 days ago through the coming weeks, by date. Each shows its status (planned,
     skipped, in play-tools, approval pending, sanctioning error, cancelled) and offers
     **Create in play-tools** (one, or every selected), **Skip**, **Reschedule…** and **Cancel…**. A one-off
-    **New tournament** comes from a template and a date.
+    **New tournament** comes from a template and a date, which may be up to 2 days in the past.
   - **Templates:** list, create, edit, archive. The form's choices (formats, series, venues) are read live from
     play-tools as the template's organizer.
   - **Schedules:** scaffolds (slots: template, day offset, start time) and their recurrence, with a preview of the
