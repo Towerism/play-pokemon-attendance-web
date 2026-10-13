@@ -6,6 +6,7 @@ import {
   clearConfirmed,
   historyLabel,
   isSubmissionActive,
+  playerImportSummary,
   progressPercent,
   staffImportBlocked,
   staffImportErrorText,
@@ -179,7 +180,7 @@ describe('a staff import in History and Settings', () => {
     );
   });
 
-  it('explains why an import stopped, in words, keeping any other message as it is', () => {
+  it('explains why an import (staff or player) stopped, in words, keeping any other message as it is', () => {
     expect(staffImportErrorText('forbidden')).toBe('play-tools refused to show these tournaments. Check which Pokémon account is connected.');
     expect(staffImportErrorText('needs_reconnect')).toBe('The Pokémon account needs reconnecting. Reconnect it above, then retry.');
     expect(staffImportErrorText('unavailable')).toBe('play-tools could not be reached. Try again later.');
@@ -189,7 +190,7 @@ describe('a staff import in History and Settings', () => {
     );
   });
 
-  it('can be started only with a usable Pokémon connection and a chosen league, and says why not', () => {
+  it('can be started only with a usable Pokémon connection and a chosen league, and says why not (a player import too)', () => {
     const league = { id: 'g', name: 'Card Shop', displayId: 'L5012', canSubmit: false };
     expect(staffImportBlocked({ status: 'connected', league })).toBeNull();
     expect(staffImportBlocked(null)).toBe('Connect a Pokémon account first.');
@@ -214,5 +215,29 @@ describe('staff jobs in History', () => {
 
   it('offers no undo for a staff job, and says where staff are changed', () => {
     expect(undoBlockedText({ kind: 'staff', undoBlockedReason: 'not_undoable', items: [] })).toBe('Staff are changed from This week, not undone.');
+  });
+});
+
+describe('a player import in History and Settings', () => {
+  const result = { tournamentsTotal: 117, tournamentsRead: 117, tournamentsFailed: 0, playersFound: 640, newPlayers: [] };
+
+  it('is labelled "Player import" in the history list, reads while running, and cannot be undone', () => {
+    expect(historyLabel({ kind: 'player_import', undoOf: null, playSessionLabel: 'Player import' })).toBe('Player import');
+    expect(submissionStatus('running', 'player_import')).toEqual({ label: 'Reading…', color: 'info' });
+    expect(undoBlockedText({ kind: 'player_import', undoBlockedReason: 'not_undoable', items: [] })).toBe("A player import can't be undone.");
+  });
+
+  it('sums up what it read and found, leaving out the zeros', () => {
+    const one = [{ playerId: '1' as PlayerId, name: 'Pat Player' }];
+    expect(playerImportSummary(result)).toBe('Read 117 of 117 tournaments · 640 players found');
+    expect(playerImportSummary({ ...result, tournamentsRead: 115, tournamentsFailed: 2, playersFound: 1, newPlayers: one })).toBe(
+      'Read 115 of 117 tournaments · 2 could not be read · 1 player found · 1 new player',
+    );
+    expect(playerImportSummary({ ...result, newPlayers: [...one, { playerId: '2' as PlayerId, name: '' }] })).toBe(
+      'Read 117 of 117 tournaments · 640 players found · 2 new players',
+    );
+    expect(playerImportSummary({ tournamentsTotal: 0, tournamentsRead: 0, tournamentsFailed: 0, playersFound: 0, newPlayers: [] })).toBe(
+      'No tournaments to read',
+    );
   });
 });

@@ -99,8 +99,9 @@ describe('startedByText (History)', () => {
     expect(startedByText({ startedBy: 'organizer', professor: null })).toBe('organizer');
   });
 
-  it('says a staff import read as every connected professor (#75)', () => {
+  it('says a staff or player import read as every connected professor (#75)', () => {
     expect(startedByText({ startedBy: 'organizer', professor: null, kind: 'staff_import' })).toBe('organizer, as every connected professor');
+    expect(startedByText({ startedBy: 'organizer', professor: null, kind: 'player_import' })).toBe('organizer, as every connected professor');
     expect(startedByText({ startedBy: 'organizer', professor: { playerId: '0012345', name: null }, kind: 'staff_import' })).toBe(
       'organizer, as Professor 0012345',
     );

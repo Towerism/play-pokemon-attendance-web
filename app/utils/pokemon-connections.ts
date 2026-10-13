@@ -69,9 +69,10 @@ export function submitAsText(r: Maybe<ConnectionsResponse>): string | null {
   return submitting ? `Submitting as ${professorLabel(submitting)}` : null;
 }
 
-/** Who started a History entry, and as which professor when that was recorded; a staff import reads as every one (#75). */
+/** Who started a History entry, and as which professor when that was recorded; an import reads as every one (#75). */
 export function startedByText(s: { startedBy: string; professor: { playerId: string; name: string | null } | null; kind?: string }): string {
-  if (!s.professor) return s.kind === 'staff_import' ? `${s.startedBy}, as every connected professor` : s.startedBy;
+  const everyone = s.kind === 'staff_import' || s.kind === 'player_import';
+  if (!s.professor) return everyone ? `${s.startedBy}, as every connected professor` : s.startedBy;
   return `${s.startedBy}, as ${professorLabel({ professorPlayerId: s.professor.playerId, professorName: s.professor.name })}`;
 }
 

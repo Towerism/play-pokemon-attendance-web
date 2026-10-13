@@ -78,6 +78,8 @@ export interface SubmissionView extends SubmissionSummary {
   items: SubmissionItemView[];
   /** A staff import's result; absent for other kinds. */
   staffImport?: StaffImportResult;
+  /** A player import's result; absent for other kinds. */
+  playerImport?: PlayerImportResult;
 }
 
 /** What a staff import read and found (ADR-0007 decision 5). */
@@ -88,6 +90,17 @@ export interface StaffImportResult {
   /** Distinct staffers, one item each. */
   staffersFound: number;
   /** Staffers the league didn't know before, by their local name, then id: check their names on Players → Staff. */
+  newPlayers: { playerId: PlayerId; name: string }[];
+}
+
+/** What a player import read and found (#35): the players the same tournaments list. */
+export interface PlayerImportResult {
+  tournamentsTotal: number;
+  tournamentsRead: number;
+  tournamentsFailed: number;
+  /** Distinct players, one item each. */
+  playersFound: number;
+  /** Players the league didn't know before, by their local name, then id. */
   newPlayers: { playerId: PlayerId; name: string }[];
 }
 
@@ -174,6 +187,13 @@ export interface SubmissionService {
    * @throws SubmissionError, PokemonUpstreamError
    */
   importStaff(leagueId: string, startedBy: string): Promise<{ submissionId: number }>;
+  /**
+   * Import players from play-tools (#35): reads the same tournaments as
+   * `importStaff` and adds the players they list to the league, as a new
+   * read-only `player_import` job in the background. Records no sightings.
+   * @throws SubmissionError, PokemonUpstreamError
+   */
+  importPlayers(leagueId: string, startedBy: string): Promise<{ submissionId: number }>;
   /**
    * Starts a staff batch (#76): the tournaments' staff jobs one after another, in the order given, each as its
    * organizer, holding the league's lease throughout. A tournament refused at its turn is not started; the rest go on.
@@ -272,8 +292,12 @@ const SKIPPED_TOURNAMENT: PokemonErrorCode[] = ['not_found', 'unexpected_shape']
 function skipsTournament(err: PokemonUpstreamError): boolean {
   return SKIPPED_TOURNAMENT.includes(err.code) || (err.code === 'forbidden' && err.details.status === 403);
 }
-/** A staff import's `play_session_label`; it has no play session or tournament of its own. */
-const STAFF_IMPORT_LABEL = 'Staff import';
+/** The tournament imports: each reads every connected professor's tournaments and keeps part of who they list. */
+type ImportKind = 'staff_import' | 'player_import';
+const IMPORT_KINDS: readonly SubmissionKind[] = ['staff_import', 'player_import'];
+const isImport = (row: { kind: SubmissionKind }): row is { kind: ImportKind } => IMPORT_KINDS.includes(row.kind);
+/** An import's `play_session_label`; it has no play session or tournament of its own. */
+const IMPORT_LABEL: Record<ImportKind, string> = { staff_import: 'Staff import', player_import: 'Player import' };
 
 const DRAFT_STATUS: Record<SubmissionStatus, SessionStatus> = {
   planned: 'submitting',
@@ -306,7 +330,7 @@ class Interrupted extends Error {
 
 /** How logs name a job. */
 const what = (row: { kind: SubmissionKind }) =>
-  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', staff_import: 'Staff import' })[row.kind];
+  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', ...IMPORT_LABEL })[row.kind];
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -1261,14 +1285,17 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   /**
-   * Staff import (ADR-0007 decision 5, #75): reads every tournament each
-   * connected professor organizes, in the leagues they are in today, as that
-   * professor, and seeds the staff list from each one's participants. A
+   * Staff import (ADR-0007 decision 5, #75) and player import (#35): read
+   * every tournament each connected professor organizes, in the leagues they
+   * are in today, as that professor, and seed the staff list (staff import) or
+   * the league's players (player import) from each one's participants. A
    * tournament two professors list is read once. One professor's failure stops
    * only their reads. Read-only, one call at a time and unpaced (organizer,
    * 2026-10-12: reads don't need pacing).
    */
-  async function runStaffImport(row: Row): Promise<void> {
+  async function runImport(row: Row & { kind: ImportKind }): Promise<void> {
+    const label = IMPORT_LABEL[row.kind];
+    const seed = row.kind === 'staff_import' ? seedFrom : seedPlayersFrom;
     setStatus(row, 'running');
     let total = 0;
     let done = 0;
@@ -1301,7 +1328,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     function professorFailed(c: ActingConnection, code: string): void {
       professorsFailed += 1;
       lastFailure = code;
-      log.warn(`Staff import #${row.id} could not read professor ${c.professorPlayerId}'s tournaments: ${code}`, {
+      log.warn(`${label} #${row.id} could not read professor ${c.professorPlayerId}'s tournaments: ${code}`, {
         submissionId: row.id,
         professorPlayerId: c.professorPlayerId,
         code,
@@ -1334,7 +1361,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     const why = leftOut ? `; ${leftOut} left out (leagues this account is no longer in)` : '';
     emit(row, 'planned', `${total} tournaments to read${why}.`, 0, total);
 
-    /** Every staffer found so far: once new to the league, a staffer stays `new_player` for the whole import. */
+    /** Everyone found so far: once new to the league, a player stays `new_player` for the whole import. */
     const found = new Map<PlayerId, 'found' | 'new_player'>();
     const stopped = new Set<number>();
     for (const [i, { conn, gateway, t }] of plan.entries()) {
@@ -1354,7 +1381,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         // Gone, unreadable, refused (403), or still down after 3 tries: this tournament only.
         failed += 1;
         lastFailure = err.code;
-        log.warn(`Staff import #${row.id} could not read tournament ${t.id}: ${err.code}`, {
+        log.warn(`${label} #${row.id} could not read tournament ${t.id}: ${err.code}`, {
           submissionId: row.id,
           tournamentId: t.id,
           code: err.code,
@@ -1364,13 +1391,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         emit(row, 'tournament_failed', `Could not read tournament ${t.displayId ?? t.id} (${when}): ${err.code}.`, done + failed, total);
         continue;
       }
-      db.transaction(() => seedFrom(row, t, participants, found));
+      db.transaction(() => seed(row, t, participants, found));
       done += 1;
       emit(row, 'tournament_read', `Read ${done} of ${total} tournaments.`, done + failed, total);
     }
     const status = failed === 0 && professorsFailed === 0 ? 'succeeded' : done > 0 ? 'partial' : 'failed';
     setStatus(row, status, status === 'failed' ? lastFailure : null);
-    emit(row, 'finished', `Staff import ${status}: read ${done} of ${total} tournaments, found ${found.size} staff.`, done + failed, total);
+    const who = row.kind === 'staff_import' ? 'staff' : found.size === 1 ? 'player' : 'players';
+    emit(row, 'finished', `${label} ${status}: read ${done} of ${total} tournaments, found ${found.size} ${who}.`, done + failed, total);
   }
 
   /**
@@ -1401,7 +1429,27 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     );
   }
 
-  /** A staff import's tournaments: planned, read and given up on, from its events. */
+  /**
+   * Adds one tournament's players (not its staff) to the league and records
+   * each as an item. Names only fill a player the app could not name; no
+   * sighting, regular or staff history is written (#35).
+   */
+  function seedPlayersFrom(
+    row: Row,
+    _t: Pick<Tournament, 'id' | 'startsAt'>,
+    participants: readonly TournamentParticipant[],
+    found: Map<PlayerId, 'found' | 'new_player'>,
+  ): void {
+    const players = participants.filter((p) => !p.isStaff);
+    const ids = [...new Set(players.map((p) => p.playerId))];
+    const known = new Set(deps.roster.getPlayers(row.leagueId, ids).map((p) => p.playerId));
+    deps.roster.ensurePlayers(row.leagueId, players.map((p) => ({ playerId: p.playerId, name: p.name })));    for (const playerId of ids) {
+      found.set(playerId, !known.has(playerId) || found.get(playerId) === 'new_player' ? 'new_player' : 'found');
+    }
+    setItems(ids.map((playerId) => ({ submissionId: row.id, playerId, origin: 'upstream' as const, outcome: found.get(playerId)! })));
+  }
+
+  /** An import's tournaments: planned, read and given up on, from its events. */
   function importProgress(row: Pick<Row, 'id'>): Pick<StaffImportResult, 'tournamentsTotal' | 'tournamentsRead' | 'tournamentsFailed'> {
     const events = db
       .select({ type: submissionEvent.type, total: submissionEvent.total })
@@ -1424,6 +1472,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return { ...importProgress(row), staffersFound: items.length, newPlayers };
   }
 
+  /** A player import's result: its progress, and the players its items hold. */
+  function playerImportResult(row: Row, items: readonly { playerId: string; outcome: ItemOutcome }[], names: Map<PlayerId, string>): PlayerImportResult {
+    const { staffersFound, ...rest } = staffImportResult(row, items, names);
+    return { ...rest, playersFound: staffersFound };
+  }
+
   /** A job that stops early: whoever was not sent yet is skipped. */
   function stopEarly(row: Row, status: 'failed' | 'interrupted', error: string): void {
     db.update(submissionItem)
@@ -1433,9 +1487,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     if (row.kind === 'undo' || row.kind === 'clear') finishRemoval(row);
     if (row.kind === 'staff') finishStaff(row);
     setStatus(row, status, error);
-    if (row.kind === 'staff_import') {
+    if (isImport(row)) {
       const r = importProgress(row);
-      emit(row, 'finished', `Staff import ${status}: ${error}`, r.tournamentsRead + r.tournamentsFailed, r.tournamentsTotal);
+      emit(row, 'finished', `${IMPORT_LABEL[row.kind]} ${status}: ${error}`, r.tournamentsRead + r.tournamentsFailed, r.tournamentsTotal);
       return;
     }
     const c = counts(row);
@@ -1454,15 +1508,15 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           ? runClear(row)
           : row.kind === 'staff'
             ? runStaff(row)
-            : row.kind === 'staff_import'
-              ? runStaffImport(row)
+            : isImport(row)
+              ? runImport(row)
               : run(row)
     )
       .catch((err: unknown) => {
         const interrupted = err instanceof Interrupted;
         if (!interrupted) log.warn(`${what(row)} #${submissionId} failed: ${(err as Error).message}`, { submissionId });
-        // History shows a staff import's upstream stop as its code (forbidden, needs_reconnect, unavailable…).
-        const reason = row.kind === 'staff_import' && err instanceof PokemonUpstreamError ? err.code : (err as Error).message;
+        // History shows an import's upstream stop as its code (forbidden, needs_reconnect, unavailable…).
+        const reason = isImport(row) && err instanceof PokemonUpstreamError ? err.code : (err as Error).message;
         stopEarly(row, interrupted ? 'interrupted' : 'failed', reason);
       })
       .then(() => {
@@ -1807,7 +1861,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     };
   }
 
-  async function beginStaffImport(leagueId: string, startedBy: string, retryOf: number | null) {
+  async function beginImport(kind: ImportKind, leagueId: string, startedBy: string, retryOf: number | null) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     // Every connected professor is read (#75): it needs one who can be, and the league chosen.
     const conns = deps.connections.listActingConnections();
@@ -1825,7 +1879,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           leagueId,
           sessionDate: dateIn(now(), timeZone),
           playSessionId: '',
-          playSessionLabel: STAFF_IMPORT_LABEL,
+          playSessionLabel: IMPORT_LABEL[kind],
           startedBy,
           // Read as every connected professor, so no single one (#75).
           professorPlayerId: null,
@@ -1833,7 +1887,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           startedAt: now(),
           status: 'planned',
           retryOf,
-          kind: 'staff_import',
+          kind,
         })
         .returning()
         .get();
@@ -1857,7 +1911,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       if (row.kind === 'undo') return beginUndo(leagueId, mustFind(leagueId, row.undoOf!), startedBy, row.id);
       if (row.kind === 'clear') return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
-      if (row.kind === 'staff_import') return beginStaffImport(leagueId, startedBy, row.id);
+      if (isImport(row)) return beginImport(row.kind, leagueId, startedBy, row.id);
       return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
     },
 
@@ -1887,7 +1941,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
     applyStaff: async (leagueId, date, input) => beginStaff(leagueId, date, input.tournamentId, input.startedBy, null),
 
-    importStaff: async (leagueId, startedBy) => beginStaffImport(leagueId, startedBy, null),
+    importStaff: async (leagueId, startedBy) => beginImport('staff_import', leagueId, startedBy, null),
+
+    importPlayers: async (leagueId, startedBy) => beginImport('player_import', leagueId, startedBy, null),
 
     applyStaffAll: async (leagueId, date, input) => beginStaffBatch(leagueId, date, input.tournamentIds, input.startedBy),
 
@@ -1938,6 +1994,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           suggestedPlayerId: i.suggestedPlayerId as PlayerId | null,
         })),
         ...(row.kind === 'staff_import' ? { staffImport: staffImportResult(row, items, names) } : {}),
+        ...(row.kind === 'player_import' ? { playerImport: playerImportResult(row, items, names) } : {}),
       };
     },
 

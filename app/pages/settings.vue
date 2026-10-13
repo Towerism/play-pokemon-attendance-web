@@ -9,5 +9,6 @@ useHead({ title: 'Settings' });
     <PokemonConnectionCard />
     <CurationThresholdsCard />
     <StaffImportCard />
+    <PlayerImportCard />
   </div>
 </template>
