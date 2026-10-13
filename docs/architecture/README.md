@@ -433,7 +433,8 @@ interface PlayToolsGateway {
   cancelTournament(id: string): Promise<'cancelled' | 'already_cancelled'>;
   validateResults(displayId: string, tdf: string): Promise<{ uploadId: string; errors: ResultsError[] }>;
   confirmResults(uploadId: string, tournament: { id: string; displayId: string }): Promise<'confirmed'>;
-  // getTournament gains applicationState, activityState, venue time zone and the editable fields reschedule resends.
+  // getTournament gains applicationState, activityState, organizerName (first + last, for a TDF organizer fix),
+  // venue time zone and the editable fields reschedule resends.
 }
 ```
 
@@ -611,6 +612,7 @@ erDiagram
     int id PK "ADR-0008: one row per professor, at most 10"
     text professor_player_id UK "null only for a v1 row not yet identified"
     text professor_name "organizer's optional display name; never from Pokémon"
+    text professor_full_name "optional full name for TDFs (M9, ADR-0011 decision 8); pre-filled from play-tools' organizer first + last name, confirmed by the organizer, never overwritten by play-tools; written into a TDF whose organizer is replaced"
     text ptc_user_id "access-token sub (S5)"
     blob refresh_token_ciphertext "vault: version | iv | tag | ct, AAD = pokemon_connection:<id>"
     text status "connected|needs_reconnect"
@@ -732,7 +734,9 @@ erDiagram
     text tournament_id
     text display_id
     text filename
-    int tdf_file_id FK "the archived file (ADR-0012); null once the organizer deletes it"
+    int tdf_file_id FK "the archived file as dropped (ADR-0012); null once the organizer deletes it"
+    int sent_tdf_file_id FK "the corrected file actually validated and sent, when the organizer was replaced (ADR-0011 decision 8)"
+    text organizer_replaced "json {fromPlayerId, fromName, toPlayerId, toName}; null when the file's organizer matched"
     text sha256 "kept even after the file is deleted"
     int player_count
     text upstream_upload_id "triumph upload_guid"
@@ -1175,7 +1179,8 @@ sequenceDiagram
   Note over O,G: after the event, on This week
   O->>W: drop tournament.tdf on its card
   W->>S: POST /api/sessions/{date}/tournaments/{id}/results
-  S->>S: parse; blocks (unreadable, can't take an upload) vs warnings (id, organizer, game, staff also playing, players new to the app)
+  S->>S: parse; blocks (unreadable, can't take an upload) vs warnings (id, game, staff also playing, players new to the app)
+  S->>S: file's organizer ≠ tournament's → replace popid + name (full name from the connection, asked once)
   S->>G: getTournament + participants; validateResults (as organizer)
   S-->>W: preview: blocks, warnings (incl. play-tools' errors) + attendance diff
   O->>W: Upload results (or Upload anyway, after the warning)
@@ -1244,8 +1249,8 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
 | `POST /tournaments/{id}/reschedule` → 202 (M9) | `{date, startTime}` → a `tournament_reschedule` job; 422 `outside_series_window`/`tournament_locked`/`date_too_far_past` |
 | `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; SHA-256s on upload rows stay). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
-| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB) → `{uploadId, warnings: [{code, message, players?}], attendance}`; warnings (`tdf_wrong_tournament`/`tdf_wrong_organizer`/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`/play-tools' validation codes) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`; 409 `submission_running`. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
-| `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name }` sets or clears the display name (≤ 60 characters, `''`/null clears; display only, never sent to Pokémon) and answers the connection. `POST /pokemon/token` is not built yet |
+| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB) → `{uploadId, warnings: [{code, message, players?}], attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_wrong_tournament`/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`/play-tools' validation codes) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`; 409 `submission_running`. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
+| `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name }` sets or clears the display name (≤ 60 characters, `''`/null clears; display only, never sent to Pokémon) and answers the connection. From M9 it also takes `{ fullName }` (≤ 100 characters, `''`/null clears), the professor's full name as play-tools has it (first offered from play-tools' organizer name, then saved), used only when the app replaces a TDF's organizer name and player id (ADR-0011 decision 8). `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream?professor=` · `GET /settings` · `PUT /settings` | Pick the submitting professor and their activity group, timezone, thresholds, batch delay. As built: `GET /leagues/upstream` lists the leagues every connected professor shares (#75), named as that professor sees them, with `selectedId` and `excluded` (professors left out because they need a reconnect; any other failure is 502/503); `PUT` refuses a league outside that set with 404 `league_not_found`; `GET /settings` is `{ thresholds }`; `PUT` takes `{ professorPlayerId?, activityGroupId?, thresholds? }` (the professor and league together; `{}` changes nothing; 404 `connection_not_found` or `league_not_found`) and answers with what it changed, `{ connection?, thresholds? }` |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.

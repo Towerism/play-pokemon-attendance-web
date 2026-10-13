@@ -3,6 +3,7 @@
 - Status: Proposed (#66)
 - Date: 2026-10-12
 - Amends: [ADR-0003](0003-pokemon-auth-pkce-refresh-token.md) (one connection per league)
+- Amended by (proposed): [ADR-0011](0011-tdf-results-upload.md) decision 8: a connection also stores the professor's optional **full name**, like the display name: offered from play-tools' organizer name, confirmed by the organizer, and written into a TDF whose organizer is replaced
 - Amended by: [ADR-0009](0009-tournaments-as-their-organizer.md): only attendance calls go through the submitting professor; tournament calls go through each tournament's organizer, and the league must be one every professor shares (#75)
 
 ## Context

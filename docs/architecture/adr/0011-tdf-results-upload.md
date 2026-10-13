@@ -32,6 +32,11 @@ Two rules from §9 bear on this: **never persist raw TDF files or birthdates** (
 encrypted at rest), and **act on a tournament only as its organizer** (ADR-0009). A TDF holds every player's
 birthdate, and play-tools needs the whole file.
 
+The organizer on a file whose organizer is wrong (2026-10-12): sometimes a TDF names a different organizer than the
+tournament's. Today the organizer opens the file in a text editor and fixes the player id by hand. The app should do
+that edit instead. It warns that the file's organizer will be replaced with the tournament's, asks for the
+organizer's full name the first time, and saves it for the future, stored like the display name (decision 8).
+
 The organizer on validation failures (2026-10-12): a TDF that will fail play-tools' validation may still be sent.
 Sometimes that is what they want, and Pokémon support almost always resolves it from there. The app must **warn
 before sending it**. The preview must also **call out every player the app doesn't know**, since those may be
@@ -79,7 +84,8 @@ Option 3.
      what play-tools is likely to do:
      - **the app's own checks, against the fresh read:**
        - the file's tournament id isn't the card's display id (`tdf_wrong_tournament`);
-       - its organizer id isn't the tournament's organizer (`tdf_wrong_organizer`);
+       - its organizer id isn't the tournament's organizer. The app **fixes this in the file** rather than only
+         warning (decision 8): `tdf_organizer_replaced`, or `tdf_wrong_organizer` when it can't;
        - its game type doesn't match the tournament's product (`tdf_wrong_game`);
        - a player in the file is on the tournament's staff, as play-tools lists it (`tdf_staff_also_playing`, naming
          them, and pointing at the Staff section). play-tools refuses this as `STAFF_PLAYERS_ERROR`.
@@ -91,9 +97,10 @@ Option 3.
        the row says "A known player with this name has id 01234". It is a hint only. The app never changes an id in
        the file. A mis-keyed id is fixed in TOM, and the file is dropped again. The list is worked out before the
        attendance import would make these players known.
-   - **Then upstream's validate** runs as the organizer, in one call, whenever nothing blocks. It runs even with
-     local warnings, so the organizer sees play-tools' own answer before choosing. It returns `upload_guid` and
-     play-tools' errors.
+   - **Then upstream's validate** runs as the organizer, in one call, whenever nothing blocks. It validates **the
+     file that would be sent**, with the organizer already replaced (decision 8). It runs even with local warnings, so
+     the organizer sees play-tools' own answer before choosing. It returns `upload_guid` and play-tools' errors. It
+     waits only while the organizer's full name is still being asked for (decision 8).
    - **The preview is stored:** the file goes into the encrypted TDF archive (ADR-0012), and a
      `tournament_result_upload` row holds the tournament, the archived file's id, SHA-256, player count,
      `upload_guid`, the warnings (codes, messages and the unknown players' ids and names) and state `previewed`.
@@ -102,7 +109,10 @@ Option 3.
 
 4. **Confirm** (`POST …/results/{uploadId}/confirm {importAttendance, acknowledgeWarnings}`) starts a
    `kind = 'tdf_upload'` job on the submission rails (lease, History, retry, recovery):
-   - **Warn before sending.** With no warnings, the button is **Upload results**. With any warning, the dialog lists
+   - **Warn before sending.** A replaced organizer is listed first: "The file names <popid> (<name>) as organizer.
+     It will be sent with <full name> (<player id>), the tournament's organizer, instead." It counts as a warning to
+     acknowledge, and the button reads **Replace organizer and upload** when it is the only one. With no warnings,
+     the button is **Upload results**. With any warning, the dialog lists
      them all, play-tools' first, and the button becomes **Upload anyway**. The dialog says: "play-tools reported
      problems with this file. Uploading anyway will most likely fail processing, and Pokémon support usually has to
      resolve it." The server refuses a confirm without `acknowledgeWarnings: true` for a preview that has warnings
@@ -137,8 +147,39 @@ Option 3.
 6. **Not uploading twice.** The app refuses an upload for a tournament with player records (upstream allows it only
    to admins). A second preview of the same file for the same tournament reuses the open preview.
 
-7. **Ports.** `PlayToolsGateway` gains `validateResults(displayId, file)` → `{uploadId, errors}` and
-   `confirmResults(uploadId, tournament)`. `getTournament` gains `applicationState`, `activityState` and
+8. **Fix the organizer in the file** (organizer, 2026-10-12). When the file's organizer player id (`organizer@popid`,
+   compared as text) isn't the tournament's organizer (`organizer.player_id` from the fresh read), the app replaces
+   it, so nobody has to edit the file in a text editor:
+   - **What changes:** only the `<organizer>` element's `popid`, set to the tournament organizer's player id, and its
+     `name`. The file's incorrect organizer name is **replaced too**, with the tournament organizer's full name as
+     play-tools has it (organizer, 2026-10-12), confirmed once and saved (below). It is a minimal text edit by a pure function in `shared/tdf`
+     (`replaceOrganizer(xml, {playerId, name})`). The name is XML-escaped, every other byte of the file stays as TOM
+     wrote it (no re-serialising), and the result is parsed again to check it. If the file has no single
+     `<organizer>` element to edit, nothing is changed, and the old warning `tdf_wrong_organizer` stands, with
+     **Upload anyway** as before.
+   - **The organizer's full name.** The name written into the file is the tournament organizer's full name as
+     play-tools has it. The tournament details carry `organizer.first_name` and `last_name` (seen in the #67 spike
+     data), and `getTournament` gains `organizerName` for it. It is stored on the professor's Pokémon connection, like
+     the display name (`professor_full_name`, ≤ 100 characters), set in Settings beside the display name, or here:
+     - **known:** the preview replaces the organizer straight away, and validates the corrected file;
+     - **not known yet:** the preview stores the file, skips validate, and answers `needsOrganizerFullName: {playerId,
+       playToolsName}`. The dialog asks "<organizer>'s full name, as it should appear in the TDF", **pre-filled with
+       play-tools' name** (first and last). The organizer confirms it, or corrects it once. `POST
+       …/results/{uploadId}/organizer {fullName}` saves it on the connection for next time, then replaces the
+       organizer and validates, and the preview carries on as usual;
+     - **saved, not re-read:** once saved, the stored full name is what later files get. A change of name in
+       play-tools doesn't overwrite it, as for every name in the app (ADR-0007 decision 13). It is changed in
+       Settings.
+   - **Acknowledged, like a warning** (decision 4): `tdf_organizer_replaced` names the old popid and name, and the
+     new ones.
+   - **Both files are kept** in the encrypted archive (ADR-0012): the file as dropped, and the corrected file that
+     was validated and sent. The upload row points at both, so bookkeeping shows exactly what play-tools received.
+     The attendance import uses the players, which are the same in both.
+   - **Only the organizer.** The app never rewrites anything else in a TDF: player ids, names, the tournament id and
+     the game type stay as warnings for the organizer to fix in TOM.
+
+9. **Ports.** `PlayToolsGateway` gains `validateResults(displayId, file)` → `{uploadId, errors}` and
+   `confirmResults(uploadId, tournament)`. `getTournament` gains `applicationState`, `activityState`, `organizerName` (first + last) and
    `displayId`. Which id confirm takes (the `guid` or the `display_id`; the bundle uses both) and the
    presigned-URL flag are S8 part 2's to settle, inside the adapter.
 
@@ -162,6 +203,10 @@ Option 3.
   organizer's informed choice, recorded with who acknowledged which warnings.
 - (−) "New to the app" is only a hint. A real first-timer is listed too, and a mis-keyed id that happens to be another
   known player's id isn't caught.
+- (+) A TDF naming the wrong organizer no longer means editing XML by hand. The app fixes it, says so, and keeps
+  both versions.
+- (−) The app now edits a file before sending it to play-tools. The edit is limited to the organizer element, tested
+  as a pure function, re-parsed, acknowledged by the organizer, and both versions are kept.
 - (−) The parser now reads three more fields from the file (tournament id, organizer id, game type). None is personal
   data beyond a professor's player id.
 
@@ -173,4 +218,5 @@ Option 3.
 | Q2 | Can an upload be made before the start date? How long does `upload_in_progress` last? How long does an unconfirmed `upload_guid` live? | **Open: S8 part 2** |
 | Q3 | Should the attendance import be ticked by default when a TDF is dropped on a tournament card? | **Answered (organizer, 2026-10-12):** yes, ticked |
 | Q4 | Does `PUT triumph/{upload_guid}/confirm/` accept an upload whose validation returned errors, or refuse it? | **Open: S8 part 2.** Either way the app warns first; a refusal is recorded with support details (decision 4) |
+| Q6 | Exact shape of TOM's `<organizer>` element (attributes `popid` and `name`?), from a real TDF | **Open:** check against any real file the organizer has before `replaceOrganizer` is built; recorded as a parser fixture |
 | Q5 | May a file that fails validation be sent at all? | **Answered (organizer, 2026-10-12):** yes, after a warning; Pokémon support resolves it from there. Players new to the app are called out as possible mis-keyed ids |
