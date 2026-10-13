@@ -5,6 +5,10 @@
 - Amends: architecture §5 ("TDF privacy"), §9 (minors' PII, malicious TDF) and §10 (secrets, backups); the
   CLAUDE.md security rule "never persist TDF birthdates or raw TDF files"; [ADR-0011](0011-tdf-results-upload.md)
   decision 5 (the raw file only passes through)
+- Amended by: [#101](https://github.com/Towerism/play-pokemon-attendance-web/issues/101) (2026-10-13, from the PR #83
+  review): a corrected file replaces its original only after re-pointing the attendance imports that use it
+  (decisions 1, 4); automatic deletes skip referenced files, and `kept_reason` becomes the set `kept_for`
+  (decisions 3, 5); the docs say plainly that an appdata backup can open the archive (decision 6)
 - Builds on: [ADR-0003](0003-pokemon-auth-pkce-refresh-token.md) (the token vault's AES-256-GCM format),
   [ADR-0006](0006-docker-on-unraid.md) (secrets generated once in `/data/secrets/`)
 
@@ -35,8 +39,10 @@ ADR-0011 results upload whose `upload_guid` expires needs the file dropped again
 Option 4.
 
 1. **What is kept.** Every `.tdf` the organizer drops is kept: on This week for attendance (M3), and on a tournament
-   card for results (ADR-0011). It is kept whole and byte for byte, as the organizer's record of what TOM wrote and
-   what was sent to play-tools. Nothing extracted from it changes: the parser still reads only names, ids and the
+   card for results (ADR-0011). It is kept whole and byte for byte as dropped, with one exception: when the app
+   corrects a file before sending it (ADR-0011 decision 8), the corrected file replaces the original, and the
+   attendance imports that used the original are re-pointed to it (decision 4). So the archive holds what TOM wrote,
+   or what was sent to play-tools when the app corrected it. Nothing extracted from it changes: the parser still reads only names, ids and the
    tournament's metadata. **Birthdates exist only inside the encrypted file**, never in a column, a log line, an event
    or an API response other than the file download (decision 5).
 
@@ -61,8 +67,13 @@ Option 4.
      sha256)`;
    - `read(fileId)` → content;
    - `list(leagueId, filter)`;
-   - `markKept(fileId, reason)`;
-   - `delete(fileId)`.
+   - `markKept(fileId, reason)`, which adds `attendance`, `results` or `play-tools` to the file's `kept_for` set
+     (#101: a file can be kept for more than one reason);
+   - `replace(originalId, corrected)` → `{fileId}`: stores the corrected file, re-points every `TDF_UPLOAD` that uses
+     the original (each keeps its `sha256`, the file as dropped), and deletes the original unless a results
+     upload still uses it, all in one transaction (#101);
+   - `delete(fileId)` → `{referencedBy}`: the organizer's explicit delete. It removes the ciphertext and reports the
+     rows that pointed at it; those keep their SHA-256 and show "file deleted".
 
    Only this module touches the cipher for TDFs.
 
@@ -72,12 +83,16 @@ Option 4.
      shipped ones are not edited), along with the code that fills and expires it. A re-drop of the same file is
      recognised by its SHA-256, as today.
    - **Results upload (ADR-0011):** the preview stores the file once for both the attendance import and the results
-     upload. A retry runs validate again from the archive (each validate is a send; ADR-0011 decision 7). The organizer never has to drop the file again. Confirm still sends only the
+     upload. **Upload again…** runs validate again from the archive, after the send dialog (each validate is a send;
+     ADR-0011 decisions 5 and 7). The organizer never has to drop the file again. Confirm still sends only the
      `upload_guid`.
    - **One drop, one stored file**, whichever features use it. When the app corrects a file before sending (an empty
-     tournament id filled in, or the organizer replaced: ADR-0011 decision 8), **only the corrected file is kept** (organizer, 2026-10-12). It replaces
-     the dropped original, which is deleted, and the archive holds what play-tools received. The original's SHA-256 is
-     kept on the upload row, so a re-drop of it is still recognised.
+     tournament id filled in, or the organizer replaced: ADR-0011 decision 8), **only the corrected file is kept**
+     (organizer, 2026-10-12). `replace` stores it, re-points every attendance import (`TDF_UPLOAD`) that used the
+     original to it, and deletes the original, in one transaction (organizer, 2026-10-13; #101). The players are the
+     same, because a correction changes only the organizer and an empty id. The original's SHA-256 is kept on the
+     upload rows (a re-pointed `TDF_UPLOAD` keeps its `sha256`), so a re-drop of it is still recognised. The original
+     stays only while another **results** upload uses it.
 
 5. **Handled with care.**
    - **Who can read it:** only a logged-in organizer, through `GET /tdf-files/{id}/download` or a tournament's
@@ -87,15 +102,24 @@ Option 4.
    - **What lists it:** History, and each tournament card's Results section, list the stored files (name, tournament,
      date, size, when and by whom) with **Download** and **Delete**. Settings shows the archive's size and file count.
    - **Abandoned previews don't pile up.** A file that was only previewed (never committed for attendance nor
-     confirmed for results) is deleted with its preview after a day. A file committed or confirmed is marked kept.
-   - **Kept until the organizer deletes it.** **Delete** removes the ciphertext at once. The SHA-256 stays on the
-     upload rows, so History still says which file it was. There is no automatic expiry yet (Q1).
+     confirmed for results) is deleted with its preview after a day. A file committed or confirmed is marked kept,
+     with the reason added to its `kept_for` set, and a file is an expirable preview only while that set is empty.
+     **No automatic delete removes a file a row still points at** (#101): the expiry run and `replace` skip it.
+   - **Kept until the organizer deletes it.** **Delete** removes the ciphertext at once, and its answer lists the
+     rows that pointed at it. Those keep their SHA-256 and show "file deleted", so History still says which file it
+     was, and **Upload again…** on them asks for the file to be dropped again. There is no automatic expiry yet (Q1).
    - **Logs and errors:** the parser's and adapter's existing rules hold. No body is logged, and `payload` and
      `content` join the redaction list. A decrypt failure logs the file id and "wrong key or tampered", nothing else.
 
 6. **Backups and key loss.**
    - `app.db` (and Litestream replicas) carry only ciphertext. The key lives in `secrets/`, which Litestream never
      replicates.
+   - **An appdata backup can open the archive** (#101). The recommended backup archives the whole appdata folder,
+     `secrets/tdf-vault.key` included, next to `app.db`. Anyone with that backup can decrypt every stored TDF, minors'
+     birthdates included. Encryption at rest protects Litestream replicas and a copy of `app.db` on its own, not an
+     appdata backup. The deploy guide says so, and says to keep backups somewhere only the organizer can read
+     (organizer, 2026-10-13: no extra override or field; `NUXT_TDF_VAULT_KEY` stays an env-only option and isn't
+     added to the Unraid template).
    - **Restore needs `secrets/` with `app.db`**, as the deploy guide already says. This key raises the stakes:
      - losing `token-vault.key` costs a reconnect;
      - losing `tdf-vault.key` **loses the archive**. play-tools still holds the results, and the app's attendance
@@ -103,7 +127,8 @@ Option 4.
 
      The deploy guide and Settings say so, and the restore drill checks that a stored TDF opens after a restore.
    - A file that can't be decrypted (wrong key) shows as "can't be opened with this install's key". It can be deleted,
-     and nothing else breaks.
+     and nothing else breaks. That includes `app.db` restored without `secrets/`: startup generates a new TDF key, and
+     the old files can't be opened.
 
 7. **Download a tournament's TDF** (organizer, 2026-10-12). Each tournament has a **Download TDF** action: on its
    This week card (Results section) and on its row on the Tournaments page. `GET /tournaments/{id}/tdf`, as a
@@ -130,10 +155,11 @@ Option 4.
   re-imports.
 - (+) Simpler TDF handling: no staging table, and results uploads can re-validate without the organizer finding the
   file again.
-- (+) A stolen database or backup reveals no birthdates without a key the database never holds.
+- (+) A stolen copy of `app.db` or a Litestream replica reveals no birthdates without a key the database never holds.
 - (+) Separate keys keep the two secrets' failure modes and exposure apart.
 - (−) The app now holds minors' birthdates (encrypted). A compromise of the running container, or of `app.db`
-  *and* `secrets/` together, exposes them. That was not possible before.
+  *and* `secrets/` together, exposes them. **The recommended appdata backup is such a pair** (decision 6), so it must
+  be kept somewhere only the organizer can read. That was not possible before.
 - (−) One more secret to back up. Losing it loses the archive.
 - (−) The database grows by roughly the compressed size of each file kept (tens of KB each). That is negligible at
   league scale.
@@ -146,3 +172,23 @@ Option 4.
 | Q1 | Should stored TDFs expire automatically after some time (e.g. after the season, or N years), or stay until deleted? | **Open: organizer.** Designed as kept until deleted |
 | Q2 | Should TDFs already imported before this change be recoverable? | **Partly:** the app never kept them, but a tournament whose results reached play-tools can be fetched back from play-tools on download (decision 7) |
 | Q3 | Shapes and permissions of `triumph/tournament/{display_id}/uploads/` and `triumph/tdf/{uploadGuid}` for an organizer | **Open: S8 part 2** |
+
+## Tests these decisions need
+
+Added by #101 for #88 and #97 (spec and full plan on #101).
+
+- **Module (`tdf-archive`, on a real temp SQLite file):**
+  - `replace` re-points every `TDF_UPLOAD` that used the original, keeps its `sha256`, and deletes the original in
+    the same transaction; when a results upload still uses the original, the original is kept;
+  - the expiry run, with an injected `now`, deletes only files whose `kept_for` set is empty and that no row points
+    at;
+  - no sequence of drops, corrections and expiry runs leaves a row pointing at a missing file.
+- **Server, over HTTP:** `GET /tdf-files`, `GET /tdf-files/{id}/download` and `DELETE /tdf-files/{id}`:
+  - 401 with no session;
+  - 404 for another league's file;
+  - 409 `tdf_key_mismatch` for a file this install's key can't open;
+  - `Content-Disposition: attachment` and `Cache-Control: no-store` on download;
+  - no birthdate in any answer but the download itself;
+  - delete answers `referencedBy`, and the rows show "file deleted".
+- **Restore drill:** a stored TDF opens after a backup → restore, and `app.db` restored without `secrets/` shows
+  "can't be opened with this install's key" without breaking anything else.

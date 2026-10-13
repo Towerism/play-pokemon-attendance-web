@@ -539,7 +539,8 @@ erDiagram
     int id PK
     int draft_id FK
     text filename
-    text sha256 "unique per draft: detect re-uploads"
+    text sha256 "unique per draft: detect re-uploads; always the file as dropped, even once re-pointed (M9)"
+    int tdf_file_id FK "M9 (ADR-0012): the archived file; re-pointed to the corrected copy when the app corrects it (#101); null once the organizer deletes it"
     text tournament_name
     date tournament_date
     int player_count
@@ -565,7 +566,7 @@ erDiagram
     text tournament_name "from the file, as the parser reads it"
     date tournament_date
     text tournament_display_id "the file's data/id"
-    text kept_reason "null while only previewed; attendance|results once committed or confirmed"
+    text kept_for "json set: attendance|results|play-tools (#101); empty while only previewed (expires after a day)"
     text source "dropped|play-tools (fetched for Download TDF)"
     text created_by
     datetime created_at
@@ -771,7 +772,7 @@ erDiagram
     text tournament_id
     text display_id
     text filename
-    int tdf_file_id FK "the archived file (ADR-0012): as dropped, or only the corrected one when the organizer was replaced (ADR-0011 decision 8); null once the organizer deletes it"
+    int tdf_file_id FK "the archived file (ADR-0012): as dropped, or the corrected one when the app corrected it (ADR-0011 decision 8); null once the organizer deletes it"
     text organizer_replaced "json {fromPlayerId, fromName, toPlayerId, toName}; null when the file's organizer matched"
     bool tournament_id_filled "the file's empty <id/> was filled with the display id (ADR-0011 decision 8)"
     text sha256 "of the file as dropped; kept even after the file is deleted or replaced by its corrected copy"
@@ -779,9 +780,11 @@ erDiagram
     text upstream_upload_id "triumph upload_guid"
     text upstream_errors "json"
     text warnings "json: local checks, upstream errors, unknown players (id + name)"
-    text acknowledged_by "who chose Upload anyway; null when there were no warnings"
+    text warnings_fingerprint "SHA-256 of the sorted warning codes + subjects (#101); the empty set has one too"
+    text acknowledged_fingerprint "what the confirm acknowledged; must equal warnings_fingerprint (#101)"
+    text acknowledged_by "who confirmed the send"
     datetime acknowledged_at
-    text state "previewed|sending|not_accepted|processing|complete|failed"
+    text state "previewed|sending|not_accepted|warnings_changed|validate_unknown|processing|complete|failed; processing moves on read (#101)"
     int submission_id FK "its tdf_upload job"
     datetime created_at
   }
@@ -791,7 +794,7 @@ erDiagram
     int planned_tournament_id "nullable"
     text tournament_id
     text label
-    text outcome "created|already_exists|refused|unknown|date_too_far_past|edited|already_applied|cancelled|already_cancelled|uploaded|processing|processing_failed|failed|skipped"
+    text outcome "created|already_exists|refused|unknown|date_too_far_past|edited|already_applied|cancelled|already_cancelled|uploaded|not_accepted|warnings_changed|validate_unknown|processing|processing_failed|failed|skipped"
     datetime sent_at "set just before the POST or PATCH; boot recovery reads it (#100)"
     text error_code
     text error "upstream message + correlation id for refusals"
@@ -1191,8 +1194,8 @@ Both come from a fresh read, not from upstream refusing the call.
 ### 6.5 Tournaments and results (M9)
 
 See [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md) and [ADR-0011](adr/0011-tdf-results-upload.md).
-Every write below runs as a job on the submission rails (lease, events, History, retry that re-reads, recovery), as
-the tournament's organizer, one call at a time, at least `NUXT_TOURNAMENT_DELAY_MS` apart.
+Every write below runs as a job on the submission rails (lease, events, History, retry that re-reads, recovery;
+a `tdf_upload` is sent again only through **Upload again…** and its send dialog, ADR-0011), as the tournament's organizer, one call at a time, at least `NUXT_TOURNAMENT_DELAY_MS` apart.
 
 ```mermaid
 sequenceDiagram
@@ -1224,8 +1227,11 @@ sequenceDiagram
   S->>G: getTournament + participants (reads only: nothing sent yet)
   S-->>W: preview: blocks, warnings + attendance diff
   O->>W: Upload results (or Upload anyway, after the warning; sending gives Pokémon support a copy)
-  W->>S: POST …/results/{uploadId}/confirm {importAttendance}
-  J->>G: validateResults (the send) → errors: not_accepted, stop | none: confirmResults; poll until complete / upload_failed
+  W->>S: POST …/results/{uploadId}/confirm {importAttendance, acknowledgedWarnings (fingerprint)}
+  J->>G: getTournament + participants; warnings recomputed: changed → warnings_changed, nothing sent
+  J->>G: validateResults (the send) → errors: not_accepted, stop | none: confirmResults; 5xx/timeout: validate_unknown
+  Note over J: attendance commit (if ticked), then the job ends and the lease is released
+  W->>S: later reads of the card follow processing → complete / failed
 ```
 
 - **Create** adopts before it creates (never a tournament already linked to another planned row). After a 5xx or a timeout it re-lists for the settle window and **never resends on its own**: no match means `unknown`, linked on a later read if it shows up, and created again only by **Retry create**. The creatable window is checked again just before each send (ADR-0010 decision 5, #100).
@@ -1264,7 +1270,11 @@ sequenceDiagram
   validation may still be sent: the dialog lists every warning the app can see (mismatches, fixes, and players new to
   the app as possible mis-keyed ids) and the organizer must choose **Upload anyway**, which the server also requires. Nothing is
   sent until then: validating is the send (Pokémon support gets a copy), and a file play-tools' validation rejects
-  is not confirmed but ends `not_accepted` with its errors. The file is kept encrypted, so a retry validates again
+  is not confirmed but ends `not_accepted` with its errors. The confirm carries the fingerprint of the warnings the
+  dialog showed, and the job re-checks them just before the send (`warnings_changed` if they differ; #101). A
+  validate with an unknown outcome ends `validate_unknown`. The job ends after confirm, so the lease is free, and
+  processing is followed on read. A `tdf_upload` never resumes or retries on its own: **Upload again…** goes through
+  the send dialog. The file is kept encrypted, so **Upload again…** validates again
   from it (ADR-0011 decision 7, ADR-0012).
 
 ## 7. HTTP API (Nitro server routes)
@@ -1315,8 +1325,8 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
 | `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`reschedule_window_not_open`/`reschedule_window_closed`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found`/`edit_body_unmappable` (a field of the raw read the adapter can't map; #100). With `updateTemplate`, preview also returns `shadowedBy: [{scheduleId, from, fields}]` (overrides that would still win) and warnings such as `another_planned_at_time`; apply takes `clearShadowingOverrides` (default false) |
 | `GET /tournaments/{id}/tdf` (M9, ADR-0012 decision 7) | **Download TDF** for a tournament: the archived results file (the corrected one if the organizer was replaced), else play-tools' own copy fetched as the organizer (`triumph`), archived, then served. `Content-Disposition: attachment`, `no-store`, one audit log line; 404 `no_tdf`, 409 `organizer_not_connected`/`needs_reconnect`/`submission_running` (only when it must fetch) |
-| `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; SHA-256s on upload rows stay). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
-| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB; local checks and fresh reads only, nothing sent) → `{uploadId, warnings: [{code, message, players?}], attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_tournament_id_filled` (an empty `<id/>` filled with the tournament's display id)/`tdf_wrong_tournament` (an id present but different; never overwritten)/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`. `POST …/results/{uploadId}/remove-staff {playerIds}` → 202 removes those players (listed in the file as playing) from the tournament's staff, in a staff job as its organizer (even records added in play-tools; never the organizer's), then the preview re-validates. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job that validates (the send: Pokémon support gets a copy) and confirms only if play-tools accepts it, else ends `not_accepted` with play-tools' errors; 409 `submission_running`; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
+| `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; answers `{referencedBy}`, and those rows keep their SHA-256 and show "file deleted"; automatic deletes skip any file a row points at, #101). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
+| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB; local checks and fresh reads only, nothing sent) → `{uploadId, warnings: [{code, message, players?}], fingerprint, attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_tournament_id_filled` (an empty `<id/>` filled with the tournament's display id)/`tdf_wrong_tournament` (an id present but different; never overwritten)/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`. `POST …/results/{uploadId}/remove-staff {playerIds}` → 202 removes those players from the tournament's staff, in a staff job as its organizer (even records added in play-tools), then the preview re-runs its local checks. The server first checks each id is a player in the upload's archived file (parsed again), is listed as staff in a fresh read, and isn't the organizer's own record; otherwise 422 `not_removable` with `{playerId, reason: not_in_file|not_staff|organizer}` per failing id, and nothing starts (#101). Confirm `{importAttendance, acknowledgedWarnings}` (the preview's warnings fingerprint, required even with no warnings) → a `tdf_upload` job that re-checks the warnings (`warnings_changed`, nothing sent, if they differ), validates (the send: Pokémon support gets a copy) and confirms only if play-tools accepts it, else ends `not_accepted` with play-tools' errors (`validate_unknown` after a 5xx or timeout); the job ends after confirm and processing is followed on read. 409 `submission_running`/`results_already_uploaded`; 422 `warnings_not_acknowledged` with the current `{warnings, fingerprint}` when the fingerprint isn't the preview's (#101). A `tdf_upload` is never resumed or retried from History; **Upload again…** re-runs the preview and the send dialog |
 | `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name }` sets or clears the display name (≤ 60 characters, `''`/null clears; display only, never sent to Pokémon) and answers the connection. From M9 it also takes `{ fullName }` (≤ 100 characters, `''`/null clears), the professor's full name as play-tools has it (first offered from play-tools' organizer name, then saved), used only when the app replaces a TDF's organizer name and player id (ADR-0011 decision 8). `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream?professor=` · `GET /settings` · `PUT /settings` | Pick the submitting professor and their activity group, timezone, thresholds, batch delay. As built: `GET /leagues/upstream` lists the leagues every connected professor shares (#75), named as that professor sees them, with `selectedId` and `excluded` (professors left out because they need a reconnect; any other failure is 502/503); `PUT` refuses a league outside that set with 404 `league_not_found`; `GET /settings` is `{ thresholds }`; `PUT` takes `{ professorPlayerId?, activityGroupId?, thresholds? }` (the professor and league together; `{}` changes nothing; 404 `connection_not_found` or `league_not_found`) and answers with what it changed, `{ connection?, thresholds? }` |
 
@@ -1358,7 +1368,7 @@ Client patterns:
 | Malicious TDF (XXE, billion-laughs, huge file)         | Any `<!DOCTYPE`/`<!ENTITY` is refused before parsing; `fast-xml-parser` runs with `processEntities:false` (only XML's five escapes and numeric references are decoded). Bodies over the limit are refused by `Content-Length` before they are read; 2 MB file limit; 2,000-player cap; every player ID validated |
 | OAuth `state` / code injection on connect              | `state` + PKCE verifier stored server-side and bound to the app user's session, with a 10-min TTL and single use                       |
 | Minors' PII                                            | Outside the TDF archive only name and player ID are stored. Tournament records' `year_of_birth` (S6) is dropped in the adapter, and TDF birthdates never reach a column, log or API response. Until M9 raw TDFs are not retained. |
-| Theft of the TDF archive (M9, ADR-0012; holds minors' birthdates) | Each file is AES-256-GCM encrypted with a key of its own (`NUXT_TDF_VAULT_KEY` or `/data/secrets/tdf-vault.key`, 0600), never in the database, so a copy of `app.db`, a Litestream replica or a backup without `secrets/` opens nothing. AAD binds each ciphertext to its league and SHA-256. It is decrypted only in memory, with no temp files. Download needs a session and is `no-store` and audited. `content`/`payload` are redacted from logs. Only a compromise of the running container, or of `app.db` and `secrets/` together, exposes it. |
+| Theft of the TDF archive (M9, ADR-0012; holds minors' birthdates) | Each file is AES-256-GCM encrypted with a key of its own (`NUXT_TDF_VAULT_KEY` or `/data/secrets/tdf-vault.key`, 0600), never in the database, so a copy of `app.db` or a Litestream replica opens nothing. **The recommended appdata backup holds `secrets/` with `app.db`, so it can open the archive**, and must be kept somewhere only the organizer can read (#101). AAD binds each ciphertext to its league and SHA-256. It is decrypted only in memory, with no temp files. Download needs a session and is `no-store` and audited. `content`/`payload` are redacted from logs. A compromise of the running container, or of `app.db` and `secrets/` together (an appdata backup is such a pair), exposes it. |
 | Dead names from play-tools (M8)                        | Upstream names only seed an unknown player and never overwrite a local name; the organizer can rename anyone; the app shows the local name and never stores the upstream one beside it (ADR-0007 decision 13) |
 | Supply chain                                           | Lockfile, Renovate, `pnpm audit` in CI                                                                                                 |
 
@@ -1396,7 +1406,7 @@ flowchart LR
   - `NUXT_SUBMISSION_BATCH_SIZE` (20, capped at 50), `NUXT_SUBMISSION_BATCH_DELAY_MS` (10000),
     `NUXT_SUBMISSION_SETTLE_MS` (180000), `NUXT_SUBMISSION_SETTLE_POLL_MS` (15000). Optional tuning, not in the template.
   - `NUXT_STAFF_DELAY_MS` (1000, never under 500; M8). Optional tuning, not in the template.
-  - `NUXT_TOURNAMENT_DELAY_MS` (5000, never under 2000) and `NUXT_TDF_SETTLE_MS` (600000; M9). Optional tuning, not in the template.
+  - `NUXT_TOURNAMENT_DELAY_MS` (5000, never under 2000; M9). Optional tuning, not in the template.
   - `NUXT_POKEMON_ACCESS_URL` / `NUXT_POKEMON_API_URL`. **Test doubles only**: they point the adapters at a fake upstream (`test/server/fake-pokemon.ts`). Unset means the real Pokémon hosts; never set them in the template.
   - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag, HSTS and absolute links are right. The launcher sets `NUXT_SESSION_COOKIE_SECURE` from it (`https:` → Secure) unless that is set explicitly; on plain HTTP a Secure cookie would never come back and login would fail.
   - `NUXT_TRUSTED_PROXIES`. Optional *Advanced* template field. Comma-separated addresses or CIDR ranges whose `X-Forwarded-For` is believed for the login rate limit, or `none`. Blank means the default `127.0.0.0/8,::1/128,172.16.0.0/12`, which covers Caddy on the same Unraid box or Docker network. Set it to the proxy's exact address when Caddy runs on `br0` or another host, or when Docker hides client addresses behind its gateway (rootless or userland-proxy setups). An invalid entry fails startup.
@@ -1406,8 +1416,8 @@ flowchart LR
     collector). Optional, not in the template. Both are read straight from env, so the launcher logs the same way.
   - `LITESTREAM_REPLICA_URL`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY`. Optional. When set, the entrypoint runs the app under `litestream replicate -exec` (config in the image at `/etc/litestream.yml`; only `app.db` is replicated, never `secrets/`).
     If `app.db` is missing, it is first restored from the replica (an empty replica means a normal first run). A broken Litestream config or a failed restore exits the container non-zero instead of running without backups.
-- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost token vault key means one Pokémon reconnect per professor, and a lost session password logs everyone out. No attendance data is lost in either case. A lost TDF vault key (M9) **loses the stored TDF archive** for good: play-tools still has the results, and attendance is unaffected. The restore drill checks that a stored TDF opens after a restore. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
-- **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (they resume on boot), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
+- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost token vault key means one Pokémon reconnect per professor, and a lost session password logs everyone out. No attendance data is lost in either case. From M9 an appdata backup also holds the TDF key and the archive, so it can open minors' birthdates: keep it somewhere only you can read (#101). A lost TDF vault key (M9) **loses the stored TDF archive** for good: play-tools still has the results, and attendance is unaffected. The restore drill checks that a stored TDF opens after a restore. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
+- **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (the organizer resumes them from History; a `tdf_upload` offers **Upload again…** instead, ADR-0011), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
 - **Updates:** releases are automatic. On every push to `main` that passes CI, semantic-release reads the Conventional Commits since the last `vX.Y.Z` tag; when a `fix`, `feat` or breaking change landed, it tags the image that run tested `X.Y.Z`, `X.Y` and `latest`, then pushes the git tag and a GitHub Release with generated notes. `edge` is the unreleased tip of `main`. Unraid shows "update ready" and migrations run on boot.
 - **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
 - **Observability:** pino logs to stdout, so they show up in Unraid's *Logs* view.
