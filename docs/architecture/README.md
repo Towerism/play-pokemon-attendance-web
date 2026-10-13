@@ -158,6 +158,8 @@ shared/                      auto-imported in app/ and server/ (Nuxt 4)
   schemas/                   Zod DTOs
   types/                     PlayerId, SessionDate
   tdf/                       pure TDF parser (no I/O), heavily unit-tested
+  schedule/                  pure recurrence engine (M9): schedule rules → dated scaffold occurrences
+  time/                      zone maths: a local date or time ↔ UTC instants (no dependency, Intl only)
 nuxt.config.ts
 Dockerfile                   multi-stage: pnpm build → node:22-slim runtime + litestream
 docker/entrypoint.sh         PUID/PGID chown + gosu drop, UMASK, optional Litestream supervision (M7)
@@ -460,7 +462,7 @@ interface PlayToolsGateway {
    More than 1 (e.g. an afternoon and an evening session): the user chooses.
 4. The resolved `play_session_id` is stored on the session draft, so the history always points to the exact upstream session.
 
-As built (M5, `server/modules/submission/resolve.ts`, `local-time.ts`): the league timezone is the
+As built (M5, `server/modules/submission/resolve.ts`; the zone maths in `shared/time/local-time.ts` since M9, #86): the league timezone is the
 container's `TZ`. A date becomes `[local midnight, next local midnight)` as UTC instants (23 or 25 h on DST
 days); since the upstream `less_than_or_equal_to` filter is inclusive, a session starting exactly at the next
 midnight is dropped client-side. Candidates are labelled "Open play · TCG, VG · Tue 6:00 PM" and carry
@@ -715,7 +717,7 @@ erDiagram
     int id PK
     text league_id FK
     int scaffold_id FK
-    text rule "json: weekly {weekday, every} | monthly {nth, weekday} or {day} | quarterly {month, nth, weekday}"
+    text rule "json, shared/schedule scheduleRuleSchema: {kind: weekly, weekday 1-7 ISO, every 1-4} | {kind: monthly, nth 1-4 or last, weekday} | {kind: monthly, day 1-31, a shorter month uses its last day} | {kind: quarterly, month 1-3 of the quarter, nth, weekday}"
     date starts_on
     date ends_on "nullable"
     int horizon_weeks "1-26"
@@ -1487,7 +1489,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 | M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47), the Players → Staff tab (#50), the This week Staff card with `StaffSearch` (#49) and the staff import (#48) and staff batches for every tournament on a date (#76) are built ([ADR-0007](adr/0007-staff-assignment.md), #41). Accepted |
-| M9 Tournaments                | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine and the parser's new fields; the `tournaments` module (templates, scaffolds, schedules, planned tournaments); create, edit (reschedule included) and cancel jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload); the encrypted TDF archive (`tdf-archive` module, `TDF_FILE`, the TDF key, download and delete, M3 import moved onto it and `tdf_upload_player` dropped). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md), [ADR-0012](adr/0012-encrypted-tdf-archive.md) |
+| M9 Tournaments                | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine (built, #86; a start a DST change skips or repeats is refused, with the zone helpers moved to `shared/time`) and the parser's new fields; the `tournaments` module (templates, scaffolds, schedules, planned tournaments); create, edit (reschedule included) and cancel jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload); the encrypted TDF archive (`tdf-archive` module, `TDF_FILE`, the TDF key, download and delete, M3 import moved onto it and `tdf_upload_player` dropped). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md), [ADR-0012](adr/0012-encrypted-tdf-archive.md) |
 
 ## 14. Architecture Decision Records
 

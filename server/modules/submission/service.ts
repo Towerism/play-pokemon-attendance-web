@@ -12,7 +12,7 @@ import type { SessionStatus, SessionsService } from '../sessions/service';
 import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
-import { dateIn } from './local-time';
+import { dateIn } from '../../../shared/time/local-time';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
 import { type PlaySessionResolver, submissionTarget } from './resolve';
 import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
