@@ -72,8 +72,7 @@ Option 4.
      shipped ones are not edited), along with the code that fills and expires it. A re-drop of the same file is
      recognised by its SHA-256, as today.
    - **Results upload (ADR-0011):** the preview stores the file once for both the attendance import and the results
-     upload. If play-tools has forgotten the `upload_guid` by confirm time, or a retry needs it, the job runs
-     validate again from the archive. The organizer never has to drop the file again. Confirm still sends only the
+     upload. A retry runs validate again from the archive (each validate is a send; ADR-0011 decision 7). The organizer never has to drop the file again. Confirm still sends only the
      `upload_guid`.
    - **One drop, one stored file**, whichever features use it. When the app corrects a file before sending (an empty
      tournament id filled in, or the organizer replaced: ADR-0011 decision 8), **only the corrected file is kept** (organizer, 2026-10-12). It replaces

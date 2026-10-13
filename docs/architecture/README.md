@@ -780,7 +780,7 @@ erDiagram
     text warnings "json: local checks, upstream errors, unknown players (id + name)"
     text acknowledged_by "who chose Upload anyway; null when there were no warnings"
     datetime acknowledged_at
-    text state "previewed|confirming|processing|complete|failed"
+    text state "previewed|sending|not_accepted|processing|complete|failed"
     int submission_id FK "its tdf_upload job"
     datetime created_at
   }
@@ -1219,11 +1219,11 @@ sequenceDiagram
   W->>S: POST /api/sessions/{date}/tournaments/{id}/results
   S->>S: parse; blocks (unreadable, can't take an upload) vs warnings (id, game, staff also playing, players new to the app)
   S->>S: file's organizer ≠ tournament's → replace popid + name (full name from the connection, asked once)
-  S->>G: getTournament + participants; validateResults (as organizer)
-  S-->>W: preview: blocks, warnings (incl. play-tools' errors) + attendance diff
-  O->>W: Upload results (or Upload anyway, after the warning)
+  S->>G: getTournament + participants (reads only: nothing sent yet)
+  S-->>W: preview: blocks, warnings + attendance diff
+  O->>W: Upload results (or Upload anyway, after the warning; sending gives Pokémon support a copy)
   W->>S: POST …/results/{uploadId}/confirm {importAttendance}
-  J->>G: confirmResults; poll getTournament until complete / upload_failed
+  J->>G: validateResults (the send) → errors: not_accepted, stop | none: confirmResults; poll until complete / upload_failed
 ```
 
 - **Create** adopts before it creates, and re-reads after a 5xx before any resend (ADR-0010 decision 5).
@@ -1252,10 +1252,13 @@ sequenceDiagram
   aren't bound by this window. It keeps the tournament, its registrations and staff, and moves local
   assignments to the new date. It refuses a premier event moved outside its series window (ADR-0010 decision 8).
 - **Cancel** needs a confirm from a fresh read, plus a typed display id when anyone is registered.
-- **Results** are previewed (local checks, then upstream's validate) and confirmed as a job. A file that fails
-  validation may still be sent: the dialog lists every warning (play-tools' errors, mismatches, and players new to the
-  app as possible mis-keyed ids) and the organizer must choose **Upload anyway**, which the server also requires. The
-  file is kept encrypted in the TDF archive, so a retry validates again from it (ADR-0011, ADR-0012).
+- **Results** are previewed locally (checks and fresh reads only) and sent as a job: validate, then confirm only if
+  play-tools accepts it. A file that fails
+  validation may still be sent: the dialog lists every warning the app can see (mismatches, fixes, and players new to
+  the app as possible mis-keyed ids) and the organizer must choose **Upload anyway**, which the server also requires. Nothing is
+  sent until then: validating is the send (Pokémon support gets a copy), and a file play-tools' validation rejects
+  is not confirmed but ends `not_accepted` with its errors. The file is kept encrypted, so a retry validates again
+  from it (ADR-0011 decision 7, ADR-0012).
 
 ## 7. HTTP API (Nitro server routes)
 
@@ -1306,7 +1309,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /tournaments/{id}/edit` · `POST /tournaments/{id}/edit/preview` · `POST /tournaments/{id}/edit` → 202 (M9) | Edit (and reschedule) a tournament: `GET` is the form from a fresh read as the organizer, with read-only fields marked and the schedule it belongs to. Preview takes `{changes, scope: this\|later\|all, fields, withSiblings, updateTemplate}` → every affected tournament with before → after, grouped in play-tools / planned / left out (with why). Apply takes the same plus `{excluded}` → a `tournament_edit` job for those in play-tools (≤ 60) and local overrides for the rest; 422 `tournament_locked`/`reschedule_window_not_open`/`reschedule_window_closed`/`date_too_far_past`/`outside_series_window`/`format_not_in_series`/`venue_not_found` |
 | `GET /tournaments/{id}/tdf` (M9, ADR-0012 decision 7) | **Download TDF** for a tournament: the archived results file (the corrected one if the organizer was replaced), else play-tools' own copy fetched as the organizer (`triumph`), archived, then served. `Content-Disposition: attachment`, `no-store`, one audit log line; 404 `no_tdf`, 409 `organizer_not_connected`/`needs_reconnect`/`submission_running` (only when it must fetch) |
 | `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; SHA-256s on upload rows stay). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
-| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB) → `{uploadId, warnings: [{code, message, players?}], attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_tournament_id_filled` (an empty `<id/>` filled with the tournament's display id)/`tdf_wrong_tournament` (an id present but different; never overwritten)/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`/play-tools' validation codes) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`; 409 `submission_running`. `POST …/results/{uploadId}/remove-staff {playerIds}` → 202 removes those players (listed in the file as playing) from the tournament's staff, in a staff job as its organizer (even records added in play-tools; never the organizer's), then the preview re-validates. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
+| `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB; local checks and fresh reads only, nothing sent) → `{uploadId, warnings: [{code, message, players?}], attendance}`; `needsOrganizerFullName` when the file's organizer must be replaced and the tournament organizer's full name isn't known yet (no validate until `POST …/results/{uploadId}/organizer {fullName}` saves it on their connection and re-runs the preview); warnings (`tdf_organizer_replaced`, `tdf_tournament_id_filled` (an empty `<id/>` filled with the tournament's display id)/`tdf_wrong_tournament` (an id present but different; never overwritten)/`tdf_wrong_organizer` (only when the file can't be fixed)/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`. `POST …/results/{uploadId}/remove-staff {playerIds}` → 202 removes those players (listed in the file as playing) from the tournament's staff, in a staff job as its organizer (even records added in play-tools; never the organizer's), then the preview re-validates. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job that validates (the send: Pokémon support gets a copy) and confirms only if play-tools accepts it, else ends `not_accepted` with play-tools' errors; 409 `submission_running`; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
 | `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name }` sets or clears the display name (≤ 60 characters, `''`/null clears; display only, never sent to Pokémon) and answers the connection. From M9 it also takes `{ fullName }` (≤ 100 characters, `''`/null clears), the professor's full name as play-tools has it (first offered from play-tools' organizer name, then saved), used only when the app replaces a TDF's organizer name and player id (ADR-0011 decision 8). `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream?professor=` · `GET /settings` · `PUT /settings` | Pick the submitting professor and their activity group, timezone, thresholds, batch delay. As built: `GET /leagues/upstream` lists the leagues every connected professor shares (#75), named as that professor sees them, with `selectedId` and `excluded` (professors left out because they need a reconnect; any other failure is 502/503); `PUT` refuses a league outside that set with 404 `league_not_found`; `GET /settings` is `{ thresholds }`; `PUT` takes `{ professorPlayerId?, activityGroupId?, thresholds? }` (the professor and league together; `{}` changes nothing; 404 `connection_not_found` or `league_not_found`) and answers with what it changed, `{ connection?, thresholds? }` |
 

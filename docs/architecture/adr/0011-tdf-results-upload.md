@@ -42,14 +42,20 @@ Sometimes that is what they want, and Pokémon support almost always resolves it
 before sending it**. The preview must also **call out every player the app doesn't know**, since those may be
 (though aren't necessarily) mis-keyed player ids.
 
+The organizer on what sending means (2026-10-12): **a tournament that fails play-tools' validation will not be
+accepted by play-tools, but Pokémon support will have received a copy of the TDF by then.** So validating is not a
+dry run: it is the moment the file leaves the app. The warning has to come before it.
+
 ## Options considered
 
 1. **Keep uploading in play-tools.** Zero risk, and the second drop of the same file stays.
 2. **One call on drop:** validate and confirm at once. This skips the moment where upstream's validation errors can
    be read before anything is committed, and confirm is irreversible for an organizer.
-3. **Preview → confirm, mirroring upstream's two phases.** Drop the file, and the app checks it locally and through
-   upstream's validate, showing both. **Upload results** then confirms, as a job. Problems are warnings the organizer
-   can upload past (**Upload anyway**), not refusals, except where play-tools wouldn't take an upload at all.
+3. **A local preview, then one send.** Drop the file, and the app checks it locally against a fresh read. It sends
+   nothing. **Upload results** then runs a job that validates and, only if play-tools accepts the file, confirms it.
+   Problems the app can see are warnings the organizer can send past (**Upload anyway**), not refusals, except where
+   play-tools wouldn't take an upload at all. (The first version of this option validated during the preview to
+   show play-tools' errors early. That would send the file to Pokémon support before any warning, so it was dropped.)
 4. **Keep the file and upload later**, for example in a queue that survives a restart. It needed the raw file
    stored, which §9 forbade when this was written. ADR-0012 now keeps the file encrypted, which decision 5 uses for
    retries. The preview → confirm flow stays, because it is what shows the warnings.
@@ -97,7 +103,6 @@ Option 3.
        complete or holding player records (`results_already_uploaded`), past the window, or its organizer not
        connected (`results_not_accepted`, saying which). play-tools itself won't accept an organizer's upload then
        (S8), so this isn't a validation question;
-     - another job holds the league's lease (`submission_running`).
    - **Warnings: the file may fail validation, and the organizer decides.** Each warning names what is wrong and
      what play-tools is likely to do:
      - **the app's own checks, against the fresh read:**
@@ -118,26 +123,23 @@ Option 3.
            deletes only that player's staff record on this tournament, and only if it still lists them as staff;
          - their staff assignment in the app, if any, is removed, and so is the tournament's `STAFF_HISTORY` row for
            them, since they played rather than staffed;
-         - when the job ends, the preview re-runs play-tools' validate from the archived file (ADR-0012), so the
-           warnings shown are current.
+         - when the job ends, the preview re-runs its local checks against a fresh read, so the warnings shown are
+           current. Nothing is sent to play-tools' validation by this.
 
          The organizer's own `organizer` record is never removed: a TDF listing the organizer as a player is a
          warning with no fix.
-     - **play-tools' own validation:** every error its validate call returns, mapped to readable messages by an
-       adapter constant (the S8 table), and an unknown code shown as is.
      - **Players new to the app** (`tdf_unknown_players`): every player id in the file that the app has never seen
        (no `PLAYER` row), listed with the name the file gives. The list is headed "Not in the app yet. Check these ids
        weren't mis-keyed in TOM". When a known player has the same name (ignoring case and spacing) under another id,
        the row says "A known player with this name has id 01234". It is a hint only. The app never changes an id in
        the file. A mis-keyed id is fixed in TOM, and the file is dropped again. The list is worked out before the
        attendance import would make these players known.
-   - **Then upstream's validate** runs as the organizer, in one call, whenever nothing blocks. It validates **the
-     file that would be sent**, with the organizer already replaced (decision 8). It runs even with local warnings, so
-     the organizer sees play-tools' own answer before choosing. It returns `upload_guid` and play-tools' errors. It
-     waits only while the organizer's full name is still being asked for (decision 8).
+   - **Nothing is sent from the preview.** It only reads play-tools (the tournament and its records, as the
+     organizer), because sending the file to play-tools' validation gives Pokémon support a copy (decision 7).
+     play-tools' own validation errors are therefore known only after **Upload results**.
    - **The preview is stored:** the file goes into the encrypted TDF archive (ADR-0012), and a
-     `tournament_result_upload` row holds the tournament, the archived file's id, SHA-256, player count,
-     `upload_guid`, the warnings (codes, messages and the unknown players' ids and names) and state `previewed`.
+     `tournament_result_upload` row holds the tournament, the archived file's id, SHA-256, player count, the warnings
+     (codes, messages and the unknown players' ids and names) and state `previewed`.
      The attendance side's pending `TDF_UPLOAD` points at the same archived file. Unconfirmed previews, and a file
      nothing else keeps, are dropped after a day.
 
@@ -146,40 +148,55 @@ Option 3.
    - **Warn before sending.** A replaced organizer is listed first: "The file names <popid> (<name>) as organizer.
      It will be sent with <full name> (<player id>), the tournament's organizer, instead." It counts as a warning to
      acknowledge, and the button reads **Replace organizer and upload** when it is the only one. With no warnings,
-     the button is **Upload results**. With any warning, the dialog lists
-     them all, play-tools' first, and the button becomes **Upload anyway**. The dialog says: "play-tools reported
-     problems with this file. Uploading anyway will most likely fail processing, and Pokémon support usually has to
-     resolve it." The server refuses a confirm without `acknowledgeWarnings: true` for a preview that has warnings
+     the button is **Upload results**. With any warning, the dialog lists them all, and the button becomes **Upload
+     anyway**. The dialog says: "This file has problems. Uploading sends it to play-tools, and Pokémon support receives
+     a copy. If play-tools' validation fails, it won't be accepted, and Pokémon support usually has to resolve it."
+     Every upload dialog, warnings or not, also says that sending gives Pokémon support a copy. The server refuses a confirm without `acknowledgeWarnings: true` for a preview that has warnings
      (422 `warnings_not_acknowledged`), so a stale page or a script can't skip the warning. Who acknowledged it, and
      when, is stored on the upload and shown in History.
    - It re-reads the tournament as the organizer. A tournament that can no longer take an upload stops the job before
-     the call (an upload made meanwhile in play-tools shows as `results_already_uploaded`).
-   - It sends `PUT triumph/{upload_guid}/confirm/`. **Only the `upload_guid` travels**, so confirm and its retries
-     never need the file again.
-     - play-tools' own page offers Confirm only when validation found nothing, so it may refuse to confirm an upload
-       with errors (S8 part 2, Q4). If it does, the outcome is `refused`, with its message and correlation id.
-       Nothing else is sent.
-   - If ticked, it commits the attendance import (M3 commit, idempotent). This happens even when the results upload is
-     refused or fails processing, because attendance doesn't depend on play-tools accepting the results.
+     anything is sent (an upload made meanwhile in play-tools shows as `results_already_uploaded`).
+   - It **validates**, then **confirms only if play-tools accepted the file** (decision 7).
+   - If ticked, it commits the attendance import (M3 commit, idempotent). This happens even when the results are not
+     accepted or fail processing, because attendance doesn't depend on play-tools accepting the results.
    - Then it reads the tournament every 15 s, for up to `NUXT_TDF_SETTLE_MS` (10 min), until it is `complete`
      (`uploaded`) or `upload_failed` (`processing_failed`). If it is still processing at the end, the job ends
      `processing` and the card keeps showing play-tools' state on every read.
    - After a 5xx on confirm it re-reads before anything else. A tournament already `upload_in_progress` or
      `complete` means the confirm landed, and it is never sent again.
-   - **Support details.** A refused, failed or acknowledged-with-warnings upload shows a copyable block for Pokémon
-     support: the tournament's display id and name, the date, the upload id (`upload_guid`), play-tools' error codes,
-     the correlation id of any refusal, and when it was sent. Player names and the file itself are not in it.
+   - **Support details.** A not-accepted, refused, failed or acknowledged-with-warnings upload shows a copyable block
+     for Pokémon support: the tournament's display id and name, the date, the upload id (`upload_guid`), play-tools'
+     error codes, the correlation id of any refusal, and when it was sent. Player names and the file itself are not in
+     it. Pokémon support already has the file from the validation.
 
 5. **The file is kept, encrypted** (ADR-0012, replacing "the raw file only passes through"). It is stored once
    in the TDF archive, AES-256-GCM with its own key, and decrypted only in memory. It is base64-encoded into
-   upstream's validate call from memory. If play-tools has forgotten the `upload_guid` by confirm time, or a retry
-   needs it, the job validates again **from the archive**, so the organizer never drops the file twice. If the new
-   validation has warnings the earlier acknowledgment didn't cover, the job stops and asks again. The SHA-256
+   upstream's validate call from memory. A retry validates again **from the archive**, so the organizer never drops
+   the file twice. Each retry is another send, so Pokémon support gets another copy, and the retry dialog says so. A
+   retry also re-runs the local checks: warnings the earlier acknowledgment didn't cover must be acknowledged again. The SHA-256
    recognises the same file dropped again. The adapter never logs request bodies, and `payload` joins the redaction
    list.
 
 6. **Not uploading twice.** The app refuses an upload for a tournament with player records (upstream allows it only
    to admins). A second preview of the same file for the same tournament reuses the open preview.
+
+7. **Validating is sending** (organizer, 2026-10-12). play-tools' validate call (`POST triumph/tdf/`) is where the
+   file leaves the app, and Pokémon support receives a copy of it there. A file that fails validation is **not
+   accepted** by play-tools. So:
+   - **Validation runs only inside the `tdf_upload` job**, after the organizer's **Upload results** (or **Upload
+     anyway**), never in the preview. Validate and confirm run back to back, as the organizer, under the lease.
+   - **No errors:** the job sends `PUT triumph/{upload_guid}/confirm/` straight away, then follows processing
+     (decision 4).
+   - **Errors:** the job **does not confirm**, because play-tools wouldn't accept it. It ends `not_accepted`, with each
+     of play-tools' errors in readable words (an adapter constant from the S8 table; an unknown code shown as is). It
+     says plainly: "play-tools did not accept this file. Pokémon support has received a copy of it." The support
+     details are shown, and the tournament's Results section shows *Not accepted*.
+   - **Fixing it:** after a fix in TOM, the organizer drops the corrected file and uploads again. After a fix in the
+     app (**Remove from staff**), they retry, which validates the archived file again (decision 5). Either way the new
+     attempt is a new send.
+   - **A 5xx on validate** means the outcome is unknown, and support may have the file. The job re-reads the
+     tournament's upload history (`triumph/tournament/{display_id}/uploads/`) before deciding, and never validates
+     twice blindly.
 
 8. **Fill in an empty tournament id** (organizer, 2026-10-12). When the file's `<data><id/>` is empty (`<id/>`,
    `<id></id>` or only whitespace), the app writes the tournament's display id into it, as `<id>XX-XX-XXXXXX</id>`:
@@ -209,13 +226,13 @@ Option 3.
      play-tools has it. The tournament details carry `organizer.first_name` and `last_name` (seen in the #67 spike
      data), and `getTournament` gains `organizerName` for it. It is stored on the professor's Pokémon connection, like
      the display name (`professor_full_name`, ≤ 100 characters), set in Settings beside the display name, or here:
-     - **known:** the preview replaces the organizer straight away, and validates the corrected file;
-     - **not known yet:** the preview holds the dropped file in the archive as a pending preview, skips validate,
-       and answers `needsOrganizerFullName: {playerId,
+     - **known:** the preview replaces the organizer straight away. The corrected file is what **Upload results** will
+       send to validation;
+     - **not known yet:** the preview holds the dropped file in the archive as a pending preview and answers `needsOrganizerFullName: {playerId,
        playToolsName}`. The dialog asks "<organizer>'s full name, as it should appear in the TDF", **pre-filled with
        play-tools' name** (first and last). The organizer confirms it, or corrects it once. `POST
        …/results/{uploadId}/organizer {fullName}` saves it on the connection for next time, then replaces the
-       organizer and validates, and the preview carries on as usual;
+       organizer, and the preview carries on as usual;
      - **saved, not re-read:** once saved, the stored full name is what later files get. A change of name in
        play-tools doesn't overwrite it, as for every name in the app (ADR-0007 decision 13). It is changed in
        Settings.
@@ -245,10 +262,12 @@ Option 3.
 - (+) Confirm is a job with History and retry, and it needs no stored file.
 - (+) The file is kept for bookkeeping, encrypted at rest with its own key (ADR-0012). Nothing with birthdates is
   kept in the clear.
-- (−) The preview makes an upstream call (validate), so it takes the league's lease briefly and fails while a job
-  runs.
-- (+) A restart, or an expired `upload_guid` (unknown lifetime, S8 part 2), is recovered by validating again from
-  the archive, with no new drop.
+- (+) Nothing reaches play-tools or Pokémon support until the organizer clicks **Upload results**, after every
+  warning the app can see.
+- (−) play-tools' own validation errors are known only after the file has been sent, and Pokémon support has a copy.
+  A file it doesn't accept ends `not_accepted`, and a fix means another send.
+- (+) A restart mid-upload is recovered from the archive with no new drop. Validate and confirm run back to back in
+  one job, so an `upload_guid` never has to outlive a preview.
 - (−) A mistaken confirm can't be undone by the organizer (admin purge only). That is upstream's rule, and the
   confirm dialog says so.
 - (−) An **Upload anyway** can leave a tournament `upload_failed` until Pokémon support resolves it. That is the
@@ -267,10 +286,10 @@ Option 3.
 
 | #  | Question | Status |
 | -- | -------- | ------ |
-| Q1 | Validate response shape, the shape of `errors`, confirm's id (`guid` or `display_id`), size limit, `triumph-scalability` flag | **Open: S8 part 2**, from a real upload the organizer was going to make anyway |
-| Q2 | Can an upload be made before the start date? How long does `upload_in_progress` last? How long does an unconfirmed `upload_guid` live? | **Open: S8 part 2** |
+| Q1 | Validate response shape, the shape of `errors`, confirm's id (`guid` or `display_id`), size limit, `triumph-scalability` flag | **Open: S8 part 2**, from a real upload the organizer was going to make anyway (validating sends the file to Pokémon support, decision 7) |
+| Q2 | Can an upload be made before the start date? How long does `upload_in_progress` last? | **Open: S8 part 2** |
 | Q3 | Should the attendance import be ticked by default when a TDF is dropped on a tournament card? | **Answered (organizer, 2026-10-12):** yes, ticked |
-| Q4 | Does `PUT triumph/{upload_guid}/confirm/` accept an upload whose validation returned errors, or refuse it? | **Open: S8 part 2.** Either way the app warns first; a refusal is recorded with support details (decision 4) |
+| Q4 | Does `PUT triumph/{upload_guid}/confirm/` accept an upload whose validation returned errors, or refuse it? | **Answered (organizer, 2026-10-12):** a file that fails validation is not accepted, but Pokémon support has a copy by then. The app doesn't confirm it (`not_accepted`, decision 7) |
 | Q6 | Exact shape of TOM's `<organizer>` element | **Answered (organizer, 2026-10-12):** `<organizer popid="…" name="…"/>` inside `<data>` (decision 3). Parser fixtures use made-up values |
 | Q7 | Should the app also fill in an empty `<id/>` with the tournament's display id, like it fixes the organizer? | **Answered (organizer, 2026-10-12):** yes, with a cautionary warning; only when empty (decision 8) |
 | Q8 | `gametype` spellings for TCG and VGC files | **Open:** from a real file of each game; `GO` → `pgo` is known |
