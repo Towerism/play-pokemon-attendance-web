@@ -41,6 +41,9 @@ export function useSubmissions(): SubmissionService {
       settlePollMs: Number(config.settlePollMs),
       undoDelayMs: Math.max(500, Number(useRuntimeConfig().undo.delayMs) || 0),
       staffDelayMs: Number(useRuntimeConfig().staff.delayMs) || 0,
+      tournaments: useTournaments(),
+      tournamentGateway: connectionGateway,
+      tournamentDelayMs: Number(useRuntimeConfig().tournament.delayMs) || 0,
       log: useLogger('submission'),
     });
   }
@@ -73,7 +76,8 @@ export function submissionHttpError(err: unknown): never {
     throw createError({ statusCode: STATUS[err.code], message: err.message, data: { code: err.code } });
   }
   if (err instanceof StaffingError) return staffingHttpError(err);
-  return pokemonHttpError(err);
+  // A tournament job's checks (#92) and Pokémon errors.
+  return tournamentsHttpError(err);
 }
 
 /** Clear session runs only when the organizer typed the session's date exactly; 422 `confirmation_mismatch` otherwise. */
