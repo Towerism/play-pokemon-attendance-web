@@ -57,10 +57,15 @@ outcomes are **a duplicate tournament** (players register for the wrong one) and
 4. **As 3, but a scheduled task creates the planned tournaments upstream on its own.** Least effort, but it makes
    official records nobody looked at, at machine-chosen moments (§11 ToS risk: "no calls the organizer wouldn't make
    by hand"), and a wrong template would quietly multiply.
+5. **As 3, plus option 4 bounded:** a schedule the organizer opts in creates its own tournaments automatically, but
+   only inside an **explicit horizon** the organizer sets on that schedule (for example a monthly tournament on the
+   3rd Tuesday, kept created 2 months ahead).
 
 ## Decision
 
-Option 3.
+Option 5 (organizer, 2026-10-12: "Automatic creation can occur for an explicit horizon. Say for example a monthly
+tournament, the 3rd tuesday every month."). Every schedule works as option 3. Automatic creation is per schedule,
+off until the organizer turns it on and gives it a horizon (decision 5).
 
 ### 1. Scope
 
@@ -117,18 +122,22 @@ in the **venue's** timezone through the existing `local-time` helpers, moved to 
 ### 4. Planning is local and on read
 
 - **Materialised on read.** Reading the upcoming tournaments upserts each active schedule's occurrences inside its
-  horizon (unique on schedule, slot and date), so there is no scheduled task to keep in step and nothing depends on
-  the server having been up.
+  horizon (unique on schedule, slot and date). Planning needs no scheduled task, and nothing depends on the server
+  having been up. The automatic-creation task (decision 5) materialises the same way before it creates.
 - **Editing a schedule or scaffold** replans only what hasn't reached play-tools: `planned` and `skipped` rows that
   no longer fit are deleted, new ones added. **A created tournament is never cancelled, moved or recreated because
   a schedule changed.** It is shown as "no longer in the schedule", with Cancel and Reschedule offered.
 - **Skipping** a date (a holiday) is local: the row becomes `skipped` and is never created.
 - **Templates are read at creation time.** A planned tournament takes the template's settings when it is created, so
   editing a template changes every tournament not created yet, and none that exist.
-- **Reminders, not automation.** This week shows "N planned tournaments in the next 2 weeks aren't in play-tools
-  yet", with a button to create them.
+- **Reminders for the rest.** This week shows "N planned tournaments in the next 2 weeks aren't in play-tools
+  yet", with a button to create them. Planned tournaments an auto-creating schedule will create on its own are
+  counted separately ("… will be created automatically on …"), so the reminder only asks for clicks it needs.
 
 ### 5. Creating: a `tournament_create` job
+
+A `tournament_create` job is started in two ways: by the organizer's **Create in play-tools**, or by automatic
+creation for a schedule that has opted in (below). Both run the same job.
 
 **Create in play-tools** takes 1–20 planned tournaments and starts one job of `kind = 'tournament_create'` on the
 submission rails. Each is created as its template's organizer. A planned tournament whose organizer can't act is not
@@ -151,6 +160,38 @@ started (`organizer_not_connected`, `needs_reconnect`), as for staff.
 - **Reconcile.** Re-read each created tournament (`getTournament`) and store its `guid`, `display_id` and status.
   `approval-pending` and `sanctioning-error` are shown as they are; the app doesn't chase approval.
 - **Outcomes:** `created`, `already_exists`, `refused`, `failed`, `skipped`.
+
+**Automatic creation, within an explicit horizon.** A schedule may turn on **Create automatically** with an
+**auto-create horizon**: how far ahead its tournaments are kept created in play-tools (1–26 weeks, at most the
+planning horizon, **no default**: the organizer must choose one). Example: monthly, 3rd Tuesday, auto-create
+8 weeks ahead. The next two 3rd Tuesdays exist in play-tools, and each later one is created as it comes within
+8 weeks.
+
+- **A daily Nitro task** (`tournaments:auto-create`, once a day in the league `TZ`, plus once at boot) materialises
+  every opted-in schedule. It then starts one `tournament_create` job per league for its `planned` rows dated from
+  today to today + their schedule's auto-create horizon, oldest first, at most 20 per run. Rows that are `skipped`,
+  `failed`, already created or past are never picked up. The job is recorded as started by "Schedule: <scaffold
+  name>" in History, and runs exactly like a clicked one: adopt before create, as the template's organizer, paced,
+  under the lease.
+- **It never fights the organizer.**
+  - If the lease is held, the run starts nothing and the next run tries again.
+  - A schedule that is paused, or ended, creates nothing.
+  - Turning it on shows the tournaments it would create now, and asks for a confirm. Lengthening the horizon asks
+    again for the new ones.
+  - Skip a date before it comes within the horizon, and it is never created.
+- **Failures wait for a person.**
+  - An upstream refusal (`refused`) or a local refusal (`venue_not_found`, `series_ambiguous`) leaves the row
+    `failed`, and automatic creation never retries it. It shows on This week and on the Tournaments page, and a click
+    retries it.
+  - `series_not_found` is different for automatic creation: the next quarter's premier series may not be published
+    yet. The row stays `planned` and is tried again on the next run, until its date is a week away. Then it becomes
+    `failed` and is shown.
+  - An organizer who isn't connected or needs a reconnect: their rows stay `planned`. The reconnect banner names
+    them, and the next run after they reconnect creates the rows.
+  - A 5xx or timeout is re-read and adopted inside the job (above). A row whose outcome is still unknown when the job
+    ends is checked by adoption on the next run, never blindly resent.
+- **Not a reschedule or a cancel.** Automatic creation only creates. Editing or pausing a schedule never cancels or
+  moves a tournament already created (decision 4).
 
 ### 6. Series and venue are resolved, not stored
 
@@ -238,7 +279,10 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
 - (+) Back-to-back events are one scaffold, created together.
 - (+) No duplicate tournaments: every create is preceded by a fresh listing and adoption, and a 5xx is re-read before
   any resend.
-- (+) Nothing reaches play-tools without a click, so a wrong template can't multiply on its own.
+- (+) Nothing reaches play-tools without the organizer's say-so: a click, or a schedule they set to create
+  automatically within a horizon they chose. A wrong template creates at most that horizon's tournaments, which
+  the confirm listed.
+- (+) A regular tournament such as "3rd Tuesday monthly" needs no visit at all once its schedule auto-creates.
 - (+) Rescheduling keeps the tournament: its display id, registrations and staff survive the move.
 - (+) Staff follow a tournament through a reschedule, so staff credits keep working.
 - (−) A new module with five tables (templates, scaffold slots, schedules, planned tournaments, result uploads), four
@@ -253,8 +297,11 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
 - (−) A premier event can only move within its series' window. Moving it further is a cancel and a new tournament,
   which loses its registrations.
 - (−) A reschedule may send the tournament back for approval. That is upstream's call, and the dialog warns of it.
-- (−) Creating tournaments is more exposure to the ToS risk (§11) than attendance. It stays organizer-initiated, one
-  call at a time, paced.
+- (−) Creating tournaments is more exposure to the ToS risk (§11) than attendance. Automatic creation makes calls at
+  a time the organizer didn't pick. It stays opted in per schedule, bounded by its horizon, once a day, one call at a
+  time and paced, which is the volume the organizer would create by hand.
+- (−) Automatic creation is one more scheduled task, and a failure it meets waits until someone looks. This week and
+  the Tournaments page surface it.
 
 ## Open questions
 
@@ -263,6 +310,6 @@ pre-fills each staffer's last role, so a regular crew is quick to add.
 | Q1 | Does a professor's `PATCH` of the date work, does it accept a partial body, and does it send the tournament back for approval? | **Open: S8 part 2.** Removing means cancelling (organizer, 2026-10-12); reschedule edits in place if the `PATCH` works, else the fallback in decision 8 |
 | Q2 | Which tournament types are in scope: custom (friendly) events only, or premier series (League Challenge, League Cup, Prerelease) too? | **Answered (organizer, 2026-10-12):** both; premier series are in scope |
 | Q3 | Should a tournament's default staff be part of the template? | **Answered (organizer, 2026-10-12):** no (decision 9) |
-| Q4 | Is there any case for automatic creation (e.g. weekly locals), or always a click? | **Answered (organizer, 2026-10-12):** always a click, never automatic |
+| Q4 | Is there any case for automatic creation (e.g. weekly locals), or always a click? | **Answered (organizer, 2026-10-12):** automatic creation is allowed for an explicit horizon (decision 5); otherwise a click |
 | Q5 | Production date format (`start_date_v2` UTC or naive `start_date`), create's response and initial status, and server-side refusals | **Open: S8 part 2** |
 | Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Open: S8 part 2** |
