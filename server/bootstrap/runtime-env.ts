@@ -54,12 +54,14 @@ export function prepareRuntimeEnv(input: Env): { env: Env; log: string[] } {
   return { env, log };
 }
 
-/** Optional tuning for `runtimeConfig.authRateLimit` (tests raise them; never in the template). */
+/** Optional tuning for `runtimeConfig.authRateLimit` and `integrationRateLimit` (tests change them; never in the template). */
 const RATE_LIMIT_VARS = [
   'NUXT_AUTH_RATE_LIMIT_LOGIN_MAX',
   'NUXT_AUTH_RATE_LIMIT_LOGIN_WINDOW_MS',
   'NUXT_AUTH_RATE_LIMIT_SETUP_MAX',
   'NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS',
+  'NUXT_INTEGRATION_RATE_LIMIT_MAX',
+  'NUXT_INTEGRATION_RATE_LIMIT_WINDOW_MS',
 ];
 
 function describeSource(source: string, spec: SecretSpec, dir: string): string {
