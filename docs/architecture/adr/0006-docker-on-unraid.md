@@ -3,7 +3,8 @@
 - Status: Accepted
 - Date: 2026-10-10
 - Amended by: [#101](https://github.com/Towerism/play-pokemon-attendance-web/issues/101) (2026-10-13): interrupted jobs
-  are resumed from History, not on boot (wording fix)
+  are resumed from History, not on boot (wording fix);
+  [#120](https://github.com/Towerism/play-pokemon-attendance-web/issues/120) (2026-10-13): Node 24 (see the update below)
 
 ## Context
 
@@ -67,7 +68,7 @@ what we design, document and test for.
   `X.Y.Z`, `X.Y`, cut automatically by semantic-release from the
   Conventional Commits on `main`; `edge` is the unreleased tip of `main`.
 - Multi-stage build. pnpm builds `.output/`, and the runtime stage is
-  `node:22-slim` with the prebuilt `better-sqlite3` native module and the
+  `node:24-slim` (Node 24 update below) with the prebuilt `better-sqlite3` native module and the
   `litestream` binary. No build tools ship in the final image.
 - One port, **`3000`**. One volume, **`/data`**. Everything persistent lives
   under it:
@@ -180,3 +181,19 @@ emulated under QEMU on every push to `main`, more than doubled the image build t
   stay multi-arch in GHCR.
 - The Dockerfile keeps its per-arch checksums for supercronic and Litestream, so a local `docker build` on
   an arm64 machine still works. CI simply never asks for arm64.
+
+## Update (2026-10-13): Node 24
+
+**The image and CI run Node 24 (24.21.0), up from Node 22.** [selfhost-kit#9](https://github.com/Towerism/selfhost-kit/issues/9)
+moved the shared self-hosting kit to Node 24 (`engines` `>=24.11`, the first Node 24 LTS), because only npm ≥ 11.5.1 can
+publish with OIDC and Node 22 bundles npm 10. Both apps that adopt the kit must run Node 24, so this one moves first.
+
+- `.node-version` and the Dockerfile's `NODE_IMAGE` / `NODE_SLIM_IMAGE` pin the **same exact version**, so CI tests the
+  Node the image ships. `test/unit/node-toolchain.test.ts` fails when they, `engines`, the esbuild target or
+  `@types/node` drift apart, or when the version drops below 24.11.
+- The OS bases stay the same (Debian bookworm `-slim`, Alpine 3.23); only Node changes.
+- (+) Node 24 is LTS until April 2028; Node 22 reaches end of life in April 2027.
+- (+) `better-sqlite3` ships N-API prebuilds, so it loads on Node 24 with no compiler in the image (the container smoke
+  test proves it).
+- (−) Developers need Node 24.21.0 locally (`fnm use` reads `.node-version`).
+- Rollback: no migration came with this change, so pinning an earlier `X.Y.Z` image still works on the same `/data`.

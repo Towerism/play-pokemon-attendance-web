@@ -50,9 +50,11 @@ for f in session-password token-vault.key tdf-vault.key; do
     test "$(in_container stat -c '%a %u' /data/secrets/$f)" = "600 $PUID"
 done
 # The oldest node process is the server (later ones are our own `docker exec node`).
+# Matched on argv[0], not /proc/<pid>/comm: Node 24 renames its main thread "MainThread".
 server_owner() {
   in_container sh -c 'for p in $(ls /proc | grep -E "^[0-9]+$" | sort -n); do
-    [ "$(cat /proc/$p/comm 2>/dev/null)" = node ] && { stat -c "%u:%g" /proc/$p; break; }; done'
+    exe=$(tr "\0" "\n" < /proc/$p/cmdline 2>/dev/null | head -n 1)
+    [ "${exe##*/}" = node ] && { stat -c "%u:%g" /proc/$p; break; }; done'
 }
 check "node runs as PUID:PGID, not root" test "$(server_owner)" = "$PUID:$PGID"
 check "setup code printed to the log" \

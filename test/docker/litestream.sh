@@ -56,10 +56,12 @@ stop_and_remove() { docker stop "$NAME" >/dev/null; docker rm "$NAME" >/dev/null
 in_container() { docker exec "$NAME" "$@"; }
 logs() { docker logs "$NAME" 2>&1; }
 
-# Owner (uid:gid) of the first process whose command name is $1.
+# Owner (uid:gid) of the first process whose executable (argv[0] basename) is $1.
+# Not /proc/<pid>/comm: Node 24 renames its main thread "MainThread".
 process_owner() {
   in_container sh -c 'for p in $(ls /proc | grep -E "^[0-9]+$" | sort -n); do
-    [ "$(cat /proc/$p/comm 2>/dev/null)" = "'"$1"'" ] && { stat -c "%u:%g" /proc/$p; break; }; done'
+    exe=$(tr "\0" "\n" < /proc/$p/cmdline 2>/dev/null | head -n 1)
+    [ "${exe##*/}" = "'"$1"'" ] && { stat -c "%u:%g" /proc/$p; break; }; done'
 }
 
 api() { # api <path> <json body> → exit 0 on HTTP 200
