@@ -11,11 +11,11 @@ the spikes import them.
 ## Setup
 
 ```sh
-fnm use                      # Node 22.23.3 from .node-version (Nuxt 4 needs ≥ 22.12)
+fnm use                      # Node 24.21.0 from .node-version (selfhost-kit needs ≥ 24.11)
 npx pnpm@10.18.2 install     # or `pnpm install` if pnpm works on your machine*
 ```
 
-\* The corepack bundled with older Node 22 fails with `Cannot find matching keyid`.
+\* Older bundled corepack versions fail with `Cannot find matching keyid`.
 Either use `npx pnpm@…` as above or run `npm i -g corepack@latest`.
 
 ## Running in Docker (recommended for S2)

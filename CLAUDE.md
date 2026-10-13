@@ -112,7 +112,7 @@ High-value areas:
 
 ## Toolchain
 
-Node 22 (`.node-version`) with pnpm (`packageManager` in `package.json`).
+Node 24 (`.node-version`, exact; the Dockerfile pins the same version) with pnpm (`packageManager` in `package.json`).
 
 | Command                | What it does                                                                 |
 | ---------------------- | ---------------------------------------------------------------------------- |

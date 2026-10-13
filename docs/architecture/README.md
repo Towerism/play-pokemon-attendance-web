@@ -161,7 +161,7 @@ shared/                      auto-imported in app/ and server/ (Nuxt 4)
   schedule/                  pure recurrence engine (M9): schedule rules → dated scaffold occurrences
   time/                      zone maths: a local date or time ↔ UTC instants (no dependency, Intl only)
 nuxt.config.ts
-Dockerfile                   multi-stage: pnpm build → node:22-slim runtime + litestream
+Dockerfile                   multi-stage: pnpm build → node:24-slim runtime + litestream
 docker/entrypoint.sh         PUID/PGID chown + gosu drop, UMASK, optional Litestream supervision (M7)
 server/bootstrap/launcher.ts production entry (`.output/launcher.mjs`): secret bootstrap and derived env, then loads Nitro
 deploy/unraid/               Unraid Docker template (XML) + icon
