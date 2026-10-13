@@ -4,7 +4,8 @@
  *
  * - person-ish keys (names, email, phone, birth dates, addresses) → "<redacted>"
  * - player ids → fake digits of the same length, stable within one Sanitizer
- * - GUIDs anywhere (ids, URLs) → 00000000-0000-4000-8000-<n>, stable
+ * - GUIDs anywhere (ids, URLs) → 00000000-0000-4000-8000-<n>, stable; a dashless
+ *   32-hex id (the user `sub`) gets the same fake without dashes
  * - JWTs → "<jwt>", emails anywhere → user@example.invalid
  * Dates, statuses and structure are preserved: S3 needs them.
  */
@@ -13,6 +14,7 @@ const PERSON_KEY =
   /^(name|title_name)$|(first|last|full|display|screen|user|nick|middle|given|family)_?name$|email|phone|birth|dob|address|avatar|guardian|parent/i;
 const PLAYER_ID_KEY = /^(player_?id|pop_?id|playerid)$/i;
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+const DASHLESS_ID = /(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])/gi;
 const JWT = /^eyJ[\w-]+\.[\w-]+\.[\w-]*$/;
 const EMAIL = /[\w.+-]+@[\w-]+\.[\w.-]+/g;
 
@@ -22,7 +24,7 @@ export class Sanitizer {
 
   /** Original values that must not appear in any sanitized output. */
   get originals(): string[] {
-    return [...this.guids.keys(), ...this.playerIds.keys()];
+    return [...this.guids.keys(), ...[...this.guids.keys()].map(undash), ...this.playerIds.keys()];
   }
 
   sanitize(value: unknown, key = ''): unknown {
@@ -38,7 +40,10 @@ export class Sanitizer {
     }
     if (typeof value !== 'string') return value;
     if (JWT.test(value)) return '<jwt>';
-    return value.replace(EMAIL, 'user@example.invalid').replace(GUID, (g) => this.fakeGuid(g));
+    return value
+      .replace(EMAIL, 'user@example.invalid')
+      .replace(GUID, (g) => this.fakeGuid(g))
+      .replace(DASHLESS_ID, (h) => undash(this.fakeGuid(dash(h))));
   }
 
   /**
@@ -74,6 +79,9 @@ export class Sanitizer {
     return fake;
   }
 }
+
+const undash = (guid: string) => guid.replace(/-/g, '');
+const dash = (hex: string) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 
 /** Returns the originals that survived sanitisation (should be empty). */
 export function findLeaks(sanitizedJson: string, originals: readonly string[]): string[] {
