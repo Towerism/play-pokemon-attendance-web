@@ -74,6 +74,7 @@ flowchart LR
       METRICS["metrics<br/>(sightings, curation queries)"]
       STAFF["staffing<br/>(staff assignments, staff list)"]
       TOURN["tournaments (M9)<br/>(templates, schedules, planned tournaments, results)"]
+      TDFA["tdf-archive (M9)<br/>(encrypted TDF files)"]
       PCONN["pokemon-connection<br/>(token vault, refresh)"]
     end
     JOBS["Nitro plugin job runner + Nitro scheduled task<br/>(submission jobs, token keep-alive)"]
@@ -101,6 +102,8 @@ flowchart LR
   STAFF --> P2
   TOURN --> P2
   TOURN --> STAFF
+  TOURN --> TDFA
+  SESSION --> TDFA
   SUBMIT -. "kind = tournament_* / tdf_upload jobs" .-> TOURN
   SUBMIT -. "kind = staff job" .-> STAFF
   Modules --> DB
@@ -146,7 +149,7 @@ app/                         Vue side (Nuxt 4 `app/` dir)
 server/                      Nitro side
   api/                       file-based routes (see §7), e.g. sessions/[date]/tdf.post.ts
   modules/                   domain modules (plain TS; no h3 imports)
-    roster/  sessions/  submission/  metrics/  staffing/ (M8)  tournaments/ (M9)  pokemon/{ports,adapters,vault}/ + pokemon/connection.ts
+    roster/  sessions/  submission/  metrics/  staffing/ (M8)  tournaments/ (M9)  tdf-archive/ (M9)  pokemon/{ports,adapters,vault}/ + pokemon/connection.ts
   plugins/jobs.ts            boot job runner; mark `running` submissions `interrupted`
   tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (hourly)
   db/                        drizzle schema, migrations, client
@@ -535,11 +538,27 @@ erDiagram
     datetime created_at
     datetime committed_at
   }
-  TDF_UPLOAD ||--o{ TDF_UPLOAD_PLAYER : "parsed into"
+  TDF_UPLOAD ||--o{ TDF_UPLOAD_PLAYER : "parsed into (dropped by ADR-0012, M9)"
   TDF_UPLOAD_PLAYER {
     int upload_id FK
     text player_id "no FK: may be unknown until commit"
     text name "name and ID only"
+  }
+  TDF_FILE ||--o{ TDF_UPLOAD : "imported from (M9)"
+  TDF_FILE ||--o{ TOURNAMENT_RESULT_UPLOAD : "uploaded from (M9)"
+  TDF_FILE {
+    int id PK
+    text league_id FK
+    text sha256 "unique with league_id"
+    text filename
+    int byte_size
+    blob ciphertext "gzip, then AES-256-GCM with the TDF key; AAD tdf_file:<league>:<sha256> (ADR-0012)"
+    text tournament_name "from the file, as the parser reads it"
+    date tournament_date
+    text tournament_display_id "the file's data/id"
+    text kept_reason "null while only previewed; attendance|results once committed or confirmed"
+    text created_by
+    datetime created_at
   }
   SUBMISSION {
     int id PK
@@ -713,7 +732,8 @@ erDiagram
     text tournament_id
     text display_id
     text filename
-    text sha256 "the file itself is never stored"
+    int tdf_file_id FK "the archived file (ADR-0012); null once the organizer deletes it"
+    text sha256 "kept even after the file is deleted"
     int player_count
     text upstream_upload_id "triumph upload_guid"
     text upstream_errors "json"
@@ -780,7 +800,8 @@ Key modelling decisions:
 - **Play-tools names only seed.** A play-tools name can be a dead name. It names a `PLAYER` only when the app has
   no name yet, and it never overwrites one. The organizer renames with `PATCH /players/{id}`, and the rename is
   never reverted. The app shows the local name everywhere, and doesn't store the upstream name alongside it.
-- **TDF privacy.** The parser reads `userid`, `firstname`, `lastname` and tournament metadata only (from M9 also the file's tournament id, organizer player id and game type). Birthdates and other fields are never persisted, and the raw file is discarded after parsing. Uploading results (M9, ADR-0011) passes the raw file in memory to play-tools' validate call, and never stores it.
+- **TDF privacy.** The parser reads `userid`, `firstname`, `lastname` and tournament metadata only (from M9 also the file's tournament id, organizer player id and game type). Birthdates and other fields are never put in a column, a log or an API response. Until M9 the raw file is discarded after parsing.
+- **The TDF archive** (M9, proposed, [ADR-0012](adr/0012-encrypted-tdf-archive.md)): every dropped `.tdf` is kept whole in `TDF_FILE` for bookkeeping, **gzip-compressed and AES-256-GCM encrypted with its own key** (`NUXT_TDF_VAULT_KEY` / `/data/secrets/tdf-vault.key`), deduplicated by SHA-256, and decrypted only in memory: to parse, validate or download. The `tdf-archive` module owns it, and `sessions` and `tournaments` use its service. The M3 preview → commit re-parses from the archive, so `TDF_UPLOAD_PLAYER` is dropped. A file only previewed is deleted after a day. A committed or uploaded one is kept until the organizer deletes it.
 - **Tournaments are planned locally, created on a click** (M9, [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)). Schedules are materialised into `PLANNED_TOURNAMENT` rows on read, inside each schedule's horizon. A planned tournament takes its template's settings when it is created. Every create is preceded by a listing as the organizer, and a live tournament with the same start, product, format and name is adopted instead of created. **Create through date…** on a schedule creates every planned row up to a chosen date (≤ 12 months, ≤ 60 tournaments) in one job, after listing them; nothing is created in the background. Editing a schedule replans only rows not in play-tools. A created tournament is cancelled or rescheduled only by an explicit action.
 
 ### Metrics (SQL views, computed on read — the data is small)
@@ -1174,7 +1195,7 @@ sequenceDiagram
 - **Results** are previewed (local checks, then upstream's validate) and confirmed as a job. A file that fails
   validation may still be sent: the dialog lists every warning (play-tools' errors, mismatches, and players new to the
   app as possible mis-keyed ids) and the organizer must choose **Upload anyway**, which the server also requires. The
-  raw file is never stored (ADR-0011).
+  file is kept encrypted in the TDF archive, so a retry validates again from it (ADR-0011, ADR-0012).
 
 ## 7. HTTP API (Nitro server routes)
 
@@ -1222,6 +1243,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /tournament-schedules/{id}/create-through?date=` · `POST /tournament-schedules/{id}/create-through` → 202 (M9) | Preview what the schedule would create up to the date (materialised past its horizon; lists what is left out and why), then `{date}` → one `tournament_create` job; 422 `too_many_tournaments` (> 60) or a date more than 12 months ahead |
 | `GET /tournaments/{id}/cancel` · `POST /tournaments/{id}/cancel` → 202 (M9) | Fresh preview (players, staff, allowed?), then `{confirmDisplayId?}` → a `tournament_cancel` job |
 | `POST /tournaments/{id}/reschedule` → 202 (M9) | `{date, startTime}` → a `tournament_reschedule` job; 422 `outside_series_window`/`tournament_locked`/`date_too_far_past` |
+| `GET /tdf-files?tournamentId=&date=` · `GET /tdf-files/{id}/download` · `DELETE /tdf-files/{id}` (M9, ADR-0012) | The TDF archive: list (name, tournament, date, size, who, when; never contents), download (`Content-Disposition: attachment`, `Cache-Control: no-store`, one audit log line), delete (the ciphertext goes at once; SHA-256s on upload rows stay). 404 for another league's; 409 `tdf_key_mismatch` when this install's key can't open it |
 | `POST /sessions/{date}/tournaments/{id}/results` · `POST …/results/{uploadId}/confirm` → 202 (M9) | TDF results preview (JSON `{filename, content}`, ≤ 2 MB) → `{uploadId, warnings: [{code, message, players?}], attendance}`; warnings (`tdf_wrong_tournament`/`tdf_wrong_organizer`/`tdf_wrong_game`/`tdf_staff_also_playing`/`tdf_unknown_players`/play-tools' validation codes) never block. 422 only for blocks: `too_large`/`unsafe`/`not_tdf`/`results_not_accepted`/`results_already_uploaded`; 409 `submission_running`. Confirm `{importAttendance, acknowledgeWarnings}` → a `tdf_upload` job; 422 `warnings_not_acknowledged` when the preview had warnings and they weren't acknowledged |
 | `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name }` sets or clears the display name (≤ 60 characters, `''`/null clears; display only, never sent to Pokémon) and answers the connection. `POST /pokemon/token` is not built yet |
 | `GET /leagues/upstream?professor=` · `GET /settings` · `PUT /settings` | Pick the submitting professor and their activity group, timezone, thresholds, batch delay. As built: `GET /leagues/upstream` lists the leagues every connected professor shares (#75), named as that professor sees them, with `selectedId` and `excluded` (professors left out because they need a reconnect; any other failure is 502/503); `PUT` refuses a league outside that set with 404 `league_not_found`; `GET /settings` is `{ thresholds }`; `PUT` takes `{ professorPlayerId?, activityGroupId?, thresholds? }` (the professor and league together; `{}` changes nothing; 404 `connection_not_found` or `league_not_found`) and answers with what it changed, `{ connection?, thresholds? }` |
@@ -1263,7 +1285,8 @@ Client patterns:
 | Missing security headers                               | `nuxt-security` nonces the HTML shell's inline scripts; `server/plugins/security-headers.ts` sends the same headers on every response, JSON errors included (`server/error.ts`). CSP `default-src 'self'`, `script-src 'self'` + nonce (no `unsafe-inline`/`unsafe-eval`; browser code takes Zod from `shared/zod.ts`, which runs it jitless so it never probes `Function`, enforced by ESLint), `frame-ancestors 'none'`; `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, no CORS and no COEP. HSTS (180 days) and `upgrade-insecure-requests` only when `NUXT_PUBLIC_SITE_URL` is https: HSTS covers every port on the host, and over plain HTTP the upgrade would break the app. `/api` bodies over 2 MiB get `413` (`server/middleware/body-size.ts`) except the TDF preview, which has its own limit. nuxt-security's XSS validator, CORS handler and rate limiter are off: Zod validates bodies, and TDF uploads contain XML. |
 | Malicious TDF (XXE, billion-laughs, huge file)         | Any `<!DOCTYPE`/`<!ENTITY` is refused before parsing; `fast-xml-parser` runs with `processEntities:false` (only XML's five escapes and numeric references are decoded). Bodies over the limit are refused by `Content-Length` before they are read; 2 MB file limit; 2,000-player cap; every player ID validated |
 | OAuth `state` / code injection on connect              | `state` + PKCE verifier stored server-side and bound to the app user's session, with a 10-min TTL and single use                       |
-| Minors' PII                                            | Only name and player ID are stored. No birthdates: tournament records' `year_of_birth` (S6) is dropped in the adapter, like TDF birthdates. Raw TDFs are not retained: a results upload (M9) passes the file from memory to play-tools' validate call, keeps only its SHA-256, and `payload` is redacted from logs. |
+| Minors' PII                                            | Outside the TDF archive only name and player ID are stored. Tournament records' `year_of_birth` (S6) is dropped in the adapter, and TDF birthdates never reach a column, log or API response. Until M9 raw TDFs are not retained. |
+| Theft of the TDF archive (M9, ADR-0012; holds minors' birthdates) | Each file is AES-256-GCM encrypted with a key of its own (`NUXT_TDF_VAULT_KEY` or `/data/secrets/tdf-vault.key`, 0600), never in the database, so a copy of `app.db`, a Litestream replica or a backup without `secrets/` opens nothing. AAD binds each ciphertext to its league and SHA-256. It is decrypted only in memory, with no temp files. Download needs a session and is `no-store` and audited. `content`/`payload` are redacted from logs. Only a compromise of the running container, or of `app.db` and `secrets/` together, exposes it. |
 | Dead names from play-tools (M8)                        | Upstream names only seed an unknown player and never overwrite a local name; the organizer can rename anyone; the app shows the local name and never stores the upstream one beside it (ADR-0007 decision 13) |
 | Supply chain                                           | Lockfile, Renovate, `pnpm audit` in CI                                                                                                 |
 
@@ -1297,7 +1320,7 @@ flowchart LR
   - `PUID` / `PGID` / `UMASK` (default `99` / `100` / `022`, Unraid's `nobody:users`). The entrypoint drops root with `gosu`.
   - `TZ`, which Unraid sets. It drives session dates and the keep-alive schedule.
   - `NUXT_DATABASE_PATH` (default `/data/app.db`)
-  - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils) and `NUXT_TOKEN_VAULT_KEY`. Both are optional. If either is unset, it is generated once into `/data/secrets/` (mode 0600). Env wins over the file. A malformed value fails startup and is never silently regenerated.
+  - `NUXT_SESSION_PASSWORD` (nuxt-auth-utils), `NUXT_TOKEN_VAULT_KEY` and, from M9, `NUXT_TDF_VAULT_KEY` (ADR-0012). All are optional. If one is unset, it is generated once into `/data/secrets/` (mode 0600). Env wins over the file. A malformed value fails startup and is never silently regenerated.
   - `NUXT_SUBMISSION_BATCH_SIZE` (20, capped at 50), `NUXT_SUBMISSION_BATCH_DELAY_MS` (10000),
     `NUXT_SUBMISSION_SETTLE_MS` (180000), `NUXT_SUBMISSION_SETTLE_POLL_MS` (15000). Optional tuning, not in the template.
   - `NUXT_STAFF_DELAY_MS` (1000, never under 500; M8). Optional tuning, not in the template.
@@ -1311,7 +1334,7 @@ flowchart LR
     collector). Optional, not in the template. Both are read straight from env, so the launcher logs the same way.
   - `LITESTREAM_REPLICA_URL`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY`. Optional. When set, the entrypoint runs the app under `litestream replicate -exec` (config in the image at `/etc/litestream.yml`; only `app.db` is replicated, never `secrets/`).
     If `app.db` is missing, it is first restored from the replica (an empty replica means a normal first run). A broken Litestream config or a failed restore exits the container non-zero instead of running without backups.
-- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost vault key means one Pokémon reconnect per professor, and a lost session password logs everyone out. No attendance data is lost in either case. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
+- **Backups and restore:** stop the container and archive the whole appdata folder (*Appdata Backup*), or restore from Litestream. Always restore `secrets/` with `app.db`. A lost token vault key means one Pokémon reconnect per professor, and a lost session password logs everyone out. No attendance data is lost in either case. A lost TDF vault key (M9) **loses the stored TDF archive** for good: play-tools still has the results, and attendance is unaffected. The restore drill checks that a stored TDF opens after a restore. Step-by-step install, backup, restore and the restore drill: [`docs/deploy/unraid.md`](../deploy/unraid.md).
 - **Shutdown:** on `SIGTERM` the app stops new batches, marks running jobs `interrupted` (they resume on boot), checkpoints the WAL and closes SQLite within Docker's 10 s stop timeout.
 - **Updates:** releases are automatic. On every push to `main` that passes CI, semantic-release reads the Conventional Commits since the last `vX.Y.Z` tag; when a `fix`, `feat` or breaking change landed, it tags the image that run tested `X.Y.Z`, `X.Y` and `latest`, then pushes the git tag and a GitHub Release with generated notes. `edge` is the unreleased tip of `main`. Unraid shows "update ready" and migrations run on boot.
 - **Scheduling:** `nitro.experimental.tasks = true` with `scheduledTasks: { '0 * * * *': ['pokemon:keepalive'] }`. This requires a long-lived (non-serverless) preset, which is one reason the target is a container, not Vercel or Netlify functions.
@@ -1381,7 +1404,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 | M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47), the Players → Staff tab (#50), the This week Staff card with `StaffSearch` (#49) and the staff import (#48) and staff batches for every tournament on a date (#76) are built ([ADR-0007](adr/0007-staff-assignment.md), #41). Accepted |
-| M9 Tournaments (proposed)     | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine and the parser's new fields; the `tournaments` module (templates, scaffolds, schedules, planned tournaments); create, cancel and reschedule jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md) |
+| M9 Tournaments (proposed)     | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine and the parser's new fields; the `tournaments` module (templates, scaffolds, schedules, planned tournaments); create, cancel and reschedule jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload); the encrypted TDF archive (`tdf-archive` module, `TDF_FILE`, the TDF key, download and delete, M3 import moved onto it and `tdf_upload_player` dropped). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md), [ADR-0012](adr/0012-encrypted-tdf-archive.md) |
 
 ## 14. Architecture Decision Records
 
@@ -1396,3 +1419,4 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 - [ADR-0009](adr/0009-tournaments-as-their-organizer.md) Tournaments are read and staffed as their organizer (#75)
 - [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md) Tournament templates, schedules and lifecycle: create, cancel, reschedule (M9, proposed)
 - [ADR-0011](adr/0011-tdf-results-upload.md) Upload a tournament's TDF to play-tools from its This week card (M9, proposed)
+- [ADR-0012](adr/0012-encrypted-tdf-archive.md) Keep TDF files, encrypted at rest (M9, proposed)

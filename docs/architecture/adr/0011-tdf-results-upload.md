@@ -3,6 +3,7 @@
 - Status: Proposed (M9)
 - Date: 2026-10-12
 - Amends: architecture §5 "TDF privacy" and §9 (the raw TDF now travels on to play-tools)
+- Amended by (proposed): [ADR-0012](0012-encrypted-tdf-archive.md): the file is kept, encrypted at rest (decision 5)
 - Builds on: [ADR-0009](0009-tournaments-as-their-organizer.md), [ADR-0010](0010-tournament-templates-and-lifecycle.md)
   (the `tournaments` module and its job kinds)
 - Upstream contract: spike S8 ([spikes.md](../spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)), part 1 done, live capture pending
@@ -27,8 +28,9 @@ What S8 part 1 found:
 - After confirm the tournament goes `upload_in_progress`, then `complete` or `upload_failed`. play-tools' own page
   doesn't poll.
 
-Two rules from §9 bear on this: **never persist raw TDF files or birthdates**, and **act on a tournament only as its
-organizer** (ADR-0009). A TDF holds every player's birthdate, and play-tools needs the whole file.
+Two rules from §9 bear on this: **never persist raw TDF files or birthdates** (relaxed by ADR-0012: kept only
+encrypted at rest), and **act on a tournament only as its organizer** (ADR-0009). A TDF holds every player's
+birthdate, and play-tools needs the whole file.
 
 The organizer on validation failures (2026-10-12): a TDF that will fail play-tools' validation may still be sent.
 Sometimes that is what they want, and Pokémon support almost always resolves it from there. The app must **warn
@@ -43,8 +45,9 @@ before sending it**. The preview must also **call out every player the app doesn
 3. **Preview → confirm, mirroring upstream's two phases.** Drop the file, and the app checks it locally and through
    upstream's validate, showing both. **Upload results** then confirms, as a job. Problems are warnings the organizer
    can upload past (**Upload anyway**), not refusals, except where play-tools wouldn't take an upload at all.
-4. **Keep the file and upload later**, for example in a queue that survives a restart. It needs the raw file stored,
-   which §9 forbids.
+4. **Keep the file and upload later**, for example in a queue that survives a restart. It needed the raw file
+   stored, which §9 forbade when this was written. ADR-0012 now keeps the file encrypted, which decision 5 uses for
+   retries. The preview → confirm flow stays, because it is what shows the warnings.
 
 ## Decision
 
@@ -91,10 +94,11 @@ Option 3.
    - **Then upstream's validate** runs as the organizer, in one call, whenever nothing blocks. It runs even with
      local warnings, so the organizer sees play-tools' own answer before choosing. It returns `upload_guid` and
      play-tools' errors.
-   - **The preview is stored without the file:** a `tournament_result_upload` row with the tournament, file name,
-     SHA-256, player count, `upload_guid`, the warnings (codes, messages and the unknown players' ids and names) and
-     state `previewed`. The attendance side creates its usual pending `TDF_UPLOAD` (name and id only). Unconfirmed
-     previews are dropped after a day, like TDF previews.
+   - **The preview is stored:** the file goes into the encrypted TDF archive (ADR-0012), and a
+     `tournament_result_upload` row holds the tournament, the archived file's id, SHA-256, player count,
+     `upload_guid`, the warnings (codes, messages and the unknown players' ids and names) and state `previewed`.
+     The attendance side's pending `TDF_UPLOAD` points at the same archived file. Unconfirmed previews, and a file
+     nothing else keeps, are dropped after a day.
 
 4. **Confirm** (`POST …/results/{uploadId}/confirm {importAttendance, acknowledgeWarnings}`) starts a
    `kind = 'tdf_upload'` job on the submission rails (lease, History, retry, recovery):
@@ -122,10 +126,13 @@ Option 3.
      support: the tournament's display id and name, the date, the upload id (`upload_guid`), play-tools' error codes,
      the correlation id of any refusal, and when it was sent. Player names and the file itself are not in it.
 
-5. **The raw file only passes through.** It lives in the preview request's memory, is base64-encoded straight into
-   upstream's validate call, and is never written to the database, disk or logs. Only its SHA-256 is kept, so the
-   same file dropped again is recognised. play-tools is the file's intended destination, as when the organizer
-   uploads it there. The adapter never logs request bodies, and `payload` joins the redaction list.
+5. **The file is kept, encrypted** (ADR-0012, replacing "the raw file only passes through"). It is stored once
+   in the TDF archive, AES-256-GCM with its own key, and decrypted only in memory. It is base64-encoded into
+   upstream's validate call from memory. If play-tools has forgotten the `upload_guid` by confirm time, or a retry
+   needs it, the job validates again **from the archive**, so the organizer never drops the file twice. If the new
+   validation has warnings the earlier acknowledgment didn't cover, the job stops and asks again. The SHA-256
+   recognises the same file dropped again. The adapter never logs request bodies, and `payload` joins the redaction
+   list.
 
 6. **Not uploading twice.** The app refuses an upload for a tournament with player records (upstream allows it only
    to admins). A second preview of the same file for the same tournament reuses the open preview.
@@ -143,11 +150,12 @@ Option 3.
 - (+) The organizer keeps the final say. A file that will fail validation can still go through when that is what
   they want, after an explicit warning, with the warnings and support details on record for Pokémon support.
 - (+) Confirm is a job with History and retry, and it needs no stored file.
-- (+) The raw-file rule holds: nothing with birthdates is kept.
+- (+) The file is kept for bookkeeping, encrypted at rest with its own key (ADR-0012). Nothing with birthdates is
+  kept in the clear.
 - (−) The preview makes an upstream call (validate), so it takes the league's lease briefly and fails while a job
   runs.
-- (−) A restart between preview and confirm keeps the `upload_guid`, but if upstream expires it (unknown, S8 part
-  2), the organizer drops the file again.
+- (+) A restart, or an expired `upload_guid` (unknown lifetime, S8 part 2), is recovered by validating again from
+  the archive, with no new drop.
 - (−) A mistaken confirm can't be undone by the organizer (admin purge only). That is upstream's rule, and the
   confirm dialog says so.
 - (−) An **Upload anyway** can leave a tournament `upload_failed` until Pokémon support resolves it. That is the
