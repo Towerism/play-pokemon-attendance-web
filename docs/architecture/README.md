@@ -593,14 +593,14 @@ erDiagram
     text status "planned|running|succeeded|partial|failed|interrupted"
     text error "why it stopped early"
     int retry_of "the attempt this one retries or resumes"
-    text kind "submit|undo|clear (M7)|staff|staff_import (M8)"
+    text kind "submit|undo|clear (M7)|staff|staff_import (M8)|player_import (#35)"
     int undo_of "for an undo: the submission it undoes"
   }
   SUBMISSION_ITEM {
     int submission_id FK
     text player_id FK
     text origin "regular|session|upstream"
-    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed; staff: assigned|already_assigned|already_listed|is_organizer|role_changed|ineligible|removed|already_removed|failed|skipped; staff_import: found|new_player"
+    text outcome "pending|added|already_present|failed|skipped|unrequested; undo, clear: removed|already_removed; staff: assigned|already_assigned|already_listed|is_organizer|role_changed|ineligible|removed|already_removed|failed|skipped; staff_import, player_import: found|new_player"
     text error
     text record_id "upstream record, for undo and clear (M7)"
     bool as_staff "present upstream in a staff role"
@@ -1112,7 +1112,7 @@ records each staff record found, excluding `organizer`, in `STAFF_HISTORY` (`sou
 through `RosterService`, which uses the play-tools name only for a player the app can't name yet. The one-time
 **Import staff from play-tools** (`kind = 'staff_import'`, #48) does the same for every tournament each connected
 professor has organized, dated or not, in the leagues they are in today (#67: play-tools refuses a former league's
-records). As built (`runStaffImport` in `server/modules/submission/service.ts`):
+records). As built (`runImport` in `server/modules/submission/service.ts`, shared with the player import below):
 - **Every professor (#75).** For each connected professor in turn, as them: one `listLeagues()` and one
   `listTournaments()` with no range. A tournament two professors list is read once, as the first. A professor who needs
   a reconnect, or whose leagues or tournaments can't be listed, is one `professor_failed` event, and the import goes on
@@ -1138,6 +1138,21 @@ records). As built (`runStaffImport` in `server/modules/submission/service.ts`):
   staffersFound, newPlayers: [{ playerId, name }] }` (local names), counted from the `planned`, `tournament_read`
   and `tournament_failed` events and the items. Settings and History list the new players, so their names can be
   checked and corrected on Players → Staff.
+
+**Import players from play-tools** (`kind = 'player_import'`, #35) is the same job keeping the other half of each
+tournament's records: the players (`player: true`, not staff). Play-tools has no player search, so this is how players
+the app hasn't met become findable in the player search (#31), Players and This week. It differs only in what it seeds:
+- **Seeding** goes through `RosterService.ensurePlayers` into the league the job started in: a `player` row named as
+  play-tools shows them (only when the app can't name them yet) and a `player_membership` row with the defaults. It
+  records **no sighting** (a tournament isn't a league session, and any sighting date counts as one, ADR-0005), and
+  writes no regular flag, note or `STAFF_HISTORY`. Only the player id and name are kept; `year_of_birth`, country,
+  division and results are never read.
+- **Items:** one per distinct player, `origin = upstream`, `new_player` when the league didn't have them before this
+  import, else `found`.
+- **The row and result:** `play_session_label = 'Player import'`; `GET /submissions/{id}` carries `playerImport: {
+  tournamentsTotal, tournamentsRead, tournamentsFailed, playersFound, newPlayers }`. Everything else (professors,
+  reads, errors, lease, Retry, never undoable) is as for the staff import, and the two exclude each other through the
+  league's lease.
 
 **Rules** ([ADR-0007](adr/0007-staff-assignment.md) decisions 8 and 9):
 
@@ -1318,6 +1333,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /sessions/{date}/clear?playSessionId=` · `POST /sessions/{date}/clear` → 202 | Clear session (§6.3). `GET` previews `{ playSessionId, playSessionLabel, players: [{ playerId, name, addedByApp }], staffKept, otherSessionHasAppRecords }`. `POST` takes `{ playSessionId, confirmDate }` and starts a `kind = 'clear'` job → `{ submissionId }` |
 | `GET /staff?q=&limit=` (M8)                               | Staff list search over `STAFF_HISTORY` (seeded from play-tools): a bare array `[{ playerId, name, timesStaffed, lastStaffedOn, lastRole }]`, most recent first (`lastStaffedOn` null and last when no tournament has a date; `lastRole` is upstream text); `q` and `limit` (1–100, absent = every match) as for `/players`. `name` is always the local name. Needs no Pokémon connection |
 | `POST /staff/import` → 202 (M8)                           | No body. Start the read-only `kind = 'staff_import'` job: every tournament each connected professor organizes in the leagues they are in today (#67, ADR-0009), read as them one at a time and unpaced → `{ submissionId }`; 409 `submission_running` / `league_not_selected` / `not_connected` (no professor) / `needs_reconnect` (every professor needs one), 503 `shutting_down`. `GET /submissions/{id}` then carries the `staffImport` result: tournaments total, read and failed, staffers found, and the new players (to check names). Re-running is harmless |
+| `POST /players/import` → 202 (#35)                        | No body. Start the read-only `kind = 'player_import'` job: the same tournaments and reads as `POST /staff/import`, adding their players (not staff) to the league with no sightings → `{ submissionId }`; the same errors. `GET /submissions/{id}` then carries the `playerImport` result: tournaments total, read and failed, players found, and the new players. Re-running is harmless |
 | `GET /staff/roles` (M8)                                   | `{ roles: [{ code, label }] }` from `listStaffRoles` (the S6 constant; `judge` first as the default). No upstream call |
 | `GET /sessions/{date}/staff` (M8)                         | `{ timeZone, tournaments: [{ tournamentId, label, startsAt, editable, missing?, unavailable?, organizer: { playerId, name, connected, needsReconnect } \| null, assignments: [{ id, playerId, name, role, appliedRole, state }], upstreamOnly: [{ playerId, name, role }], players: [{ playerId }] }], unread: [{ professor: { playerId, name }, code, message }] }`: this league's tournaments of every connected professor that start on the date (league TZ), in start order (ADR-0009). Reads upstream live as each professor (one call at a time) and seeds the staff list. A tournament is `editable` only while its organizer can act. A professor who can't be read is in `unread` (code `needs_reconnect`, `unavailable`, …), and the rest still show. An assignment whose tournament nobody lists shows under a `missing: true` entry, or `unavailable: true` while someone couldn't be read (`startsAt` and `organizer` null, not editable). 409 `league_not_selected`/`not_connected` (no professor connected) |
 | `POST /sessions/{date}/staff` (M8)                        | Add `{ tournamentId, playerId, role, name? }`: 201 when added (or a tombstoned assignment revived), 200 when that player is already wanted there in that role (no upstream call), 409 `player_already_staffed` in another role, 409 `already_listed` (`data.how`: `player` \| `staff`) when play-tools already lists them, 422 `organizer_cannot_staff` for the tournament's organizer (fresh read, as the organizer), `unknown_role`, `unknown_tournament` (not this league's on that date) and `tournament_locked`; 409 `organizer_not_connected` (`data.organizerPlayerId`) when no connected professor organizes it, 409 `needs_reconnect` (`data.professorPlayerId`) when its organizer needs a reconnect (ADR-0009). 400 for a malformed body, before any upstream call |
@@ -1354,8 +1370,8 @@ Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submi
 | `tournaments.vue` (M9) | A **Required events** grid on top (League Cup per quarter and League Challenge per month × TCG / GO / VGC; status, urgency, **Plan one…**, **Mark as covered…**; requirements editable), then tabs **Upcoming** (planned and play-tools tournaments by date: Create in play-tools, Skip, Edit… (any field; rescheduling included; optionally across the schedule), Cancel…, Download TDF when `tdfAvailable`, New tournament), **Templates** (form choices read live as the template's organizer) and **Schedules** (scaffold slots, recurrence, a preview of the next dates, and **Create through date…**, confirmed against the list it would create). On This week (M9) each Staff card becomes a tournament card with its status, Staff, and a **Results** section where a dropped `.tdf` previews the upload and the attendance import together, with **Download TDF** once the app holds its results file (`tdfAvailable`, from local rows only; with results in play-tools but no file, "Results are in play-tools. This app has no copy of the TDF."); planned tournaments not yet created show with **Create in play-tools** |
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**, **Staff** (M8, #50: the staff list from `GET /staff` with times staffed, last staffed, and the last role's label from `GET /staff/roles` (fetched once); the page's search box searches it; an inline rename (`PATCH /players/{id}`, one row at a time) since a seeded play-tools name can be a dead name. The Staff tab never calls `/players`, and the other tabs never call `/staff`) (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
-| `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …", "Staff import") |
-| `settings.vue`      | Pokémon accounts (`PokemonConnectionCard`, ADR-0008): one row per professor, "Display name (player id)" or "Professor <player id>", status, last refreshed, "Submits attendance", Rename, Reconnect and Disconnect named for the professor, and Add Pokémon account; the league picker chooses the professor, then a league every connected professor shares (#75: it names who it left out until they reconnect, and offers nothing to save when they share none). The global banner names the submitting professor (display name alone) and shows only when they need a reconnect; the submit dialog says "Submitting as …"; History shows who each attempt ran as; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; **Import staff from play-tools** (`StaffImportCard`, M8: disabled with the reason until the connection is usable and a league is chosen; live progress, then the latest import's result with its new players and a link to History); app users |
+| `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …", "Staff import", "Player import") |
+| `settings.vue`      | Pokémon accounts (`PokemonConnectionCard`, ADR-0008): one row per professor, "Display name (player id)" or "Professor <player id>", status, last refreshed, "Submits attendance", Rename, Reconnect and Disconnect named for the professor, and Add Pokémon account; the league picker chooses the professor, then a league every connected professor shares (#75: it names who it left out until they reconnect, and offers nothing to save when they share none). The global banner names the submitting professor (display name alone) and shows only when they need a reconnect; the submit dialog says "Submitting as …"; History shows who each attempt ran as; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; **Import staff from play-tools** (`StaffImportCard`, M8: disabled with the reason until the connection is usable and a league is chosen; live progress, then the latest import's result with its new players and a link to History); **Import players from play-tools** (`PlayerImportCard`, #35: the same, with the new players behind a "Show the N new players" disclosure); app users |
 | `login.vue`         | App login (the only page outside `auth.global.ts` middleware)                                                                  |
 
 Client patterns:
