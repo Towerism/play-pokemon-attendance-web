@@ -4,6 +4,8 @@
 - Date: 2026-10-11 (updated with spike S6 the same day)
 - Issue: [#41](https://github.com/Towerism/play-pokemon-attendance-web/issues/41)
 - Amended by: [ADR-0009](0009-tournaments-as-their-organizer.md): tournaments are listed as every connected professor and acted on only as their organizer (#75)
+- Amended by: [ADR-0011](0011-tdf-results-upload.md): a staffer the TDF lists as playing may be removed from staff on the organizer's explicit request, even if added in play-tools (update below)
+- Amended by: [ADR-0010](0010-tournament-templates-and-lifecycle.md): creating, cancelling and rescheduling tournaments, and uploading their results ([ADR-0011](0011-tdf-results-upload.md)), move into scope (M9)
 
 ## Context
 
@@ -323,6 +325,24 @@ confirmed on #76:
   submission module.
 
 There is no cancel, and nothing runs in parallel, even for different professors.
+
+### Update (M9, ADR-0011): removing a staffer who played, on request
+
+A TDF being uploaded may list a player who is also on the tournament's staff, which play-tools refuses
+(`STAFF_PLAYERS_ERROR`). The organizer (2026-10-12): this can be fixed by removing that player from staff, **even
+when the staff record was added directly in play-tools**. It stays a warning either way.
+
+This is the one exception to "never change or delete a record the app neither created nor adopted" (decisions 4, 8
+and 12). It is narrow:
+
+- it happens only on the organizer's explicit **Remove from staff** in the TDF preview, per person (or for all the
+  people listed, after one confirm that names each of them);
+- it removes only the staff record of a player **the TDF lists as playing**, on that tournament;
+- the staff job re-reads the records first, and sends `DELETE` only if that player is still listed as staff. The
+  outcome is `removed` or `already_removed`, and History records it like any other removal;
+- it never removes the tournament's `organizer` record.
+
+No other path deletes a record the app didn't create or adopt.
 
 ## Alternatives considered
 
