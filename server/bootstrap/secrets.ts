@@ -43,6 +43,14 @@ export const TOKEN_VAULT_KEY: SecretSpec = {
     BASE64.test(v) && Buffer.from(v, 'base64').length === 32 ? null : 'must be 32 bytes, base64-encoded',
 };
 
+/** The TDF archive's own AES-256-GCM key (ADR-0012): losing it loses the archive, not the Pokémon login. */
+export const TDF_VAULT_KEY: SecretSpec = {
+  env: 'NUXT_TDF_VAULT_KEY',
+  file: 'tdf-vault.key',
+  generate: TOKEN_VAULT_KEY.generate,
+  problem: TOKEN_VAULT_KEY.problem,
+};
+
 export function resolveSecret(
   spec: SecretSpec,
   opts: { env: Record<string, string | undefined>; dir: string },

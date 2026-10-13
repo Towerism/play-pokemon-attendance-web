@@ -42,6 +42,7 @@ export default defineNuxtConfig({
     migrationsDir: 'server/db/migrations',
     // Filled from env or /data/secrets/ by server/bootstrap/launcher.ts.
     tokenVaultKey: '',
+    tdfVaultKey: '',
     // Empty means the real Pokémon hosts. Only test doubles set these
     // (NUXT_POKEMON_ACCESS_URL / NUXT_POKEMON_API_URL); see test/server/fake-pokemon.ts.
     pokemon: { accessUrl: '', apiUrl: '' },

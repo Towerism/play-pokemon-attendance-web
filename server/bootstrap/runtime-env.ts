@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path';
 import { InvalidTrustedProxiesError, parseTrustedProxies } from '../modules/security/client-address';
-import { SESSION_PASSWORD, type SecretSpec, TOKEN_VAULT_KEY, resolveSecret } from './secrets';
+import { SESSION_PASSWORD, type SecretSpec, TDF_VAULT_KEY, TOKEN_VAULT_KEY, resolveSecret } from './secrets';
 
 type Env = Record<string, string | undefined>;
 
@@ -14,6 +14,7 @@ const DEFAULT_DATABASE_PATH = '.data/app.db';
 const SECRETS: Array<[label: string, spec: SecretSpec]> = [
   ['Session password', SESSION_PASSWORD],
   ['Token vault key', TOKEN_VAULT_KEY],
+  ['TDF vault key', TDF_VAULT_KEY],
 ];
 
 /**
