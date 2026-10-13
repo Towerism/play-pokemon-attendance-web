@@ -10,5 +10,6 @@ useHead({ title: 'Settings' });
     <CurationThresholdsCard />
     <StaffImportCard />
     <PlayerImportCard />
+    <IntegrationTokensCard />
   </div>
 </template>
