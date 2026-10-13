@@ -2,7 +2,7 @@
 import type { TemplateBody } from '../../../shared/schemas/tournaments';
 import type { ActingConnection, ConnectionView } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { Format, Series, Tournament, Venue } from '../pokemon/ports/play-tools-gateway';
+import type { Format, Series, Tournament, TournamentDetails, Venue } from '../pokemon/ports/play-tools-gateway';
 
 export const GROUP = 'group-1';
 export const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
@@ -33,7 +33,10 @@ export function series(id: string, name: string, from: string, to: string, produ
   return { id, name, product, categories: ['tcg_std'], tags: [], playTemplate: null, windows: { US: { from, to } } };
 }
 
-export function upstreamTournament(id: string, startsAt: string, opts: Partial<Tournament> & { organizer?: string } = {}): Tournament & { organizer: string } {
+/** A play-tools tournament as the stub holds it: listed, plus the details only `getTournament` reads. */
+export type StubTournament = Tournament & { organizer: string; category?: string; applicationState?: string };
+
+export function upstreamTournament(id: string, startsAt: string, opts: Partial<StubTournament> = {}): StubTournament {
   return {
     id,
     name: `Cup ${id}`,
@@ -55,7 +58,7 @@ export function upstreamTournament(id: string, startsAt: string, opts: Partial<T
 export function stubPlayTools() {
   const state = {
     professors: [{ ...OLIVE }] as ActingConnection[],
-    tournaments: [] as (Tournament & { organizer: string })[],
+    tournaments: [] as StubTournament[],
     series: [] as Series[],
     formats: [{ product: 'tcg', categories: ['tcg_std', 'tcg_exp'] }] as Format[],
     venues: [{ id: VENUE.id, name: 'Card Shop', formattedAddress: '1 Main St', country: 'US', timeZone: 'America/Chicago' }] as Venue[],
@@ -94,8 +97,30 @@ export function stubPlayTools() {
         state.tournaments
           .filter((t) => t.organizer === who)
           .filter((t) => !range || (t.startsAt && t.startsAt >= range.from && t.startsAt < range.to))
-          .map(({ organizer: _o, ...t }) => t),
+          .map(({ organizer: _o, category: _c, applicationState: _a, ...t }) => t),
       ),
+    getTournament: (tournamentId: string) =>
+      call(as, 'getTournament', (): TournamentDetails => {
+        const t = state.tournaments.find((x) => x.id === tournamentId);
+        if (!t) throw new PokemonUpstreamError('not_found', `No tournament ${tournamentId}.`);
+        const { organizer, category, applicationState, ...listed } = t;
+        return {
+          ...listed,
+          organizerPlayerId: organizer as never,
+          organizerName: null,
+          applicationState: applicationState ?? t.status,
+          activityState: 'pending',
+          category: category ?? 'tcg_std',
+          series: null,
+          venue: null,
+          contact: { email: null, phone: null },
+          registration: null,
+          onSiteAdmission: null,
+          thirdPartyRegistrationUrl: null,
+          details: null,
+          eventWebsite: null,
+        };
+      }),
     listSeries: (groupId: string) => call(as, 'listSeries', () => (groupId === GROUP ? [...state.series] : [])),
     listFormats: (_country: string) => call(as, 'listFormats', () => [...state.formats]),
     listVenues: (_groupId: string, _country: string) => call(as, 'listVenues', () => [...state.venues]),

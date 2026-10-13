@@ -45,6 +45,8 @@ export interface PlanInput {
   windowStart: LocalDate;
   /** `eventKey`s held by rows of other schedules or one-offs that aren't cancelled. */
   takenElsewhere: ReadonlySet<string>;
+  /** **Create through date…** (#92): plan up to this date too, when it is past the horizon. */
+  through?: LocalDate;
 }
 
 export interface NewRow {
@@ -100,7 +102,8 @@ export function planSchedule(input: PlanInput): Plan {
   }
 
   if (!schedule.active) return plan;
-  const horizonEnd = addDays(input.today, schedule.horizonWeeks * 7);
+  const horizon = addDays(input.today, schedule.horizonWeeks * 7);
+  const horizonEnd = input.through !== undefined && input.through > horizon ? input.through : horizon;
   if (horizonEnd < windowStart) return plan;
   for (const occurrenceDate of occurrenceDates(schedule.rule, bounds, { from: windowStart, to: horizonEnd })) {
     for (const slot of input.slots) {

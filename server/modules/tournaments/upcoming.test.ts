@@ -74,6 +74,7 @@ describe('Upcoming with play-tools’ tournaments', () => {
       displayId: '26-10-g2',
       upstreamStatus: 'sanctioned',
       errorCode: null,
+      lastAttemptAt: null,
       actions: [],
     });
     expect(tournaments[1]).toMatchObject({ plannedId: planned.plannedId, displayId: '26-10-g1', upstreamStatus: 'sanctioned', actions: [] });
