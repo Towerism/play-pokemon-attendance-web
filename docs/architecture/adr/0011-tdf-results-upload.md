@@ -103,9 +103,9 @@ Option 3.
 
      - **`<id/>` can be empty**: TOM may write a file with no tournament id. The app fills it in with the
        tournament's display id, and warns (decision 8, `tdf_tournament_id_filled`).
-     - **Game type to product:** `gametype` `GO` is play-tools' `pgo`. The `TCG` and `VGC` spellings are taken from
-       real files of each game before `tdf_wrong_game` is built (Q8). An unknown spelling gives no game warning
-       rather than a false one.
+     - **Game type to product:** `gametype` `TRADING_CARD_GAME` is play-tools' `tcg`, `VIDEO_GAME` is `vg`, and
+       `GO` is `pgo`, matched exactly. These are the spellings in real files of each game (S8 part 2, Q8). An
+       unknown spelling gives no game warning rather than a false one.
    - **Blocks: no upload is possible**, so there is nothing to send (422, and the card says why):
      - the file can't be read safely (`too_large`, `unsafe`, `not_tdf`: the parser's existing refusals);
      - the tournament can't take an upload from the organizer, from a fresh read as them: not sanctioned, already

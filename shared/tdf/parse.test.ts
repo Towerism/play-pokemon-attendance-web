@@ -1,48 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { type TomPlayer, tomTdf } from './__fixtures__/tom';
 import { TDF_MAX_BYTES, TDF_MAX_PLAYERS, TdfError, type TdfErrorCode, parseTdf } from './parse';
 
-interface FakePlayer {
-  userid: string;
-  first?: string;
-  last?: string;
-}
+/** The shared TOM-shaped builder, with this file's older call shape. */
+const tdf = (players: TomPlayer[], opts: { name?: string; startdate?: string } = {}): string => tomTdf({ players, ...opts });
 
-/** A tournament file shaped like the ones TOM writes (`tournament > data`, `players > player[@userid]`). */
-function tdf(players: FakePlayer[], opts: { name?: string; startdate?: string } = {}): string {
-  const rows = players
-    .map(
-      (p) => `    <player userid="${p.userid}">
-      <firstname>${p.first ?? ''}</firstname>
-      <lastname>${p.last ?? ''}</lastname>
-      <birthdate>01/02/2012</birthdate>
-      <creationdate>09/01/2026 18:00:00</creationdate>
-      <lastmodifieddate>09/01/2026 18:00:00</lastmodifieddate>
-    </player>`,
-    )
-    .join('\n');
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<tournament type="2" stage="5" version="1.74" gametype="TRADING_CARD_GAME" mode="LEAGUECHALLENGE">
-  <data>
-    <name>${opts.name ?? 'Wednesday League Cup'}</name>
-    <id>26-10-000123</id>
-    <city>Springfield</city>
-    <state>IL</state>
-    <country>US</country>
-    <roundtime>50</roundtime>
-    <finalsroundtime>75</finalsroundtime>
-    <organizer popid="7654321" name="Pat Organizer" />
-    <startdate>${opts.startdate ?? '10/14/2026'}</startdate>
-    <lessswiss>false</lessswiss>
-  </data>
-  <timeelapsed>0</timeelapsed>
-  <players>
-${rows}
-  </players>
-  <pods></pods>
-  <finalsoptions></finalsoptions>
-</tournament>
-`;
-}
 
 describe('parseTdf', () => {
   it('reads every player as "first last" with the ID as a string', () => {
@@ -158,12 +120,19 @@ describe('parseTdf: duplicates and invalid rows', () => {
 });
 
 describe('parseTdf: what it keeps', () => {
-  it('returns names and IDs only: no birthdates, organizer or location', () => {
-    const out = JSON.stringify(parseTdf(tdf([{ userid: '1', first: 'Ash' }])));
+  it('never returns birthdates or location', () => {
+    const out = JSON.stringify(parseTdf(tomTdf()));
 
     expect(out).not.toMatch(/birth|01\/02\/2012|2012/i);
-    expect(out).not.toMatch(/7654321|Pat Organizer|popid/);
-    expect(out).not.toMatch(/Springfield|creationdate/);
+    expect(out).not.toMatch(/Springfield|IL"|creationdate/);
+  });
+
+  it('keeps the organizer out of the tournament, which the attendance preview shows', () => {
+    const parsed = parseTdf(tomTdf({ organizerElement: '<organizer popid="7654321" name="Pat Organizer"/>' }));
+
+    expect(JSON.stringify(parsed.tournament)).not.toMatch(/7654321|Pat Organizer/);
+    expect(Object.keys(parsed.tournament).sort()).toEqual(['date', 'name']);
+    expect(parsed.header.organizer).toEqual({ playerId: '7654321', name: 'Pat Organizer' });
   });
 });
 
@@ -263,5 +232,87 @@ describe('parseTdf: tournament', () => {
 
   it('leaves a blank tournament name as null', () => {
     expect(parseTdf(tdf([{ userid: '1' }], { name: '  ' })).tournament.name).toBeNull();
+  });
+});
+
+describe("parseTdf: the file's tournament id", () => {
+  it('reads the id TOM wrote', () => {
+    expect(parseTdf(tomTdf({ idElement: '<id>26-10-000123</id>' })).header.tournamentId).toBe('26-10-000123');
+  });
+
+  it.each([
+    ['self-closing', '<id/>'],
+    ['open and close', '<id></id>'],
+    ['only whitespace', '<id>  \n </id>'],
+    ['missing', ''],
+    ['a nested element', '<id><x/></id>'],
+  ])('is null when the id is %s', (_label, idElement) => {
+    expect(parseTdf(tomTdf({ idElement })).header.tournamentId).toBeNull();
+  });
+
+  it('reads an id that is present but malformed as written', () => {
+    expect(parseTdf(tomTdf({ idElement: '<id> not-an-id </id>' })).header.tournamentId).toBe('not-an-id');
+  });
+});
+
+describe("parseTdf: the file's organizer", () => {
+  it('reads the popid as text, keeping leading zeros, and decodes the name', () => {
+    const organizerElement = '<organizer popid=" 0012345 " name="Pat &amp; Sam  Organizer"/>';
+
+    expect(parseTdf(tomTdf({ organizerElement })).header.organizer).toEqual({ playerId: '0012345', name: 'Pat & Sam Organizer' });
+  });
+
+  it('keeps a popid that is not a valid player ID as written', () => {
+    expect(parseTdf(tomTdf({ organizerElement: '<organizer popid="P-42" name="Pat"/>' })).header.organizer?.playerId).toBe('P-42');
+  });
+
+  it('reads an organizer with no name as an empty name', () => {
+    expect(parseTdf(tomTdf({ organizerElement: '<organizer popid="7654321"/>' })).header.organizer).toEqual({
+      playerId: '7654321',
+      name: '',
+    });
+  });
+
+  it.each([
+    ['missing', ''],
+    ['listed twice', '<organizer popid="1" name="A"/><organizer popid="2" name="B"/>'],
+    ['without a popid', '<organizer name="Pat"/>'],
+    ['with a blank popid', '<organizer popid="  " name="Pat"/>'],
+  ])('is null when the organizer is %s', (_label, organizerElement) => {
+    expect(parseTdf(tomTdf({ organizerElement })).header.organizer).toBeNull();
+  });
+});
+
+describe("parseTdf: the file's game", () => {
+  it.each([
+    ['TRADING_CARD_GAME', 'LEAGUECHALLENGE', 'tcg'],
+    ['VIDEO_GAME', 'VGCPREMIER', 'vg'],
+    ['GO', 'GOPREMIER', 'pgo'],
+  ])('maps gametype %s to the play-tools product', (gametype, mode, product) => {
+    expect(parseTdf(tomTdf({ gametype, mode })).header.game).toEqual({ gametype, mode, product });
+  });
+
+  it.each([['TCG'], ['go'], ['POKEMON_GO'], ['']])('gives no product for gametype %j rather than guessing', (gametype) => {
+    expect(parseTdf(tomTdf({ gametype })).header.game.product).toBeNull();
+  });
+
+  it('reads a missing gametype and mode as null', () => {
+    expect(parseTdf(tomTdf({ gametype: null, mode: null })).header.game).toEqual({ gametype: null, mode: null, product: null });
+  });
+});
+
+describe('parseTdf: optional player elements in real files', () => {
+  it('reads players and header the same with dropped, seed, order and staticseat present', () => {
+    const plain = parseTdf(tomTdf());
+    const withExtras = parseTdf(
+      tomTdf({
+        players: [
+          { userid: '1234567', first: 'Ash', last: 'Ketchum', dropped: true },
+          { userid: '7654321', first: 'Misty', last: 'Waterflower', seeded: true },
+        ],
+      }),
+    );
+
+    expect(withExtras).toEqual(plain);
   });
 });
