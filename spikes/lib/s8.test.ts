@@ -8,7 +8,9 @@ import {
   cancelRefusal,
   confirmCode,
   createBody,
+  knownOriginalsFrom,
   localToUtc,
+  maskIds,
   restoreActions,
   tdfMismatch,
   validatePlan,
@@ -197,6 +199,25 @@ describe('restoreActions', () => {
 
   it('treats a missing details as empty, so null and "" are the same', () => {
     expect(restoreActions(tournament({ details: null }), tournament({ details: '' }))).toBeNull();
+  });
+});
+
+describe('knownOriginalsFrom', () => {
+  it('collects display ids, the organizer, the league and the venue from recorded bodies, plus the extras', () => {
+    const calls = [
+      { path: '/services/core/activities', request: null, response: { results: [{ display_id: '26-10-021965', activity_group: { guid: 'ag-guid' } }] } },
+      { path: '/services/core/tournament', request: { activity_group_id: 'ag-guid', address_id: 'venue-guid', organizer_id: 'org-guid' }, response: { guid: 'x' } },
+      { path: '/services/core/tournament/x', request: null, response: { organizer: { player_id: '0012345', guid: 'org-guid' }, details: 'see 26-09-004745' } },
+    ];
+    expect(knownOriginalsFrom(calls, ['sub-hex']).sort()).toEqual(['0012345', '26-09-004745', '26-10-021965', 'ag-guid', 'org-guid', 'sub-hex', 'venue-guid'].sort());
+  });
+});
+
+describe('maskIds', () => {
+  it('shows GUIDs, dashless ids and display ids by their last two characters only', () => {
+    expect(maskIds('GET /services/core/users/93763009eecc499080dd46172f420fee/x/df02d0b2-a68e-974f-ab86-878ca8f574e9?t=26-10-021965 → 200')).toBe(
+      'GET /services/core/users/…ee/x/…e9?t=…65 → 200',
+    );
   });
 });
 

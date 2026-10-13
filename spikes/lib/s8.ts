@@ -284,6 +284,43 @@ export function buildTemplate(input: TemplateInput): Plan {
   };
 }
 
+const DISPLAY_ID = /\b\d{2}-\d{2}-\d{6}\b/g;
+const ORIGINAL_KEY = /^(activity_group_id|address_id|organizer_id)$/;
+
+/**
+ * The run's real identifiers, from what it recorded: every display id, the
+ * organizer's player id and guid, the league and the venue. The fixture step
+ * refuses to write if any of them survives sanitisation.
+ */
+export function knownOriginalsFrom(calls: readonly { request: unknown; response: unknown }[], extra: readonly string[]): string[] {
+  const found = new Set(extra);
+  const walk = (v: unknown, key = ''): void => {
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, key));
+    if (v && typeof v === 'object') {
+      const o = v as Row;
+      if (key === 'organizer' || key === 'activity_group') {
+        for (const k of ['player_id', 'guid']) if (typeof o[k] === 'string') found.add(o[k] as string);
+      }
+      return Object.entries(o).forEach(([k, x]) => walk(x, k));
+    }
+    if (typeof v !== 'string') return;
+    if (ORIGINAL_KEY.test(key) && v) found.add(v);
+    for (const id of v.match(DISPLAY_ID) ?? []) found.add(id);
+  };
+  for (const c of calls) {
+    walk(c.request);
+    walk(c.response);
+  }
+  return [...found];
+}
+
+const MASKABLE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])|\b\d{2}-\d{2}-\d{6}\b/gi;
+
+/** For console lines: ids are shown by their last two characters. */
+export function maskIds(line: string): string {
+  return line.replace(MASKABLE, (id) => `…${id.slice(-2)}`);
+}
+
 /** The instant at the venue, rounded down to the hour, as `YYYY-MM-DDTHH:00`. */
 function utcToLocalHour(instant: number, zone: string): string {
   return `${new Date(instant + offsetAt(instant, zone)).toISOString().slice(0, 13)}:00`;
