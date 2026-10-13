@@ -256,6 +256,22 @@ time, so play-tools sees one call at a time), the event log and SSE, History, re
 and shutdown. Their per-tournament items go in a new `submission_tournament_item` table, because `submission_item`
 is per player.
 
+- **Permissions are play-tools' business** (organizer, 2026-10-12). The app assumes every connected professor has
+  the rights each action needs: create, edit, cancel, upload, and reading series and venues. It keeps no role model of
+  owners or league assistants, and never hides an action on a guess.
+- **Every refusal carries support details.** When play-tools refuses an action, the item's outcome shows play-tools'
+  own message. It also shows a copyable **support details** block, the same as ADR-0011's for TDF uploads. A
+  permission refusal (401, 403), a 4xx with no code, and any other refusal are covered. The block has enough for
+  Pokémon support to find the call and fix the account:
+  - the action (create, edit, reschedule, cancel, read series or venues, TDF validate or confirm) and when it was sent;
+  - the league's display id and the tournament's display id and name (or, for a create, the date and name it
+    would have had);
+  - the professor it ran as: player id and display name;
+  - the HTTP status, play-tools' error code and message as returned, and the `x-correlation-id` response header.
+
+  It holds no tokens, no request body and no player data. History keeps it with the job. A 401 or 403 still stops
+  the job (`forbidden`), and its message says the connected account may lack the permission for that action.
+
 ### 8. Cancelling, editing and rescheduling are explicit, and never automatic
 
 **Cancel** (`kind = 'tournament_cancel'`, one tournament):
@@ -505,7 +521,7 @@ schedules: a schedule is how events usually get planned, and coverage is the che
 | Q3 | Should a tournament's default staff be part of the template? | **Answered (organizer, 2026-10-12):** no (decision 9) |
 | Q4 | Is there any case for automatic creation (e.g. weekly locals), or always a click? | **Answered (organizer, 2026-10-12):** "create everything up to date X" on a schedule, one click (decision 5); no background creation |
 | Q5 | Production date format (`start_date_v2` UTC or naive `start_date`), create's response and initial status, and server-side refusals | **Open: S8 part 2** |
-| Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Open: S8 part 2** |
+| Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Answered (organizer, 2026-10-12): out of scope.** Connected accounts are assumed to have the right permissions. A refusal shows support details for Pokémon support (decision 7) |
 | Q7 | Which events must the league hold? | **Answered (organizer, 2026-10-12):** a League Cup per quarter and a League Challenge per month, for each of TCG, GO and VGC (decision 12) |
 | Q8 | Do League Challenge series windows run monthly or quarterly in play-tools, and do series windows always align with calendar quarters? | **Open: S8 part 2** (`listSeries`). Coverage uses the series window when one exists, else the calendar period |
 | Q11 | When can a tournament be rescheduled? | **Answered (organizer, 2026-10-12):** from 3 days before its start to 90 days after (decision 8) |

@@ -443,7 +443,10 @@ interface PlayToolsGateway {
 - **The date wire format is behind a play-tools flag** (`start_date_v2` in UTC, or naive local `start_date`). The
   adapter owns that choice. Callers pass an instant and the venue's time zone.
 - **Errors:** create, edit and cancel carry no codes (S8). A 4xx maps to `refused` with upstream's message and its
-  `x-correlation-id`. A 5xx or timeout throws `unavailable`, and the caller re-reads. A 423 is `tournament_locked`,
+  `x-correlation-id`. Permissions are assumed (ADR-0010 decision 7): the app models no roles. Every refusal,
+  401/403 included, carries **support details** for Pokémon support: action, time, league and tournament display ids,
+  the professor's player id, HTTP status, play-tools' code and message, and the correlation id, never a token or
+  body. A 5xx or timeout throws `unavailable`, and the caller re-reads. A 423 is `tournament_locked`,
   as for staff. TDF validation codes map to readable messages through an adapter constant.
 - **Validated locally:** ids as for staff, names ≤ 80, product and category from `listFormats`, and no request body
   is logged (`payload` is redacted).
