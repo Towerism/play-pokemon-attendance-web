@@ -33,7 +33,7 @@ Pain points that remain with the CLI:
 - **G4 Submit attendance.** One click. The app obtains a valid JWT from `access.pokemon.com` **without manual token copying**, asks *which date* the attendance is for, resolves that date to the play session, and uploads regulars ∪ session players with no duplicates.
 - **G5 Metrics.** Every player ID that ever enters the system is tracked, with enough metrics to curate the regulars list by hand (promote frequent non-regulars, demote regulars who stopped coming).
 - **G6 Assign staff** (M8, [ADR-0007](adr/0007-staff-assignment.md)). In the same weekly flow, assign one or more staff (player ID + role; several people, roles may repeat) to each of the date's tournaments in play-tools, so they earn staff points. A search over the league's **staff list** (everyone who has staffed its tournaments, seeded from play-tools; names editable, since play-tools may show a dead name) fills in the player and their last role.
-- **G7 Tournaments** (M9, proposed, [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)). Create, cancel and reschedule the league's tournaments in play-tools from the app. **Templates** hold a tournament's settings, **scaffolds** group templates held back to back, and **schedules** repeat a scaffold weekly, monthly or quarterly. The app plans the upcoming dates, and the organizer creates them with one click.
+- **G7 Tournaments** (M9, proposed, [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md)). Create, cancel and reschedule the league's tournaments in play-tools from the app, custom events and premier series (League Challenge, League Cup, Prerelease) alike, always on the organizer's click. **Templates** hold a tournament's settings, **scaffolds** group templates held back to back, and **schedules** repeat a scaffold weekly, monthly or quarterly. The app plans the upcoming dates, and the organizer creates them with one click.
 - **G8 Upload results** (M9, proposed, [ADR-0011](adr/0011-tdf-results-upload.md)). Upload a tournament's `.tdf` to play-tools from its This week card, the same drop that imports its players for attendance.
 
 ### Non-goals (v1)
@@ -665,7 +665,6 @@ erDiagram
     text contact_phone
     text details
     text event_website
-    text default_staff "json [{playerId, role}]"
     datetime archived_at
   }
   TOURNAMENT_SCAFFOLD {
@@ -1146,7 +1145,7 @@ sequenceDiagram
   loop each planned tournament, as its organizer
     J->>G: listTournaments(date) → adopt a match, or
     J->>G: listSeries / listVenues → createTournament
-    J->>G: getTournament → status; default staff → StaffingService (pending)
+    J->>G: getTournament → status
   end
   Note over O,G: after the event, on This week
   O->>W: drop tournament.tdf on its card

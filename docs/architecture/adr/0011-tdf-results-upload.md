@@ -50,7 +50,8 @@ Option 3.
    recorded).
 
 2. **One drop, both jobs.** Dropping a `.tdf` on a card previews **both** the results upload and the attendance
-   import (M3) for that date. The attendance import is ticked by default, and the organizer can untick it. The
+   import (M3) for that date. The attendance import is ticked by default (organizer, 2026-10-12), and the organizer
+   can untick it. The
    page's own TDF dropzone stays for dates whose tournament isn't in play-tools.
 
 3. **Preview** (`POST /sessions/{date}/tournaments/{tournamentId}/results`, the file's text as JSON, ≤ 2 MB):
@@ -119,4 +120,4 @@ Option 3.
 | -- | -------- | ------ |
 | Q1 | Validate response shape, the shape of `errors`, confirm's id (`guid` or `display_id`), size limit, `triumph-scalability` flag | **Open: S8 part 2**, from a real upload the organizer was going to make anyway |
 | Q2 | Can an upload be made before the start date? How long does `upload_in_progress` last? How long does an unconfirmed `upload_guid` live? | **Open: S8 part 2** |
-| Q3 | Should the attendance import be ticked by default when a TDF is dropped on a tournament card? | **Open: organizer.** Designed as ticked |
+| Q3 | Should the attendance import be ticked by default when a TDF is dropped on a tournament card? | **Answered (organizer, 2026-10-12):** yes, ticked |

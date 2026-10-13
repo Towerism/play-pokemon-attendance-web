@@ -73,7 +73,8 @@ approve), and roster-only uploads.
 
 `server/modules/tournaments/` owns templates, scaffolds, schedules, planned tournaments and TDF result uploads
 (ADR-0011). It reaches upstream only through `PlayToolsGateway`, uses `staffing` only through `StaffingService`
-(decision 9), and connections only through `PokemonConnectionService`. Its jobs run on the submission rails
+(to move a rescheduled tournament's assignments, decision 8), and connections only through
+`PokemonConnectionService`. Its jobs run on the submission rails
 (decision 7). `staffing` stays as it is.
 
 ### 3. Vocabulary
@@ -88,8 +89,9 @@ approve), and roster-only uploads.
   - the usual start time (local to the venue);
   - registration: `on_site` (opens N minutes before the start, closes M minutes after, admission text) or
     `third_party` (a URL);
-  - contact email and/or phone, details, event website;
-  - **default staff**: `[{playerId, role}]`, roles from `listStaffRoles` (decision 9).
+  - contact email and/or phone, details, event website.
+
+  A template carries **no staff** (decision 9).
 
   A template can be archived, never deleted while a planned tournament refers to it.
 - **Scaffold:** an ordered list of **slots**. Each slot is a template, a day offset (0 = the scaffold's date, up to
@@ -148,7 +150,6 @@ started (`organizer_not_connected`, `needs_reconnect`), as for staff.
     The job goes on with the rest. A 401 or 403 stops the job (`forbidden`).
 - **Reconcile.** Re-read each created tournament (`getTournament`) and store its `guid`, `display_id` and status.
   `approval-pending` and `sanctioning-error` are shown as they are; the app doesn't chase approval.
-  Default staff are added (decision 9).
 - **Outcomes:** `created`, `already_exists`, `refused`, `failed`, `skipped`.
 
 ### 6. Series and venue are resolved, not stored
@@ -209,13 +210,11 @@ place** (organizer, 2026-10-12: use the `PATCH` when play-tools allows it):
   updated and the organizer's approval before it is built.
 - **A schedule never reschedules.** A planned tournament that hasn't reached play-tools is just edited (date, time).
 
-### 9. Default staff become wanted staff
+### 9. Templates carry no staff
 
-When a tournament is created (or adopted) for a planned tournament whose template has default staff, the job adds them
-as **pending** staff assignments through `StaffingService`, for that tournament and date. ADR-0007 applies unchanged:
-nothing is sent until **Assign staff in play-tools**, the organizer is never staffed, and anyone already listed is
-skipped. A staffer refused at that point (for example, the template's organizer) is reported in the job's result, and
-creation still counts as done.
+Staff are chosen per tournament, on This week's tournament card, as today (ADR-0007), once the tournament exists in
+play-tools (organizer, 2026-10-12). Creating a tournament adds no staff assignments. The staff list search already
+pre-fills each staffer's last role, so a regular crew is quick to add.
 
 ### 10. Where the organizer does it
 
@@ -241,7 +240,7 @@ creation still counts as done.
   any resend.
 - (+) Nothing reaches play-tools without a click, so a wrong template can't multiply on its own.
 - (+) Rescheduling keeps the tournament: its display id, registrations and staff survive the move.
-- (+) Staff follow a tournament from its template and through a reschedule, so staff credits keep working.
+- (+) Staff follow a tournament through a reschedule, so staff credits keep working.
 - (−) A new module with five tables (templates, scaffold slots, schedules, planned tournaments, result uploads), four
   new job kinds and a new item table.
 - (−) Adoption matches on start, product, format and name. A tournament edited in play-tools after creation (renamed
@@ -262,8 +261,8 @@ creation still counts as done.
 | #  | Question | Status |
 | -- | -------- | ------ |
 | Q1 | Does a professor's `PATCH` of the date work, does it accept a partial body, and does it send the tournament back for approval? | **Open: S8 part 2.** Removing means cancelling (organizer, 2026-10-12); reschedule edits in place if the `PATCH` works, else the fallback in decision 8 |
-| Q2 | Which tournament types are in scope: custom (friendly) events only, or premier series (League Challenge, League Cup, Prerelease) too? | **Open: organizer.** Designed for both |
-| Q3 | Should a tournament's default staff be part of the template? | **Open: organizer.** Designed in (decision 9) |
-| Q4 | Is there any case for automatic creation (e.g. weekly locals), or always a click? | **Open: organizer.** Designed as always a click |
+| Q2 | Which tournament types are in scope: custom (friendly) events only, or premier series (League Challenge, League Cup, Prerelease) too? | **Answered (organizer, 2026-10-12):** both; premier series are in scope |
+| Q3 | Should a tournament's default staff be part of the template? | **Answered (organizer, 2026-10-12):** no (decision 9) |
+| Q4 | Is there any case for automatic creation (e.g. weekly locals), or always a click? | **Answered (organizer, 2026-10-12):** always a click, never automatic |
 | Q5 | Production date format (`start_date_v2` UTC or naive `start_date`), create's response and initial status, and server-side refusals | **Open: S8 part 2** |
 | Q6 | What league assistants (Enhanced / Specialist) may create and cancel, vs. the owner | **Open: S8 part 2** |
