@@ -8,7 +8,10 @@
 - Amended by: [#101](https://github.com/Towerism/play-pokemon-attendance-web/issues/101) (2026-10-13, from the PR #83
   review): a corrected file replaces its original only after re-pointing the attendance imports that use it
   (decisions 1, 4); automatic deletes skip referenced files, and `kept_reason` becomes the set `kept_for`
-  (decisions 3, 5); the docs say plainly that an appdata backup can open the archive (decision 6)
+  (decisions 3, 5); the docs say plainly that an appdata backup can open the archive (decision 6). And by
+  [#107](https://github.com/Towerism/play-pokemon-attendance-web/issues/107) (2026-10-13, from spike S8 part 2):
+  play-tools won't give an organizer a TDF back (403), so **Download TDF** serves only the archived copy, and the
+  `play-tools` kept reason goes (decisions 3, 7; Q2)
 - Builds on: [ADR-0003](0003-pokemon-auth-pkce-refresh-token.md) (the token vault's AES-256-GCM format),
   [ADR-0006](0006-docker-on-unraid.md) (secrets generated once in `/data/secrets/`)
 
@@ -67,8 +70,8 @@ Option 4.
      sha256)`;
    - `read(fileId)` → content;
    - `list(leagueId, filter)`;
-   - `markKept(fileId, reason)`, which adds `attendance`, `results` or `play-tools` to the file's `kept_for` set
-     (#101: a file can be kept for more than one reason);
+   - `markKept(fileId, reason)`, which adds `attendance` or `results` to the file's `kept_for` set (#101: a file can be
+     kept for more than one reason; #107 dropped `play-tools`);
    - `replace(originalId, corrected)` → `{fileId}`: stores the corrected file, re-points every `TDF_UPLOAD` that uses
      the original (each keeps its `sha256`, the file as dropped), and deletes the original unless a results
      upload still uses it, all in one transaction (#101);
@@ -130,24 +133,24 @@ Option 4.
      and nothing else breaks. That includes `app.db` restored without `secrets/`: startup generates a new TDF key, and
      the old files can't be opened.
 
-7. **Download a tournament's TDF** (organizer, 2026-10-12). Each tournament has a **Download TDF** action: on its
-   This week card (Results section) and on its row on the Tournaments page. `GET /tournaments/{id}/tdf`, as a
-   connected professor:
-   - **From the archive first:** the file kept for that tournament's results, the corrected one when the organizer
-     was replaced (ADR-0011 decision 8). If several were confirmed (a retry with another file), the latest confirmed
-     one is served, and the Results section lists the others.
-   - **Else from play-tools:** when the app holds no file for the tournament (results uploaded directly in
-     play-tools, or before this app kept TDFs), the app fetches play-tools' own copy as the tournament's organizer.
-     The S8 bundle shows `GET triumph/tournament/{display_id}/uploads/` (the upload history) and
-     `GET triumph/tdf/{uploadGuid}` (the file). It takes the latest accepted `tdf` upload, **stores it in the archive**
-     (encrypted, `source = play-tools`, so the next download is local), and serves it. Its shape and permissions are
-     S8 part 2's to confirm (Q3).
-   - **Nothing to download:** a tournament with no results anywhere answers 404 `no_tdf`, and the action is hidden on
-     a tournament still awaiting results.
-   - **Organizer only for the fetch.** Fetching from play-tools runs as the tournament's organizer (ADR-0009). If they
-     can't act, the archive copy is still served, and with none the answer is 409 `organizer_not_connected` /
-     `needs_reconnect`. It is a read, so it isn't paced, but it doesn't run while a job holds the lease
-     (`submission_running`), as for other upstream calls from a page.
+7. **Download a tournament's TDF** (organizer, 2026-10-12; amended by #107, 2026-10-13). Each tournament has a
+   **Download TDF** action: on its This week card (Results section) and on its row on the Tournaments page.
+   `GET /tournaments/{id}/tdf`, as a logged-in organizer, serves **only the app's archived copy**:
+   - **Which file:** the archived file of the tournament's latest confirmed results upload (state `processing` or
+     `complete`), the corrected one when the app corrected it (ADR-0011 decision 8). If the organizer deleted that
+     file, the next-latest confirmed upload whose file still exists is served. The Results section lists the others.
+     A confirmed upload that ended `failed` is never served.
+   - **Nothing in the archive:** 404 `no_tdf`. That covers results uploaded in play-tools directly, results uploaded
+     before the app kept TDFs, a tournament with no results, and a file the organizer deleted.
+   - **Never from play-tools.** S8 part 2 found `GET triumph/tdf/{uploadGuid}` answers 403 `op.generic.forbidden` for
+     the tournament's organizer, even for an upload they had just made, and no identity the app can act as owns the
+     tournament more than its organizer. So the route makes no upstream call. It needs no organizer connection,
+     isn't held by the lease, and has no `organizer_not_connected`, `needs_reconnect` or `submission_running` answer.
+     A file this install's key can't open answers 409 `tdf_key_mismatch`, as `/tdf-files/{id}/download` does.
+   - **Shown only when there is a file.** The card and the row carry `tdfAvailable`, computed from local rows only,
+     and the action appears only when it is true. A tournament with results in play-tools but no file in the app
+     shows "Results are in play-tools. This app has no copy of the TDF." in its Results section, with no action.
+   - Fetching the file back is reconsidered only in a new ADR, if play-tools ever allows it and a recording shows it.
 
 ## Consequences
 
@@ -164,14 +167,16 @@ Option 4.
 - (−) The database grows by roughly the compressed size of each file kept (tens of KB each). That is negligible at
   league scale.
 - (−) M3 code changes: the preview/commit path, a new migration dropping `tdf_upload_player`, and its tests.
+- (−) A tournament whose results reached play-tools some other way (uploaded there directly, or before the app kept
+  TDFs) has no downloadable TDF in the app: play-tools won't give it back (#107).
 
 ## Open questions
 
 | #  | Question | Status |
 | -- | -------- | ------ |
 | Q1 | Should stored TDFs expire automatically after some time (e.g. after the season, or N years), or stay until deleted? | **Open: organizer.** Designed as kept until deleted |
-| Q2 | Should TDFs already imported before this change be recoverable? | **Partly:** the app never kept them, but a tournament whose results reached play-tools can be fetched back from play-tools on download (decision 7) |
-| Q3 | Shapes and permissions of `triumph/tournament/{display_id}/uploads/` and `triumph/tdf/{uploadGuid}` for an organizer | **Answered (S8 part 2, 2026-10-13):** the uploads list works for the organizer. It is a bare list of `{guid, tournament_id, kind, accepted, errors, uploader, upload_timestamp, upload_expiration}`, rejected validations included. **`triumph/tdf/{uploadGuid}` is 403 `op.generic.forbidden` for the organizer**, even for an upload they just made, so decision 7's fetch-back and Q2's "fetched back from play-tools" don't work as designed. Follow-up: #107 |
+| Q2 | Should TDFs already imported before this change be recoverable? | **No** (#107): the app never kept them, and play-tools answers 403 when an organizer asks for a TDF back (S8 part 2) |
+| Q3 | Shapes and permissions of `triumph/tournament/{display_id}/uploads/` and `triumph/tdf/{uploadGuid}` for an organizer | **Answered (S8 part 2, 2026-10-13):** the uploads list works for the organizer. It is a bare list of `{guid, tournament_id, kind, accepted, errors, uploader, upload_timestamp, upload_expiration}`, rejected validations included. **`triumph/tdf/{uploadGuid}` is 403 `op.generic.forbidden` for the organizer**, even for an upload they just made, so decision 7's fetch-back and Q2's "fetched back from play-tools" don't work as designed. Resolved by #107: decision 7 serves only the archived copy |
 
 ## Tests these decisions need
 
@@ -190,5 +195,12 @@ Added by #101 for #88 and #97 (spec and full plan on #101).
   - `Content-Disposition: attachment` and `Cache-Control: no-store` on download;
   - no birthdate in any answer but the download itself;
   - delete answers `referencedBy`, and the rows show "file deleted".
+- **Server, over HTTP: `GET /tournaments/{id}/tdf`** (added by #107 for #97; against `test/server/fake-pokemon.ts`):
+  - two confirmed uploads, the later one corrected: 200 with the later upload's corrected bytes, `Content-Disposition:
+    attachment` with its name, `Cache-Control: no-store`, and one audit log line without content;
+  - no archived results file: 404 `no_tdf`, and the fake records no request during the call;
+  - the latest confirmed upload's file deleted: the earlier confirmed upload's file is served, else 404 `no_tdf`;
+  - the organizer not connected or needing a reconnect, or a job holding the lease: an archived file is still 200;
+  - a file under another key: 409 `tdf_key_mismatch`; no session: 401; no answer but the 200 carries file content.
 - **Restore drill:** a stored TDF opens after a backup → restore, and `app.db` restored without `secrets/` shows
   "can't be opened with this install's key" without breaking anything else.
