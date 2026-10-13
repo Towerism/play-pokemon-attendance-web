@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { NewTournament, TournamentChanges } from '../../ports/play-tools-gateway';
+import { EMPTY_DIVISION_INFO } from './constants';
 
 /**
  * Wire schemas for api.play.pokemon.com/services/core.
@@ -156,14 +158,150 @@ export const ActivityTournament = z.looseObject({
 });
 export type ActivityTournament = z.infer<typeof ActivityTournament>;
 
+const OptionalText = z.string().nullable().optional();
+const OptionalInstant = z.iso.datetime().nullable().optional();
+
 /**
- * `core/tournament/{t}` (S6, recorded 2026-10-11). `organizer.player_id` holds the fixed
- * `organizer` role. `start_date_actual` is true UTC too.
+ * `core/tournament/{t}` (S6, recorded 2026-10-11; S8 part 2, 2026-10-13). `organizer.player_id` holds the fixed
+ * `organizer` role. `start_date_actual` is true UTC too. The S8 fields are optional, so S6 reads still parse.
+ * `address` was redacted whole by the sanitizer, so its shape is unknown and it is read leniently.
  */
 export const TournamentDetails = ActivityTournament.omit({ activity_type: true }).extend({
-  start_date_actual: z.iso.datetime().nullable().optional(),
-  organizer: z.looseObject({ player_id: WirePlayerId }),
+  start_date_actual: OptionalInstant,
+  organizer: z.looseObject({ player_id: WirePlayerId, first_name: OptionalText, last_name: OptionalText }),
+  application_state: OptionalText,
+  activity_state: OptionalText,
+  category: OptionalText,
+  series: z.looseObject({ guid: Guid, name: OptionalText }).nullable().optional(),
+  address: z.unknown().optional(),
+  contact_information: z.looseObject({ email: OptionalText, phone: OptionalText }).nullable().optional(),
+  registration_start_date_v2: OptionalInstant,
+  registration_end_date_v2: OptionalInstant,
+  // Recorded as a string ("35", "FREE"); a number is taken as text.
+  on_site_admission: z.union([z.string(), z.number()]).transform(String).nullable().optional(),
+  third_party_registration_website: OptionalText,
+  details: OptionalText,
+  event_website: OptionalText,
 });
+
+/** A list play-tools pages under `results` with no count (S8: series, address book); `next` only if it pages. */
+function ResultsList<T extends z.ZodType>(item: T) {
+  return z
+    .looseObject({ results: z.array(item), next: z.string().nullable().optional() })
+    .transform((p) => ({ items: p.results as z.output<T>[], next: p.next ?? null }));
+}
+
+/** Item of `core/users/{sub}/activity_groups/{ag}/series/` (S8 recording 07). `schedule` is per country, inclusive dates. */
+export const SeriesItem = z.looseObject({
+  guid: Guid,
+  name: OptionalText,
+  product: z.string(),
+  category_slugs: z.array(z.string()),
+  tags: z.array(z.string()).optional(),
+  play_template: OptionalText,
+  schedule: z.record(z.string(), z.looseObject({ start_date: z.iso.date(), end_date: z.iso.date() })).optional(),
+  is_enabled: z.boolean().optional(),
+  supported_types: z.array(z.string()).optional(),
+});
+export const SeriesList = ResultsList(SeriesItem);
+
+/** `core/products?country=XX` (S8 recording 06): product codes, and each product's format slugs. */
+export const ProductsResponse = z.looseObject({
+  results: z.array(z.string()),
+  product_categories: z.record(z.string(), z.array(z.string())),
+});
+
+/** Item of `core/v2/users/{userGuid}/address_book` (S8 recording 08). */
+export const AddressBookItem = z.looseObject({
+  guid: Guid,
+  name: OptionalText,
+  formatted_address: OptionalText,
+  country: OptionalText,
+  op_country: OptionalText,
+  timezone: OptionalText,
+});
+export const AddressBookList = ResultsList(AddressBookItem);
+
+/** `POST core/tournament` → 201 `{guid}` and nothing else (S8 recording 16). */
+export const CreateTournamentResponse = z.looseObject({ guid: Guid });
+
+/** A TDF error: `{type, message}` as recorded (S8 part 2), or a bare code as the bundle shows (S8 part 1). */
+export const TdfError = z.union([z.string(), z.looseObject({ type: z.string(), message: OptionalText })]);
+export type TdfError = z.infer<typeof TdfError>;
+
+/** `POST triumph/tdf/` → 200, a preview of the file plus `errors` (S8 recording 37). Only the id and errors are read. */
+export const ValidateResponse = z.looseObject({ upload_guid: Guid, errors: z.array(TdfError) });
+
+/** `GET triumph/tournament/{display_id}/uploads/`: a bare list, rejected and unconfirmed validations included (S8). */
+export const UploadsList = z.array(
+  z.looseObject({ guid: Guid, accepted: z.boolean(), errors: z.array(TdfError), upload_timestamp: z.number() }),
+);
+
+/**
+ * Error envelope of the tournament and TDF calls (S8): `{code, message, errors}`, with field errors keyed by field
+ * directly (`{"activity_division_info": ["This field may not be null."]}`). Read leniently: it only feeds messages.
+ */
+export const TournamentErrorResponse = z.looseObject({
+  code: z.string().optional(),
+  message: z.string().optional(),
+  errors: z.unknown().optional(),
+});
+
+/** An instant as play-tools writes it: UTC, whole seconds (`2026-10-12T05:00:00Z`). */
+export function wireInstant(at: Date): string {
+  return at.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/** The optional settings, under their wire names, only when given. */
+function settingsFields(s: TournamentChanges): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (s.name !== undefined) body.name = s.name;
+  if (s.category !== undefined) body.category = s.category;
+  if (s.venueId !== undefined) body.address_id = s.venueId;
+  if (s.startsAt !== undefined) body.start_date_v2 = wireInstant(s.startsAt);
+  if (s.contact !== undefined) body.contact_information = { email: s.contact.email, phone: s.contact.phone };
+  if (s.registration !== undefined) {
+    body.registration_start_date_v2 = s.registration && wireInstant(s.registration.startsAt);
+    body.registration_end_date_v2 = s.registration && wireInstant(s.registration.endsAt);
+  }
+  if (s.onSiteAdmission !== undefined) body.on_site_admission = s.onSiteAdmission;
+  if (s.thirdPartyRegistrationUrl !== undefined) body.third_party_registration_website = s.thirdPartyRegistrationUrl;
+  if (s.details !== undefined) body.details = s.details;
+  if (s.eventWebsite !== undefined) body.event_website = s.eventWebsite;
+  return body;
+}
+
+/** `POST core/tournament` (S8 recording 16): `organizer_id` is the professor's user guid; division info is never null. */
+export function createTournamentBody(t: NewTournament, organizerGuid: string): Record<string, unknown> {
+  return {
+    ...settingsFields(t),
+    activity_group_id: t.groupId,
+    organizer_id: organizerGuid,
+    product: t.product,
+    series_guid: t.seriesId,
+    activity_division_info: EMPTY_DIVISION_INFO,
+  };
+}
+
+/** `PATCH core/tournament/{guid}/` with only the changed fields: a partial body changes only them (S8 recordings 19–25). */
+export function editTournamentBody(changes: TournamentChanges): Record<string, unknown> {
+  return settingsFields(changes);
+}
+
+/** `PATCH core/tournament/{guid}/` (S8 recording 30). */
+export function cancelTournamentBody() {
+  return { application_state: 'cancelled' } as const;
+}
+
+/** `POST triumph/tdf/` (S8 recording 37): the file as base64 of its UTF-8 bytes. */
+export function validateResultsBody(displayId: string, tdf: string) {
+  return { kind: 'tdf', tournament_id: displayId, payload: Buffer.from(tdf, 'utf8').toString('base64') } as const;
+}
+
+/** `PUT triumph/{upload_guid}/confirm/` takes the tournament guid (S8 recording 39). */
+export function confirmResultsBody(tournamentId: string) {
+  return { tournament_id: tournamentId } as const;
+}
 
 /**
  * Item of `core/tournaments/{t}/records`, unfiltered (S6): players (`player: true`,

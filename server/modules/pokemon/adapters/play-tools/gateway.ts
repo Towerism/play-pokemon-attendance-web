@@ -1,27 +1,47 @@
 import type { z } from 'zod';
 import { type Logger, silentLogger } from '../../../../logging/types';
-import { PokemonUpstreamError } from '../../ports/errors';
+import { PokemonUpstreamError, type UpstreamReply } from '../../ports/errors';
 import { type PlayerId, toPlayerId } from '../../../../../shared/types/ids';
 import type {
   AttendanceRecord,
   BulkResult,
   DateRange,
+  Format,
   League,
+  NewTournament,
   PlaySession,
   PlaySessionStatus,
   PlayToolsGateway,
   ProfessorProfile,
+  ResultsError,
+  ResultsUpload,
+  Series,
   Tournament,
   TournamentDetails as TournamentDetailsPort,
   StaffAssignResult,
   StaffRoleCode,
+  TournamentChanges,
   TournamentParticipant,
+  Venue,
 } from '../../ports/play-tools-gateway';
 import type { TokenProvider } from '../../ports/token-provider';
 import { fetchUpstream, jsonOrUndefined, throttleOrServerError } from '../http';
-import { OP_API_BASE, OP_API_HEADERS, STAFF_ROLES, opPaths, tournamentPaths } from './constants';
+import { OP_API_BASE, OP_API_HEADERS, STAFF_ROLES, TDF_ERROR_MESSAGES, lifecyclePaths, opPaths, tournamentPaths } from './constants';
 import {
   ActivitiesPage,
+  AddressBookList,
+  CreateTournamentResponse,
+  ProductsResponse,
+  ValidateResponse,
+  cancelTournamentBody,
+  confirmResultsBody,
+  createTournamentBody,
+  editTournamentBody,
+  validateResultsBody,
+  SeriesList,
+  type TdfError,
+  TournamentErrorResponse,
+  UploadsList,
   type ActivityTournament,
   ActivityGroupsPage,
   DEAD_TOURNAMENT_STATUSES,
@@ -56,7 +76,11 @@ export interface PlayToolsHttpAdapterOptions {
   /** Replaces `https://api.play.pokemon.com/services/` (test doubles only; `NUXT_POKEMON_API_URL`). */
   baseUrl?: string;
   log?: Pick<Logger, 'warn'>;
+  /** How long a tournament or TDF write may take before it counts as `unavailable` (outcome unknown). Default 60 s. */
+  writeTimeoutMs?: number;
 }
+
+const DEFAULT_WRITE_TIMEOUT_MS = 60_000;
 
 export type PlayToolsHttpAdapter = PlayToolsGateway;
 
@@ -72,6 +96,50 @@ function tournamentGuid(id: string): string {
 function recordGuid(id: string): string {
   if (!RECORD_ID.test(id)) throw new TypeError(`Not a staff record id: ${JSON.stringify(id)}`);
   return id;
+}
+
+/** A league, series, venue or upload guid, refused before any call if it could change the request path. */
+function guidParam(id: string, what: string): string {
+  if (!RECORD_ID.test(id)) throw new TypeError(`Not a ${what} id: ${JSON.stringify(id)}`);
+  return id;
+}
+
+/** The id people see, e.g. `26-10-900041`; the TDF calls take it. */
+function displayIdParam(displayId: string): string {
+  if (!/^\d{2}-\d{2}-\d{6}$/.test(displayId)) throw new TypeError(`Not a tournament display id: ${JSON.stringify(displayId)}`);
+  return displayId;
+}
+
+function countryParam(country: string): string {
+  if (!/^[A-Z]{2}$/.test(country)) throw new TypeError(`Not a country code: ${JSON.stringify(country)}`);
+  return country;
+}
+
+/**
+ * The professor's user guid, hyphenated: the token's `sub` is the same id without hyphens (S8: `organizer_id` and the
+ * address book take it hyphenated, the users path takes `sub` as it is).
+ */
+function userGuid(subject: string): string {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject)) return subject;
+  const hex = /^([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/i.exec(subject);
+  if (!hex) throw new PokemonUpstreamError('unexpected_shape', 'The Pokémon account id is not a user guid.');
+  return hex.slice(1).join('-');
+}
+
+/** The venue, when the read's `address` (shape unrecorded, S8) is an object naming it. */
+function venueOf(address: unknown): TournamentDetailsPort['venue'] {
+  if (!address || typeof address !== 'object') return null;
+  const { guid, timezone } = address as Record<string, unknown>;
+  const id = typeof guid === 'string' && guid ? guid : null;
+  const timeZone = typeof timezone === 'string' && timezone ? timezone : null;
+  return id || timeZone ? { id, timeZone } : null;
+}
+
+/** A TDF error in readable words; a code play-tools doesn't explain is shown as it is. */
+function resultsError(error: TdfError): ResultsError {
+  const code = typeof error === 'string' ? error : error.type;
+  const detail = typeof error === 'string' ? null : (error.message ?? null);
+  return { code, message: TDF_ERROR_MESSAGES[code] ?? code, detail };
 }
 
 /** Only the roles play-tools offers; `organizer` is fixed upstream and never sent. */
@@ -90,6 +158,7 @@ function staffRole(role: string): StaffRoleCode {
 export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): PlayToolsHttpAdapter {
   const base = new URL(opts.baseUrl || OP_API_BASE);
   const log = opts.log ?? silentLogger;
+  const writeTimeoutMs = opts.writeTimeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS;
 
   function accessToken() {
     if (opts.connectionId === null) {
@@ -106,7 +175,13 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
   }
 
   /** A JSON write with a fresh token; the caller reads the status. */
-  async function writeJson(method: 'POST' | 'PATCH' | 'DELETE', path: string, payload: unknown, what: string): Promise<{ res: Response; url: URL }> {
+  async function writeJson(
+    method: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+    path: string,
+    payload: unknown,
+    what: string,
+    signal?: AbortSignal,
+  ): Promise<{ res: Response; url: URL }> {
     const token = await accessToken();
     const url = new URL(path, base);
     const res = await fetchUpstream(
@@ -115,10 +190,29 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
         method,
         headers: { ...OP_API_HEADERS, authorization: `Bearer ${token.value}`, 'content-type': 'application/json' },
         body: JSON.stringify(payload),
+        signal,
       },
       what,
     );
     return { res, url };
+  }
+
+  /**
+   * A tournament or TDF write (S8): one request, never retried. Answers `{url, json}` for a 2xx, or for a status
+   * `accept` takes as an answer; anything else throws.
+   */
+  async function lifecycleWrite(
+    method: 'POST' | 'PATCH' | 'PUT',
+    path: string,
+    payload: unknown,
+    what: string,
+    accept: (res: Response, json: unknown) => boolean = () => false,
+  ): Promise<{ url: URL; json: unknown }> {
+    // A write that hangs may still land; `unavailable` tells the caller to re-read, never to resend blind.
+    const { res, url } = await writeJson(method, path, payload, what, AbortSignal.timeout(writeTimeoutMs));
+    const json = await jsonOrUndefined(res);
+    if (res.ok || accept(res, json)) return { url, json };
+    throw lifecycleError(res, json, what);
   }
 
   /** Every page of a DRF list, following `next` only within the OP API's own origin. */
@@ -267,10 +361,116 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
       const parsed = TournamentDetails.safeParse(body);
       if (!parsed.success) throw unexpected(what, url, body, parsed.error);
       const t = parsed.data;
+      const registrationStart = t.registration_start_date_v2;
+      const registrationEnd = t.registration_end_date_v2;
       return {
         ...toTournament({ ...t, activity_type: 'tournament', start_date_v2: t.start_date_v2 ?? t.start_date_actual ?? null }),
         organizerPlayerId: t.organizer.player_id as PlayerId,
+        organizerName: [t.organizer.first_name, t.organizer.last_name].map((part) => part?.trim()).filter(Boolean).join(' ') || null,
+        applicationState: t.application_state ?? null,
+        activityState: t.activity_state ?? null,
+        category: t.category ?? null,
+        series: t.series ? { id: t.series.guid, name: t.series.name ?? null } : null,
+        venue: venueOf(t.address),
+        contact: { email: t.contact_information?.email ?? null, phone: t.contact_information?.phone ?? null },
+        registration: registrationStart && registrationEnd ? { startsAt: new Date(registrationStart), endsAt: new Date(registrationEnd) } : null,
+        onSiteAdmission: t.on_site_admission ?? null,
+        thirdPartyRegistrationUrl: t.third_party_registration_website ?? null,
+        details: t.details ?? null,
+        eventWebsite: t.event_website ?? null,
       };
+    },
+
+    async listSeries(groupId): Promise<Series[]> {
+      const group = guidParam(groupId, 'league');
+      const { subject } = await accessToken();
+      const series = await getAll(lifecyclePaths.series(subject, group), SeriesList, 'Premier series');
+      return series
+        .filter((s) => s.is_enabled !== false && (s.supported_types === undefined || s.supported_types.includes('tournament')))
+        .map((s) => ({
+          id: s.guid,
+          name: s.name ?? '',
+          product: s.product,
+          categories: s.category_slugs,
+          tags: s.tags ?? [],
+          playTemplate: s.play_template ?? null,
+          windows: Object.fromEntries(Object.entries(s.schedule ?? {}).map(([country, w]) => [country, { from: w.start_date, to: w.end_date }])),
+        }));
+    },
+
+    async listFormats(country): Promise<Format[]> {
+      const what = 'Formats';
+      const url = new URL(`${lifecyclePaths.products()}?${new URLSearchParams({ country: countryParam(country) })}`, base);
+      const body = await get(url, what);
+      const parsed = ProductsResponse.safeParse(body);
+      if (!parsed.success) throw unexpected(what, url, body, parsed.error);
+      return parsed.data.results.map((product) => ({ product, categories: parsed.data.product_categories[product] ?? [] }));
+    },
+
+    async listVenues(groupId, country): Promise<Venue[]> {
+      const query = new URLSearchParams({ country: countryParam(country), activity_group_id: guidParam(groupId, 'league') });
+      const user = userGuid((await accessToken()).subject);
+      const venues = await getAll(`${lifecyclePaths.addressBook(user)}?${query}`, AddressBookList, 'Venues');
+      return venues.map((v) => ({
+        id: v.guid,
+        name: v.name ?? null,
+        formattedAddress: v.formatted_address ?? null,
+        country: v.op_country ?? v.country ?? null,
+        timeZone: v.timezone ?? null,
+      }));
+    },
+
+    async createTournament(tournament) {
+      const what = 'Creating a tournament';
+      checkNewTournament(tournament);
+      const organizer = userGuid((await accessToken()).subject);
+      const { url, json } = await lifecycleWrite('POST', lifecyclePaths.create(), createTournamentBody(tournament, organizer), what);
+      const parsed = CreateTournamentResponse.safeParse(json);
+      if (!parsed.success) throw unexpected(what, url, json, parsed.error);
+      return { tournamentId: parsed.data.guid };
+    },
+
+    async editTournament(tournamentId, changes) {
+      tournamentGuid(tournamentId);
+      if (Object.values(changes).every((v) => v === undefined)) throw new TypeError('An edit needs at least one change.');
+      checkSettings(changes);
+      await lifecycleWrite('PATCH', lifecyclePaths.edit(tournamentGuid(tournamentId)), editTournamentBody(changes), 'Editing a tournament');
+      return 'edited';
+    },
+
+    async cancelTournament(tournamentId) {
+      await lifecycleWrite('PATCH', lifecyclePaths.edit(tournamentGuid(tournamentId)), cancelTournamentBody(), 'Cancelling a tournament');
+      return 'cancelled';
+    },
+
+    async validateResults(displayId, tdf) {
+      const what = 'Validating a TDF';
+      displayIdParam(displayId);
+      if (tdf.length === 0) throw new TypeError('A TDF to validate is empty.');
+      // A validation that finds errors may answer 400 with the same body (unrecorded), so a 400 with an upload id is a result.
+      const { url, json } = await lifecycleWrite('POST', lifecyclePaths.validate(), validateResultsBody(displayIdParam(displayId), tdf), what, (res, body) =>
+        res.status === 400 && ValidateResponse.safeParse(body).success,
+      );
+      const parsed = ValidateResponse.safeParse(json);
+      if (!parsed.success) throw unexpected(what, url, json, parsed.error);
+      return { uploadId: parsed.data.upload_guid, errors: parsed.data.errors.map(resultsError) };
+    },
+
+    async confirmResults(uploadId, tournamentId) {
+      const path = lifecyclePaths.confirm(guidParam(uploadId, 'upload'));
+      await lifecycleWrite('PUT', path, confirmResultsBody(tournamentGuid(tournamentId)), 'Confirming a TDF');
+      return 'confirmed';
+    },
+
+    async listResultsUploads(displayId): Promise<ResultsUpload[]> {
+      const what = 'TDF uploads';
+      const url = new URL(lifecyclePaths.uploads(displayIdParam(displayId)), base);
+      const body = await get(url, what);
+      const parsed = UploadsList.safeParse(body);
+      if (!parsed.success) throw unexpected(what, url, body, parsed.error);
+      return parsed.data
+        .map((u) => ({ uploadId: u.guid, accepted: u.accepted, errors: u.errors.map(resultsError), uploadedAt: new Date(u.upload_timestamp) }))
+        .sort((a, b) => a.uploadedAt.getTime() - b.uploadedAt.getTime());
     },
 
     async listTournamentParticipants(tournamentId): Promise<TournamentParticipant[]> {
@@ -413,6 +613,81 @@ function asPlayerId(value: unknown): PlayerId | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A failed tournament or TDF write (S8: no `op.*` codes on create, edit and cancel). Any 4xx without a more specific
+ * meaning is `refused`. Every error carries what play-tools said, for the support details (ADR-0010 decision 7).
+ */
+function lifecycleError(res: Response, json: unknown, what: string): PokemonUpstreamError {
+  const upstream = upstreamReply(res, json);
+  const known = throttleOrServerError(res, what) ?? clientError(res.status, what);
+  if (known.code === 'unexpected_shape') {
+    const why = upstream.message ? `: ${upstream.message}` : ` (${res.status})`;
+    return new PokemonUpstreamError('refused', `${what}: play-tools refused it${why}`, { status: res.status, upstream });
+  }
+  return new PokemonUpstreamError(known.code, known.message, { ...known.details, upstream });
+}
+
+/** play-tools' code and message (field errors appended) and the correlation id; never the request. */
+function upstreamReply(res: Response, json: unknown): UpstreamReply {
+  const parsed = TournamentErrorResponse.safeParse(json);
+  const body = parsed.success ? parsed.data : {};
+  const fields = fieldErrors(body.errors);
+  const message = [body.message, fields.length > 0 ? `(${fields.join('; ')})` : undefined].filter(Boolean).join(' ');
+  const correlationId = res.headers.get('x-correlation-id');
+  return {
+    ...(body.code ? { code: body.code } : {}),
+    ...(message ? { message } : {}),
+    ...(correlationId ? { correlationId } : {}),
+  };
+}
+
+/** `{field: ["text"]}` (S8), or nested by location with `{code, message}` items (S6), as `field: text` lines. */
+function fieldErrors(errors: unknown, prefix = ''): string[] {
+  if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return [];
+  return Object.entries(errors).flatMap(([field, value]) => {
+    if (!Array.isArray(value)) return fieldErrors(value, `${prefix}${field}.`);
+    const texts = value
+      .map((item: unknown) => (typeof item === 'string' ? item : (item as { message?: unknown; code?: unknown } | null)?.message ?? (item as { code?: unknown } | null)?.code))
+      .filter((text): text is string => typeof text === 'string' && text !== '');
+    return texts.length > 0 ? [`${prefix}${field}: ${texts.join(' ')}`] : [];
+  });
+}
+
+const PRODUCTS: readonly string[] = ['tcg', 'vg', 'pgo'];
+const NAME_MAX = 80;
+const DETAILS_MAX = 30_000;
+
+/** Checks a new tournament before anything is fetched or sent (play-tools' own limits, S8). */
+function checkNewTournament(t: NewTournament): void {
+  guidParam(t.groupId, 'league');
+  if (!PRODUCTS.includes(t.product)) throw new TypeError(`Not a product: ${JSON.stringify(t.product)}`);
+  if (t.seriesId !== null) guidParam(t.seriesId, 'series');
+  checkSettings(t);
+}
+
+/** Checks whichever settings are given. */
+function checkSettings(s: TournamentChanges): void {
+  if (s.name !== undefined && (s.name.trim() === '' || s.name.length > NAME_MAX)) {
+    throw new TypeError(`A tournament name has 1 to ${NAME_MAX} characters.`);
+  }
+  if (s.category !== undefined && !/^[a-z0-9_]{1,64}$/.test(s.category)) throw new TypeError(`Not a format: ${JSON.stringify(s.category)}`);
+  if (s.venueId !== undefined) guidParam(s.venueId, 'venue');
+  if (s.startsAt !== undefined) instant(s.startsAt, 'start');
+  if (s.contact !== undefined && !s.contact.email && !s.contact.phone) throw new TypeError('A tournament needs a contact email or phone.');
+  if (s.registration) {
+    if (instant(s.registration.endsAt, 'registration end') <= instant(s.registration.startsAt, 'registration start')) {
+      throw new TypeError('Registration must end after it starts.');
+    }
+  }
+  if (s.details && s.details.length > DETAILS_MAX) throw new TypeError(`Tournament details have at most ${DETAILS_MAX} characters.`);
+}
+
+function instant(at: Date, what: string): number {
+  const ms = at instanceof Date ? at.getTime() : Number.NaN;
+  if (Number.isNaN(ms)) throw new TypeError(`Not a ${what} time.`);
+  return ms;
 }
 
 function clientError(status: number, what: string): PokemonUpstreamError {

@@ -82,6 +82,121 @@ export interface PlayToolsGateway {
 
   /** Removes a staff record (only ever one this app created). */
   unassignStaff(tournamentId: string, recordId: string, playerId: PlayerId): Promise<'removed' | 'not_found'>;
+
+  // Tournament lifecycle and results (M9, ADR-0010, ADR-0011; contract from spike S8 part 2).
+  // Inputs are checked before any call: a malformed id, display id, country, product, category, name,
+  // contact or date throws TypeError. Writes are never retried; a 5xx, a network failure or a write timeout
+  // throws `unavailable`, and the write may have landed: callers re-read. Any other 4xx throws `refused`
+  // with play-tools' message. Every error carries `details.upstream` (code, message, correlation id).
+
+  /** Premier series play-tools offers the connected professor for a league. Disabled ones are left out. */
+  listSeries(groupId: string): Promise<Series[]>;
+
+  /** Products and their formats (categories) for a country, in play-tools' order. */
+  listFormats(country: string): Promise<Format[]>;
+
+  /** The connected professor's venues (address book) for a league and country, the league's own first. */
+  listVenues(groupId: string, country: string): Promise<Venue[]>;
+
+  /** Creates a tournament as the connected professor. A 2xx without the new id throws `unexpected_shape` (it may have landed). */
+  createTournament(tournament: NewTournament): Promise<{ tournamentId: string }>;
+
+  /** Changes only the given fields; nothing else is sent. A reschedule is a `startsAt` change. */
+  editTournament(tournamentId: string, changes: TournamentChanges): Promise<'edited'>;
+
+  /** Cancels a tournament. Whether it was already cancelled is the caller's to see, from a fresh read. */
+  cancelTournament(tournamentId: string): Promise<'cancelled'>;
+
+  /** Sends a TDF to play-tools' validation. No errors means it can be confirmed with the returned upload id. */
+  validateResults(displayId: string, tdf: string): Promise<{ uploadId: string; errors: ResultsError[] }>;
+
+  /** Confirms a validated TDF for the tournament (its id, not its display id). play-tools then processes it. */
+  confirmResults(uploadId: string, tournamentId: string): Promise<'confirmed'>;
+
+  /** Every TDF upload play-tools has for a tournament, rejected and unconfirmed ones included, oldest first. */
+  listResultsUploads(displayId: string): Promise<ResultsUpload[]>;
+}
+
+export type Product = 'tcg' | 'vg' | 'pgo';
+
+export interface Series {
+  readonly id: string;
+  readonly name: string;
+  readonly product: string;
+  /** The formats the series allows. */
+  readonly categories: readonly string[];
+  /** e.g. `league_cup`, `league_challenge`, `prerelease`. */
+  readonly tags: readonly string[];
+  readonly playTemplate: string | null;
+  /** Country code → when the series may be held there: inclusive `YYYY-MM-DD` dates. */
+  readonly windows: Readonly<Record<string, { readonly from: string; readonly to: string }>>;
+}
+
+export interface Format {
+  readonly product: string;
+  readonly categories: readonly string[];
+}
+
+export interface Venue {
+  readonly id: string;
+  readonly name: string | null;
+  readonly formattedAddress: string | null;
+  readonly country: string | null;
+  /** IANA zone, e.g. `America/Chicago`. */
+  readonly timeZone: string | null;
+}
+
+/** At least one of the two is set. */
+export interface Contact {
+  readonly email: string | null;
+  readonly phone: string | null;
+}
+
+export interface Registration {
+  readonly startsAt: Date;
+  readonly endsAt: Date;
+}
+
+/** What the organizer sets on a tournament. Optional fields left out are not sent. */
+export interface TournamentSettings {
+  readonly name: string;
+  /** The format, e.g. `tcg_std`. */
+  readonly category: string;
+  readonly venueId: string;
+  readonly startsAt: Date;
+  readonly contact: Contact;
+  readonly registration?: Registration | null;
+  readonly onSiteAdmission?: string | null;
+  readonly thirdPartyRegistrationUrl?: string | null;
+  readonly details?: string | null;
+  readonly eventWebsite?: string | null;
+}
+
+export interface NewTournament extends TournamentSettings {
+  readonly groupId: string;
+  readonly product: Product;
+  /** The premier series, or null for a custom event. */
+  readonly seriesId: string | null;
+}
+
+/** Only the fields that change; at least one. */
+export type TournamentChanges = Partial<TournamentSettings>;
+
+export interface ResultsError {
+  /** play-tools' code, e.g. `ORGANIZER_ID_MISMATCH`. */
+  readonly code: string;
+  /** Readable text for the codes play-tools explains; the code itself otherwise. */
+  readonly message: string;
+  /** play-tools' own detail (it may name player ids), or null. */
+  readonly detail: string | null;
+}
+
+export interface ResultsUpload {
+  readonly uploadId: string;
+  /** Confirmed and taken by play-tools. A validation never confirmed, or refused, is false. */
+  readonly accepted: boolean;
+  readonly errors: readonly ResultsError[];
+  readonly uploadedAt: Date;
 }
 
 export interface Tournament {
@@ -105,6 +220,24 @@ export interface Tournament {
 export interface TournamentDetails extends Tournament {
   /** Holds the fixed `organizer` role; never assignable as staff on this tournament. */
   readonly organizerPlayerId: PlayerId;
+  /** First and last name as play-tools has them; null when it has neither. */
+  readonly organizerName: string | null;
+  /** e.g. `sanctioned`, `approval-pending`, `cancelled`. */
+  readonly applicationState: string | null;
+  /** `pending`, `upload_in_progress`, `completed` or `upload_failed`. */
+  readonly activityState: string | null;
+  /** The format, e.g. `tcg_std`. */
+  readonly category: string | null;
+  /** The premier series; null for a custom event. */
+  readonly series: { readonly id: string; readonly name: string | null } | null;
+  /** Only when play-tools' read names the venue; callers otherwise fall back to the venue list or the league's zone. */
+  readonly venue: { readonly id: string | null; readonly timeZone: string | null } | null;
+  readonly contact: Contact;
+  readonly registration: Registration | null;
+  readonly onSiteAdmission: string | null;
+  readonly thirdPartyRegistrationUrl: string | null;
+  readonly details: string | null;
+  readonly eventWebsite: string | null;
 }
 
 export interface TournamentParticipant {

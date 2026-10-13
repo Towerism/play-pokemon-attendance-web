@@ -35,6 +35,18 @@ export function tournament(id: string, opts: Partial<Tournament> & { organizer?:
     status: 'sanctioned',
     editableUntil: opts.editableUntil === undefined ? (startsAt && new Date(startsAt.getTime() + 90 * DAY)) : opts.editableUntil,
     organizerPlayerId: (opts.organizer ?? '9999991') as PlayerId,
+    organizerName: 'Olive Organizer',
+    applicationState: 'sanctioned',
+    activityState: 'pending',
+    category: 'tcg_std',
+    series: null,
+    venue: null,
+    contact: { email: 'league@example.com', phone: null },
+    registration: null,
+    onSiteAdmission: null,
+    thirdPartyRegistrationUrl: null,
+    details: null,
+    eventWebsite: null,
   };
 }
 

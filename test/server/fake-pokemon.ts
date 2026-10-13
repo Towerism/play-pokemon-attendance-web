@@ -60,6 +60,18 @@ export interface FakePokemon {
    * `path@playerId` fails only that professor's requests for the path.
    */
   failOnce: Map<string, number | { status: number; after: number }>;
+  /** Path → the status and JSON body the next OP API request for that path answers (e.g. a 400 refusal), then cleared. */
+  refuseOnce: Map<string, { status: number; body: unknown }>;
+  /** Premier series every league offers, in the S8 `series/` item shape. */
+  series: FakeSeries[];
+  /** `core/products` for any country (S8 recording 06). */
+  formats: { results: string[]; product_categories: Record<string, string[]> };
+  /** Every professor's address book, in the S8 shape; the first is the league's own venue. */
+  venues: FakeVenue[];
+  /** Display id → the errors the next TDF validation for that tournament reports (`{type, message}` or a bare code), then cleared. */
+  tdfErrors: Map<string, (string | { type: string; message: string })[]>;
+  /** Ends a confirmed upload's processing: `completed` makes the tournament `complete`; `upload_failed` leaves it sanctioned. */
+  finishUpload(tournamentId: string, outcome: 'completed' | 'upload_failed'): void;
   /** Refuse the account's next refresh with `invalid_grant` (default account when no player id is given). */
   revokeChain(playerId?: string): void;
   liveRefreshToken(playerId?: string): string | undefined;
@@ -117,12 +129,66 @@ export interface FakeTournament {
   status: string;
   activity_group: { guid: string; group_type: 'league' } | null;
   organizer: { player_id: string; first_name: string; last_name: string };
+  // The detail read's S8 fields; a `PATCH` sets them by their wire names.
+  application_state: string;
+  activity_state: string;
+  category: string | null;
+  series: { guid: string; name: string } | null;
+  address: string | null;
+  contact_information: { email: string | null; phone: string | null };
+  registration_start_date_v2?: string | null;
+  registration_end_date_v2?: string | null;
+  on_site_admission?: string | null;
+  third_party_registration_website?: string | null;
+  details?: string | null;
+  event_website?: string | null;
 }
+
+export interface FakeSeries {
+  guid: string;
+  name: string;
+  product: string;
+  category_slugs: string[];
+  tags: string[];
+  play_template: string | null;
+  schedule: Record<string, { start_date: string; end_date: string }>;
+}
+
+export interface FakeVenue {
+  guid: string;
+  name: string;
+  formatted_address: string;
+  country: string;
+  op_country: string;
+  timezone: string;
+}
+
+interface FakeUpload {
+  guid: string;
+  tournament_id: string;
+  kind: 'tdf';
+  accepted: boolean;
+  errors: (string | { type: string; message: string })[];
+  uploader: string;
+  upload_timestamp: number;
+}
+
+const STANDARD_FORMAT: Record<string, string> = { tcg: 'tcg_std', vg: 'vg_mod', pgo: 'pgo_std' };
+
+/** The league's own venue in the default address book (S8 recording 08's shape, made-up values). */
+export const FAKE_VENUE: FakeVenue = {
+  guid: '00000000-0000-4000-8000-000000000051',
+  name: 'Card Shop',
+  formatted_address: '1 Main St',
+  country: 'US',
+  op_country: 'US',
+  timezone: 'America/Chicago',
+};
 
 /** A tournament as `core/activities` lists it (S6). `startsAt` is true UTC; the wall clock is taken as UTC−5. */
 export function fakeTournament(
   guid: string,
-  opts: { startsAt?: string | null; groupId?: string; organizer?: string; status?: string; product?: string; name?: string } = {},
+  opts: { startsAt?: string | null; groupId?: string; organizer?: string; status?: string; product?: string; name?: string; displayId?: string } = {},
 ): FakeTournament {
   const startsAt = opts.startsAt === undefined ? '2026-10-11T19:30:00Z' : opts.startsAt;
   const wallClock = startsAt ? new Date(Date.parse(startsAt) - 5 * 3_600_000) : new Date('2024-10-26T16:00:00Z');
@@ -130,13 +196,19 @@ export function fakeTournament(
     guid,
     activity_type: 'tournament',
     name: opts.name ?? `League Challenge ${guid}`,
-    display_id: `26-10-${guid}`,
+    display_id: opts.displayId ?? `26-10-${guid}`,
     product: opts.product ?? 'tcg',
     start_date: wallClock.toISOString().replace('.000', ''),
     start_date_v2: startsAt,
     status: opts.status ?? 'sanctioned',
     activity_group: { guid: opts.groupId ?? 'group-1', group_type: 'league' },
     organizer: { player_id: opts.organizer ?? '9999991', first_name: 'Olive', last_name: 'Organizer' },
+    application_state: opts.status === 'complete' ? 'sanctioned' : (opts.status ?? 'sanctioned'),
+    activity_state: opts.status === 'complete' ? 'completed' : 'pending',
+    category: STANDARD_FORMAT[opts.product ?? 'tcg'] ?? null,
+    series: null,
+    address: '1 Main St',
+    contact_information: { email: 'league@example.com', phone: null },
   };
 }
 
@@ -169,18 +241,42 @@ const BULK_PATH = /^\/services\/core\/activity_groups\/([^/]+)\/play_sessions\/(
 const TOURNAMENT_PATH = /^\/services\/core\/tournament\/([^/]+)$/;
 const T_RECORDS_PATH = /^\/services\/core\/tournaments\/([^/]+)\/records$/;
 const T_RECORD_PATH = /^\/services\/core\/tournaments\/([^/]+)\/records\/([^/]+)$/;
+// Tournament lifecycle and TDF (S8 part 2), exactly as recorded.
+const TOURNAMENT_EDIT_PATH = /^\/services\/core\/tournament\/([^/]+)\/$/;
+const SERIES_PATH = /^\/services\/core\/users\/([^/]+)\/activity_groups\/[^/]+\/series\/$/;
+const ADDRESS_BOOK_PATH = /^\/services\/core\/v2\/users\/([^/]+)\/address_book$/;
+const CONFIRM_PATH = /^\/services\/triumph\/([^/]+)\/confirm\/$/;
+const UPLOADS_PATH = /^\/services\/triumph\/tournament\/([^/]+)\/uploads\/$/;
+const TDF_FILE_PATH = /^\/services\/triumph\/tdf\/[^/]+$/;
+
+/** A create or edit body onto a stored tournament, by wire name; dates move the wall-clock start and cancel the status with them. */
+function applyTournamentFields(t: FakeTournament, sent: Record<string, unknown>): void {
+  const settable = ['name', 'category', 'contact_information', 'registration_start_date_v2', 'registration_end_date_v2', 'on_site_admission',
+    'third_party_registration_website', 'details', 'event_website'] as const;
+  for (const key of settable) if (key in sent) (t as unknown as Record<string, unknown>)[key] = sent[key];
+  if (typeof sent.start_date_v2 === 'string') {
+    t.start_date_v2 = sent.start_date_v2;
+    t.start_date = new Date(Date.parse(sent.start_date_v2) - 5 * 3_600_000).toISOString().replace('.000', '');
+  }
+  if (typeof sent.application_state === 'string') {
+    t.application_state = sent.application_state;
+    t.status = sent.application_state;
+  }
+}
 
 export async function startFakePokemon(): Promise<FakePokemon> {
   let serial = 0;
   const issued: string[] = [];
   const accounts: AccountState[] = [];
+  const uploads: FakeUpload[] = [];
   const account = (playerId?: string) => (playerId === undefined ? accounts[0] : accounts.find((a) => a.playerId === playerId));
 
   const fake: Omit<FakePokemon, 'url' | 'env' | 'close'> = {
     requests: [],
     accounts,
     addAccount: ({ playerId, name, leagues = [] }) => {
-      const added: AccountState = { sub: `sub-${playerId}`, playerId, name, code: `code-${playerId}`, leagues, rotated: new Set() };
+      // A `sub` is a user guid without hyphens (S8), so the address book and create take it as the professor's id.
+      const added: AccountState = { sub: playerId.padStart(32, '0'), playerId, name, code: `code-${playerId}`, leagues, rotated: new Set() };
       accounts.push(added);
       return added;
     },
@@ -199,6 +295,24 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     refuseStaff: new Map(),
     staffPostDelayMs: 0,
     failOnce: new Map(),
+    refuseOnce: new Map(),
+    series: [],
+    formats: {
+      results: ['pgo', 'tcg', 'vg'],
+      product_categories: {
+        pgo: ['pgo_std', 'pgo_limited_meta', 'pgo_other'],
+        tcg: ['tcg_std', 'tcg_exp', 'tcg_lim', 'tcg_lim_ditto', 'tcg_unl', 'tcg_glc', 'tcg_other'],
+        vg: ['vg_mod', 'vg_fun_sin', 'vg_fun_multi', 'vg_fun_other'],
+      },
+    },
+    venues: [FAKE_VENUE],
+    tdfErrors: new Map(),
+    finishUpload: (tournamentId, outcome) => {
+      const t = fake.tournaments.find((x) => x.guid === tournamentId);
+      if (!t) throw new Error(`fake: no tournament ${tournamentId}`);
+      t.activity_state = outcome;
+      if (outcome === 'completed') t.status = 'complete';
+    },
     revokeChain: (playerId) => {
       const a = account(playerId);
       if (a) a.live = undefined;
@@ -289,6 +403,11 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       } else if (own) {
         fake.failOnce.delete(key);
         return json(res, typeof own === 'object' ? own.status : own, { code: 'op.generic.unavailable' });
+      }
+      const refusal = fake.refuseOnce.get(url.pathname);
+      if (refusal) {
+        fake.refuseOnce.delete(url.pathname);
+        return json(res, refusal.status, refusal.body);
       }
       // Play sessions belong to a league; only its staff may touch them.
       const group = /^\/services\/core\/activity_groups\/([^/]+)\//.exec(url.pathname)?.[1];
@@ -432,6 +551,118 @@ export async function startFakePokemon(): Promise<FakePokemon> {
       }
     }
 
+    // S8: create. 201 {guid}; `activity_division_info: null` is refused by field; the league must be the caller's.
+    if (req.method === 'POST' && caller && url.pathname === '/services/core/tournament') {
+      const sent = JSON.parse(await body(req)) as Record<string, unknown>;
+      entry.body = sent;
+      if (sent.activity_division_info == null) {
+        return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.', errors: { activity_division_info: ['This field may not be null.'] } });
+      }
+      if (!caller.leagues.some((l) => l.guid === sent.activity_group_id)) {
+        return json(res, 403, { code: 'op.generic.forbidden', message: 'Request not authorized for attempted action.' });
+      }
+      const guid = `t-${++serial}`;
+      const [first = '', last = ''] = caller.name.split(' ');
+      const created: FakeTournament = {
+        ...fakeTournament(guid, {
+          startsAt: sent.start_date_v2 as string,
+          groupId: sent.activity_group_id as string,
+          organizer: caller.playerId,
+          product: sent.product as string,
+          name: sent.name as string,
+        }),
+        display_id: `26-10-${900000 + serial}`,
+        organizer: { player_id: caller.playerId, first_name: first, last_name: last },
+        series: (() => {
+          const s = fake.series.find((x) => x.guid === sent.series_guid);
+          return s ? { guid: s.guid, name: s.name } : null;
+        })(),
+        address: fake.venues.find((v) => v.guid === sent.address_id)?.formatted_address ?? null,
+      };
+      applyTournamentFields(created, sent);
+      fake.tournaments.push(created);
+      return json(res, 201, { guid });
+    }
+
+    // S8: edit and cancel are a partial PATCH that changes only the fields sent; 204, empty.
+    const editMatch = TOURNAMENT_EDIT_PATH.exec(url.pathname);
+    if (req.method === 'PATCH' && editMatch) {
+      const t = fake.tournaments.find((x) => x.guid === editMatch[1]);
+      const raw = await body(req);
+      entry.body = raw ? (JSON.parse(raw) as unknown) : undefined;
+      if (!t) return json(res, 404, { code: 'op.generic.not_found' });
+      if (t.organizer.player_id !== caller?.playerId) {
+        return json(res, 403, { code: 'op.generic.forbidden', message: 'Request not authorized for attempted action.' });
+      }
+      if (fake.lockedTournaments.has(t.guid)) {
+        return json(res, 423, { code: 'op.activity.cannot_modify_old_activity', message: 'The given activity is no longer modifiable.' });
+      }
+      applyTournamentFields(t, entry.body as Record<string, unknown>);
+      res.writeHead(204).end();
+      return;
+    }
+
+    const seriesMatch = SERIES_PATH.exec(url.pathname);
+    if (req.method === 'GET' && caller && seriesMatch && seriesMatch[1] === caller.sub) {
+      return json(res, 200, { results: fake.series });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/services/core/products') {
+      if (!url.searchParams.get('country')) return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.' });
+      return json(res, 200, fake.formats);
+    }
+
+    // S8: the address book is the professor's own, by their user guid (the `sub`, hyphenated).
+    const bookMatch = ADDRESS_BOOK_PATH.exec(url.pathname);
+    if (req.method === 'GET' && caller && bookMatch) {
+      if (bookMatch[1]!.replaceAll('-', '') !== caller.sub) return json(res, 403, { code: 'op.generic.forbidden' });
+      return json(res, 200, { results: fake.venues });
+    }
+
+    // S8: validate answers a preview with the file's errors; the upload is listed straight away, not yet accepted.
+    if (req.method === 'POST' && caller && url.pathname === '/services/triumph/tdf/') {
+      const sent = JSON.parse(await body(req)) as { kind: string; tournament_id: string; payload: string };
+      entry.body = { ...sent, payload: '<tdf>' };
+      const t = fake.tournaments.find((x) => x.display_id === sent.tournament_id);
+      if (!t) return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.' });
+      const errors = fake.tdfErrors.get(sent.tournament_id) ?? [];
+      fake.tdfErrors.delete(sent.tournament_id);
+      const upload: FakeUpload = {
+        guid: `upload-${++serial}`,
+        tournament_id: sent.tournament_id,
+        kind: 'tdf',
+        accepted: false,
+        errors,
+        uploader: caller.sub,
+        upload_timestamp: Date.now(),
+      };
+      uploads.push(upload);
+      return json(res, 200, { name: t.name, id: t.display_id, upload_guid: upload.guid, player_count: 0, start_date: '', product: 'TRADING_CARD_GAME', errors });
+    }
+
+    // S8: confirm takes the tournament guid; 202, and processing runs until `finishUpload`.
+    const confirmMatch = CONFIRM_PATH.exec(url.pathname);
+    if (req.method === 'PUT' && confirmMatch) {
+      entry.body = JSON.parse(await body(req)) as unknown;
+      const upload = uploads.find((u) => u.guid === confirmMatch[1]);
+      const t = fake.tournaments.find((x) => x.guid === (entry.body as { tournament_id?: string }).tournament_id);
+      if (!upload || !t || t.display_id !== upload.tournament_id) return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.' });
+      upload.accepted = true;
+      t.activity_state = 'upload_in_progress';
+      res.writeHead(202).end();
+      return;
+    }
+
+    const uploadsMatch = UPLOADS_PATH.exec(url.pathname);
+    if (req.method === 'GET' && uploadsMatch) {
+      return json(res, 200, uploads.filter((u) => u.tournament_id === uploadsMatch[1]));
+    }
+
+    // S8: an organizer can't fetch a TDF back (#107).
+    if (req.method === 'GET' && TDF_FILE_PATH.test(url.pathname)) {
+      return json(res, 403, { code: 'op.generic.forbidden', message: 'Request not authorized for attempted action.' });
+    }
+
     if (req.method === 'GET' && caller && url.pathname === `/services/core/users/${caller.sub}/activity_groups/`) {
       const results = [
         {
@@ -480,8 +711,11 @@ function paged<T>(items: T[], url: URL, req: IncomingMessage) {
   return { count: items.length, next, previous: null, results };
 }
 
+let correlations = 0;
+
+/** A JSON answer with an `x-correlation-id`, as the OP gateway sends (the support details carry it, ADR-0010 decision 7). */
 function json(res: ServerResponse, status: number, payload: unknown) {
-  res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(payload));
+  res.writeHead(status, { 'content-type': 'application/json', 'x-correlation-id': `fake-${++correlations}` }).end(JSON.stringify(payload));
 }
 
 function body(req: IncomingMessage): Promise<string> {
