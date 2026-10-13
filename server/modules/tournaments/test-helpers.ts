@@ -1,0 +1,112 @@
+/** Test-only stand-ins and factories for the tournaments module. Not imported by production code. */
+import type { TemplateBody } from '../../../shared/schemas/tournaments';
+import type { ActingConnection, ConnectionView } from '../pokemon/connection';
+import { PokemonUpstreamError } from '../pokemon/ports/errors';
+import type { Format, Series, Tournament, Venue } from '../pokemon/ports/play-tools-gateway';
+
+export const GROUP = 'group-1';
+export const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
+export const BROCK: ActingConnection = { id: 2, professorPlayerId: '9999992', professorName: 'Brock', status: 'connected' };
+
+export const VENUE = { id: '00000000-0000-4000-8000-000000000051', label: 'Card Shop', timeZone: 'America/Chicago', country: 'US' };
+
+/** A valid template body (what the route hands the service after parsing). */
+export function templateBody(overrides: Partial<TemplateBody> = {}): TemplateBody {
+  return {
+    name: 'League Challenge {month}',
+    organizerPlayerId: OLIVE.professorPlayerId,
+    product: 'tcg',
+    category: 'tcg_std',
+    type: { kind: 'premier', seriesMatch: 'League Challenge' },
+    venue: VENUE,
+    startTime: '18:00',
+    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+    contactEmail: 'league@example.com',
+    contactPhone: null,
+    details: null,
+    eventWebsite: null,
+    ...overrides,
+  } as TemplateBody;
+}
+
+export function series(id: string, name: string, from: string, to: string, product = 'tcg'): Series {
+  return { id, name, product, categories: ['tcg_std'], tags: [], playTemplate: null, windows: { US: { from, to } } };
+}
+
+export function upstreamTournament(id: string, startsAt: string, opts: Partial<Tournament> & { organizer?: string } = {}): Tournament & { organizer: string } {
+  return {
+    id,
+    name: `Cup ${id}`,
+    displayId: `26-10-${id}`,
+    groupId: GROUP,
+    products: ['tcg'],
+    startsAt: new Date(startsAt),
+    status: 'sanctioned',
+    editableUntil: null,
+    organizer: OLIVE.professorPlayerId!,
+    ...opts,
+  };
+}
+
+/**
+ * An in-memory play-tools for the reads this module makes, as several professors: each lists only the
+ * tournaments they organize. Every call is logged with the connection it was made as.
+ */
+export function stubPlayTools() {
+  const state = {
+    professors: [{ ...OLIVE }] as ActingConnection[],
+    tournaments: [] as (Tournament & { organizer: string })[],
+    series: [] as Series[],
+    formats: [{ product: 'tcg', categories: ['tcg_std', 'tcg_exp'] }] as Format[],
+    venues: [{ id: VENUE.id, name: 'Card Shop', formattedAddress: '1 Main St', country: 'US', timeZone: 'America/Chicago' }] as Venue[],
+    /** `method@connectionId` (or `method`) → throw this from the next such call. */
+    failNext: new Map<string, PokemonUpstreamError>(),
+    calls: [] as string[],
+    connection: {
+      status: 'connected',
+      reason: null,
+      connectedAt: new Date(0),
+      lastRefreshedAt: new Date(0),
+      league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
+      connectionId: 1,
+      professor: { playerId: OLIVE.professorPlayerId, name: OLIVE.professorName },
+    } as ConnectionView,
+  };
+
+  async function call<T>(as: number, name: string, run: (who: string) => T): Promise<T> {
+    state.calls.push(`${name}@${as}`);
+    for (const key of [`${name}@${as}`, name]) {
+      const failure = state.failNext.get(key);
+      if (failure) {
+        state.failNext.delete(key);
+        throw failure;
+      }
+    }
+    const p = state.professors.find((x) => x.id === as);
+    if (!p) throw new PokemonUpstreamError('not_connected', 'No Pokémon account is connected.');
+    if (p.status === 'needs_reconnect') throw new PokemonUpstreamError('needs_reconnect', 'The Pokémon login was refused.');
+    return run(p.professorPlayerId!);
+  }
+
+  const gateway = (as: number) => ({
+    listTournaments: (range?: { from: Date; to: Date }) =>
+      call(as, 'listTournaments', (who) =>
+        state.tournaments
+          .filter((t) => t.organizer === who)
+          .filter((t) => !range || (t.startsAt && t.startsAt >= range.from && t.startsAt < range.to))
+          .map(({ organizer: _o, ...t }) => t),
+      ),
+    listSeries: (groupId: string) => call(as, 'listSeries', () => (groupId === GROUP ? [...state.series] : [])),
+    listFormats: (_country: string) => call(as, 'listFormats', () => [...state.formats]),
+    listVenues: (_groupId: string, _country: string) => call(as, 'listVenues', () => [...state.venues]),
+  });
+
+  return {
+    state,
+    gateway,
+    connections: {
+      getStatus: () => state.connection,
+      listActingConnections: (): ActingConnection[] => state.professors.map((p) => ({ ...p })),
+    },
+  };
+}

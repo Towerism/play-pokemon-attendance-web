@@ -41,6 +41,7 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useIntegrationTokens()',
     'useIntegrationDays()',
     'requireIntegrationToken(e)',
+    'useTournaments()',
   ])(
     'rejects the auto-imported call %s',
     async (call) => {

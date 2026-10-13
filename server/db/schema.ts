@@ -490,3 +490,176 @@ export const integrationToken = sqliteTable(
   },
   (t) => [index('integration_token_league_idx').on(t.leagueId)],
 );
+
+/**
+ * One tournament's settings (ADR-0010 decision 3): what a planned tournament is created with, as its organizer.
+ * Archived, never deleted. Owned by the tournaments module, as are the tables below.
+ */
+export const tournamentTemplate = sqliteTable(
+  'tournament_template',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** ≤ 80; may hold `{month}`, `{year}` and `{date}`. */
+    name: text('name').notNull(),
+    /** A connected professor: the tournament is created as them (ADR-0009). */
+    organizerPlayerId: text('organizer_player_id').notNull(),
+    product: text('product', { enum: ['tcg', 'vg', 'pgo'] }).notNull(),
+    /** The format, e.g. `tcg_std`. */
+    category: text('category').notNull(),
+    /** As picked from play-tools' live type list (decision 6). */
+    eventType: text('event_type', { enum: ['custom', 'premier'] }).notNull(),
+    /** Premier only: part of the series' name, resolved per date against `listSeries`. */
+    seriesMatch: text('series_match'),
+    /** The organizer's address-book entry. */
+    venueId: text('venue_id').notNull(),
+    venueLabel: text('venue_label').notNull(),
+    venueTimeZone: text('venue_time_zone').notNull(),
+    /** Two-letter: series windows and formats are per country. */
+    venueCountry: text('venue_country').notNull(),
+    /** `HH:MM`, local to the venue. */
+    startTime: text('start_time').notNull(),
+    /** JSON: `{kind: on_site, opensBeforeMin, closesAfterMin, admission}` or `{kind: third_party, url}`. */
+    registration: text('registration', { mode: 'json' }).notNull(),
+    contactEmail: text('contact_email'),
+    contactPhone: text('contact_phone'),
+    details: text('details'),
+    eventWebsite: text('event_website'),
+    archivedAt: integer('archived_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('tournament_template_league_idx').on(t.leagueId)],
+);
+
+/** Templates held together, e.g. a TCG and a VGC Cup on one afternoon (decision 3). Archived, never deleted. */
+export const tournamentScaffold = sqliteTable(
+  'tournament_scaffold',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    name: text('name').notNull(),
+    archivedAt: integer('archived_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('tournament_scaffold_league_idx').on(t.leagueId)],
+);
+
+/** One tournament of a scaffold, in order from position 0. Replaced as a whole when the scaffold is edited. */
+export const scaffoldSlot = sqliteTable(
+  'scaffold_slot',
+  {
+    scaffoldId: integer('scaffold_id')
+      .notNull()
+      .references(() => tournamentScaffold.id),
+    position: integer('position').notNull(),
+    templateId: integer('template_id')
+      .notNull()
+      .references(() => tournamentTemplate.id),
+    /** Days after the scaffold's date, 0–6. */
+    dayOffset: integer('day_offset').notNull(),
+    /** Overrides the template's start time. */
+    startTime: text('start_time'),
+  },
+  (t) => [primaryKey({ columns: [t.scaffoldId, t.position] })],
+);
+
+/** A recurrence for one scaffold (decision 3), planned on read up to its horizon. Archived, never deleted. */
+export const tournamentSchedule = sqliteTable(
+  'tournament_schedule',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    scaffoldId: integer('scaffold_id')
+      .notNull()
+      .references(() => tournamentScaffold.id),
+    /** JSON, `shared/schedule` `scheduleRuleSchema`. */
+    rule: text('rule', { mode: 'json' }).notNull(),
+    startsOn: text('starts_on').notNull(),
+    endsOn: text('ends_on'),
+    /** 1–26. */
+    horizonWeeks: integer('horizon_weeks').notNull(),
+    /** The last date **Create through date…** covered (#92); display only. */
+    createdThrough: text('created_through'),
+    paused: integer('paused', { mode: 'boolean' }).notNull().default(false),
+    archivedAt: integer('archived_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('tournament_schedule_league_idx').on(t.leagueId)],
+);
+
+/**
+ * One tournament the organizer wants on one date (decision 3): from a schedule's slot, or a one-off from a
+ * template. Desired state: it reaches play-tools only on a click (#92), and then holds the upstream guid.
+ */
+export const plannedTournament = sqliteTable(
+  'planned_tournament',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** Null for a one-off. */
+    scheduleId: integer('schedule_id').references(() => tournamentSchedule.id),
+    slotPosition: integer('slot_position'),
+    /** The scaffold's date the row was planned for. */
+    occurrenceDate: text('occurrence_date'),
+    templateId: integer('template_id')
+      .notNull()
+      .references(() => tournamentTemplate.id),
+    /** In the venue's zone. */
+    localDate: text('local_date').notNull(),
+    startTime: text('start_time').notNull(),
+    /** A series id or `custom`, picked on the row when its match found none or several. */
+    seriesOverride: text('series_override'),
+    /** JSON: fields set on this row before creation, `localDate` and `startTime` included (decision 11). */
+    overrides: text('overrides', { mode: 'json' }).notNull().default({}),
+    state: text('state', { enum: ['planned', 'skipped', 'creating', 'created', 'failed', 'cancelled', 'unknown'] })
+      .notNull()
+      .default('planned'),
+    /** The upstream guid once created or adopted. */
+    tournamentId: text('tournament_id'),
+    /** When a create was last sent (#100). */
+    lastAttemptAt: integer('last_attempt_at', { mode: 'timestamp' }),
+    displayId: text('display_id'),
+    upstreamStatus: text('upstream_status'),
+    errorCode: text('error_code'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('planned_tournament_occurrence_unique').on(t.scheduleId, t.slotPosition, t.occurrenceDate),
+    uniqueIndex('planned_tournament_tournament_unique')
+      .on(t.leagueId, t.tournamentId)
+      .where(sql`${t.tournamentId} is not null`),
+    index('planned_tournament_league_date_idx').on(t.leagueId, t.localDate),
+    index('planned_tournament_event_idx').on(t.leagueId, t.templateId, t.localDate),
+  ],
+);
+
+/**
+ * An edit applied across a schedule (decision 11): fields that tournaments of one slot are created with from a
+ * date on. Never a date. Written by the edit flow (#93); read when settings are resolved.
+ */
+export const tournamentScheduleOverride = sqliteTable(
+  'tournament_schedule_override',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    scheduleId: integer('schedule_id')
+      .notNull()
+      .references(() => tournamentSchedule.id),
+    slotPosition: integer('slot_position').notNull(),
+    effectiveFrom: text('effective_from').notNull(),
+    /** JSON: the changed settings fields carried over. */
+    fields: text('fields', { mode: 'json' }).notNull(),
+    /** Organizer username. */
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('tournament_schedule_override_schedule_idx').on(t.scheduleId, t.slotPosition)],
+);

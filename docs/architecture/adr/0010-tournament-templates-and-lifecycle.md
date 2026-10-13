@@ -10,6 +10,9 @@
 - Updated: 2026-10-13 ([#90](https://github.com/Towerism/play-pokemon-attendance-web/issues/90), from S8 part 2): an
   edit sends only the changed fields, which replaces the raw-read passthrough and `edit_body_unmappable`. See
   [Update (#90)](#update-90-the-edit-body-is-only-the-changed-fields).
+- Updated: 2026-10-13 ([#91](https://github.com/Towerism/play-pokemon-attendance-web/issues/91), building the module):
+  a template keeps its venue's country, schedules are archived rather than deleted, archiving what is still used is
+  refused, and a schedule doesn't plan an event a planned row already holds. See [Update (#91)](#update-91-what-the-module-keeps).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
@@ -615,6 +618,24 @@ what the adapter builds from the same changes.
 - (+) There is no read-to-write mapping to keep in step with play-tools.
 - (−) This rests on a custom event edited after its start. If play-tools ever wants the full body for a premier
   event or an earlier edit, the refusal (`refused`, with play-tools' message) shows it.
+
+## Update (#91): what the module keeps
+
+Building the `tournaments` module filled four gaps the decisions above left open:
+
+- **A venue's country.** Series windows (decision 6) and `listFormats` are per country, and the app stores no league
+  country. A template keeps its venue's two-letter country with its id, label and time zone. The form options take
+  `?country=` (default `US`). Storing a league country is a later decision, if a league outside the US uses the app.
+- **Schedules are archived, not deleted.** A schedule whose rows reached play-tools can't lose them, so `DELETE`
+  archives it and replans it as if nothing fits: rows not in play-tools go, the rest keep their schedule link.
+  Templates and scaffolds were already archived (decision 3).
+- **Archiving what is still used is refused.** A template used by a live scaffold (409 `template_in_use`), or a
+  scaffold used by a live schedule (409 `scaffold_in_use`), isn't archived, so a schedule never plans from an
+  archived template.
+- **One planned row per event, in both directions.** Decision 4 refuses a one-off that duplicates a planned row. A
+  schedule likewise doesn't plan an occurrence when a row that isn't cancelled already holds the same template, local
+  date and start time, so a one-off followed by a schedule can't create two tournaments. Two identical slots of one
+  scaffold still plan two rows (decision 5).
 
 ## Consequences
 
