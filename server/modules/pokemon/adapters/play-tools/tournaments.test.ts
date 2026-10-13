@@ -1,10 +1,10 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { http, HttpResponse } from 'msw';
+import { http, HttpResponse, type JsonBodyType } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PokemonUpstreamError } from '../../ports/errors';
-import type { NewTournament } from '../../ports/play-tools-gateway';
+import type { Contact, NewTournament } from '../../ports/play-tools-gateway';
 import type { TokenProvider } from '../../ports/token-provider';
 import { createPlayToolsHttpAdapter } from './gateway';
 
@@ -19,7 +19,7 @@ interface Recording {
   query: Record<string, string>;
   status: number;
   request: Record<string, unknown> | null;
-  response: unknown;
+  response: JsonBodyType;
 }
 const recording = (n: string): Recording => {
   const file = readdirSync(S8).find((f) => f.startsWith(`${n}.`));
@@ -303,7 +303,7 @@ describe('createTournament (S8 recording 16)', () => {
   it('sends the recorded create body as the professor and returns the new tournament id', async () => {
     const recorded = recording('16');
     upstream.use(http.post(`${API}core/tournament`, () => HttpResponse.json(recorded.response, { status: 201 })));
-    const r = recorded.request as Record<string, never>;
+    const r = recorded.request as unknown as { activity_group_id: string; name: string; start_date_v2: string; contact_information: Contact };
 
     const created = await gateway().createTournament(
       newTournament({

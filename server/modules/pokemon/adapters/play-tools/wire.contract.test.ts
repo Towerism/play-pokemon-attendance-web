@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { z } from 'zod';
+import type { Contact, Product } from '../../ports/play-tools-gateway';
 import { EMPTY_DIVISION_INFO } from './constants';
 import {
   ActivitiesPage,
@@ -179,7 +180,17 @@ describe('play-tools tournament lifecycle wire contract (S8 recordings)', () => 
 
     if (rec.method === 'POST' && /\/core\/tournament$/.test(rec.path)) {
       it(`${file}: the adapter builds the recorded create body`, () => {
-        const r = rec.request as Record<string, never> & { contact_information: { email: string; phone: string } };
+        const r = rec.request as unknown as {
+          activity_group_id: string;
+          organizer_id: string;
+          name: string;
+          product: Product;
+          category: string;
+          series_guid: string | null;
+          address_id: string;
+          start_date_v2: string;
+          contact_information: Contact;
+        };
         const body = createTournamentBody(
           {
             groupId: r.activity_group_id,
