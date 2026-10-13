@@ -16,6 +16,63 @@ export function dateIn(instant: Date, timeZone: string): SessionDate {
   return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(instant) as SessionDate;
 }
 
+/** A wall time that isn't exactly one instant: skipped by a DST gap, or repeated by an overlap. */
+export class LocalTimeError extends RangeError {
+  constructor(
+    readonly reason: 'nonexistent' | 'ambiguous',
+    date: string,
+    time: string,
+    timeZone: string,
+  ) {
+    super(`${date} ${time} is ${reason === 'nonexistent' ? 'skipped' : 'repeated'} by a DST change in ${timeZone}`);
+    this.name = 'LocalTimeError';
+  }
+}
+
+/**
+ * The UTC instant at which the wall clock of `timeZone` shows `date` `time`
+ * (`YYYY-MM-DD`, `HH:MM`), e.g. a tournament's start at its venue. A time a
+ * DST change skips or repeats is refused, never shifted or guessed.
+ */
+export function localInstant(date: string, time: string, timeZone: string): Date {
+  const [y, m, d] = parseLocalDate(date);
+  const [hh, mm] = parseLocalTime(time);
+  const instants = instantsAt(Date.UTC(y, m - 1, d, hh, mm), timeZone);
+  if (instants.length === 0) throw new LocalTimeError('nonexistent', date, time, timeZone);
+  if (instants.length > 1) throw new LocalTimeError('ambiguous', date, time, timeZone);
+  return new Date(instants[0]!);
+}
+
+/** `YYYY-MM-DD` as [year, month, day], refusing anything that isn't a real calendar date. */
+export function parseLocalDate(date: string): [number, number, number] {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(date);
+  const [y, m, d] = match ? [Number(match[1]), Number(match[2]), Number(match[3])] : [0, 0, 0];
+  const at = new Date(Date.UTC(y, m - 1, d));
+  if (!match || at.getUTCFullYear() !== y || at.getUTCMonth() !== m - 1 || at.getUTCDate() !== d) {
+    throw new RangeError(`Invalid date ${JSON.stringify(date)}: expected a real YYYY-MM-DD date`);
+  }
+  return [y, m, d];
+}
+
+/** `HH:MM` (00:00–23:59) as [hours, minutes]. */
+export function parseLocalTime(time: string): [number, number] {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/u.exec(time);
+  if (!match) throw new RangeError(`Invalid time ${JSON.stringify(time)}: expected HH:MM, 00:00–23:59`);
+  return [Number(match[1]), Number(match[2])];
+}
+
+/** Every instant whose wall clock in `timeZone` reads `wall`: none in a DST gap, two in an overlap. */
+function instantsAt(wall: number, timeZone: string): number[] {
+  // The offsets a day either side cover both sides of any DST change near `wall`.
+  const offsets = new Set([offsetMs(new Date(wall - DAY_MS), timeZone), offsetMs(new Date(wall + DAY_MS), timeZone)]);
+  return [...offsets]
+    .map((offset) => wall - offset)
+    .filter((at) => offsetMs(new Date(at), timeZone) === wall - at)
+    .sort((a, b) => a - b);
+}
+
+const DAY_MS = 86_400_000;
+
 function localMidnight(y: number, m: number, d: number, timeZone: string): Date {
   const wall = Date.UTC(y, m - 1, d);
   // Two passes: the offset at the guess can differ from the offset at the answer around a DST change.
