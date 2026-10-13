@@ -81,10 +81,13 @@ function localMidnight(y: number, m: number, d: number, timeZone: string): Date 
   return new Date(at);
 }
 
-/** How far the zone's wall clock is ahead of UTC at `instant`. */
-function offsetMs(instant: Date, timeZone: string): number {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat('en-US', {
+/** A formatter per zone: building one costs far more than using it, and a schedule asks hundreds of times. */
+const wallClocks = new Map<string, Intl.DateTimeFormat>();
+
+function wallClock(timeZone: string): Intl.DateTimeFormat {
+  let format = wallClocks.get(timeZone);
+  if (!format) {
+    format = new Intl.DateTimeFormat('en-US', {
       timeZone,
       hourCycle: 'h23',
       year: 'numeric',
@@ -93,7 +96,16 @@ function offsetMs(instant: Date, timeZone: string): number {
       hour: 'numeric',
       minute: 'numeric',
       second: 'numeric',
-    })
+    });
+    wallClocks.set(timeZone, format);
+  }
+  return format;
+}
+
+/** How far the zone's wall clock is ahead of UTC at `instant`. */
+function offsetMs(instant: Date, timeZone: string): number {
+  const parts = Object.fromEntries(
+    wallClock(timeZone)
       .formatToParts(instant)
       .map((p) => [p.type, Number(p.value)]),
   ) as Record<'year' | 'month' | 'day' | 'hour' | 'minute' | 'second', number>;

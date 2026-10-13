@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { occurrenceDates } from './expand';
+import { afterEach, describe, expect, it } from 'vitest';
+import { expandSchedule, occurrenceDates, type ExpandableSchedule, type ScheduleSlot } from './expand';
 import type { ScheduleRule } from './rule';
 
 const TUESDAY = 2;
@@ -112,6 +112,155 @@ describe('occurrenceDates, weekly', () => {
     expect(occurrenceDates(weekly(), { startsOn: '2026-01-01', endsOn: '2026-09-30' }, { from: '2026-10-01', to: '2026-12-31' })).toEqual([]);
     expect(occurrenceDates(weekly(), { startsOn: '2026-10-01', endsOn: '2026-09-01' }, { from: '2026-10-01', to: '2026-12-31' })).toEqual([]);
     expect(occurrenceDates(weekly(), { startsOn: '2026-10-01' }, { from: '2026-10-31', to: '2026-10-01' })).toEqual([]);
+  });
+});
+
+describe('expandSchedule', () => {
+  const slot = (position: number, dayOffset: number, startTime: string): ScheduleSlot => ({ position, dayOffset, startTime });
+  const schedule = (overrides: Partial<ExpandableSchedule> = {}): ExpandableSchedule => ({
+    rule: { kind: 'monthly', nth: 3, weekday: TUESDAY },
+    startsOn: '2026-01-01',
+    slots: [slot(0, 0, '18:00')],
+    timeZone: 'America/Chicago',
+    ...overrides,
+  });
+
+  it('gives every slot of a back-to-back set for each date, in order, with its instant at the venue', () => {
+    const slots = [slot(2, 1, '10:00'), slot(1, 0, '16:00'), slot(0, 0, '12:00')];
+    expect(expandSchedule(schedule({ slots }), { from: '2026-10-01', to: '2026-11-30' })).toEqual([
+      { occurrenceDate: '2026-10-20', slotPosition: 0, localDate: '2026-10-20', startTime: '12:00', startsAt: new Date('2026-10-20T17:00:00Z') },
+      { occurrenceDate: '2026-10-20', slotPosition: 1, localDate: '2026-10-20', startTime: '16:00', startsAt: new Date('2026-10-20T21:00:00Z') },
+      { occurrenceDate: '2026-10-20', slotPosition: 2, localDate: '2026-10-21', startTime: '10:00', startsAt: new Date('2026-10-21T15:00:00Z') },
+      { occurrenceDate: '2026-11-17', slotPosition: 0, localDate: '2026-11-17', startTime: '12:00', startsAt: new Date('2026-11-17T18:00:00Z') },
+      { occurrenceDate: '2026-11-17', slotPosition: 1, localDate: '2026-11-17', startTime: '16:00', startsAt: new Date('2026-11-17T22:00:00Z') },
+      { occurrenceDate: '2026-11-17', slotPosition: 2, localDate: '2026-11-18', startTime: '10:00', startsAt: new Date('2026-11-18T16:00:00Z') },
+    ]);
+  });
+
+  it('orders two slots on the same day by start time, then position', () => {
+    const slots = [slot(0, 0, '16:00'), slot(1, 0, '12:00'), slot(2, 0, '12:00')];
+    const [a, b, c] = expandSchedule(schedule({ slots }), { from: '2026-10-01', to: '2026-10-31' });
+    expect([a!.slotPosition, b!.slotPosition, c!.slotPosition]).toEqual([1, 2, 0]);
+  });
+
+  it('carries a slot across a year end and onto a leap day', () => {
+    const yearEnd = expandSchedule(schedule({ rule: { kind: 'monthly', day: 31 }, slots: [slot(0, 1, '10:00')] }), {
+      from: '2026-12-01',
+      to: '2026-12-31',
+    });
+    expect(yearEnd.map((o) => [o.occurrenceDate, o.localDate])).toEqual([['2026-12-31', '2027-01-01']]);
+    const leap = expandSchedule(schedule({ rule: { kind: 'monthly', day: 28 }, slots: [slot(0, 1, '10:00')] }), {
+      from: '2028-02-01',
+      to: '2028-02-28',
+    });
+    expect(leap.map((o) => o.localDate)).toEqual(['2028-02-29']);
+  });
+
+  it('filters on the scaffold date, so a Saturday + Sunday set is never split by the range', () => {
+    const weekend = schedule({ rule: { kind: 'weekly', weekday: 6, every: 1 }, slots: [slot(0, 0, '12:00'), slot(1, 1, '12:00')] });
+    // 2026-10-17 is a Saturday.
+    expect(expandSchedule(weekend, { from: '2026-10-11', to: '2026-10-17' }).map((o) => o.localDate)).toEqual(['2026-10-17', '2026-10-18']);
+    expect(expandSchedule(weekend, { from: '2026-10-18', to: '2026-10-23' })).toEqual([]);
+  });
+
+  it('marks only the date whose start a DST change skips, and plans the rest', () => {
+    const sundays = schedule({ rule: { kind: 'weekly', weekday: 7, every: 1 }, slots: [slot(0, 0, '02:30')] });
+    const march = expandSchedule(sundays, { from: '2026-03-01', to: '2026-03-31' });
+    expect(march.map((o) => [o.localDate, o.startsAt?.toISOString() ?? null, o.timeProblem])).toEqual([
+      ['2026-03-01', '2026-03-01T08:30:00.000Z', undefined],
+      ['2026-03-08', null, 'nonexistent'],
+      ['2026-03-15', '2026-03-15T07:30:00.000Z', undefined],
+      ['2026-03-22', '2026-03-22T07:30:00.000Z', undefined],
+      ['2026-03-29', '2026-03-29T07:30:00.000Z', undefined],
+    ]);
+    expect(march.filter((o) => o.startsAt).every((o) => !('timeProblem' in o))).toBe(true);
+  });
+
+  it('marks a start a DST change repeats as ambiguous', () => {
+    const sundays = schedule({ rule: { kind: 'weekly', weekday: 7, every: 1 }, slots: [slot(0, 0, '01:30')] });
+    const [first] = expandSchedule(sundays, { from: '2026-11-01', to: '2026-11-01' });
+    expect(first).toMatchObject({ localDate: '2026-11-01', startsAt: null, timeProblem: 'ambiguous' });
+  });
+
+  it('is empty for a scaffold with no slots', () => {
+    expect(expandSchedule(schedule({ slots: [] }), { from: '2026-10-01', to: '2026-12-31' })).toEqual([]);
+  });
+
+  it.each([
+    [{ slots: [slot(0, 7, '18:00')] }, /offset/],
+    [{ slots: [slot(0, -1, '18:00')] }, /offset/],
+    [{ slots: [slot(0, 1.5, '18:00')] }, /offset/],
+    [{ slots: [slot(0, 0, '18:00'), slot(0, 1, '18:00')] }, /position 0/],
+    [{ slots: [slot(0, 0, '24:00')] }, /24:00/],
+    [{ timeZone: 'Mars/Olympus' }, /Mars\/Olympus/],
+  ])('refuses %j', (overrides, named) => {
+    expect(() => expandSchedule(schedule(overrides), { from: '2026-10-01', to: '2026-12-31' })).toThrow(RangeError);
+    expect(() => expandSchedule(schedule(overrides), { from: '2026-10-01', to: '2026-12-31' })).toThrow(named);
+  });
+});
+
+describe("the host's time zone", () => {
+  const hostTz = process.env.TZ;
+  afterEach(() => {
+    if (hostTz === undefined) delete process.env.TZ;
+    else process.env.TZ = hostTz;
+  });
+
+  const run = () => [
+    occurrenceDates({ kind: 'monthly', nth: 3, weekday: TUESDAY }, { startsOn: '2026-01-01' }, { from: '2026-10-01', to: '2026-12-31' }),
+    expandSchedule(
+      {
+        rule: { kind: 'weekly', weekday: 7, every: 1 },
+        startsOn: '2026-01-01',
+        slots: [
+          { position: 0, dayOffset: 0, startTime: '02:30' },
+          { position: 1, dayOffset: 6, startTime: '23:30' },
+        ],
+        timeZone: 'America/Chicago',
+      },
+      { from: '2026-02-20', to: '2026-03-31' },
+    ),
+  ];
+
+  it('never changes a result', () => {
+    process.env.TZ = 'UTC';
+    const expected = run();
+    for (const tz of ['Pacific/Kiritimati', 'America/Adak']) {
+      process.env.TZ = tz;
+      expect(new Date(Date.UTC(2026, 2, 8, 12)).getHours()).not.toBe(12); // the host zone really changed
+      expect(run()).toEqual(expected);
+    }
+  });
+});
+
+describe('occurrenceDates, invalid input', () => {
+  const rule: ScheduleRule = { kind: 'weekly', weekday: TUESDAY, every: 1 };
+  const bounds = { startsOn: '2026-10-01' };
+  const range = { from: '2026-10-01', to: '2026-12-31' };
+
+  it.each([
+    [{ kind: 'weekly', weekday: TUESDAY, every: 5 }, /rule/],
+    [{ kind: 'monthly', nth: 5, weekday: TUESDAY }, /rule/],
+    [{ kind: 'monthly', day: 32 }, /rule/],
+    [{ kind: 'quarterly', month: 4, nth: 1, weekday: 6 }, /rule/],
+  ])('refuses the rule %j', (bad, named) => {
+    expect(() => occurrenceDates(bad as ScheduleRule, bounds, range)).toThrow(RangeError);
+    expect(() => occurrenceDates(bad as ScheduleRule, bounds, range)).toThrow(named);
+  });
+
+  it.each([
+    [{ startsOn: '2026-02-30' }, range, /2026-02-30/],
+    [{ startsOn: '2026-10-01', endsOn: '2026-13-01' }, range, /2026-13-01/],
+    [bounds, { from: '2026-1-5', to: '2026-12-31' }, /2026-1-5/],
+    [bounds, { from: '2026-10-01', to: 'tomorrow' }, /tomorrow/],
+  ])('refuses a malformed date (%j, %j)', (b, r, named) => {
+    expect(() => occurrenceDates(rule, b, r)).toThrow(RangeError);
+    expect(() => occurrenceDates(rule, b, r)).toThrow(named);
+  });
+
+  it('refuses a range longer than 400 days, and takes one of exactly 400', () => {
+    expect(() => occurrenceDates(rule, bounds, { from: '2026-10-01', to: '2027-11-05' })).toThrow(/400 days/);
+    expect(occurrenceDates(rule, bounds, { from: '2026-10-01', to: '2027-11-04' })).toHaveLength(57);
   });
 });
 
