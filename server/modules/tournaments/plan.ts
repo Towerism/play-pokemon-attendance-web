@@ -77,8 +77,7 @@ export function planSchedule(input: PlanInput): Plan {
   const { schedule, windowStart } = input;
   const slots = new Map(input.slots.map((s) => [s.position, s]));
   const bounds = { startsOn: schedule.startsOn, endsOn: schedule.endsOn };
-  const fits = (r: PlanRow) =>
-    schedule.active && slots.has(r.slotPosition) && occurrenceDates(schedule.rule, bounds, { from: r.occurrenceDate, to: r.occurrenceDate }).length === 1;
+  const fits = (r: PlanRow) => fitsSchedule(schedule, slots, r);
 
   const plan: Plan = { insert: [], delete: [], update: [], notInSchedule: [] };
   const existing = new Set<string>();
@@ -112,6 +111,20 @@ export function planSchedule(input: PlanInput): Plan {
     }
   }
   return plan;
+}
+
+/**
+ * A row still belongs to its schedule: the schedule is active, its rule and bounds produce the row's scaffold
+ * date, and the scaffold still has the row's slot. The horizon doesn't matter: a row created through a later
+ * date (#92) still fits.
+ */
+export function fitsSchedule(
+  schedule: Pick<PlanInput['schedule'], 'rule' | 'startsOn' | 'endsOn' | 'active'>,
+  slots: { has(position: number): boolean },
+  row: Pick<PlanRow, 'slotPosition' | 'occurrenceDate'>,
+): boolean {
+  const bounds = { startsOn: schedule.startsOn, endsOn: schedule.endsOn };
+  return schedule.active && slots.has(row.slotPosition) && occurrenceDates(schedule.rule, bounds, { from: row.occurrenceDate, to: row.occurrenceDate }).length === 1;
 }
 
 /** 8 weeks for weekly, 3 months for monthly, 2 quarters for quarterly (ADR-0010 decision 3). */
