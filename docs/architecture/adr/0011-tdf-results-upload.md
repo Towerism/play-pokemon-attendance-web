@@ -89,7 +89,20 @@ Option 3.
          warning (decision 8): `tdf_organizer_replaced`, or `tdf_wrong_organizer` when it can't;
        - its game type doesn't match the tournament's product (`tdf_wrong_game`);
        - a player in the file is on the tournament's staff, as play-tools lists it (`tdf_staff_also_playing`, naming
-         them, and pointing at the Staff section). play-tools refuses this as `STAFF_PLAYERS_ERROR`.
+         them and their role). play-tools refuses this as `STAFF_PLAYERS_ERROR`. It stays a warning: the organizer
+         may upload anyway. The warning offers a fix, **Remove from staff**, for each of them or for all at once
+         (organizer, 2026-10-12). It works whether the staff record was added through the app or directly in
+         play-tools:
+         - a confirm names each person and role being removed from the tournament's staff in play-tools;
+         - it starts an ordinary staff job (ADR-0007), as the tournament's organizer. The job re-reads the records and
+           deletes only that player's staff record on this tournament, and only if it still lists them as staff;
+         - their staff assignment in the app, if any, is removed, and so is the tournament's `STAFF_HISTORY` row for
+           them, since they played rather than staffed;
+         - when the job ends, the preview re-runs play-tools' validate from the archived file (ADR-0012), so the
+           warnings shown are current.
+
+         The organizer's own `organizer` record is never removed: a TDF listing the organizer as a player is a
+         warning with no fix.
      - **play-tools' own validation:** every error its validate call returns, mapped to readable messages by an
        adapter constant (the S8 table), and an unknown code shown as is.
      - **Players new to the app** (`tdf_unknown_players`): every player id in the file that the app has never seen
