@@ -37,6 +37,43 @@ export const tournamentPaths = {
   record: (tournamentId: string, recordId: string) => `core/tournaments/${enc(tournamentId)}/records/${enc(recordId)}`,
 } as const;
 
+/** Tournament lifecycle and TDF paths (S8 part 2), exactly as recorded, trailing slashes included. */
+export const lifecyclePaths = {
+  create: () => 'core/tournament',
+  edit: (tournamentId: string) => `core/tournament/${enc(tournamentId)}/`,
+  series: (userId: string, groupId: string) => `core/users/${enc(userId)}/activity_groups/${enc(groupId)}/series/`,
+  products: () => 'core/products',
+  addressBook: (userGuid: string) => `core/v2/users/${enc(userGuid)}/address_book`,
+  validate: () => 'triumph/tdf/',
+  confirm: (uploadId: string) => `triumph/${enc(uploadId)}/confirm/`,
+  uploads: (displayId: string) => `triumph/tournament/${enc(displayId)}/uploads/`,
+} as const;
+
+/**
+ * Readable text for the TDF errors play-tools' UI explains (S8 part 1), plus the two "file doesn't match" codes S8
+ * recorded or named. Any other code is shown as play-tools sent it.
+ */
+export const TDF_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  TDF_TOURNAMENT_ID_AND_PAYLOAD_ID_MISMATCH_ERROR: "The file's tournament id isn't this tournament's.",
+  ORGANIZER_ID_MISMATCH: "The file's organizer isn't this tournament's organizer.",
+  GAMETYPE_PRODUCT_CODE_ERROR: "The file's game isn't this tournament's game.",
+  PLAYER_IDS_CHECK_ERROR: "play-tools couldn't check the file's player ids.",
+  INVALID_PLAYER_IDS_ERROR: 'The file has player ids play-tools doesn\'t know.',
+  STAFF_PLAYERS_ERROR: 'Someone in the file is on the tournament staff.',
+  MERGED_PLAYER_IDS_ERROR: 'The file has a player id that was merged into another one.',
+  DUPLICATE_PLAYER_IDS_ERROR: 'The file lists a player id more than once.',
+  PLAYER_COUNT_MISMATCH_ERROR: "The file's player count doesn't match its players.",
+  MISSING_PLAYERS_FROM_STANDINGS_ERROR: "Some players in the file aren't in its standings.",
+  MISSING_PLAYERS_FROM_ROSTER_ERROR: "Some players in the standings aren't in the file's roster.",
+  MISSING_STANDINGS_ERROR: 'The file has no standings.',
+});
+
+/**
+ * `activity_division_info` on create: one empty entry per division, as the organizer's own tournaments carry it.
+ * `null` is refused upstream (S8 recording 15), and per-division times and costs are out of scope (ADR-0010).
+ */
+export const EMPTY_DIVISION_INFO = Object.freeze({ juniors: null, masters: null, seniors: null, all: null });
+
 /**
  * Staff roles (S6): a constant in play-tools' own code, not an endpoint, in its order.
  * `organizer` is fixed upstream and never offered.

@@ -309,6 +309,18 @@ describe('getTournament (S6: core/tournament/{t}, singular)', () => {
       status: 'complete',
       editableUntil: new Date(Date.parse('2026-10-11T19:30:00Z') + 90 * DAY_MS),
       organizerPlayerId: '9999991',
+      organizerName: '<redacted> <redacted>',
+      applicationState: 'sanctioned',
+      activityState: 'completed',
+      category: 'pgo_std',
+      series: { id: '5b099da4be26f5d468491dc83244370e', name: '<redacted>' },
+      venue: null,
+      contact: { email: '<redacted>', phone: '<redacted>' },
+      registration: { startsAt: new Date('2026-10-11T19:00:00Z'), endsAt: new Date('2026-10-11T19:30:00Z') },
+      onSiteAdmission: 'FREE',
+      thirdPartyRegistrationUrl: null,
+      details: '<redacted>',
+      eventWebsite: '<redacted>',
     });
     expect([...keysDeep(details)].filter((k) => UPSTREAM_ONLY.includes(k))).toEqual([]);
   });

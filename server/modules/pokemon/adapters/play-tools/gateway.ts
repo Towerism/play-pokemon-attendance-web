@@ -6,22 +6,32 @@ import type {
   AttendanceRecord,
   BulkResult,
   DateRange,
+  Format,
   League,
   PlaySession,
   PlaySessionStatus,
   PlayToolsGateway,
   ProfessorProfile,
+  ResultsError,
+  ResultsUpload,
+  Series,
   Tournament,
   TournamentDetails as TournamentDetailsPort,
   StaffAssignResult,
   StaffRoleCode,
   TournamentParticipant,
+  Venue,
 } from '../../ports/play-tools-gateway';
 import type { TokenProvider } from '../../ports/token-provider';
 import { fetchUpstream, jsonOrUndefined, throttleOrServerError } from '../http';
-import { OP_API_BASE, OP_API_HEADERS, STAFF_ROLES, opPaths, tournamentPaths } from './constants';
+import { OP_API_BASE, OP_API_HEADERS, STAFF_ROLES, TDF_ERROR_MESSAGES, lifecyclePaths, opPaths, tournamentPaths } from './constants';
 import {
   ActivitiesPage,
+  AddressBookList,
+  ProductsResponse,
+  SeriesList,
+  type TdfError,
+  UploadsList,
   type ActivityTournament,
   ActivityGroupsPage,
   DEAD_TOURNAMENT_STATUSES,
@@ -72,6 +82,50 @@ function tournamentGuid(id: string): string {
 function recordGuid(id: string): string {
   if (!RECORD_ID.test(id)) throw new TypeError(`Not a staff record id: ${JSON.stringify(id)}`);
   return id;
+}
+
+/** A league, series, venue or upload guid, refused before any call if it could change the request path. */
+function guidParam(id: string, what: string): string {
+  if (!RECORD_ID.test(id)) throw new TypeError(`Not a ${what} id: ${JSON.stringify(id)}`);
+  return id;
+}
+
+/** The id people see, e.g. `26-10-900041`; the TDF calls take it. */
+function displayIdParam(displayId: string): string {
+  if (!/^\d{2}-\d{2}-\d{6}$/.test(displayId)) throw new TypeError(`Not a tournament display id: ${JSON.stringify(displayId)}`);
+  return displayId;
+}
+
+function countryParam(country: string): string {
+  if (!/^[A-Z]{2}$/.test(country)) throw new TypeError(`Not a country code: ${JSON.stringify(country)}`);
+  return country;
+}
+
+/**
+ * The professor's user guid, hyphenated: the token's `sub` is the same id without hyphens (S8: `organizer_id` and the
+ * address book take it hyphenated, the users path takes `sub` as it is).
+ */
+function userGuid(subject: string): string {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject)) return subject;
+  const hex = /^([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/i.exec(subject);
+  if (!hex) throw new PokemonUpstreamError('unexpected_shape', 'The Pokémon account id is not a user guid.');
+  return hex.slice(1).join('-');
+}
+
+/** The venue, when the read's `address` (shape unrecorded, S8) is an object naming it. */
+function venueOf(address: unknown): TournamentDetailsPort['venue'] {
+  if (!address || typeof address !== 'object') return null;
+  const { guid, timezone } = address as Record<string, unknown>;
+  const id = typeof guid === 'string' && guid ? guid : null;
+  const timeZone = typeof timezone === 'string' && timezone ? timezone : null;
+  return id || timeZone ? { id, timeZone } : null;
+}
+
+/** A TDF error in readable words; a code play-tools doesn't explain is shown as it is. */
+function resultsError(error: TdfError): ResultsError {
+  const code = typeof error === 'string' ? error : error.type;
+  const detail = typeof error === 'string' ? null : (error.message ?? null);
+  return { code, message: TDF_ERROR_MESSAGES[code] ?? code, detail };
 }
 
 /** Only the roles play-tools offers; `organizer` is fixed upstream and never sent. */
@@ -267,10 +321,74 @@ export function createPlayToolsHttpAdapter(opts: PlayToolsHttpAdapterOptions): P
       const parsed = TournamentDetails.safeParse(body);
       if (!parsed.success) throw unexpected(what, url, body, parsed.error);
       const t = parsed.data;
+      const registrationStart = t.registration_start_date_v2;
+      const registrationEnd = t.registration_end_date_v2;
       return {
         ...toTournament({ ...t, activity_type: 'tournament', start_date_v2: t.start_date_v2 ?? t.start_date_actual ?? null }),
         organizerPlayerId: t.organizer.player_id as PlayerId,
+        organizerName: [t.organizer.first_name, t.organizer.last_name].map((part) => part?.trim()).filter(Boolean).join(' ') || null,
+        applicationState: t.application_state ?? null,
+        activityState: t.activity_state ?? null,
+        category: t.category ?? null,
+        series: t.series ? { id: t.series.guid, name: t.series.name ?? null } : null,
+        venue: venueOf(t.address),
+        contact: { email: t.contact_information?.email ?? null, phone: t.contact_information?.phone ?? null },
+        registration: registrationStart && registrationEnd ? { startsAt: new Date(registrationStart), endsAt: new Date(registrationEnd) } : null,
+        onSiteAdmission: t.on_site_admission ?? null,
+        thirdPartyRegistrationUrl: t.third_party_registration_website ?? null,
+        details: t.details ?? null,
+        eventWebsite: t.event_website ?? null,
       };
+    },
+
+    async listSeries(groupId): Promise<Series[]> {
+      const group = guidParam(groupId, 'league');
+      const { subject } = await accessToken();
+      const series = await getAll(lifecyclePaths.series(subject, group), SeriesList, 'Premier series');
+      return series
+        .filter((s) => s.is_enabled !== false && (s.supported_types === undefined || s.supported_types.includes('tournament')))
+        .map((s) => ({
+          id: s.guid,
+          name: s.name ?? '',
+          product: s.product,
+          categories: s.category_slugs,
+          tags: s.tags ?? [],
+          playTemplate: s.play_template ?? null,
+          windows: Object.fromEntries(Object.entries(s.schedule ?? {}).map(([country, w]) => [country, { from: w.start_date, to: w.end_date }])),
+        }));
+    },
+
+    async listFormats(country): Promise<Format[]> {
+      const what = 'Formats';
+      const url = new URL(`${lifecyclePaths.products()}?${new URLSearchParams({ country: countryParam(country) })}`, base);
+      const body = await get(url, what);
+      const parsed = ProductsResponse.safeParse(body);
+      if (!parsed.success) throw unexpected(what, url, body, parsed.error);
+      return parsed.data.results.map((product) => ({ product, categories: parsed.data.product_categories[product] ?? [] }));
+    },
+
+    async listVenues(groupId, country): Promise<Venue[]> {
+      const query = new URLSearchParams({ country: countryParam(country), activity_group_id: guidParam(groupId, 'league') });
+      const user = userGuid((await accessToken()).subject);
+      const venues = await getAll(`${lifecyclePaths.addressBook(user)}?${query}`, AddressBookList, 'Venues');
+      return venues.map((v) => ({
+        id: v.guid,
+        name: v.name ?? null,
+        formattedAddress: v.formatted_address ?? null,
+        country: v.op_country ?? v.country ?? null,
+        timeZone: v.timezone ?? null,
+      }));
+    },
+
+    async listResultsUploads(displayId): Promise<ResultsUpload[]> {
+      const what = 'TDF uploads';
+      const url = new URL(lifecyclePaths.uploads(displayIdParam(displayId)), base);
+      const body = await get(url, what);
+      const parsed = UploadsList.safeParse(body);
+      if (!parsed.success) throw unexpected(what, url, body, parsed.error);
+      return parsed.data
+        .map((u) => ({ uploadId: u.guid, accepted: u.accepted, errors: u.errors.map(resultsError), uploadedAt: new Date(u.upload_timestamp) }))
+        .sort((a, b) => a.uploadedAt.getTime() - b.uploadedAt.getTime());
     },
 
     async listTournamentParticipants(tournamentId): Promise<TournamentParticipant[]> {
