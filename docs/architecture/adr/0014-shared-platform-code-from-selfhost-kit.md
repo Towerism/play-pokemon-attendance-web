@@ -1,6 +1,6 @@
 # ADR-0014: Shared platform code from `@towerism/selfhost-kit`
 
-- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130)
+- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131)
 - Date: 2026-10-13
 - Amends: §3 (tech stack, module rules), §9 and §10, which described these pieces as attendance's own code
 - Companion: [selfhost-kit ADR-0001](https://github.com/Towerism/selfhost-kit/blob/main/docs/architecture/adr/0001-share-as-a-package.md)
@@ -68,6 +68,18 @@ Two formatter differences from attendance's own code are accepted:
   more.
 
 A kit API that builds its own logger when none is passed (`runLauncher`, A3) must be given `createAppLogger(...)`.
+
+A3 (#131) moved the secret bootstrap, the runtime env and the launcher. `server/bootstrap/app-env.ts` holds only
+attendance's configuration: `SECRETS` (the kit's `sessionPassword()` and two `aes256Key` specs with today's env names,
+file names and log labels), the six rate-limit variables, and `RUNTIME_ENV`, which the launcher passes to the kit's
+`prepareRuntimeEnv`. The launcher is the kit's `runLauncher`, given `logger: createAppLogger({ scope: 'startup' })`;
+ESLint rejects a `runLauncher` call without it (an aliased import, options built elsewhere, or a later spread overriding
+`logger` are review checks). `ATTENDANCE_LOG_KEYS` takes the secret names from `secretKeyNames(SECRETS)`: the same list.
+An existing install's `secrets/` is pinned by a test that loads synthetic files and checks that nothing on disk changes.
+One difference from attendance's own code is accepted: `NUXT_SESSION_COOKIE_SECURE` is now derived with the kit's
+`isHttpsSite` (the site URL parses and its protocol is `https:`), the check HSTS already used, instead of a
+"starts with `https:`" prefix test. They agree on every well-formed URL; for a malformed one, `https:` or `https://`
+alone is no longer Secure and a URL with leading whitespace now is.
 
 ## Consequences
 
