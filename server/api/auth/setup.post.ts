@@ -1,9 +1,10 @@
+import { enforceRateLimit } from '@towerism/selfhost-kit/nitro';
 import { SetupBody } from '#shared/schemas/auth';
 import { InvalidSetupCodeError, SetupClosedError } from '../../modules/accounts/service';
 
 /** First-run setup: create the organizer account with the logged setup code, then log in. */
 export default defineEventHandler(async (event) => {
-  enforceAuthRateLimit(event, 'setup');
+  enforceRateLimit(event, authRateLimit('setup'));
   const body = await readValidatedBody(event, SetupBody.parse);
   try {
     const user = await useAccounts().setup(body);

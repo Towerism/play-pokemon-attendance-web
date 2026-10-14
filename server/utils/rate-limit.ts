@@ -1,5 +1,4 @@
-import type { H3Event } from 'h3';
-import { enforceRateLimit } from '@towerism/selfhost-kit/nitro';
+import type { RateLimitOptions } from '@towerism/selfhost-kit/nitro';
 import { type RateLimits, buildRateLimits } from '../bootstrap/rate-limits';
 
 let limits: RateLimits | undefined;
@@ -14,13 +13,12 @@ export function useRateLimits(): RateLimits {
 }
 
 /**
- * Login and first-run setup are rate-limited per client (architecture §9).
- * Called first in the handler, before the body is read, so a limited request
- * costs no scrypt work. The client is the TCP peer, or the X-Forwarded-For
- * entry a trusted proxy (`NUXT_TRUSTED_PROXIES`, e.g. Caddy) appended. The
- * guard is the kit's `enforceRateLimit`.
+ * The kit's `enforceRateLimit` options for login or first-run setup (architecture §9): their limiter and the
+ * trusted proxies. The handler calls `enforceRateLimit(event, authRateLimit(route))` first, before the body is
+ * read, so a limited request costs no scrypt work. The client is the TCP peer, or the X-Forwarded-For entry a
+ * trusted proxy (`NUXT_TRUSTED_PROXIES`, e.g. Caddy) appended.
  */
-export function enforceAuthRateLimit(event: H3Event, route: 'login' | 'setup'): void {
+export function authRateLimit(route: 'login' | 'setup'): RateLimitOptions {
   const { auth, trusted } = useRateLimits();
-  enforceRateLimit(event, { limiter: auth[route], trusted });
+  return { limiter: auth[route], trusted };
 }
