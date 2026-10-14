@@ -172,6 +172,71 @@ export const CreateThroughQuery = z.object({ date: localDate });
 export const CreateThroughBody = z.strictObject({ date: localDate, acknowledgeShortNotice: z.boolean().default(false) });
 export type CreateThroughBody = z.infer<typeof CreateThroughBody>;
 
+/** What **Edit…** may change (ADR-0010 decision 11): the template form's fields and the date; never the league, organizer, product or type. */
+const editChanges = z
+  .strictObject({
+    name: templateFields.name,
+    category: templateFields.category,
+    venue,
+    localDate,
+    startTime: localTime,
+    registration,
+    contactEmail: templateFields.contactEmail,
+    contactPhone: templateFields.contactPhone,
+    details: templateFields.details,
+    eventWebsite: templateFields.eventWebsite,
+  })
+  .partial()
+  .refine((c) => Object.keys(c).length > 0, 'Change at least one field');
+
+/** The fields a change may carry to the other tournaments of a schedule: never the date. */
+const carriedField = z.enum(['name', 'category', 'venue', 'startTime', 'registration', 'contactEmail', 'contactPhone', 'details', 'eventWebsite']);
+
+const editFields = {
+  changes: editChanges,
+  scope: z.enum(['this', 'later', 'all']).default('this'),
+  /** Default: every changed field but the name. */
+  fields: z.array(carriedField).max(9).optional(),
+  /** The scaffold's other slots on the same dates. */
+  withSiblings: z.boolean().default(false),
+  updateTemplate: z.boolean().default(false),
+};
+
+/** **Edit…** preview (`POST /tournaments/{id}/edit/preview`, #93). */
+export const EditBody = z.strictObject(editFields);
+export type EditBody = z.infer<typeof EditBody>;
+
+/** A preview entry's key: a planned row, or a play-tools tournament no row holds. */
+const editKey = z.string().regex(/^(p:[1-9]\d{0,9}|t:[A-Za-z0-9-]{1,64})$/, 'Not a tournament key');
+
+/** **Edit…** apply (`POST /tournaments/{id}/edit`). */
+export const ApplyBody = z.strictObject({
+  ...editFields,
+  excluded: z.array(editKey).max(200).default([]),
+  /** The new date is less than 7 days ahead (ADR-0010 decision 6). */
+  acknowledgeShortNotice: z.boolean().default(false),
+  /** Remove the overrides that would shadow **Update the template** (#100). */
+  clearShadowingOverrides: z.boolean().default(false),
+});
+export type ApplyBody = z.infer<typeof ApplyBody>;
+
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** `{id}` of an edit route: a planned tournament id, or a play-tools tournament guid. */
+export const EditTargetParam = z.object({
+  id: z.union([
+    z
+      .string()
+      .regex(/^[1-9]\d{0,9}$/)
+      .transform((s) => ({ kind: 'planned' as const, id: Number(s) })),
+    z
+      .string()
+      .regex(GUID)
+      .transform((s) => ({ kind: 'tournament' as const, id: s.toLowerCase() })),
+  ]),
+});
+export type EditTarget = z.infer<typeof EditTargetParam>['id'];
+
 /** At most 366 days, so a year of planned tournaments fits. */
 export const MAX_UPCOMING_DAYS = 366;
 export const UpcomingQuery = z

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ApplyBody,
   CreateThroughBody,
+  EditBody,
+  EditTargetParam,
   CreateThroughQuery,
   CreateTournamentsBody,
   IdParam,
@@ -215,5 +218,48 @@ describe('creating in play-tools (#92)', () => {
     expect(CreateThroughQuery.safeParse({}).success).toBe(false);
     expect(CreateThroughBody.parse({ date: '2026-12-31' })).toEqual({ date: '2026-12-31', acknowledgeShortNotice: false });
     expect(CreateThroughBody.safeParse({ date: '31/12/2026' }).success).toBe(false);
+  });
+});
+
+describe('editing (#93)', () => {
+  it('takes any editable field, and fills the defaults', () => {
+    expect(EditBody.parse({ changes: { localDate: '2026-10-22', details: '' } })).toEqual({
+      changes: { localDate: '2026-10-22', details: null },
+      scope: 'this',
+      withSiblings: false,
+      updateTemplate: false,
+    });
+  });
+
+  it.each([
+    ['no changes', { changes: {} }],
+    ['an unknown field', { changes: { organizerPlayerId: '1' } }],
+    ['a field play-tools keeps read-only', { changes: { product: 'vg' } }],
+    ['a bad date', { changes: { localDate: '2026-02-30' } }],
+    ['a bad time', { changes: { startTime: '24:00' } }],
+    ['an unknown scope', { changes: { name: 'X' }, scope: 'next' }],
+    ['the date as a carried field', { changes: { name: 'X' }, fields: ['localDate'] }],
+    ['a field outside the body', { changes: { name: 'X' }, force: true }],
+  ])('refuses %s', (_what, body) => {
+    expect(ok(EditBody, body)).toBe(false);
+  });
+
+  it('takes up to 200 excluded keys, planned or play-tools', () => {
+    const keys = (n: number) => Array.from({ length: n }, (_, i) => (i % 2 ? `p:${i + 1}` : `t:00000000-0000-4000-8000-${String(i).padStart(12, '0')}`));
+    expect(ApplyBody.parse({ changes: { name: 'X' }, excluded: keys(200) }).excluded).toHaveLength(200);
+    expect(ok(ApplyBody, { changes: { name: 'X' }, excluded: keys(201) })).toBe(false);
+    expect(ok(ApplyBody, { changes: { name: 'X' }, excluded: ['x:1'] })).toBe(false);
+    expect(ApplyBody.parse({ changes: { name: 'X' } })).toMatchObject({ excluded: [], acknowledgeShortNotice: false, clearShadowingOverrides: false });
+  });
+
+  it.each([
+    ['42', { kind: 'planned', id: 42 }],
+    ['00000000-0000-4000-8000-000000000001', { kind: 'tournament', id: '00000000-0000-4000-8000-000000000001' }],
+  ])('reads %s as a planned id or a play-tools guid', (id, parsed) => {
+    expect(EditTargetParam.parse({ id })).toEqual({ id: parsed });
+  });
+
+  it.each(['0', 'abc', '../x', ''])('refuses the id %j', (id) => {
+    expect(ok(EditTargetParam, { id })).toBe(false);
   });
 });

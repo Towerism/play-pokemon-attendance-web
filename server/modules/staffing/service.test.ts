@@ -1061,3 +1061,33 @@ describe('acting on a tournament as its organizer (#75)', () => {
     expect(aboutBrocks.map((c) => c.as)).not.toContain(1);
   });
 });
+
+describe('moveTournament: a rescheduled tournament keeps its staff (ADR-0010 decision 8)', () => {
+  const insert = (tournamentId: string, playerId: string, date: string, removedAt: number | null = null) =>
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, created_by, created_at, removed_at)
+         values (?, ?, ?, 'Cup', ?, 'judge', 'organizer', 0, ?)`,
+      )
+      .run(L, date, tournamentId, playerId, removedAt);
+  const dates = () =>
+    database.sqlite.prepare('select tournament_id, player_id, session_date from staff_assignment order by tournament_id, player_id').all();
+
+  it("moves every assignment of that tournament, tombstones too, and nobody else's", () => {
+    database.sqlite.prepare("insert into player (player_id, display_name, first_seen_at) values ('00456', 'Misty', 0)").run();
+    insert('t-1', '00123', '2026-10-20');
+    insert('t-1', '00456', '2026-10-20', 1);
+    insert('t-2', '00123', '2026-10-20');
+
+    expect(staffing.moveTournament(L, 't-1', '2026-10-22' as SessionDate)).toBe(2);
+    expect(dates()).toEqual([
+      { tournament_id: 't-1', player_id: '00123', session_date: '2026-10-22' },
+      { tournament_id: 't-1', player_id: '00456', session_date: '2026-10-22' },
+      { tournament_id: 't-2', player_id: '00123', session_date: '2026-10-20' },
+    ]);
+  });
+
+  it("leaves another league's assignments alone", () => {
+    expect(staffing.moveTournament('other-league', 't-1', '2026-10-22' as SessionDate)).toBe(0);
+  });
+});

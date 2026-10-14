@@ -208,6 +208,11 @@ export interface StaffingService {
   recordFailed(leagueId: string, assignmentId: number): void;
   /** Play-tools no longer holds a tombstoned assignment's record: the row goes. Never deletes a live one. */
   forgetRemoved(leagueId: string, assignmentId: number): void;
+  /**
+   * A tournament rescheduled in place keeps its staff (ADR-0010 decision 8): its assignments, tombstones too, move
+   * to its new local date. Nothing is sent. Returns how many moved.
+   */
+  moveTournament(leagueId: string, tournamentId: string, to: SessionDate): number;
 }
 
 /** The play-tools calls staffing makes. */
@@ -806,6 +811,14 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
       db.delete(staffAssignment)
         .where(and(eq(staffAssignment.id, assignmentId), eq(staffAssignment.leagueId, leagueId), isNotNull(staffAssignment.removedAt)))
         .run();
+    },
+
+    moveTournament(leagueId, tournamentId, to) {
+      return db
+        .update(staffAssignment)
+        .set({ sessionDate: to })
+        .where(and(eq(staffAssignment.leagueId, leagueId), eq(staffAssignment.tournamentId, tournamentId)))
+        .run().changes;
     },
   };
 }
