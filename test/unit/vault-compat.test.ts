@@ -1,8 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { createVault } from '../../server/modules/vault/vault';
-import { createTokenVault } from '../../server/modules/pokemon/vault/vault';
+import { tdfVault, tokenCipher, tokenVault } from '../../server/bootstrap/vaults';
 import { createVault as legacyCreateVault } from '../fixtures/vault-v1/legacy/vault/vault';
 import { createTokenVault as legacyCreateTokenVault } from '../fixtures/vault-v1/legacy/pokemon/vault/vault';
 
@@ -27,9 +26,9 @@ const ORACLE_FILES = {
 
 /** The vaults as attendance builds them: the code under test. */
 const underTest = {
-  tokenString: (key: string) => createTokenVault(key),
-  tokenBytes: (key: string) => createVault(key, 'token'),
-  tdf: (key: string) => createVault(key, 'tdf'),
+  tokenString: (key: string) => tokenVault(key),
+  tokenBytes: (key: string) => tokenCipher(key),
+  tdf: (key: string) => tdfVault(key),
 };
 
 const legacy = {

@@ -6,7 +6,7 @@ import { TdfError } from '../../../shared/tdf/parse';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import type { LogFields, Logger } from '@towerism/selfhost-kit';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
-import { createVault } from '../vault/vault';
+import { tdfVault } from '../../bootstrap/vaults';
 import { TdfFileNotFoundError, TdfKeyMismatchError } from './errors';
 import { type TdfArchiveService, type TdfFileReferrer, createTdfArchiveService } from './service';
 
@@ -51,7 +51,7 @@ function referrers(): TdfFileReferrer[] {
 function archiveWith(base64Key: string): TdfArchiveService {
   return createTdfArchiveService({
     db: database.db,
-    vault: createVault(base64Key, 'tdf'),
+    vault: tdfVault(base64Key),
     referrers,
     log: recordingLogger(),
     now: () => now,
@@ -157,7 +157,7 @@ describe('read', () => {
 describe('the AAD binds each file to its league and hash (the kit refuses an empty one)', () => {
   it('seals and opens with tdf_file:<league>:<sha256 of the file>, in every league', () => {
     const aads: { op: 'seal' | 'open'; aad: string }[] = [];
-    const real = createVault(key, 'tdf');
+    const real = tdfVault(key);
     archive = createTdfArchiveService({
       db: database.db,
       // Records each call's AAD before delegating to the real vault.

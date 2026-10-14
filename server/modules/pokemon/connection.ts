@@ -1,4 +1,4 @@
-import { type Logger, silentLogger } from '@towerism/selfhost-kit';
+import { type Logger, type StringVault, VaultError, silentLogger } from '@towerism/selfhost-kit';
 import { asc, count, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { leagueUpstream, pokemonConnection } from '../../db/schema';
@@ -7,7 +7,6 @@ import { PokemonUpstreamError } from './ports/errors';
 import type { League, PlayToolsGateway, ProfessorProfile } from './ports/play-tools-gateway';
 import type { PtcOAuthClient, TokenGrant } from './ports/ptc-oauth';
 import type { AccessToken, ConnectionStatus, TokenProvider } from './ports/token-provider';
-import { type TokenVault, TokenVaultError } from './vault/vault';
 
 /** One professor's connection, as Settings lists it. Never carries a token. */
 export interface ProfessorConnection {
@@ -138,7 +137,7 @@ export interface PokemonConnectionService extends TokenProvider {
 
 export interface PokemonConnectionDeps {
   db: Db;
-  vault: TokenVault;
+  vault: StringVault;
   oauth: PtcOAuthClient;
   /** League discovery and identity through the play-tools adapter, authorised as the given connection. */
   gateway: (tokens: TokenProvider, connectionId: number) => Pick<PlayToolsGateway, 'listLeagues' | 'getProfessorProfile'>;
@@ -274,7 +273,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     try {
       return vault.decrypt(r.refreshTokenCiphertext, connectionAad(r.id));
     } catch (err) {
-      if (!(err instanceof TokenVaultError)) throw err;
+      if (!(err instanceof VaultError)) throw err;
       throw markNeedsReconnect(r.id, 'The saved Pokémon login cannot be decrypted: the token vault key changed. Reconnect the Pokémon account.');
     }
   }
@@ -590,7 +589,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         try {
           revoked = await revokeQuietly(vault.decrypt(r.refreshTokenCiphertext, connectionAad(r.id)));
         } catch (err) {
-          if (!(err instanceof TokenVaultError)) throw err;
+          if (!(err instanceof VaultError)) throw err;
         }
         db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
         return { revoked };
@@ -604,13 +603,13 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
           vault.decrypt(r.refreshTokenCiphertext, connectionAad(r.id));
           continue;
         } catch (err) {
-          if (!(err instanceof TokenVaultError)) throw err;
+          if (!(err instanceof VaultError)) throw err;
         }
         let token: string;
         try {
           token = vault.decrypt(r.refreshTokenCiphertext, leagueId);
         } catch (err) {
-          if (!(err instanceof TokenVaultError)) throw err;
+          if (!(err instanceof VaultError)) throw err;
           continue; // a lost key or a foreign ciphertext: the first use marks it needs_reconnect
         }
         db.update(pokemonConnection)

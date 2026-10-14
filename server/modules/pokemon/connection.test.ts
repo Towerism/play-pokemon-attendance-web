@@ -16,7 +16,8 @@ import { PokemonUpstreamError } from './ports/errors';
 import type { League } from './ports/play-tools-gateway';
 import type { PtcOAuthClient, TokenGrant } from './ports/ptc-oauth';
 import type { TokenProvider } from './ports/token-provider';
-import { type TokenVault, createTokenVault } from './vault/vault';
+import type { StringVault } from '@towerism/selfhost-kit';
+import { tokenVault } from '../../bootstrap/vaults';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const MIN = 60_000;
@@ -37,7 +38,7 @@ const ASH: Professor = { sub: 'sub-ash', playerId: '0012345', name: 'Ash Ketchum
 const BROCK: Professor = { sub: 'sub-brock', playerId: '222', name: 'Brock Harrison', leagues: [OTHER_STORE] };
 
 let database: OpenDatabase;
-let vault: TokenVault;
+let vault: StringVault;
 let clock: Date;
 let oauth: FakeOAuth;
 let professors: Map<string, Professor>;
@@ -171,7 +172,7 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 beforeEach(() => {
   database = openDatabase(':memory:');
   migrateDatabase(database.db, MIGRATIONS_DIR);
-  vault = createTokenVault(randomBytes(32).toString('base64'));
+  vault = tokenVault(randomBytes(32).toString('base64'));
   clock = new Date('2026-10-14T22:00:00Z');
   oauth = new FakeOAuth();
   professors = new Map([ASH, BROCK].map((p) => [p.sub, { ...p }]));
@@ -554,7 +555,7 @@ describe('getAccessToken (TokenProvider contract, per connection)', () => {
 
   it('marks needs_reconnect when the stored token no longer decrypts (vault key replaced)', async () => {
     await connect();
-    vault = createTokenVault(randomBytes(32).toString('base64'));
+    vault = tokenVault(randomBytes(32).toString('base64'));
     const restarted = build();
     expect(((await rejection(restarted.getAccessToken(idOf(ASH)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
     expect(restarted.getStatus(L)).toMatchObject({ status: 'needs_reconnect', reason: expect.stringMatching(/key/) });
@@ -975,7 +976,7 @@ describe('edge cases', () => {
 
   it('still forgets a professor whose token the vault can no longer open, without revoking', async () => {
     await connect(ASH);
-    vault = createTokenVault(randomBytes(32).toString('base64'));
+    vault = tokenVault(randomBytes(32).toString('base64'));
     const restarted = build();
     expect(await restarted.disconnect(L, ASH.playerId)).toEqual({ revoked: false });
     expect(rows()).toEqual([]);
@@ -1003,7 +1004,7 @@ describe('edge cases', () => {
   it('leaves a ciphertext that opens under neither key for its first use to mark needs_reconnect', async () => {
     database.sqlite
       .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
-      .run(ASH.sub, createTokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L), 'connected', 1, 1);
+      .run(ASH.sub, tokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L), 'connected', 1, 1);
     expect(service.resealCarriedOver(L)).toBe(0);
     await service.identifyCarriedOver();
     expect(rows()[0]).toMatchObject({ status: 'needs_reconnect', status_reason: expect.stringMatching(/key/) });
@@ -1019,7 +1020,7 @@ describe('every AAD the token vault sees binds a row (the kit refuses an empty o
   }
 
   /** Records each call's AAD before delegating to the real vault, so calls that throw are recorded too. */
-  function recording(inner: TokenVault, calls: VaultCall[]): TokenVault {
+  function recording(inner: StringVault, calls: VaultCall[]): StringVault {
     const record = <T>(op: VaultCall['op'], aad: string, run: () => T): T => {
       const call: VaultCall = { op, aad, threw: true };
       calls.push(call);
@@ -1040,7 +1041,7 @@ describe('every AAD the token vault sees binds a row (the kit refuses an empty o
 
   it('across connect, refresh, reseal, disconnect and a replaced key, on the paths that throw too', async () => {
     const calls: VaultCall[] = [];
-    const real = createTokenVault(randomBytes(32).toString('base64'));
+    const real = tokenVault(randomBytes(32).toString('base64'));
     vault = recording(real, calls);
     service = build();
 
@@ -1048,12 +1049,12 @@ describe('every AAD the token vault sees binds a row (the kit refuses an empty o
     advance(HOUR);
     await service.getAccessToken(idOf(ASH)); // opens it, seals the rotated one
     insertCarriedOver('sub-carried', real.encrypt('ory_rt_v1', L));
-    insertCarriedOver('sub-foreign', createTokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L));
+    insertCarriedOver('sub-foreign', tokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L));
     expect(service.resealCarriedOver(L)).toBe(1); // tries its own row, then the league id; skips the foreign one
     await connect(BROCK);
     expect(await service.disconnect(L, ASH.playerId)).toEqual({ revoked: true });
 
-    vault = recording(createTokenVault(randomBytes(32).toString('base64')), calls); // the key was replaced
+    vault = recording(tokenVault(randomBytes(32).toString('base64')), calls); // the key was replaced
     const restarted = build();
     expect(((await rejection(restarted.getAccessToken(idOf(BROCK)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
     expect(await restarted.disconnect(L, BROCK.playerId)).toEqual({ revoked: false });
