@@ -1,6 +1,6 @@
 # ADR-0014: Shared platform code from `@towerism/selfhost-kit`
 
-- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131; A4 in #132; A5 in #133; A6 in #134)
+- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131; A4 in #132; A5 in #133; A6 in #134; A7 in #135)
 - Date: 2026-10-13
 - Amends: §3 (tech stack, module rules), §9 and §10, which described these pieces as attendance's own code
 - Companion: [selfhost-kit ADR-0001](https://github.com/Towerism/selfhost-kit/blob/main/docs/architecture/adr/0001-share-as-a-package.md)
@@ -138,8 +138,28 @@ differences are deliberate:
 - the kit's installer is amd64-only, so a local `app` build on an arm64 host needs `--platform linux/amd64`
   (ADR-0006, update A6). The published image has been amd64-only since M7.
 
+A7 (#135) moved CI's image and release jobs to the kit's reusable `app-image.yml` and `app-release.yml`, both pinned by
+the v0.4.2 commit's full SHA, and `.releaserc.json` to `{ "extends": "@towerism/selfhost-kit/release-config" }`. The
+`check` and `e2e` jobs are unchanged; the image job runs the same three container tests in the same order on target
+`app`; the release still waits for `check`, `e2e` and `image` on a push to `main`. The image job grants only
+`contents: read` and `packages: write`, the release job `contents: write` and `packages: write`, and no secret is passed
+(the kit uses `github.token`). The image name became an input to both calls (a reusable-workflow call can't read `env`),
+so `test/unit/unraid-template.test.ts` now checks both inputs name the image the template pulls. Semantic-release dry runs
+on synthetic commits give the same versions with both configs. Deliberate differences:
+- the image is built once and the smoke-tested image is published, instead of a second build. `pr-N` and `sha-<short>`
+  are a plain amd64 image manifest; `edge`, `X.Y.Z`, `X.Y` and `latest` are a one-entry manifest list around it
+  ([selfhost-kit#30](https://github.com/Towerism/selfhost-kit/issues/30)), and no image carries a provenance
+  attestation any more (ADR-0006, update A7);
+- the container tests get the image as `app-image:smoke-test` and `/dev/null` as stdin;
+- the kit's jobs run on `ubuntu-24.04` with 30/15-minute timeouts and SHA-pinned actions at newer majors;
+- before tagging, the release checks that `main` is still at the run's commit, and afterwards that `vX.Y.Z` points at it;
+- `fix(security)` commits get a **Security** section in the release notes, with their `Advisory: GHSA-…` linked;
+- the checks show as "Image (smoke test, publish) / image" and "Release / release" (`main` has no required checks).
+
 A4 is a pure refactor and releases nothing, departing from kit ADR-0007's "each step ships as its own release" in
-favour of its "pure refactors release nothing"; a rollback is a revert PR.
+favour of its "pure refactors release nothing"; a rollback is a revert PR. A7 is a pipeline change (`ci:` commits) and
+releases nothing either: its effect on published images first reaches installs with the next `fix`/`feat` release, so
+pinning the release before that one on Unraid undoes it for an install, and reverting A7 undoes it in CI.
 
 ## Consequences
 
