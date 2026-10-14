@@ -72,53 +72,57 @@ function unreadCode(code: string): UnreadProfessor['code'] {
 /** A details failure after which play-tools isn't asked again in the same request. */
 const STOPS_DETAILS: ReadonlySet<string> = new Set(['unavailable', 'rate_limited']);
 
-type SeriesRef = { id: string; name: string | null } | null;
+/** A tournament's series as its details give it: null for a custom event. */
+type DetailsSeries = { id: string; name: string | null } | null;
 
 export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
   /** connection|from|to → a listing read within the TTL. */
-  const listings = new Map<string, { at: number; tournaments: readonly Tournament[] }>();
+  const listingCache = new Map<string, { at: number; tournaments: readonly Tournament[] }>();
   /** The same key → the read in flight, shared by concurrent requests. */
-  const listing = new Map<string, Promise<readonly Tournament[]>>();
+  const listingInFlight = new Map<string, Promise<readonly Tournament[]>>();
   /** Bumped when listings are dropped, so a read already in flight doesn't put a stale one back. */
   let generation = 0;
   /** guid → its series, kept for good: a professor can't change a tournament's series. */
-  const seriesOf = new Map<string, SeriesRef>();
-  const details = new Map<string, Promise<SeriesRef>>();
+  const seriesCache = new Map<string, DetailsSeries>();
+  /** guid → the details read in flight, shared by concurrent requests. */
+  const detailsInFlight = new Map<string, Promise<DetailsSeries>>();
 
   function readListing(c: ActingConnection, range: { from: Date; to: Date }, refresh: boolean): Promise<readonly Tournament[]> {
     const key = `${c.id}|${range.from.toISOString()}|${range.to.toISOString()}`;
-    const hit = listings.get(key);
-    if (!refresh && hit && deps.now().getTime() - hit.at < LISTING_TTL_MS) return Promise.resolve(hit.tournaments);
-    const pending = listing.get(key);
+    const at = deps.now().getTime();
+    // Drop what has expired, so ranges past months no longer ask for don't pile up.
+    for (const [k, v] of listingCache) if (at - v.at >= LISTING_TTL_MS) listingCache.delete(k);
+    const hit = listingCache.get(key);
+    if (!refresh && hit) return Promise.resolve(hit.tournaments);
+    const pending = listingInFlight.get(key);
     if (pending) return pending;
     const startedIn = generation;
-    const at = deps.now().getTime();
     const read = deps
       .gateway(c.id)
       .listTournaments(range)
       .then((tournaments) => {
-        if (startedIn === generation) listings.set(key, { at, tournaments });
+        if (startedIn === generation) listingCache.set(key, { at, tournaments });
         return tournaments;
       })
       .finally(() => {
-        if (listing.get(key) === read) listing.delete(key);
+        if (listingInFlight.get(key) === read) listingInFlight.delete(key);
       });
-    listing.set(key, read);
+    listingInFlight.set(key, read);
     return read;
   }
 
-  function readSeries(c: ActingConnection, guid: string): Promise<SeriesRef> {
-    const pending = details.get(guid);
+  function readSeries(c: ActingConnection, guid: string): Promise<DetailsSeries> {
+    const pending = detailsInFlight.get(guid);
     if (pending) return pending;
     const read = deps
       .gateway(c.id)
       .getTournament(guid)
       .then((t) => {
-        seriesOf.set(guid, t.series);
+        seriesCache.set(guid, t.series);
         return t.series;
       })
-      .finally(() => details.delete(guid));
-    details.set(guid, read);
+      .finally(() => detailsInFlight.delete(guid));
+    detailsInFlight.set(guid, read);
     return read;
   }
 
@@ -137,8 +141,8 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
   return {
     listingsChanged() {
       generation++;
-      listings.clear();
-      listing.clear();
+      listingCache.clear();
+      listingInFlight.clear();
     },
 
     async read(leagueId, opts) {
@@ -191,8 +195,8 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
       const seriesFor = new Map<string, ListedInput['series']>();
       for (const { tournament: t, organizer } of listed) {
         if (!couldCount(t)) continue;
-        if (seriesOf.has(t.id)) {
-          seriesFor.set(t.id, seriesOf.get(t.id)!);
+        if (seriesCache.has(t.id)) {
+          seriesFor.set(t.id, seriesCache.get(t.id)!);
           continue;
         }
         if (stopped) {

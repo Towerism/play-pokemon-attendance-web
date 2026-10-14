@@ -304,6 +304,37 @@ describe('planned tournaments', () => {
     expect(await nov()).toMatchObject({ status: 'planned', action: { kind: 'create', plannedId: row.plannedId } });
   });
 
+  it('counts rows from today − 2 on, in every state a create can still be in, by the league date of their start', async () => {
+    upstream.state.series = [series('lc', 'League Challenge', '2026-10-01', '2026-11-30')];
+    const template = service.createTemplate(L, templateBody());
+    const at = (localDate: string, state: string) => {
+      const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-20', startTime: `1${state.length % 10}:00` });
+      database.sqlite.prepare('update planned_tournament set local_date = ?, state = ? where id = ?').run(localDate, state, row.plannedId);
+      return row.plannedId!;
+    };
+    const twoDaysBack = at('2026-10-12', 'failed');
+    at('2026-10-11', 'planned'); // today − 3: too late to create
+    const creating = at('2026-10-25', 'creating');
+    const unknown = at('2026-10-26', 'unknown');
+
+    const october = (await read()).requirements[0]!.periods.find((p) => p.periodStart === '2026-10-01')!;
+
+    expect(october.tournaments.map((t) => t.plannedId).sort()).toEqual([twoDaysBack, creating, unknown].sort());
+  });
+
+  it("puts a row in the period of its start's date in the league time zone, not the venue's", async () => {
+    upstream.state.series = [series('lc', 'League Challenge', '2026-10-01', '2026-11-30')];
+    const west = { ...templateBody().venue, timeZone: 'America/Los_Angeles' };
+    const template = service.createTemplate(L, templateBody({ venue: west, startTime: '23:30' }));
+    // 23:30 on Oct 31 in Los Angeles is 01:30 on Nov 1 in Chicago.
+    const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-31' });
+
+    const periods = (await read()).requirements[0]!.periods;
+
+    expect(periods.find((p) => p.periodStart === '2026-11-01')!.tournaments.map((t) => t.plannedId)).toEqual([row.plannedId]);
+    expect(periods.find((p) => p.periodStart === '2026-10-01')!.tournaments).toEqual([]);
+  });
+
   it("falls back to the template's match when its organizer's series can't be read", async () => {
     const template = service.createTemplate(L, templateBody());
     service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14' });

@@ -99,7 +99,7 @@ function build(over: { tournamentDelayMs?: number } = {}): SubmissionService {
       clock = new Date(clock.getTime() + ms);
       onSleep?.();
     },
-    log: { warn: () => {}, info: (message, meta) => logged.push({ message, meta }) },
+    log: { warn: (message, meta) => logged.push({ message, meta }), info: (message, meta) => logged.push({ message, meta }) },
     ...(over.tournamentDelayMs !== undefined && { tournamentDelayMs: over.tournamentDelayMs }),
   });
 }
@@ -205,6 +205,16 @@ describe("dropping coverage's cached listings (#95)", () => {
     const { submissionId } = await cancel(id);
     expect(service.get(L, submissionId!).status).not.toBe('running');
     expect(drops).toHaveLength(1);
+  });
+
+  it('still ends the job cleanly if dropping them throws', async () => {
+    (tournaments.requiredEvents as { listingsChanged: () => void }).listingsChanged = () => {
+      throw new Error('cache gone');
+    };
+    const id = created();
+    const { submissionId } = await cancel(id);
+    expect(service.get(L, submissionId!).status).toBe('succeeded');
+    expect(logged.some((l) => l.message.includes('cache gone'))).toBe(true);
   });
 
   it('leaves them alone for a job that is not a tournament job', async () => {

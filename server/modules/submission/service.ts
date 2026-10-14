@@ -2433,7 +2433,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
       // However it ended, play-tools may have changed: coverage lists again (ADR-0010 decision 12).
       .finally(() => {
-        if (isTournamentJob(row)) deps.tournaments?.requiredEvents?.listingsChanged();
+        if (!isTournamentJob(row)) return;
+        try {
+          deps.tournaments?.requiredEvents?.listingsChanged();
+        } catch (err) {
+          log.warn(`${what(row)} #${submissionId} could not drop coverage's cached listings: ${(err as Error).message}`, { submissionId });
+        }
       });
   }
 
