@@ -1,16 +1,1 @@
-{
-  "branches": ["main"],
-  "tagFormat": "v${version}",
-  "plugins": [
-    ["@semantic-release/commit-analyzer", { "preset": "conventionalcommits" }],
-    ["@semantic-release/release-notes-generator", { "preset": "conventionalcommits" }],
-    [
-      "@semantic-release/exec",
-      { "verifyReleaseCmd": "echo ${nextRelease.version} > \"$RUNNER_TEMP/release-version\"" }
-    ],
-    [
-      "@semantic-release/github",
-      { "successComment": false, "failComment": false, "releasedLabels": false }
-    ]
-  ]
-}
+{ "extends": "@towerism/selfhost-kit/release-config" }

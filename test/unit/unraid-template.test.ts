@@ -27,16 +27,19 @@ const config = (target: string) => {
 };
 
 const dockerfileEnv = (name: string) => readFileSync('Dockerfile', 'utf8').match(new RegExp(`\\b${name}=(\\S+)`))?.[1];
-const ciImage = readFileSync('.github/workflows/ci.yml', 'utf8').match(/IMAGE_NAME:\s*(\S+)/)?.[1];
+/** The image-name inputs CI passes to the kit's image and release workflows (comment lines don't count). */
+const ciImageNames = [...readFileSync('.github/workflows/ci.yml', 'utf8').matchAll(/^\s+image-name:\s*(\S+)\s*$/gm)].map((m) => m[1]);
 
 describe('Unraid template', () => {
   it('has no required field', () => {
     expect(container.Config.filter((c) => c.Required !== 'false').map((c) => c.Name)).toEqual([]);
   });
 
-  it('pulls the image CI publishes', () => {
-    expect(ciImage).toBeDefined();
-    expect(container.Repository).toBe(`${ciImage}:latest`);
+  it('pulls the image CI publishes and releases', () => {
+    // One for the image job, one for the release job, naming the same image.
+    expect(ciImageNames).toHaveLength(2);
+    expect(new Set(ciImageNames).size).toBe(1);
+    expect(container.Repository).toBe(`${ciImageNames[0]}:latest`);
   });
 
   it('opens the WebUI on the container port 3000', () => {

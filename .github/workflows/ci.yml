@@ -9,10 +9,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # Must match deploy/unraid/play-pokemon-attendance.xml (checked by test/unit/unraid-template.test.ts).
-  IMAGE_NAME: ghcr.io/towerism/play-pokemon-attendance
-
 permissions:
   contents: read
 
@@ -63,146 +59,45 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # The kit's reusable image workflow (ADR-0014, kit ADR-0004): builds target `app` once (amd64 only,
+  # ADR-0006), runs the three container tests below against that image, and only then publishes that
+  # same image: edge + sha-<short> from main, pr-<number> from PRs of this repo (fork PRs smoke-test
+  # only). X.Y.Z / X.Y / latest come from the release job, on the digest this job outputs.
+  # Pinned by full commit SHA; keep the comment equal to package.json's @towerism/selfhost-kit version.
   image:
     name: Image (smoke test, publish)
     needs: check
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      # Manifest-list digest of the published image; the release job tags exactly this.
-      digest: ${{ steps.push.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
+    uses: Towerism/selfhost-kit/.github/workflows/app-image.yml@4c453910482af10fad937ff27f3d72c8f31a3bf1 # v0.4.2
+    with:
+      # Must match deploy/unraid/play-pokemon-attendance.xml (checked by test/unit/unraid-template.test.ts).
+      image-name: ghcr.io/towerism/play-pokemon-attendance
+      target: app
+      # Container smoke test (entrypoint, PUID/PGID, secrets, setup, graceful stop); Litestream
+      # (replicate, graceful stop, restore, fail loudly); restore drill (backup, restore, restore
+      # without secrets, truncated archive). Each gets the built image's tag as its only argument.
+      smoke-scripts: |
+        test/docker/smoke.sh
+        test/docker/litestream.sh
+        test/docker/restore-drill.sh
 
-      - name: Build for the smoke test
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: app
-          load: true
-          tags: play-pokemon-attendance:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Container smoke test (entrypoint, PUID/PGID, secrets, setup, graceful stop)
-        run: test/docker/smoke.sh play-pokemon-attendance:test
-
-      - name: Litestream smoke test (replicate, graceful stop, restore, fail loudly)
-        run: test/docker/litestream.sh play-pokemon-attendance:test
-
-      - name: Restore drill (backup, restore, restore without secrets, truncated archive)
-        run: test/docker/restore-drill.sh play-pokemon-attendance:test
-
-      # Pushes publish, and so do PRs from this repo, so a PR can be tried on
-      # Unraid as :pr-<number>. Fork PRs get a read-only token: smoke test only.
-      - name: Decide whether to publish
-        id: publish
-        run: echo "enabled=${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}" >> "$GITHUB_OUTPUT"
-
-      - name: Image tags
-        id: meta
-        if: steps.publish.outputs.enabled == 'true'
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          # edge + sha from main; pr-<number> from PRs (moves with each push to the PR).
-          # X.Y.Z / X.Y / latest come from the release job (ADR-0006).
-          tags: |
-            type=edge,branch=main
-            type=ref,event=pr
-            type=sha,enable=${{ github.event_name == 'push' }}
-
-      - uses: docker/login-action@v3
-        if: steps.publish.outputs.enabled == 'true'
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish image to GHCR
-        id: push
-        if: steps.publish.outputs.enabled == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: app
-          # amd64 only: Unraid is the only target (ADR-0006 update).
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # semantic-release from Conventional Commits (.releaserc.json). A tag pushed with
-  # GITHUB_TOKEN starts no new run, so the release happens here, on the image this run
-  # smoke-tested: dry run for the version, tag that image X.Y.Z / X.Y / latest, then the
-  # git tag and GitHub Release. Nothing is committed back to main.
+  # The kit's reusable release workflow (ADR-0014, kit ADR-0004), with the shared semantic-release
+  # config (.releaserc.json extends @towerism/selfhost-kit/release-config). A tag pushed with
+  # GITHUB_TOKEN starts no new run, so the release happens here, after check, e2e and image are green,
+  # on the image this run smoke-tested: dry run for the version, tag the image job's digest
+  # X.Y.Z / X.Y / latest, then the git tag and GitHub Release. Nothing is committed back to main.
+  # Pinned by the same commit SHA as the image job.
   release:
     name: Release
     needs: [check, e2e, image]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      # Writes $RUNNER_TEMP/release-version only when a release is due. Skips (no file)
-      # when nothing releasable landed, or when main has moved on: the newer run releases.
-      - name: Next version (dry run)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm exec semantic-release --dry-run
-
-      - name: Decide whether to release
-        id: next
-        run: |
-          if [ -s "$RUNNER_TEMP/release-version" ]; then
-            echo "version=$(cat "$RUNNER_TEMP/release-version")" >> "$GITHUB_OUTPUT"
-          else
-            echo "No release due."
-          fi
-
-      - uses: docker/login-action@v3
-        if: steps.next.outputs.version != ''
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Before the git tag, so a GitHub Release never exists without its image.
-      - name: Tag the image X.Y.Z, X.Y, latest
-        if: steps.next.outputs.version != ''
-        env:
-          VERSION: ${{ steps.next.outputs.version }}
-          DIGEST: ${{ needs.image.outputs.digest }}
-        run: |
-          if [ -z "$DIGEST" ]; then
-            echo "::error::The image job published no digest; refusing to release $VERSION."
-            exit 1
-          fi
-          docker buildx imagetools create \
-            --tag "$IMAGE_NAME:$VERSION" \
-            --tag "$IMAGE_NAME:${VERSION%.*}" \
-            --tag "$IMAGE_NAME:latest" \
-            "$IMAGE_NAME@$DIGEST"
-          docker buildx imagetools inspect "$IMAGE_NAME:$VERSION"
-
-      - name: Git tag and GitHub Release
-        if: steps.next.outputs.version != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm exec semantic-release
+    uses: Towerism/selfhost-kit/.github/workflows/app-release.yml@4c453910482af10fad937ff27f3d72c8f31a3bf1 # v0.4.2
+    with:
+      # Must match deploy/unraid/play-pokemon-attendance.xml (checked by test/unit/unraid-template.test.ts).
+      image-name: ghcr.io/towerism/play-pokemon-attendance
+      digest: ${{ needs.image.outputs.digest }}

@@ -201,3 +201,23 @@ publish with OIDC and Node 22 bundles npm 10. Both apps that adopt the kit must 
   test proves it).
 - (−) Developers need Node 24.21.0 locally (`fnm use` reads `.node-version`).
 - Rollback: no migration came with this change, so pinning an earlier `X.Y.Z` image still works on the same `/data`.
+
+## Update (A7, 2026-10-14): images published by the kit's workflows
+
+**CI builds the image once and publishes the image its container tests ran.** A7 (#135,
+[ADR-0014](0014-shared-platform-code-from-selfhost-kit.md)) moved CI's image and release jobs to the shared kit's
+reusable `app-image.yml` and `app-release.yml`. Before, CI smoke-tested one build and pushed a second; the two matched
+only when every layer came from the cache. Tag names, the amd64-only build, fork-PR behaviour and the release order
+(image tags before the git tag) are unchanged.
+
+- `pr-N` and `sha-<short>` are a single-platform `linux/amd64` image manifest, pushed from the runner's image store. Its
+  digest is the image job's output, which the release tags.
+- `edge`, `X.Y.Z`, `X.Y` and `latest` are a one-entry manifest list around that manifest, because `buildx imagetools
+  create` wraps a plain manifest in a list ([selfhost-kit#30](https://github.com/Towerism/selfhost-kit/issues/30)). Their
+  own digest differs from the image job's; their `linux/amd64` entry is that digest.
+- Published images no longer carry BuildKit's provenance attestation (an `unknown/unknown` entry in the old index).
+  Nothing consumes it; restoring it would be a kit change.
+- (+) Every published tag is the smoke-tested image, not a rebuild.
+- (−) `docker pull` and Unraid's update check work on either shape, but a digest pinned from an older tag (an OCI index)
+  differs in form from a new one. Tags published before A7 keep their index.
+- Rollback: pin a previous `X.Y.Z` or `sha-…` on Unraid; reverting A7 restores the inline jobs.
