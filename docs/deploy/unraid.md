@@ -4,6 +4,8 @@ How to install, configure, back up and restore the attendance app on an Unraid
 server, and how to prove that the backups work. The design behind it is
 [ADR-0006](../architecture/adr/0006-docker-on-unraid.md) and
 [architecture §10](../architecture/README.md#10-deployment-and-operations).
+The container's infrastructure (its entrypoint, secret bootstrap and Litestream setup) comes from the shared
+[`@towerism/selfhost-kit`](https://github.com/Towerism/selfhost-kit) package; you don't install or configure it separately.
 
 Everything the app keeps lives in one appdata folder,
 `/mnt/user/appdata/play-pokemon-attendance`, mounted in the container at `/data`:

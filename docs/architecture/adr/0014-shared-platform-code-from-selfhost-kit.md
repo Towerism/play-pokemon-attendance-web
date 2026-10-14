@@ -1,6 +1,6 @@
 # ADR-0014: Shared platform code from `@towerism/selfhost-kit`
 
-- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131; A4 in #132; A5 in #133)
+- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131; A4 in #132; A5 in #133; A6 in #134)
 - Date: 2026-10-13
 - Amends: §3 (tech stack, module rules), §9 and §10, which described these pieces as attendance's own code
 - Companion: [selfhost-kit ADR-0001](https://github.com/Towerism/selfhost-kit/blob/main/docs/architecture/adr/0001-share-as-a-package.md)
@@ -122,6 +122,21 @@ after. ESLint keeps `@towerism/selfhost-kit/testing` out of every non-test file 
 - a DELETE body over 2 MiB gets 413;
 - a rate-limit or trusted-proxy value the kit refuses now fails startup (exit 1, a message naming the variables, before
   the database opens) instead of making the limited routes answer 500 (see Consequences).
+
+A6 (#134) moved the container's Docker assets. The entrypoint, `litestream.yml` and the Litestream installer
+(`fetch-litestream.sh`, the one Litestream pin) are the kit's, copied out of `node_modules` at build time by its
+`selfhost-kit docker-assets` bin into `/opt/selfhost-kit` in the Dockerfile's `app-deps` stage, so the image always
+carries the pinned kit version's bytes and there is no committed copy to keep in sync. `docker/` is gone. The entrypoint
+lands at the same path and the config at `/etc/litestream.yml`, with the same env names, defaults, log lines and exit
+codes; the unchanged `test/docker/smoke.sh`, `litestream.sh` and `restore-drill.sh` are the evidence. Attendance's
+unit tests run against the bin's output and keep only its own contract with the entrypoint (the log lines the Unraid
+guide quotes, the config path, a failing app's exit status); the entrypoint's behaviour tests are the kit's. Two
+differences are deliberate:
+- the kit 0.4.2 entrypoint re-owns a symlink under `/data` itself, never its target (`chown -h`,
+  [GHSA-9hhq-6x36-4565](https://github.com/advisories/GHSA-9hhq-6x36-4565)). Attendance's own copy re-owned the target,
+  which could be any file the container can see. Attendance never creates symlinks under `/data`;
+- the kit's installer is amd64-only, so a local `app` build on an arm64 host needs `--platform linux/amd64`
+  (ADR-0006, update A6). The published image has been amd64-only since M7.
 
 A4 is a pure refactor and releases nothing, departing from kit ADR-0007's "each step ships as its own release" in
 favour of its "pure refactors release nothing"; a rollback is a revert PR.
