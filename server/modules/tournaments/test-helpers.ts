@@ -2,7 +2,7 @@
 import type { TemplateBody } from '../../../shared/schemas/tournaments';
 import type { ActingConnection, ConnectionView } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { Format, Series, Tournament, TournamentDetails, Venue } from '../pokemon/ports/play-tools-gateway';
+import type { Format, Series, Tournament, TournamentChanges, TournamentDetails, Venue } from '../pokemon/ports/play-tools-gateway';
 
 export const GROUP = 'group-1';
 export const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
@@ -34,7 +34,13 @@ export function series(id: string, name: string, from: string, to: string, produ
 }
 
 /** A play-tools tournament as the stub holds it: listed, plus the details only `getTournament` reads. */
-export type StubTournament = Tournament & { organizer: string; category?: string; applicationState?: string };
+export type StubTournament = Tournament & {
+  organizer: string;
+  category?: string;
+  applicationState?: string;
+  /** What only the details read carries (venue, contact, registration…); an edit writes here. */
+  details?: { -readonly [K in keyof TournamentDetails]?: TournamentDetails[K] };
+};
 
 export function upstreamTournament(id: string, startsAt: string, opts: Partial<StubTournament> = {}): StubTournament {
   return {
@@ -64,6 +70,8 @@ export function stubPlayTools() {
     venues: [{ id: VENUE.id, name: 'Card Shop', formattedAddress: '1 Main St', country: 'US', timeZone: 'America/Chicago' }] as Venue[],
     /** `method@connectionId` (or `method`) → throw this from the next such call. */
     failNext: new Map<string, PokemonUpstreamError>(),
+    /** Every `editTournament` call, with the connection it was made as. */
+    edits: [] as { as: number; tournamentId: string; changes: TournamentChanges }[],
     calls: [] as string[],
     connection: {
       status: 'connected',
@@ -97,13 +105,13 @@ export function stubPlayTools() {
         state.tournaments
           .filter((t) => t.organizer === who)
           .filter((t) => !range || (t.startsAt && t.startsAt >= range.from && t.startsAt < range.to))
-          .map(({ organizer: _o, category: _c, applicationState: _a, ...t }) => t),
+          .map(({ organizer: _o, category: _c, applicationState: _a, details: _d, ...t }) => t),
       ),
     getTournament: (tournamentId: string) =>
       call(as, 'getTournament', (): TournamentDetails => {
         const t = state.tournaments.find((x) => x.id === tournamentId);
         if (!t) throw new PokemonUpstreamError('not_found', `No tournament ${tournamentId}.`);
-        const { organizer, category, applicationState, ...listed } = t;
+        const { organizer, category, applicationState, details, ...listed } = t;
         return {
           ...listed,
           organizerPlayerId: organizer as never,
@@ -119,7 +127,25 @@ export function stubPlayTools() {
           thirdPartyRegistrationUrl: null,
           details: null,
           eventWebsite: null,
+          ...details,
         };
+      }),
+    editTournament: (tournamentId: string, changes: TournamentChanges) =>
+      call(as, 'editTournament', () => {
+        state.edits.push({ as, tournamentId, changes });
+        const t = state.tournaments.find((x) => x.id === tournamentId);
+        if (!t) throw new PokemonUpstreamError('not_found', `No tournament ${tournamentId}.`);
+        const d: Record<string, unknown> = { ...t.details };
+        const listed = t as { -readonly [K in keyof StubTournament]: StubTournament[K] };
+        if (changes.name !== undefined) listed.name = changes.name;
+        if (changes.startsAt !== undefined) listed.startsAt = changes.startsAt;
+        if (changes.category !== undefined) listed.category = changes.category;
+        if (changes.venueId !== undefined) d.venue = { id: changes.venueId, timeZone: t.details?.venue?.timeZone ?? null };
+        for (const k of ['contact', 'registration', 'onSiteAdmission', 'thirdPartyRegistrationUrl', 'details', 'eventWebsite'] as const) {
+          if (changes[k] !== undefined) d[k] = changes[k];
+        }
+        t.details = d as StubTournament['details'];
+        return 'edited' as const;
       }),
     listSeries: (groupId: string) => call(as, 'listSeries', () => (groupId === GROUP ? [...state.series] : [])),
     listFormats: (_country: string) => call(as, 'listFormats', () => [...state.formats]),

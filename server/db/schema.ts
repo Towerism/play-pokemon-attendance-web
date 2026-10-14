@@ -213,9 +213,10 @@ export const submission = sqliteTable(
      * into the staff list (M8): `play_session_id` is '' and `play_session_label` "Staff import". `player_import` reads
      * the same tournaments into the league's players (#35): `play_session_label` "Player import". `tournament_create`
      * creates planned tournaments in play-tools (#92, ADR-0010 decision 5): `play_session_id` is '' and its items are
-     * `submission_tournament_item` rows.
+     * `submission_tournament_item` rows. `tournament_edit` edits (and reschedules) tournaments in play-tools (#93,
+     * ADR-0010 decisions 8 and 11), with the same items.
      */
-    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create'] })
+    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create', 'tournament_edit'] })
       .notNull()
       .default('submit'),
     /** For an undo: the submission whose added records it removes. */
@@ -294,10 +295,23 @@ export const submissionTournamentItem = sqliteTable(
     tournamentId: text('tournament_id'),
     /** The resolved name and local date. */
     label: text('label').notNull(),
+    /** `edited` and `already_applied` are an edit job's (#93). */
     outcome: text('outcome', {
-      enum: ['pending', 'created', 'already_exists', 'refused', 'failed', 'skipped', 'unknown', 'date_too_far_past', 'date_too_far_ahead'],
+      enum: [
+        'pending',
+        'created',
+        'already_exists',
+        'refused',
+        'failed',
+        'skipped',
+        'unknown',
+        'date_too_far_past',
+        'date_too_far_ahead',
+        'edited',
+        'already_applied',
+      ],
     }).notNull(),
-    /** Written just before the create is sent (#100): boot recovery reads it. */
+    /** Written just before the create or edit is sent (#100): boot recovery reads it. */
     sentAt: integer('sent_at', { mode: 'timestamp_ms' }),
     /** Less than 7 days ahead when the job started; the job's `started_by` acknowledged it. */
     shortNotice: integer('short_notice', { mode: 'boolean' }).notNull().default(false),
@@ -305,6 +319,10 @@ export const submissionTournamentItem = sqliteTable(
     error: text('error'),
     /** JSON support details (ADR-0010 decision 7): never a token, a request body or player data. */
     support: text('support', { mode: 'json' }),
+    /** An edit item's changes in the app's terms (#93): applied over a fresh read when its turn comes. */
+    changes: text('changes', { mode: 'json' }),
+    /** The organizer an edit item runs as (ADR-0009). */
+    professorPlayerId: text('professor_player_id'),
   },
   (t) => [primaryKey({ columns: [t.submissionId, t.position] })],
 );
