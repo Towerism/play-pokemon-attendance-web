@@ -41,9 +41,11 @@ contract tests. It was built to match attendance's behaviour.
 4. Module boundaries still hold. `server/modules/*` may import only plain helpers from the kit root (an ESLint
    allowlist), and never `@towerism/selfhost-kit/nitro`. Loggers, request ids, secrets and vaults are
    wired outside `server/modules` (`server/utils`, `server/plugins`, `server/bootstrap`) and injected. `app/` and `shared/` never import the kit; it is server-only.
-5. **Security fixes reach attendance only through a version bump.** Until attendance has a Renovate config (#126) that
-   proposes kit bumps on release and on advisories (kit ADR-0005 rule 4), the owner bumps by hand on each kit release
-   or advisory.
+5. **Security fixes reach attendance only through a version bump.** `renovate.json` (#126, kit ADR-0005 "Security
+   fixes" §4) groups the npm version and both reusable-workflow SHAs into one `fix(deps)` PR with no release-age wait,
+   and automerges patches and minors once the `main` ruleset's required checks pass (majors wait for review).
+   `test/unit/kit-pins.test.ts` is the check that keeps a half-moved bump from merging. Until the Renovate GitHub App
+   is installed on the repo, the owner bumps by hand on each kit release or advisory.
 
 A1 (#129) moved the setup code, the fixed-window limiter, client address and trusted proxies, request ids, and the
 CSP/security headers (including `nuxt.config.ts`'s imports). The Nitro wiring around them
