@@ -154,7 +154,7 @@ describe('the confirm preview', () => {
     expect((await refusal(service.cancelling.preview(L, byGuid())))?.code).toBe('not_found');
     expect((await refusal(service.cancelling.prepare(L, byGuid(), {})))?.code).toBe('not_found');
 
-    stub().groupId = 'group-1';
+    (stub() as { groupId: string }).groupId = 'group-1';
     (stub() as { organizer: string }).organizer = '9999993';
     expect((await refusal(service.cancelling.preview(L, byGuid())))?.code).toBe('organizer_not_connected');
     expect(upstream.state.cancels).toEqual([]);

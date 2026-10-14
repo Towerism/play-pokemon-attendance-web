@@ -216,7 +216,7 @@ export const submission = sqliteTable(
      * `submission_tournament_item` rows. `tournament_edit` edits (and reschedules) tournaments in play-tools (#93,
      * ADR-0010 decisions 8 and 11), with the same items.
      */
-    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create', 'tournament_edit'] })
+    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create', 'tournament_edit', 'tournament_cancel'] })
       .notNull()
       .default('submit'),
     /** For an undo: the submission whose added records it removes. */
@@ -295,7 +295,7 @@ export const submissionTournamentItem = sqliteTable(
     tournamentId: text('tournament_id'),
     /** The resolved name and local date. */
     label: text('label').notNull(),
-    /** `edited` and `already_applied` are an edit job's (#93). */
+    /** `edited` and `already_applied` are an edit job's (#93); `cancelled` and `already_cancelled` a cancel job's (#94). */
     outcome: text('outcome', {
       enum: [
         'pending',
@@ -309,6 +309,8 @@ export const submissionTournamentItem = sqliteTable(
         'date_too_far_ahead',
         'edited',
         'already_applied',
+        'cancelled',
+        'already_cancelled',
       ],
     }).notNull(),
     /** Written just before the create or edit is sent (#100): boot recovery reads it. */
@@ -319,9 +321,9 @@ export const submissionTournamentItem = sqliteTable(
     error: text('error'),
     /** JSON support details (ADR-0010 decision 7): never a token, a request body or player data. */
     support: text('support', { mode: 'json' }),
-    /** An edit item's changes in the app's terms (#93): applied over a fresh read when its turn comes. */
+    /** An edit item's changes in the app's terms (#93): applied over a fresh read when its turn comes. A cancel item's `{confirmed}` (#94). */
     changes: text('changes', { mode: 'json' }),
-    /** The organizer an edit item runs as (ADR-0009). */
+    /** The organizer an edit or cancel item runs as (ADR-0009). */
     professorPlayerId: text('professor_player_id'),
   },
   (t) => [primaryKey({ columns: [t.submissionId, t.position] })],
