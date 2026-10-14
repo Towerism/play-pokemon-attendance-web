@@ -99,6 +99,14 @@ describe('the legacy oracle is the pre-migration vault code', () => {
     expect(corpus.legacyBlobIds).toEqual(LEGACY_BLOB_IDS);
     expect(corpus.generatedFrom).toBe('4fb84effa638de011efed1eee62a77646367364f');
   });
+
+  it.each(nonEmpty.map((e) => [e.name, e] as const))('opens %s from the corpus', (_name, e) => {
+    expect(sha256(open(legacy, e, blobOf(e)))).toBe(e.plaintextSha256);
+  });
+
+  it.each(empty.map((e) => [e.name, e] as const))('refuses %s from the corpus, as it refuses every header-only blob', (_name, e) => {
+    expect(() => open(legacy, e, blobOf(e))).toThrow(/not in a format this version understands/);
+  });
 });
 
 describe('the corpus covers every AAD shape and plaintext kind', () => {
