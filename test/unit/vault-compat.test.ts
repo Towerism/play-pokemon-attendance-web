@@ -148,6 +148,17 @@ describe('an empty plaintext (attendance never seals one)', () => {
       'The stored TDF data is not in a format this version understands.',
     );
   });
+
+  it.each(empty.map((e) => [e.name, e] as const))('the code under test opens %s from the corpus as empty', (_name, e) => {
+    expect(open(underTest, e, blobOf(e)).length).toBe(0);
+  });
+
+  it.each(empty.map((e) => [e.name, e] as const))(
+    'the pre-migration code refuses %s sealed by the code under test (a rollback never meets one)',
+    (_name, e) => {
+      expect(() => open(legacy, e, seal(underTest, e, Buffer.alloc(0)))).toThrow(/not in a format this version understands/);
+    },
+  );
 });
 
 describe('operator-facing messages keep their wording', () => {

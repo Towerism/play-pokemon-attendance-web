@@ -1010,3 +1010,59 @@ describe('edge cases', () => {
     expect(oauth.refreshCalls).toEqual([]);
   });
 });
+
+describe('every AAD the token vault sees binds a row (the kit refuses an empty one)', () => {
+  interface VaultCall {
+    op: 'encrypt' | 'decrypt';
+    aad: string;
+    threw: boolean;
+  }
+
+  /** Records each call's AAD before delegating to the real vault, so calls that throw are recorded too. */
+  function recording(inner: TokenVault, calls: VaultCall[]): TokenVault {
+    const record = <T>(op: VaultCall['op'], aad: string, run: () => T): T => {
+      const call: VaultCall = { op, aad, threw: true };
+      calls.push(call);
+      const result = run();
+      call.threw = false;
+      return result;
+    };
+    return {
+      encrypt: (plaintext, aad) => record('encrypt', aad, () => inner.encrypt(plaintext, aad)),
+      decrypt: (blob, aad) => record('decrypt', aad, () => inner.decrypt(blob, aad)),
+    };
+  }
+
+  const insertCarriedOver = (sub: string, ciphertext: Buffer) =>
+    database.sqlite
+      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .run(sub, ciphertext, 'connected', 1, 1).lastInsertRowid as number;
+
+  it('across connect, refresh, reseal, disconnect and a replaced key, on the paths that throw too', async () => {
+    const calls: VaultCall[] = [];
+    const real = createTokenVault(randomBytes(32).toString('base64'));
+    vault = recording(real, calls);
+    service = build();
+
+    await connect(ASH); // seals the new connection's token
+    advance(HOUR);
+    await service.getAccessToken(idOf(ASH)); // opens it, seals the rotated one
+    insertCarriedOver('sub-carried', real.encrypt('ory_rt_v1', L));
+    insertCarriedOver('sub-foreign', createTokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L));
+    expect(service.resealCarriedOver(L)).toBe(1); // tries its own row, then the league id; skips the foreign one
+    await connect(BROCK);
+    expect(await service.disconnect(L, ASH.playerId)).toEqual({ revoked: true });
+
+    vault = recording(createTokenVault(randomBytes(32).toString('base64')), calls); // the key was replaced
+    const restarted = build();
+    expect(((await rejection(restarted.getAccessToken(idOf(BROCK)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
+    expect(await restarted.disconnect(L, BROCK.playerId)).toEqual({ revoked: false });
+
+    expect(calls.length).toBeGreaterThan(0);
+    for (const { aad } of calls) expect(aad).toMatch(/^(pokemon_connection:[1-9]\d*|default)$/);
+    expect(calls.filter((c) => c.aad === L && c.threw)).not.toEqual([]); // the foreign row under the league id
+    expect(calls.filter((c) => c.aad === L && !c.threw)).not.toEqual([]); // the carried-over row under the league id
+    expect(calls.filter((c) => c.aad.startsWith('pokemon_connection:') && c.threw)).not.toEqual([]);
+    expect(calls.filter((c) => c.op === 'encrypt').map((c) => c.aad)).not.toContain(L);
+  });
+});
