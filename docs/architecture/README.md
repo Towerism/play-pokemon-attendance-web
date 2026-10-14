@@ -1513,9 +1513,10 @@ flowchart LR
   - **Wiring:** every logger is built by `createAppLogger` (`server/logging/app-logger.ts`, plain TS: the launcher
     uses it before Nitro loads), which always applies attendance's redactor. Nitro code calls `useLogger(scope)`;
     `server/modules/*` take a `Logger` (a type from the kit) as a dependency. ESLint bans `console` in server code,
-    and rejects the kit's `createLogger`/`createRedactor` outside `app-logger.ts` and any `pino` import, because
-    either would log without attendance's keys. A kit API that builds its own logger when none is passed
-    (`runLauncher`) must be given `createAppLogger(...)`; ESLint can't see that, so it is a review check.
+    and rejects the kit's `createLogger`/`createRedactor` outside `app-logger.ts` and any `pino` import in server
+    and script code (`app/` and `shared/` don't log; a pino import there is a review check), because either would log
+    without attendance's keys. ESLint doesn't see `require` or a dynamic `import()`, and a kit API that builds its
+    own logger when none is passed (`runLauncher`) must be given `createAppLogger(...)`: both are review checks.
   - `server/routes/healthz.get.ts` (used by the image `HEALTHCHECK`) and `server/routes/readyz.get.ts` endpoints.
     The submission history in the UI *is* the audit log.
 - **Expected cost:** $0 on existing Unraid hardware, plus cents per month if a Litestream bucket is used.

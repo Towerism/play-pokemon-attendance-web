@@ -29,6 +29,7 @@ export const ATTENDANCE_LOG_KEYS: readonly string[] = [
   'TDF_VAULT_KEY',
 ];
 
+/** Exported for the redaction contract test. Build loggers with `createAppLogger`, never from this directly. */
 export const redactor = createRedactor({ extraKeys: ATTENDANCE_LOG_KEYS });
 
 /** A kit logger with attendance's redactor, which the caller can't replace. */

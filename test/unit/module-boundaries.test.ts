@@ -229,6 +229,7 @@ describe("every logger is attendance's configured one (server/logging/app-logger
     "import build from 'pino/file';\nexport const p = build;",
   ];
 
+  // ESM syntax only, in .cjs too: no-restricted-imports doesn't see require() or import() (a review check).
   it.each(['server/utils/x.ts', 'server/plugins/x.ts', 'server/bootstrap/x.ts', 'server/api/x.get.ts', 'nuxt.config.ts', 'scripts/x.mjs', 'scripts/x.cjs'])(
     'rejects an unconfigured kit logger, redactor or bare pino in %s',
     async (file) => {
