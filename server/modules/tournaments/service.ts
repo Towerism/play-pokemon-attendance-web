@@ -1106,7 +1106,13 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   const requirements = createRequirements({ db, now });
 
   /** Planned rows coverage counts: not in play-tools yet, from the creatable window on (ADR-0010 decision 12, #95). */
-  async function plannedForCoverage(leagueId: string, to: LocalDate, group: string | null, listed: readonly ListedTournament[]): Promise<PlannedInput[]> {
+  async function plannedForCoverage(
+    leagueId: string,
+    to: LocalDate,
+    group: string | null,
+    listed: readonly ListedTournament[],
+    opts: { link: boolean },
+  ): Promise<PlannedInput[]> {
     materialise(leagueId);
     const from = creatableWindow(now(), deps.timeZone).from;
     const rowsIn = () =>
@@ -1116,7 +1122,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         .where(and(eq(plannedTournament.leagueId, leagueId), gte(plannedTournament.localDate, addDays(from, -1)), lte(plannedTournament.localDate, addDays(to, 1))))
         .all();
     let rows = rowsIn();
-    if (group !== null && (await linkUnknown(leagueId, group, rows, listed))) rows = rowsIn();
+    if (opts.link && group !== null && (await linkUnknown(leagueId, group, rows, listed))) rows = rowsIn();
     rows = rows.filter((r) => r.tournamentId === null && COUNTED.has(r.state));
     const ctx = contextFor(rows);
     ctx.series = await seriesByOrganizer(rows, ctx.templates, ctx.conns, group);

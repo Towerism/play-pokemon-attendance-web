@@ -745,7 +745,9 @@ Building coverage (decision 12) settled what it left open:
 3. **Status comes from the listing's `application_state`** (else `status`). The port's `Tournament` carries it, and
    details are read only for the series, which a professor can't change, so their cache never goes stale. `sanctioned`
    or `complete` count, `approval-pending` is pending, `sanctioning-error` is a problem, cancelled, deleted and
-   invalidated are ignored, and any other value is pending, never covered.
+   invalidated are ignored (as the application state or the status), and any other value is pending, never covered. A
+   series the details give without a name is named from play-tools' series list; when that list can't be read, the
+   tournament is unread, so its period is `unknown`.
 4. **No connection or no league is `unknown` too.** With nobody connected, or no league selected, nothing can be
    confirmed, so no uncovered period shows `missing`.
 5. **Any tournament job's end drops every cached listing**, not only its professor's. A listing read in flight then
@@ -760,8 +762,9 @@ Building coverage (decision 12) settled what it left open:
 8. **The listing cache is coverage's for now.** Upcoming keeps its live read; This week and Upcoming move onto it with
    their pages (#98, #99). Coverage names a failed listing `needs_reconnect`, `upstream_unavailable` (a 429 or 5xx) or
    `refused` (any other play-tools error).
-9. **Human-scale traffic.** Details reads run one at a time and stop at the first 429 or 5xx; the rest wait for the
-   next request, their periods `unknown` meanwhile. Concurrent reads (the grid, the banner and the badge) share one
+9. **Human-scale traffic.** Details reads run one at a time and stop at the first 429 or 5xx; the rest, and the
+   linking of `unknown` rows, wait for the next request, their periods `unknown` meanwhile. A details failure a retry
+   won't fix (refused, not found, an unexpected shape) isn't asked again until the listings are next read. Concurrent reads (the grid, the banner and the badge) share one
    listing and one details read per tournament. A league has at most 50 requirements.
 10. **Tournaments without `start_date_v2`** can't be placed in a period and are left out, as Upcoming leaves them
     out. Only legacy tournaments lack it; a manual cover covers one if it ever matters.

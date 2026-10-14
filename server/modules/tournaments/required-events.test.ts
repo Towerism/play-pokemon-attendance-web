@@ -376,3 +376,50 @@ describe('planned tournaments', () => {
     expect((await nov()).status).toBe('missing');
   });
 });
+
+describe('failures that never show missing, and never keep play-tools busy (PR review)', () => {
+  beforeEach(() => onlyTcgChallenge());
+
+  it("treats a nameless series as unread when the series list couldn't be read", async () => {
+    upstream.state.tournaments = [challenge('a', '2026-11-14T18:00:00Z', { details: { series: { id: 'lc-nov', name: null } } })];
+    seriesDown();
+    expect(await nov()).toMatchObject({ status: 'unknown', bestKnown: 'missing', unreadTournaments: [{ tournamentId: 'a' }] });
+  });
+
+  it('remembers a details failure that is not a 429 or 5xx until the listings are next read', async () => {
+    upstream.state.tournaments = [challenge('a')];
+    upstream.state.failNext.set('getTournament', new PokemonUpstreamError('forbidden', 'Request not authorized for attempted action.'));
+    expect((await nov()).status).toBe('unknown');
+    reset();
+    expect((await nov()).status).toBe('unknown');
+    expect(calls('getTournament')).toEqual([]);
+    now = new Date(NOON_WED.getTime() + 5 * MINUTE);
+    expect((await nov()).status).toBe('sanctioned');
+    expect(calls('getTournament')).toHaveLength(1);
+  });
+
+  it('forgets a remembered details failure when a tournament job ends', async () => {
+    upstream.state.tournaments = [challenge('a')];
+    upstream.state.failNext.set('getTournament', new PokemonUpstreamError('not_found', 'gone'));
+    await nov();
+    service.requiredEvents.listingsChanged();
+    expect((await nov()).status).toBe('sanctioned');
+  });
+
+  it('leaves linking unknown rows to the next request after a details 429', async () => {
+    upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
+    const template = service.createTemplate(L, templateBody({ name: 'League Challenge' }));
+    const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14' });
+    database.sqlite.prepare("update planned_tournament set state = 'unknown' where id = ?").run(row.plannedId);
+    upstream.state.tournaments = [challenge('landed', '2026-11-15T00:00:00Z', { name: 'League Challenge' })];
+    upstream.state.failNext.set('getTournament', new PokemonUpstreamError('rate_limited', 'slow down'));
+
+    await nov();
+
+    expect(calls('getTournament')).toHaveLength(1);
+    expect(database.sqlite.prepare('select state from planned_tournament where id = ?').get(row.plannedId)).toEqual({ state: 'unknown' });
+    reset();
+    await nov();
+    expect(database.sqlite.prepare('select state from planned_tournament where id = ?').get(row.plannedId)).toEqual({ state: 'created' });
+  });
+});

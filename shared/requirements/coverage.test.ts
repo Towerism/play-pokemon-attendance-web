@@ -156,6 +156,7 @@ describe('what counts toward a period', () => {
     ['cancelled', 'cancelled', 'missing'],
     ['sanctioned', 'deleted', 'missing'],
     ['sanctioned', 'invalidated', 'missing'],
+    ['cancelled', 'sanctioned', 'missing'],
     ['mystery-state', null, 'pending'],
   ])('status %s with application state %s gives %s', (status, applicationState, expected) => {
     const result = coverage(input({ listed: [listed({ status, applicationState })] }));

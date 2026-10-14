@@ -57,7 +57,7 @@ export interface RequiredEventsDeps {
    * The planned rows coverage counts (not in play-tools, from the creatable window on, up to `to`), after the
    * schedules are planned and `unknown` rows are linked to what the listing shows, as Upcoming does.
    */
-  planned(leagueId: string, to: LocalDate, group: string | null, listed: readonly ListedTournament[]): Promise<PlannedInput[]>;
+  planned(leagueId: string, to: LocalDate, group: string | null, listed: readonly ListedTournament[], opts: { link: boolean }): Promise<PlannedInput[]>;
   timeZone: string;
   now: () => Date;
 }
@@ -86,6 +86,11 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
   const seriesCache = new Map<string, DetailsSeries>();
   /** guid → the details read in flight, shared by concurrent requests. */
   const detailsInFlight = new Map<string, Promise<DetailsSeries>>();
+  /**
+   * guid → when its details last failed for a reason a retry won't fix (refused, not found, an unexpected shape): not
+   * asked again until the listings are next read, so the grid, banner and badge don't keep play-tools busy.
+   */
+  const detailsFailedAt = new Map<string, number>();
 
   function readListing(c: ActingConnection, range: { from: Date; to: Date }, refresh: boolean): Promise<readonly Tournament[]> {
     const key = `${c.id}|${range.from.toISOString()}|${range.to.toISOString()}`;
@@ -143,6 +148,7 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
       generation++;
       listingCache.clear();
       listingInFlight.clear();
+      detailsFailedAt.clear();
     },
 
     async read(leagueId, opts) {
@@ -199,7 +205,8 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
           seriesFor.set(t.id, seriesCache.get(t.id)!);
           continue;
         }
-        if (stopped) {
+        const failedAt = detailsFailedAt.get(t.id);
+        if (stopped || (failedAt !== undefined && now.getTime() - failedAt < LISTING_TTL_MS)) {
           seriesFor.set(t.id, 'unread');
           continue;
         }
@@ -209,12 +216,14 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
           if (!(err instanceof PokemonUpstreamError)) throw err;
           seriesFor.set(t.id, 'unread');
           if (STOPS_DETAILS.has(err.code)) stopped = true;
+          else detailsFailedAt.set(t.id, now.getTime());
         }
       }
 
       const list = group === null ? null : await seriesList(conns, group);
       const names = new Map((list ?? []).map((s) => [s.id, s.name]));
-      const planned = await deps.planned(leagueId, to, group, listed);
+      // Linking `unknown` rows reads details too: after a 429 or 5xx it waits for the next request.
+      const planned = await deps.planned(leagueId, to, group, listed, { link: !stopped });
 
       const result = coverage({
         today,
@@ -226,7 +235,10 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
         unread,
         series: list?.map((s): SeriesInput => ({ id: s.id, name: s.name, product: s.product, windows: s.windows })) ?? null,
         listed: listed.map(({ tournament: t, organizer }): ListedInput => {
-          const series = seriesFor.get(t.id) ?? null;
+          const read = seriesFor.get(t.id) ?? null;
+          const name = read === null || read === 'unread' ? null : (read.name ?? names.get(read.id) ?? null);
+          // A nameless series can only be named by the series list; without it, the tournament can't be judged.
+          const series = read === null || read === 'unread' ? read : name === null && list === null ? 'unread' : { id: read.id, name };
           return {
             tournamentId: t.id,
             displayId: t.displayId,
@@ -234,7 +246,7 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
             startsAt: t.startsAt!.toISOString(),
             status: t.status,
             applicationState: t.applicationState ?? null,
-            series: series === null || series === 'unread' ? series : { id: series.id, name: series.name ?? names.get(series.id) ?? null },
+            series,
             organizer: { playerId: organizer.professorPlayerId!, name: organizer.professorName },
           };
         }),
