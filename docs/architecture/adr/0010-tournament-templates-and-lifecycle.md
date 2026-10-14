@@ -718,8 +718,10 @@ Building **Cancel…** settled what decision 8 left to it:
 6. **A 204 is `cancelled`.** The follow-ups run, then a re-read records play-tools' status on the planned row. If that
    status isn't `cancelled`, the row keeps what play-tools shows and the item says so.
 7. **"Marked removed locally" is the staffing tombstone** (`removed_at`, state `removing`, as removing an assignment
-   does). No staff job can send it, since staffing refuses a tournament play-tools no longer lists. On This week the
-   tombstones show under the cancelled tournament until #99's cards ([#148](https://github.com/Towerism/play-pokemon-attendance-web/issues/148)).
+   does). No staff job can send it, since staffing refuses a tournament play-tools no longer lists. This week leaves the
+   tombstones off once every professor was read and nobody lists the tournament, so a cancelled tournament with only
+   tombstones shows no card; the rows stay, so a cancel that turns out not to have happened still removes them
+   ([#148](https://github.com/Towerism/play-pokemon-attendance-web/issues/148)).
 8. **The confirmation travels with the item.** The item records whether the organizer typed the confirmation. A retry
    of a confirmed item doesn't ask again. An unconfirmed one (nobody was listed at apply) has its participants read
    again at its turn, and anyone listed by then fails it `confirmation_required`, with nothing sent. So no cancel
