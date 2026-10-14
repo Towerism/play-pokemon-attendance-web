@@ -63,7 +63,14 @@ export type TournamentsErrorCode =
   /** **Update the template** for a tournament made in play-tools. */
   | 'no_template'
   /** Everything was excluded or left out. */
-  | 'nothing_to_edit';
+  | 'nothing_to_edit'
+  // Cancel… (#94, ADR-0010 decision 8)
+  /** A planned row that never reached play-tools: Skip it instead (`details.state`). */
+  | 'not_in_play_tools'
+  /** Anyone is registered, and the display id (or date) typed doesn't match exactly (`details.required`). */
+  | 'confirmation_mismatch'
+  /** A retry of a cancel job whose tournament is already cancelled. */
+  | 'nothing_to_cancel';
 
 export class TournamentsError extends Error {
   override name = 'TournamentsError';

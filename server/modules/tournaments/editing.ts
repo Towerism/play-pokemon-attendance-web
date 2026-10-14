@@ -27,6 +27,7 @@ import {
   siblingFields,
 } from './edit';
 import { TournamentsError } from './errors';
+import { organizerReads } from './organizer';
 import type { LiveReads } from './live-reads';
 import { REPLANNABLE } from './plan';
 import type { TemplateSettings } from './settings';
@@ -160,8 +161,6 @@ export interface EditingContext {
 
 /** Upstream errors after which nothing more is sent as that organizer (ADR-0010 decision 5). */
 const STOPS: ReadonlySet<string> = new Set(['forbidden', 'needs_reconnect', 'not_connected']);
-/** Reads that mean "not this professor's", when looking for who organizes a guid. */
-const NOT_THEIRS: ReadonlySet<string> = new Set(['not_found', 'forbidden', 'refused']);
 const DEAD = new Set(['cancelled', 'complete', 'deleted', 'invalidated']);
 /** A tournament with no template: series windows and venues are asked for the US (ADR-0010 update #91). */
 const DEFAULT_COUNTRY = 'US';
@@ -189,36 +188,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
     return ctx.connections.listActingConnections().find((c) => c.professorPlayerId === playerId);
   }
 
-  /** The organizer's connection for a request: refused when they aren't connected or must reconnect. */
-  function requireActing(playerId: string): ActingConnection {
-    const c = acting(playerId);
-    if (!c) {
-      throw new TournamentsError('organizer_not_connected', `Professor ${playerId} isn't connected. Connect their Pokémon account in Settings to edit as them.`, {
-        professorPlayerId: playerId,
-      });
-    }
-    if (c.status === 'needs_reconnect') {
-      throw new TournamentsError('needs_reconnect', `Reconnect ${c.professorName ?? `Professor ${playerId}`} in Settings.`, { professorPlayerId: playerId });
-    }
-    return c;
-  }
-
-  async function read(c: ActingConnection, tournamentId: string): Promise<TournamentDetails> {
-    try {
-      return await ctx.gateway(c.id).getTournament(tournamentId);
-    } catch (err) {
-      if (err instanceof PokemonUpstreamError && err.code === 'not_found') throw new TournamentsError('not_found', 'play-tools no longer has this tournament.');
-      throw err;
-    }
-  }
-
-  /** A fresh read as the tournament's organizer (ADR-0009): `first` reads it, and the organizer it names acts. */
-  async function asOrganizer(group: string, tournamentId: string, first: ActingConnection, fresh: TournamentDetails) {
-    if (fresh.groupId !== group) throw new TournamentsError('not_found', "This tournament isn't the league's.");
-    if (fresh.organizerPlayerId === first.professorPlayerId) return { tournamentId, read: fresh, organizer: first };
-    const organizer = requireActing(fresh.organizerPlayerId);
-    return { tournamentId, read: await read(organizer, tournamentId), organizer };
-  }
+  const reads = organizerReads(ctx);
 
   async function resolve(leagueId: string, target: EditTarget): Promise<Resolved> {
     const status = ctx.connections.getStatus(leagueId);
@@ -235,17 +205,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
     const base = { group, leagueDisplayId: status.league?.displayId ?? null };
     if (!row) {
       const guid = (target as Extract<EditTarget, { kind: 'tournament' }>).id;
-      for (const c of ctx.connections.listActingConnections().filter((x) => x.status === 'connected')) {
-        let fresh: TournamentDetails;
-        try {
-          fresh = await ctx.gateway(c.id).getTournament(guid);
-        } catch (err) {
-          if (err instanceof PokemonUpstreamError && NOT_THEIRS.has(err.code)) continue;
-          throw err;
-        }
-        return { ...base, row: null, template: null, schedule: null, settings: null, upstream: await asOrganizer(group, guid, c, fresh) };
-      }
-      throw new TournamentsError('not_found', 'No connected professor can read this tournament in play-tools.');
+      return { ...base, row: null, template: null, schedule: null, settings: null, upstream: await reads.ofGuid(group, guid) };
     }
     if (row.state === 'creating' || row.state === 'unknown' || row.state === 'cancelled') {
       throw new TournamentsError('not_editable', 'This tournament is being created, may have been created, or is cancelled.', { state: row.state });
@@ -255,8 +215,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
     const settings = ctx.settingsFor([row]).get(row.id)!;
     let upstream: Resolved['upstream'] = null;
     if (row.state === 'created' && row.tournamentId) {
-      const c = requireActing(template.organizerPlayerId);
-      upstream = await asOrganizer(group, row.tournamentId, c, await read(c, row.tournamentId));
+      upstream = await reads.ofRow(group, row.tournamentId, template.organizerPlayerId);
     }
     return { ...base, row, template, schedule, settings, upstream };
   }

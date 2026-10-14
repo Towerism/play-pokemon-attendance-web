@@ -2,7 +2,7 @@
 import type { TemplateBody } from '../../../shared/schemas/tournaments';
 import type { ActingConnection, ConnectionView } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { Format, Series, Tournament, TournamentChanges, TournamentDetails, Venue } from '../pokemon/ports/play-tools-gateway';
+import type { Format, Series, Tournament, TournamentChanges, TournamentDetails, TournamentParticipant, Venue } from '../pokemon/ports/play-tools-gateway';
 
 export const GROUP = 'group-1';
 export const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
@@ -42,6 +42,22 @@ export type StubTournament = Tournament & {
   details?: { -readonly [K in keyof TournamentDetails]?: TournamentDetails[K] };
 };
 
+/** Who a tournament lists: its organizer, then `players` players and `staff` judges. Names and ids are made up. */
+export function participants(organizer: string, counts: { players?: number; staff?: number } = {}): TournamentParticipant[] {
+  const person = (playerId: string, role: string | null): TournamentParticipant => ({
+    recordId: `rec-${playerId}`,
+    playerId: playerId as never,
+    role,
+    isStaff: role !== null,
+    name: `Person ${playerId}`,
+  });
+  return [
+    person(organizer, 'organizer'),
+    ...Array.from({ length: counts.players ?? 0 }, (_, i) => person(`8000${i}`, null)),
+    ...Array.from({ length: counts.staff ?? 0 }, (_, i) => person(`7000${i}`, 'judge')),
+  ];
+}
+
 export function upstreamTournament(id: string, startsAt: string, opts: Partial<StubTournament> = {}): StubTournament {
   return {
     id,
@@ -72,6 +88,10 @@ export function stubPlayTools() {
     failNext: new Map<string, PokemonUpstreamError>(),
     /** Every `editTournament` call, with the connection it was made as. */
     edits: [] as { as: number; tournamentId: string; changes: TournamentChanges }[],
+    /** Who each tournament lists (players and staff), by guid; none when unset. */
+    participants: new Map<string, TournamentParticipant[]>(),
+    /** Every `cancelTournament` call, with the connection it was made as. */
+    cancels: [] as { as: number; tournamentId: string }[],
     calls: [] as string[],
     connection: {
       status: 'connected',
@@ -146,6 +166,21 @@ export function stubPlayTools() {
         }
         t.details = d as StubTournament['details'];
         return 'edited' as const;
+      }),
+    listTournamentParticipants: (tournamentId: string) =>
+      call(as, 'listTournamentParticipants', () => {
+        if (!state.tournaments.some((x) => x.id === tournamentId)) throw new PokemonUpstreamError('not_found', `No tournament ${tournamentId}.`);
+        return [...(state.participants.get(tournamentId) ?? [])];
+      }),
+    cancelTournament: (tournamentId: string) =>
+      call(as, 'cancelTournament', (who) => {
+        state.cancels.push({ as, tournamentId });
+        const t = state.tournaments.find((x) => x.id === tournamentId);
+        if (!t) throw new PokemonUpstreamError('not_found', `No tournament ${tournamentId}.`);
+        if (t.organizer !== who) throw new PokemonUpstreamError('forbidden', 'Request not authorized for attempted action.');
+        (t as { status: string }).status = 'cancelled';
+        t.applicationState = 'cancelled';
+        return 'cancelled' as const;
       }),
     listSeries: (groupId: string) => call(as, 'listSeries', () => (groupId === GROUP ? [...state.series] : [])),
     listFormats: (_country: string) => call(as, 'listFormats', () => [...state.formats]),

@@ -113,7 +113,7 @@ beforeEach(() => {
     db: database.db,
     connections: upstream.connections,
     gateway: (c) => playTools(c),
-    staffing: { moveTournament: (_l, tournamentId, to) => (moved.push({ tournamentId, to }), 1) },
+    staffing: { moveTournament: (_l, tournamentId, to) => (moved.push({ tournamentId, to }), 1), cancelTournament: () => ({ dropped: 0, removed: 0 }) },
     timeZone: TZ,
     now: () => clock,
   });
