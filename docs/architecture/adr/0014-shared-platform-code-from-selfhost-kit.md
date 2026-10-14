@@ -1,6 +1,6 @@
 # ADR-0014: Shared platform code from `@towerism/selfhost-kit`
 
-- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131)
+- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131; A4 in #132)
 - Date: 2026-10-13
 - Amends: §3 (tech stack, module rules), §9 and §10, which described these pieces as attendance's own code
 - Companion: [selfhost-kit ADR-0001](https://github.com/Towerism/selfhost-kit/blob/main/docs/architecture/adr/0001-share-as-a-package.md)
@@ -80,6 +80,25 @@ One difference from attendance's own code is accepted: `NUXT_SESSION_COOKIE_SECU
 `isHttpsSite` (the site URL parses and its protocol is `https:`), the check HSTS already used, instead of a
 "starts with `https:`" prefix test. They agree on every well-formed URL; for a malformed one, `https:` or `https://`
 alone is no longer Secure and a URL with leading whitespace now is.
+
+A4 (#132) moved the vault, merging attendance's two vault files (the cipher and the token adapter) into the kit's
+`createVault` / `stringVault`. `server/bootstrap/vaults.ts` is configuration only: it names the two vaults (`token`,
+`TDF`), so every message reads as before, and holds the exact kit calls kit ADR-0007 names, in one place that
+`server/utils` and the tests share. The keys still reach it only from runtime config, through
+`server/utils/pokemon.ts` (token) and `server/utils/tdf-archive.ts` (TDF), and the vaults are injected into the modules.
+Modules take `Vault`, `StringVault` and `VaultError` from the kit root and nothing from `server/bootstrap` (ESLint;
+module tests may build the real vaults there). The kit's cipher is byte-identical to attendance's. The compatibility
+evidence stays in CI: a corpus sealed by the pre-migration code (every AAD shape, the carried-over league-id form
+included; empty, binary and 2 MiB plaintexts) opens with the kit, and kit-sealed blobs open with a pinned copy of
+that code (`test/fixtures/vault-v1/`, `test/unit/vault-compat.test.ts`). Three differences are accepted, none
+visible to an install:
+- the kit refuses an empty AAD; every attendance AAD is non-empty by construction, and tests record each one;
+- the kit opens a header-only blob (an empty plaintext) that attendance's code refused, even its own; attendance
+  never seals an empty plaintext (refresh tokens are non-empty at the OAuth wire, TDF files are gzip output);
+- `TokenVaultError` is gone: the kit's `VaultError` is thrown unwrapped, and no log or response shows its name.
+
+A4 is a pure refactor and releases nothing, departing from kit ADR-0007's "each step ships as its own release" in
+favour of its "pure refactors release nothing"; a rollback is a revert PR.
 
 ## Consequences
 
