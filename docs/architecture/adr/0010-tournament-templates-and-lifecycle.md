@@ -695,6 +695,38 @@ Building **Edit…** settled what decisions 8 and 11 left to it:
 8. **Refusals keep the codes the module already had:** `contact_required` stays 400 and `organizer_not_connected` 422,
    as for templates and creates.
 
+## Update (#94): cancel as built
+
+Building **Cancel…** settled what decision 8 left to it:
+
+1. **"Anyone registered" is anyone listed besides the organizer:** a player or a staffer. Either one requires the typed
+   confirmation, since a cancel notifies staff too.
+2. **What is typed** is the display id, exactly as play-tools shows it, or the local date (`YYYY-MM-DD`) for a
+   tournament with no display id. The comparison is exact, as Clear session's is. The value is in the preview, so typing
+   it proves intent; it is not a secret.
+3. **Cancellable** means `application_state` (else `status`) is `sanctioned`, `approval-pending` or
+   `sanctioning-error`, `status` isn't one of the dead ones an edit locks on (`cancelled`, `complete`, `deleted`,
+   `invalidated`), the activity isn't `completed`, and now is before start + 90 days when the start is known. Otherwise
+   it is `tournament_locked`. play-tools still decides, and its refusal is the outcome.
+4. **Already cancelled at apply time is not an error.** The apply answers 200 with no job and no call, after the typed
+   confirmation, and does the local follow-ups under the same lease check a job takes. It is logged with who did it,
+   since History has no job to show.
+5. **Only tournaments in play-tools are cancelled.** A row a create holds or may have made (`creating`, `unknown`) is
+   `not_editable` until it settles. Any other row with no guid never reached play-tools: `not_in_play_tools`, and
+   **Skip** is the way. Any other row holding a guid (`created`, `cancelled`, or a `skipped` / `failed` row linked later,
+   decision 5) can be cancelled.
+6. **A 204 is `cancelled`.** The follow-ups run, then a re-read records play-tools' status on the planned row. If that
+   status isn't `cancelled`, the row keeps what play-tools shows and the item says so.
+7. **"Marked removed locally" is the staffing tombstone** (`removed_at`, state `removing`, as removing an assignment
+   does). No staff job can send it, since staffing refuses a tournament play-tools no longer lists. On This week the
+   tombstones show under the cancelled tournament until #99's cards ([#148](https://github.com/Towerism/play-pokemon-attendance-web/issues/148)).
+8. **The confirmation travels with the item.** The item records whether the organizer typed the confirmation. A retry
+   of a confirmed item doesn't ask again. An unconfirmed one (nobody was listed at apply) has its participants read
+   again at its turn, and anyone listed by then fails it `confirmation_required`, with nothing sent. So no cancel
+   reaches a tournament with registrants unless someone typed its display id. Like an edit, a cancel in flight at a
+   crash is `unknown`, a 5xx is settled by one re-read and never resent by the job, and recovery leaves the planned row
+   and staff alone until a retry finds out.
+
 ## Consequences
 
 - (+) A regular tournament is set up once. After that it's a reminder and one click per batch of dates, with no

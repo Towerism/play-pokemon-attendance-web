@@ -31,6 +31,7 @@ import type { NewTournament, PlayToolsGateway, Series, Tournament, Venue } from 
 import type { StaffingService } from '../staffing/service';
 import { type AdoptionTarget, type LeftOutReason, adoptionCandidates, isShortNotice, newTournament, selectCreateThrough } from './create';
 import { addDays, addMonths, type LocalDate, timeIn } from './dates';
+import { type TournamentCancelling, createCancelling } from './cancelling';
 import { type EditForm, type EditPreview, type TournamentEditing, createEditing } from './editing';
 import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
@@ -231,6 +232,8 @@ export interface TournamentsService {
   editPreview(leagueId: string, target: EditTarget, body: EditBody): Promise<EditPreview>;
   /** What the submission module's `tournament_edit` job uses (#93). */
   editing: TournamentEditing;
+  /** **Cancel…** (#94, ADR-0010 decision 8): the confirm preview, and what the `tournament_cancel` job uses. */
+  cancelling: TournamentCancelling;
 }
 
 export interface CreateThroughPreview {
@@ -307,15 +310,15 @@ export interface TournamentOptions {
 }
 
 /** The play-tools reads this module makes, as one professor. */
-export type TournamentsGateway = Pick<PlayToolsGateway, 'listTournaments' | 'getTournament' | 'listSeries' | 'listFormats' | 'listVenues'>;
+export type TournamentsGateway = Pick<PlayToolsGateway, 'listTournaments' | 'getTournament' | 'listTournamentParticipants' | 'listSeries' | 'listFormats' | 'listVenues'>;
 
 export interface TournamentsDeps {
   db: Db;
   connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
   /** Play-tools as one professor's connection. */
   gateway: (connectionId: number) => TournamentsGateway;
-  /** A rescheduled tournament's staff move with it (ADR-0010 decision 8). */
-  staffing?: Pick<StaffingService, 'moveTournament'>;
+  /** A rescheduled tournament's staff move with it, and a cancelled one's are dropped or tombstoned (ADR-0010 decision 8). */
+  staffing?: Pick<StaffingService, 'moveTournament' | 'cancelTournament'>;
   /** The league time zone (ADR-0006): the creatable window and Upcoming's dates are in it. */
   timeZone: string;
   now?: () => Date;
@@ -1080,8 +1083,19 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     templateColumns: (t) => templateColumns(t),
   });
 
+  const cancelling = createCancelling({
+    db,
+    connections: deps.connections,
+    gateway: deps.gateway,
+    ...(deps.staffing && { staffing: deps.staffing }),
+    timeZone: deps.timeZone,
+    now,
+    plannedRow,
+  });
+
   return {
     ...edits,
+    cancelling,
 
     listTemplates(leagueId, opts) {
       const rows = db

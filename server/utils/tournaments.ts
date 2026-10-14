@@ -50,6 +50,9 @@ const STATUS: Record<TournamentsErrorCode, number> = {
   not_in_schedule: 422,
   no_template: 422,
   nothing_to_edit: 422,
+  not_in_play_tools: 409,
+  confirmation_mismatch: 422,
+  nothing_to_cancel: 422,
 };
 
 /**

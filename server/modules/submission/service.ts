@@ -11,7 +11,8 @@ import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
 import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
 import { TournamentsError } from '../tournaments/errors';
-import type { ApplyBody, EditTarget } from '../../../shared/schemas/tournaments';
+import type { ApplyBody, CancelBody, EditTarget } from '../../../shared/schemas/tournaments';
+import type { CancelItem, CancelRead, TournamentCancelling } from '../tournaments/cancelling';
 import type { EditItem, ItemRead, TournamentEditing } from '../tournaments/editing';
 import type { CreatePlan, TournamentCreation, TournamentsService } from '../tournaments/service';
 import { SubmissionError } from './errors';
@@ -110,7 +111,7 @@ export interface TournamentItemView {
  * data.
  */
 export interface SupportDetails {
-  action: 'create' | 'edit' | 'reschedule';
+  action: 'create' | 'edit' | 'reschedule' | 'cancel';
   sentAt: string | null;
   league: { displayId: string | null };
   tournament: { displayId: string | null; name: string; date: string };
@@ -265,6 +266,15 @@ export interface SubmissionService {
    * @throws TournamentsError (the edit's refusals), SubmissionError `submission_running`, `shutting_down`
    */
   editTournaments(leagueId: string, input: { target: EditTarget; body: ApplyBody; startedBy: string }): Promise<{ submissionId: number | null; updatedLocally: number }>;
+  /**
+   * **Cancel…** (ADR-0010 decision 8): a `tournament_cancel` job for one tournament, confirmed from a fresh read. One
+   * play-tools already cancelled is only cancelled locally, with no job (`submissionId: null`).
+   * @throws TournamentsError (the preview's, `confirmation_mismatch`, `tournament_locked`), SubmissionError `submission_running`, `shutting_down`
+   */
+  cancelTournament(
+    leagueId: string,
+    input: { target: EditTarget; body: CancelBody; startedBy: string },
+  ): Promise<{ submissionId: number } | { submissionId: null; outcome: 'already_cancelled' }>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -301,11 +311,11 @@ export interface SubmissionDeps {
     | 'unassignStaff'
   >;
   /** The calls a tournament job makes besides the tournaments module's reads, as one professor's connection (#92). */
-  tournamentGateway?: (connectionId: number) => Pick<PlayToolsGateway, 'createTournament' | 'editTournament' | 'getTournament'>;
+  tournamentGateway?: (connectionId: number) => Pick<PlayToolsGateway, 'createTournament' | 'editTournament' | 'cancelTournament' | 'getTournament'>;
   staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
   /** Planned tournaments, for `tournament_create` jobs (#92); only those jobs need it. */
-  tournaments?: { creation: TournamentCreation; createThrough: TournamentsService['createThrough']; editing?: TournamentEditing };
+  tournaments?: { creation: TournamentCreation; createThrough: TournamentsService['createThrough']; editing?: TournamentEditing; cancelling?: TournamentCancelling };
   /** At least this long between tournament creates (NUXT_TOURNAMENT_DELAY_MS): default 5 s, never under 2 s (ADR-0010 decision 5). */
   tournamentDelayMs?: number;
   /** The league timezone (ADR-0006): a staff import is dated by the day it starts in it. Default: the process's. */
@@ -398,11 +408,11 @@ class Interrupted extends Error {
 }
 
 /** Jobs whose items are `submission_tournament_item` rows (ADR-0010 decision 7). */
-const isTournamentJob = (row: { kind: SubmissionKind }) => row.kind === 'tournament_create' || row.kind === 'tournament_edit';
+const isTournamentJob = (row: { kind: SubmissionKind }) => row.kind === 'tournament_create' || row.kind === 'tournament_edit' || row.kind === 'tournament_cancel';
 
 /** How logs name a job. */
 const what = (row: { kind: SubmissionKind }) =>
-  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', tournament_create: 'Tournament create', tournament_edit: 'Tournament edit', ...IMPORT_LABEL })[row.kind];
+  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', tournament_create: 'Tournament create', tournament_edit: 'Tournament edit', tournament_cancel: 'Tournament cancel', ...IMPORT_LABEL })[row.kind];
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -524,8 +534,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       const outcomes = tournamentItems(row.id).map((i) => i.outcome);
       const count = (...o: TournamentItemOutcome[]) => outcomes.filter((x) => o.includes(x)).length;
       return {
-        added: count('created', 'edited'),
-        alreadyPresent: count('already_exists', 'already_applied'),
+        added: count('created', 'edited', 'cancelled'),
+        alreadyPresent: count('already_exists', 'already_applied', 'already_cancelled'),
         failed: count('refused', 'failed', 'unknown', 'date_too_far_past', 'date_too_far_ahead'),
         skipped: count('skipped'),
         unrequested: 0,
@@ -1785,14 +1795,16 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   /** A tournament job that stopped: a create sent with no answer may have landed (`unknown`); the rest are released. */
   function stopTournamentItems(row: Row): void {
-    if (row.kind === 'tournament_edit') {
-      // An edit is idempotent: one in flight is `unknown`, and a retry re-reads before sending it again.
+    if (row.kind === 'tournament_edit' || row.kind === 'tournament_cancel') {
+      // An edit or a cancel is idempotent: one in flight is `unknown`, and a retry re-reads before sending it again.
+      // Only the item changes: the planned row and staff wait for what the retry finds.
+      const what = row.kind === 'tournament_edit' ? 'edit' : 'cancel';
       for (const item of tournamentItems(row.id)) {
         if (item.outcome !== 'pending') continue;
         setTournamentItem(
           row.id,
           item.position,
-          item.sentAt ? { outcome: 'unknown', error: 'The app stopped while this edit was in flight: it may have been applied.' } : { outcome: 'skipped' },
+          item.sentAt ? { outcome: 'unknown', error: `The app stopped while this ${what} was in flight: it may have been applied.` } : { outcome: 'skipped' },
         );
       }
       return;
@@ -2122,6 +2134,228 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'finished', `Tournament edit ${status}.`, total, total);
   }
 
+  function cancelling(): TournamentCancelling {
+    if (!deps.tournaments?.cancelling) throw new Error('This app was built without the tournaments module.');
+    return deps.tournaments.cancelling;
+  }
+
+  const cancelItemOf = (i: ItemRow): CancelItem => ({
+    plannedId: i.plannedTournamentId,
+    tournamentId: i.tournamentId!,
+    label: i.label,
+    professorPlayerId: i.professorPlayerId!,
+    confirmed: (i.changes as { confirmed?: boolean } | null)?.confirmed === true,
+  });
+
+  /** Inserts a `tournament_cancel` job and its one item, and takes the lease, in one transaction. */
+  function insertCancelJob(leagueId: string, input: { item: CancelItem; startedBy: string; retryOf: number | null }): Row {
+    const organizer = deps.connections.listActingConnections().find((c) => c.professorPlayerId === input.item.professorPlayerId);
+    return db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: dateIn(now(), timeZone),
+          playSessionId: '',
+          playSessionLabel: `Cancel ${input.item.label}`,
+          startedBy: input.startedBy,
+          professorPlayerId: input.item.professorPlayerId,
+          professorName: organizer?.professorName ?? null,
+          startedAt: now(),
+          status: 'planned',
+          retryOf: input.retryOf,
+          kind: 'tournament_cancel',
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      db.insert(submissionTournamentItem)
+        .values({
+          submissionId: created.id,
+          position: 0,
+          plannedTournamentId: input.item.plannedId,
+          tournamentId: input.item.tournamentId,
+          label: input.item.label,
+          outcome: 'pending',
+          changes: { confirmed: input.item.confirmed },
+          professorPlayerId: input.item.professorPlayerId,
+        })
+        .run();
+      return created;
+    });
+  }
+
+  /**
+   * **Cancel…** (ADR-0010 decision 8): fresh reads and the typed confirmation, then a job. One play-tools already
+   * cancelled is cancelled locally with no job, under the same lease check, and logged, since History won't show it.
+   */
+  async function beginTournamentCancel(leagueId: string, input: { target: EditTarget; body: CancelBody; startedBy: string }) {
+    const shuttingDown = () => new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    if (stop.signal.aborted) throw shuttingDown();
+    assertUnlocked(leagueId);
+    const c = cancelling();
+    const plan = await c.prepare(leagueId, input.target, input.body);
+    if (stop.signal.aborted) throw shuttingDown();
+    if (plan.kind === 'already_cancelled') {
+      const { dropped, removed } = db.transaction(() => {
+        assertUnlocked(leagueId);
+        return c.recordCancelled(leagueId, plan.item);
+      });
+      log.info(`${plan.item.label} was already cancelled in play-tools: cancelled here too`, {
+        by: input.startedBy,
+        tournamentId: plan.item.tournamentId,
+        plannedTournamentId: plan.item.plannedId,
+        dropped,
+        removed,
+      });
+      return { submissionId: null, outcome: 'already_cancelled' as const };
+    }
+    const row = insertCancelJob(leagueId, { item: plan.item, startedBy: input.startedBy, retryOf: null });
+    launch(row);
+    return { submissionId: row.id };
+  }
+
+  /** Retry of a cancel job: its item again, confirmed or not as it was; the job re-reads first. */
+  function retryTournamentCancel(row: Row, startedBy: string): { submissionId: number } {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    const open = tournamentItems(row.id).find((i) => i.outcome !== 'cancelled' && i.outcome !== 'already_cancelled');
+    if (!open) throw new TournamentsError('nothing_to_cancel', 'play-tools already has this tournament cancelled.');
+    const created = insertCancelJob(row.leagueId, { item: cancelItemOf(open), startedBy, retryOf: row.id });
+    launch(created);
+    return { submissionId: created.id };
+  }
+
+  /**
+   * `tournament_cancel` (ADR-0010 decision 8): a fresh read as the organizer, then one `PATCH`, paced with the league's
+   * other tournament writes. A 5xx is settled by one re-read, never resent. Then the planned row and staff follow
+   * locally, and a last read records play-tools' status.
+   */
+  async function runTournamentCancel(row: Row): Promise<void> {
+    const { leagueId } = row;
+    const c = cancelling();
+    setStatus(row, 'running');
+    const items = tournamentItems(row.id);
+    const total = items.length;
+    let done = 0;
+    emit(row, 'planned', 'One tournament to cancel.', 0, total);
+    const step = (message: string) => {
+      done += 1;
+      emit(row, 'tournament_sent', message, done, total);
+    };
+
+    async function pace(): Promise<void> {
+      if (stop.signal.aborted) throw stop.signal.reason;
+      const last = lastTournamentPost.get(leagueId);
+      const wait = last === undefined ? 0 : last + tournamentDelayMs - now().getTime();
+      renewLock(row, Math.max(0, wait));
+      if (wait > 0) await sleep(wait, stop.signal);
+    }
+
+    let landed: { position: number; it: CancelItem; connectionId: number } | null = null;
+    for (const item of items) {
+      if (item.outcome !== 'pending') continue;
+      if (stop.signal.aborted) throw stop.signal.reason;
+      renewLock(row);
+      const it = cancelItemOf(item);
+      const name = item.label.replace(/ · \d{4}-\d{2}-\d{2}$/, '');
+      const date = item.label.match(/\d{4}-\d{2}-\d{2}$/)?.[0] ?? '';
+
+      const settle = (outcome: 'cancelled' | 'already_cancelled', connectionId: number) => {
+        c.recordCancelled(leagueId, it);
+        setTournamentItem(row.id, item.position, { outcome, errorCode: null, error: null });
+        if (outcome === 'cancelled') landed = { position: item.position, it, connectionId };
+      };
+
+      // Wait its turn first, so the read that decides the cancel is the last thing before it: nobody registers unseen.
+      await pace();
+      let read: CancelRead;
+      try {
+        read = await c.readItem(leagueId, it);
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        const stops = CREATE_STOPS.has(err.code);
+        setTournamentItem(row.id, item.position, { outcome: stops ? 'refused' : 'failed', errorCode: err.code, error: err.message });
+        step(`${item.label}: ${err.code}.`);
+        if (stops) throw new TournamentStop(err.code);
+        continue;
+      }
+      if (read.kind === 'already_cancelled') {
+        settle('already_cancelled', read.connectionId);
+        step(`${item.label}: already cancelled in play-tools.`);
+        continue;
+      }
+      if (read.kind === 'fail') {
+        setTournamentItem(row.id, item.position, { outcome: 'failed', errorCode: read.code, error: read.message });
+        step(`${item.label}: ${read.code}.`);
+        continue;
+      }
+
+      const sentAt = now();
+      setTournamentItem(row.id, item.position, { sentAt });
+      const at = { name, date, connectionId: read.connectionId, sentAt, action: 'cancel' as const, displayId: read.read.displayId };
+      try {
+        lastTournamentPost.set(leagueId, now().getTime());
+        await tournamentGateway(read.connectionId).cancelTournament(it.tournamentId);
+        settle('cancelled', read.connectionId);
+        step(`Cancelled ${item.label}.`);
+      } catch (err) {
+        if (err instanceof TypeError) {
+          setTournamentItem(row.id, item.position, { outcome: 'failed', errorCode: 'invalid_input', error: err.message });
+          step(`${item.label}: invalid_input.`);
+          continue;
+        }
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        if (err.code === 'unavailable' || err.code === 'unexpected_shape') {
+          emit(row, 'retrying', `${err.message} Reading the tournament again to see whether the cancel landed; it is never sent twice.`, done, total);
+          let again: CancelRead | null = null;
+          try {
+            again = await c.readItem(leagueId, it);
+          } catch (readErr) {
+            if (!(readErr instanceof PokemonUpstreamError)) throw readErr;
+          }
+          if (again?.kind === 'already_cancelled') {
+            settle('cancelled', again.connectionId);
+            step(`Cancelled ${item.label}.`);
+          } else {
+            setTournamentItem(row.id, item.position, {
+              outcome: 'failed',
+              errorCode: 'unavailable',
+              error: `${err.message} play-tools doesn't show it cancelled. Retry to send it again; the retry reads first.`,
+              support: support(leagueId, at, err),
+            });
+            step(`${item.label}: unavailable.`);
+          }
+          continue;
+        }
+        const outcome = err.code === 'tournament_locked' ? 'failed' : 'refused';
+        setTournamentItem(row.id, item.position, { outcome, errorCode: err.code, error: err.message, support: support(leagueId, at, err) });
+        step(`${item.label}: ${outcome}.`);
+        if (CREATE_STOPS.has(err.code)) throw new TournamentStop(err.code);
+      }
+    }
+
+    // Reconcile, after the local follow-ups: play-tools' own status goes on the row, whatever it says.
+    const l = landed as { position: number; it: CancelItem; connectionId: number } | null;
+    if (l) {
+      try {
+        const details = await tournamentGateway(l.connectionId).getTournament(l.it.tournamentId);
+        const status = details.applicationState ?? details.status;
+        if (l.it.plannedId !== null) c.recordReconciled(leagueId, l.it.plannedId, { displayId: details.displayId, status });
+        if (status !== 'cancelled') {
+          setTournamentItem(row.id, l.position, { error: `play-tools answered the cancel, but still shows this tournament as ${status}.` });
+        }
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        log.warn(`Tournament cancel #${row.id} could not re-read ${l.it.tournamentId}: ${err.code}`, { submissionId: row.id, code: err.code });
+      }
+    }
+    const ok = tournamentItems(row.id).every((i) => i.outcome === 'cancelled' || i.outcome === 'already_cancelled');
+    const status = ok ? 'succeeded' : 'failed';
+    emit(row, 'reconciled', ok ? 'play-tools has the tournament cancelled.' : "play-tools doesn't have the tournament cancelled.", total, total);
+    setStatus(row, status);
+    emit(row, 'finished', `Tournament cancel ${status}.`, total, total);
+  }
+
   function tournamentItemView(i: typeof submissionTournamentItem.$inferSelect): TournamentItemView {
     return {
       position: i.position,
@@ -2172,6 +2406,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
               ? runTournamentCreate(row)
               : row.kind === 'tournament_edit'
               ? runTournamentEdit(row)
+              : row.kind === 'tournament_cancel'
+              ? runTournamentCancel(row)
               : isImport(row)
               ? runImport(row)
               : run(row)
@@ -2577,6 +2813,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (isImport(row)) return beginImport(row.kind, leagueId, startedBy, row.id);
       if (row.kind === 'tournament_edit') return retryTournamentEdit(row, startedBy);
+      if (row.kind === 'tournament_cancel') return retryTournamentCancel(row, startedBy);
       if (row.kind === 'tournament_create') {
         const items = tournamentItems(row.id);
         const plannedIds = creation().retryable(
@@ -2660,6 +2897,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     },
 
     editTournaments: async (leagueId, input) => beginTournamentEdit(leagueId, input),
+
+    cancelTournament: async (leagueId, input) => beginTournamentCancel(leagueId, input),
 
     staffBatch(leagueId, batchId) {
       assertLeagueChosen(leagueId);
