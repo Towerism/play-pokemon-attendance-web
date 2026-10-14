@@ -131,6 +131,7 @@ export function createCancelling(ctx: CancellingContext): TournamentCancelling {
     };
   }
 
+  /** As `organizer.ts`'s `requireActing`, but a job's error: `not_connected` / `needs_reconnect` stop the job. */
   function organizerOf(playerId: string): ActingConnection {
     const c = ctx.connections.listActingConnections().find((x) => x.professorPlayerId === playerId);
     if (!c) throw new PokemonUpstreamError('not_connected', `Professor ${playerId}'s Pokémon account is no longer connected.`);

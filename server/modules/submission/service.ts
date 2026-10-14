@@ -2266,6 +2266,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         if (outcome === 'cancelled') landed = { position: item.position, it, connectionId };
       };
 
+      // Wait its turn first, so the read that decides the cancel is the last thing before it: nobody registers unseen.
+      await pace();
       let read: CancelRead;
       try {
         read = await c.readItem(leagueId, it);
@@ -2288,7 +2290,6 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         continue;
       }
 
-      await pace();
       const sentAt = now();
       setTournamentItem(row.id, item.position, { sentAt });
       const at = { name, date, connectionId: read.connectionId, sentAt, action: 'cancel' as const, displayId: read.read.displayId };

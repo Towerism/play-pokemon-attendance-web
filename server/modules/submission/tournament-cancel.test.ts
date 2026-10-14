@@ -40,6 +40,8 @@ type Behaviour = { fail: PokemonUpstreamError; landed?: boolean } | 'ignored' | 
 /** Runs before each tournament read, numbered from 1; a promise holds the read until it settles. */
 let onRead: ((n: number) => unknown) | undefined;
 let readCount: number;
+/** Runs after each paced wait. */
+let onSleep: (() => void) | undefined;
 let logged: { message: string; meta: unknown }[];
 
 const noResolver: PlaySessionResolver = { resolve: () => Promise.reject(new Error('never')), find: () => Promise.reject(new Error('never')) };
@@ -95,6 +97,7 @@ function build(over: { tournamentDelayMs?: number } = {}): SubmissionService {
     sleep: async (ms, signal) => {
       if (signal.aborted) throw signal.reason;
       clock = new Date(clock.getTime() + ms);
+      onSleep?.();
     },
     log: { warn: () => {}, info: (message, meta) => logged.push({ message, meta }) },
     ...(over.tournamentDelayMs !== undefined && { tournamentDelayMs: over.tournamentDelayMs }),
@@ -113,6 +116,7 @@ beforeEach(() => {
   onCancel = undefined;
   onRead = undefined;
   readCount = 0;
+  onSleep = undefined;
   logged = [];
   const staffing = createStaffingService({
     db: database.db,
@@ -415,6 +419,32 @@ describe('the tournament_cancel job', () => {
       database.sqlite.prepare('insert or replace into submission_lock (league_id, submission_id, expires_at) values (?, 999, ?)').run(L, clock.getTime() + 60_000);
     };
     await expect(cancel(id)).rejects.toMatchObject({ code: 'submission_running' });
+    expect(rowOf(id).state).toBe('created');
+    expect(staffRows()).toEqual(UNTOUCHED);
+  });
+
+  it('reads the tournament after waiting its turn, so someone registering during the wait stops an unconfirmed cancel', async () => {
+    service = build({ tournamentDelayMs: 60_000 });
+    const id = created();
+    await service.editTournaments(L, { target: { kind: 'planned', id }, body: ApplyBody.parse({ changes: { details: 'New' } }), startedBy: 'organizer' });
+    await service.idle();
+    onSleep = () => upstream.state.participants.set(GUID, participants(OLIVE.professorPlayerId!, { players: 1 }));
+
+    const { submissionId } = await cancel(id);
+
+    expect(cancels()).toEqual([]);
+    expect(items(submissionId!)[0]).toMatchObject({ outcome: 'failed', errorCode: 'confirmation_required' });
+  });
+
+  it.each([
+    ['a job', () => undefined],
+    ['the already-cancelled path', () => (stub().applicationState = 'cancelled')],
+  ])('refuses %s when the app starts shutting down during the reads, writing nothing', async (_what, setup) => {
+    const id = created();
+    setup();
+    onRead = () => void service.shutdown();
+    await expect(cancel(id)).rejects.toMatchObject({ code: 'shutting_down' });
+    expect(jobs()).toEqual([]);
     expect(rowOf(id).state).toBe('created');
     expect(staffRows()).toEqual(UNTOUCHED);
   });
