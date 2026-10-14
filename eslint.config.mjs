@@ -55,7 +55,8 @@ const NO_KIT_IN_BROWSER = {
 
 // The kit's runLauncher builds a logger that hides only the kit's base keys when it isn't given one (architecture
 // §10), so it must be handed createAppLogger(...) directly in its options. Not seen (review checks): an aliased
-// import, options built outside the call, a logger from a variable, a later spread overriding `logger`.
+// import, a namespace call (`kit.runLauncher`), options built outside the call, a logger from a variable, a later
+// spread overriding `logger`.
 const LAUNCHER_WITH_APP_LOGGER = {
   selector:
     "CallExpression[callee.name='runLauncher']:not(:has(> ObjectExpression:has(> Property[key.name='logger'][value.type='CallExpression'][value.callee.name='createAppLogger'])))",

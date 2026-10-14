@@ -1518,7 +1518,7 @@ flowchart LR
     and script code (`app/` and `shared/` don't log; a pino import there is a review check), because either would log
     without attendance's keys. ESLint doesn't see `require` or a dynamic `import()` (a review check). A kit API that builds its own logger
     when none is passed must be given `createAppLogger(...)`: for `runLauncher`, ESLint requires
-    `logger: createAppLogger(...)` directly in its options (an aliased import, options built elsewhere or a later
+    `logger: createAppLogger(...)` directly in its options (an aliased import, a namespace call, options built elsewhere or a later
     spread overriding `logger` are review checks).
   - `server/routes/healthz.get.ts` (used by the image `HEALTHCHECK`) and `server/routes/readyz.get.ts` endpoints.
     The submission history in the UI *is* the audit log.

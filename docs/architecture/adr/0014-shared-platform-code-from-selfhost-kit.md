@@ -73,8 +73,8 @@ A3 (#131) moved the secret bootstrap, the runtime env and the launcher. `server/
 attendance's configuration: `SECRETS` (the kit's `sessionPassword()` and two `aes256Key` specs with today's env names,
 file names and log labels), the six rate-limit variables, and `RUNTIME_ENV`, which the launcher passes to the kit's
 `prepareRuntimeEnv`. The launcher is the kit's `runLauncher`, given `logger: createAppLogger({ scope: 'startup' })`;
-ESLint rejects a `runLauncher` call without it (an aliased import, options built elsewhere, or a later spread overriding
-`logger` are review checks). `ATTENDANCE_LOG_KEYS` takes the secret names from `secretKeyNames(SECRETS)`: the same list.
+ESLint rejects a `runLauncher` call without it (an aliased import, a namespace call, options built elsewhere, or a later
+spread overriding `logger` are review checks). `ATTENDANCE_LOG_KEYS` takes the secret names from `secretKeyNames(SECRETS)`: the same list.
 An existing install's `secrets/` is pinned by a test that loads synthetic files and checks that nothing on disk changes.
 One difference from attendance's own code is accepted: `NUXT_SESSION_COOKIE_SECURE` is now derived with the kit's
 `isHttpsSite` (the site URL parses and its protocol is `https:`), the check HSTS already used, instead of a

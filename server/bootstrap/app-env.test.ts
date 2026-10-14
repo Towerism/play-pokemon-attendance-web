@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { chmodSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type TempSecretsDir, existingInstallSecrets } from '@towerism/selfhost-kit/testing';
+import { type TempSecretsDir, existingInstallSecrets, tempSecretsDir } from '@towerism/selfhost-kit/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InvalidConfigError, InvalidSecretError, prepareRuntimeEnv, resolveSecret } from '@towerism/selfhost-kit';
 import { POSITIVE_INTEGER_VARS, RUNTIME_ENV, SECRETS } from './app-env';
@@ -155,6 +155,32 @@ describe('an existing install', () => {
       `Invalid secret in file ${path}: ${problem}. Fix or remove it; it is never regenerated automatically.`,
     );
     expect(snapshot(install.secretsDir)).toEqual(before);
+  });
+});
+
+describe('a first boot (empty data folder)', () => {
+  let fresh: TempSecretsDir;
+  beforeEach(() => {
+    fresh = tempSecretsDir();
+  });
+  afterEach(() => fresh.cleanup());
+
+  it('generates the three secret files, owner-only, and says so in order', () => {
+    const { env, log } = prepareRuntimeEnv({ NUXT_DATABASE_PATH: fresh.databasePath }, RUNTIME_ENV);
+
+    const dir = fresh.secretsDir;
+    expect(log).toEqual([
+      `Session password: generated into ${join(dir, 'session-password')}`,
+      `Token vault key: generated into ${join(dir, 'token-vault.key')}`,
+      `TDF vault key: generated into ${join(dir, 'tdf-vault.key')}`,
+    ]);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    for (const spec of SECRETS) {
+      const file = join(dir, spec.file);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(readFileSync(file, 'utf8')).toBe(`${env[spec.env]}\n`);
+      expect(log.join('\n')).not.toContain(env[spec.env]);
+    }
   });
 });
 
