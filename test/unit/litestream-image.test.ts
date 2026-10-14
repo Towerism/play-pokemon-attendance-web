@@ -1,10 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { copyKitDockerAssets } from './kit-docker-assets';
 
 /** ADR-0002 / ADR-0006: optional Litestream ships in the `app` image, configured only from env. */
 const dockerfile = readFileSync('Dockerfile', 'utf8');
 const appStage = dockerfile.slice(dockerfile.indexOf('AS app-build'));
-const configPath = 'docker/litestream.yml';
+// The config the image gets: the kit's, copied by `selfhost-kit docker-assets`.
+const assets = copyKitDockerAssets();
+const configPath = assets.path('litestream.yml');
+afterAll(() => assets.remove());
 
 describe('shipped Litestream config', () => {
   it('exists and is copied to the path the entrypoint uses', () => {

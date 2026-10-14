@@ -2,13 +2,19 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { copyKitDockerAssets } from './kit-docker-assets';
 
 // The root path (chown + gosu) needs a container: test/docker/smoke.sh covers it in CI.
-const run = (env: Record<string, string>, ...cmd: string[]) =>
-  spawnSync('sh', ['docker/entrypoint.sh', ...cmd], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
+// The entrypoint under test is the one the image gets: the kit's, copied by `selfhost-kit docker-assets`.
+const assets = copyKitDockerAssets();
+const ENTRYPOINT = assets.path('entrypoint.sh');
+afterAll(() => assets.remove());
 
-describe.runIf(process.getuid?.() !== 0)('docker/entrypoint.sh as a non-root user', () => {
+const run = (env: Record<string, string>, ...cmd: string[]) =>
+  spawnSync('sh', [ENTRYPOINT, ...cmd], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
+
+describe.runIf(process.getuid?.() !== 0)('the copied entrypoint.sh as a non-root user', () => {
   it('runs the command as-is', () => {
     const result = run({}, 'sh', '-c', 'echo "$0 $(umask)"', 'hello');
     expect(result.status).toBe(0);
@@ -52,7 +58,7 @@ esac
 exit 98
 `;
 
-describe.runIf(process.getuid?.() !== 0)('docker/entrypoint.sh with optional Litestream', () => {
+describe.runIf(process.getuid?.() !== 0)('the copied entrypoint.sh with optional Litestream', () => {
   let dir: string;
   let db: string;
   let stubLog: string;
@@ -67,7 +73,7 @@ describe.runIf(process.getuid?.() !== 0)('docker/entrypoint.sh with optional Lit
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const start = (env: Record<string, string>, ...cmd: string[]) => {
-    const result = spawnSync('sh', ['docker/entrypoint.sh', ...cmd], {
+    const result = spawnSync('sh', [ENTRYPOINT, ...cmd], {
       env: { PATH: `${dir}:${process.env.PATH}`, STUB_LOG: stubLog, NUXT_DATABASE_PATH: db, ...env },
       encoding: 'utf8',
     });
