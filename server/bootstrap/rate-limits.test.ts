@@ -50,8 +50,14 @@ describe('buildRateLimits with valid settings', () => {
     expect(clientKey({ remoteAddress: '192.168.1.20', xForwardedFor: '203.0.113.9', trusted })).toBe('192.168.1.20');
   });
 
-  it('treats unset trusted proxies as blank, as before', () => {
+  it('treats unset trusted proxies as blank, which is the default list, as before', () => {
     const { trusted } = buildRateLimits(config({ trustedProxies: undefined }));
+    expect(clientKey({ remoteAddress: '127.0.0.1', xForwardedFor: '203.0.113.9', trusted })).toBe('203.0.113.9');
+    expect(clientKey({ remoteAddress: '192.168.1.20', xForwardedFor: '203.0.113.9', trusted })).toBe('192.168.1.20');
+  });
+
+  it("trusts no proxy for 'none'", () => {
+    const { trusted } = buildRateLimits(config({ trustedProxies: 'none' }));
     expect(clientKey({ remoteAddress: '127.0.0.1', xForwardedFor: '203.0.113.9', trusted })).toBe('127.0.0.1');
   });
 });

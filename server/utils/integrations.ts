@@ -3,11 +3,9 @@ import { parseBearer } from '../modules/integrations/bearer';
 import { IntegrationError, type IntegrationErrorCode } from '../modules/integrations/errors';
 import { type IntegrationDayService, createIntegrationDayService } from '../modules/integrations/service';
 import { type AuthenticatedToken, type IntegrationTokenService, createIntegrationTokenService } from '../modules/integrations/tokens';
-import { type FixedWindowLimiter, createFixedWindowLimiter } from '@towerism/selfhost-kit';
 
 let tokens: IntegrationTokenService | undefined;
 let days: IntegrationDayService | undefined;
-let limiter: FixedWindowLimiter | undefined;
 
 /** Integration tokens (#115, ADR-0013): minted in Settings, used by Tournament Genie. */
 export function useIntegrationTokens(): IntegrationTokenService {
@@ -37,9 +35,7 @@ export function requireIntegrationToken(event: H3Event): AuthenticatedToken {
     setResponseHeader(event, 'WWW-Authenticate', 'Bearer realm="integrations", error="invalid_token"');
     throw createError({ statusCode: 401, message: 'A valid integration token is required.', data: { code: 'invalid_token' } });
   }
-  const config = useRuntimeConfig(event).integrationRateLimit;
-  limiter ??= createFixedWindowLimiter({ max: Number(config.max), windowMs: Number(config.windowMs) });
-  const hit = limiter.hit(`token:${token.id}`);
+  const hit = useRateLimits().integration.hit(`token:${token.id}`);
   if (!hit.allowed) {
     setResponseHeader(event, 'Retry-After', hit.retryAfterSeconds);
     throw createError({
