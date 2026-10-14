@@ -52,7 +52,7 @@ function read(overrides: Partial<TournamentDetails> = {}): TournamentDetails {
 
 const delta = (changes: Parameters<typeof editDelta>[1], r = read()) => editDelta(r, changes, { fallbackZone: ZONE });
 
-describe('editDelta: only what differs from the fresh read is sent (NFR-1)', () => {
+describe('editDelta: only what differs from the fresh read is sent', () => {
   it.each([
     ['name', { name: 'Friday Cup Halloween' }, { name: 'Friday Cup Halloween' }],
     ['format', { category: 'tcg_exp' }, { category: 'tcg_exp' }],

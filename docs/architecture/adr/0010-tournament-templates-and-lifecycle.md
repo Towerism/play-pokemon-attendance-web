@@ -16,6 +16,9 @@
 - Updated: 2026-10-13 ([#92](https://github.com/Towerism/play-pokemon-attendance-web/issues/92), building creation):
   adoption reads a candidate's details for its format, which a listing doesn't carry. See
   [Update (#92)](#update-92-adoption-reads-the-format).
+- Updated: 2026-10-13 ([#93](https://github.com/Towerism/play-pokemon-attendance-web/issues/93), building edit and
+  reschedule): the reschedule rules apply to a date change, an uncertain edit is settled by one re-read, and rows a
+  schedule override shouldn't change are held. See [Update (#93)](#update-93-edit-and-reschedule-as-built).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
@@ -663,6 +666,34 @@ Building the job also settled what decision 5 left to it:
   and a row that has become short notice since the job ran refuses the retry (`short_notice_not_acknowledged`).
 - A held row the job never sent goes back to `unknown` if an earlier create was sent for it, else to `planned`.
 - The schedule's "in play-tools through X" moves forward only when a create-through job succeeds, never back.
+
+## Update (#93): edit and reschedule as built
+
+Building **Edit…** settled what decisions 8 and 11 left to it:
+
+1. **The reschedule rules apply when the local date changes.** The reschedule window (start − 3 d … start + 90 d),
+   short notice, the creatable window, the series window and moving staff apply to a change of the tournament's local
+   date. A new start time on the same date is an ordinary edit: decision 8 already exempts "edits that don't change
+   the date", and otherwise a time change carried across a schedule could never reach a tournament more than 3 days
+   out. A carried start time keeps each tournament's own date.
+2. **An uncertain `PATCH` is re-read once, not settled.** An edit is idempotent, unlike a create. After a 5xx or a
+   timeout the job re-reads: the change there → `edited`; otherwise the item fails `unavailable`, and **Retry** sends it
+   again only after its own fresh read (`already_applied` if the first one landed late). The job never resends on its
+   own. An edit in flight at a crash is `unknown`, and a retry takes it.
+3. **`{id}` is a planned tournament id or a play-tools guid.** A guid a planned row holds is that row. A guid no row
+   holds is read as each connected professor in turn, then acted on as the organizer the read names (ADR-0009).
+4. **A tournament with no template uses country `US`** for series windows and venues, as the form options do
+   (Update #91).
+5. **A series play-tools no longer lists** can't be checked for a date change: the preview warns
+   `series_window_unknown`, and play-tools' refusal, if any, is the outcome.
+6. **A changed venue keeps each tournament's local date and start time** in the new venue's zone, so a venue in
+   another zone moves the start instant. That is not a reschedule.
+7. **Rows a schedule override shouldn't change are held.** For "this and later" and "all", the override goes on the
+   schedule (decision 11). Rows not created yet that it would otherwise reach but the edit doesn't (excluded ones, and
+   `creating` or `unknown` ones, whose create may land under their current name) keep what they resolve to now, as row
+   overrides. So unticking a tournament in the preview really leaves it as it was.
+8. **Refusals keep the codes the module already had:** `contact_required` stays 400 and `organizer_not_connected` 422,
+   as for templates and creates.
 
 ## Consequences
 

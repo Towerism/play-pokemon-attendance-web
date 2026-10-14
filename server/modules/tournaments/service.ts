@@ -227,7 +227,7 @@ export interface TournamentsService {
    * @throws TournamentsError `not_found`, `not_editable`, `organizer_not_connected`, `needs_reconnect`, `league_not_selected`
    */
   editForm(leagueId: string, target: EditTarget): Promise<EditForm>;
-  /** Every tournament an edit would touch, with before → after; changes nothing. @throws TournamentsError (FR-9's refusals) */
+  /** Every tournament an edit would touch, with before → after; changes nothing. @throws TournamentsError the edit's refusals (locked, reschedule window, dates, series, format, venue, nothing to change) */
   editPreview(leagueId: string, target: EditTarget, body: EditBody): Promise<EditPreview>;
   /** What the submission module's `tournament_edit` job uses (#93). */
   editing: TournamentEditing;
