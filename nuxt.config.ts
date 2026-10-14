@@ -11,7 +11,7 @@ export default defineNuxtConfig({
   modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-auth-utils', 'nuxt-security'],
 
   // Architecture §9. nuxt-security nonces the HTML shell's inline scripts;
-  // server/plugins/security-headers.ts puts the same headers on every other
+  // server/plugins/security-headers.ts (the kit's plugin) puts the same headers on every other
   // response and switches HSTS / upgrade-insecure-requests on for an HTTPS site.
   security: {
     nonce: true,
@@ -23,9 +23,9 @@ export default defineNuxtConfig({
       xDownloadOptions: false,
       permissionsPolicy: Object.fromEntries(PERMISSIONS_POLICY.split(', ').map((p) => [p.split('=')[0]!, []])),
     },
-    // Our own guards instead: auth rate limits keyed through trusted proxies
-    // (server/utils/rate-limit.ts) and a 2 MiB body cap that spares the TDF
-    // route (server/middleware/body-size.ts). The XSS validator would reject
+    // The kit's guards instead: auth rate limits keyed through trusted proxies
+    // (enforceRateLimit, limiters from server/bootstrap/rate-limits.ts) and a 2 MiB
+    // body cap that spares the TDF route (server/middleware/body-size.ts). The XSS validator would reject
     // every TDF upload (XML in JSON); Zod validates bodies. Same-origin only: no CORS.
     rateLimiter: false,
     requestSizeLimiter: false,

@@ -1,40 +1,24 @@
-import type { H3Event } from 'h3';
-import { type FixedWindowLimiter, type TrustedProxies, clientKey, createFixedWindowLimiter, parseTrustedProxies } from '@towerism/selfhost-kit';
+import type { RateLimitOptions } from '@towerism/selfhost-kit/nitro';
+import { type RateLimits, buildRateLimits } from '../bootstrap/rate-limits';
 
-type AuthRoute = 'login' | 'setup';
-
-let limiters: Record<AuthRoute, FixedWindowLimiter> | undefined;
-let trusted: TrustedProxies | undefined;
+let limits: RateLimits | undefined;
 
 /**
- * Login and first-run setup are rate-limited per client (architecture §9).
- * Called first in the handler, before the body is read, so a limited request
- * costs no scrypt work. The client is the TCP peer, or the X-Forwarded-For
- * entry a trusted proxy (`NUXT_TRUSTED_PROXIES`, e.g. Caddy) appended.
+ * The login, setup and integration limiters and the trusted proxies (architecture §9), built once.
+ * `server/plugins/0.rate-limits.ts` calls this at boot, so a setting the kit refuses fails startup.
  */
-export function enforceAuthRateLimit(event: H3Event, route: AuthRoute): void {
-  const config = useRuntimeConfig(event);
-  limiters ??= {
-    login: createFixedWindowLimiter(config.authRateLimit.login),
-    setup: createFixedWindowLimiter(config.authRateLimit.setup),
-  };
-  trusted ??= parseTrustedProxies(String(config.trustedProxies ?? ''));
+export function useRateLimits(): RateLimits {
+  limits ??= buildRateLimits(useRuntimeConfig());
+  return limits;
+}
 
-  const key = clientKey({
-    remoteAddress: event.node.req.socket?.remoteAddress,
-    xForwardedFor: getRequestHeader(event, 'x-forwarded-for'),
-    trusted,
-  });
-  const result = limiters[route].hit(key);
-  if (result.allowed) return;
-
-  const { retryAfterSeconds } = result;
-  const minutes = Math.ceil(retryAfterSeconds / 60);
-  setResponseHeader(event, 'Retry-After', retryAfterSeconds);
-  throw createError({
-    statusCode: 429,
-    statusMessage: 'Too Many Requests',
-    message: `Too many attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`,
-    data: { code: 'rate_limited', retryAfterSeconds },
-  });
+/**
+ * The kit's `enforceRateLimit` options for login or first-run setup (architecture §9): their limiter and the
+ * trusted proxies. The handler calls `enforceRateLimit(event, authRateLimit(route))` first, before the body is
+ * read, so a limited request costs no scrypt work. The client is the TCP peer, or the X-Forwarded-For entry a
+ * trusted proxy (`NUXT_TRUSTED_PROXIES`, e.g. Caddy) appended.
+ */
+export function authRateLimit(route: 'login' | 'setup'): RateLimitOptions {
+  const { auth, trusted } = useRateLimits();
+  return { limiter: auth[route], trusted };
 }

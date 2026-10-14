@@ -90,6 +90,10 @@ password crosses the network unencrypted. To use the app from outside, choose on
 
 Don't forward port 3000 on your router.
 
+The proxy must pass request bodies on with their length (`Content-Length`), as
+SWAG, Nginx Proxy Manager, Caddy and Tailscale do for the browser: the app
+refuses a body sent without one with `411 Length Required`.
+
 With an `https://` *Site URL*, login cookies are `Secure`, and a browser never
 sends them back over plain HTTP. Logging in at `http://tower:3000` then fails:
 the login page just comes back. Either use the HTTPS address, or clear *Site URL*

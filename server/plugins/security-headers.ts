@@ -1,26 +1,13 @@
-import { contentSecurityPolicy, isHttpsSite, securityHeaders } from '@towerism/selfhost-kit';
+import { securityHeadersPlugin } from '@towerism/selfhost-kit/nitro';
 
 /**
  * Security headers on every response (architecture §9), errors and API calls
- * included; nuxt-security only covers the HTML shell, where it re-sends the
- * CSP with the response's nonce. HSTS and `upgrade-insecure-requests` follow
- * `NUXT_PUBLIC_SITE_URL` at runtime: a plain-HTTP LAN install gets neither.
+ * included, from the kit. nuxt-security only covers the HTML shell, where the
+ * kit's plugin hands it the same CSP (with the response's nonce) and HSTS.
+ * HSTS and `upgrade-insecure-requests` follow `NUXT_PUBLIC_SITE_URL` at
+ * runtime: a plain-HTTP LAN install gets neither.
  */
+// Built inside the plugin, not at import, so the site URL is read from runtime config when Nitro boots.
 export default defineNitroPlugin((nitroApp) => {
-  const httpsSite = isHttpsSite(useRuntimeConfig().public.siteUrl);
-  const headers = securityHeaders({ httpsSite });
-
-  // The HTML shell's CSP comes from nuxt-security; give it the same runtime switch.
-  nitroApp.hooks.hook('nuxt-security:routeRules', (rules) => {
-    const all = (rules['/**'] ??= {});
-    all.headers = {
-      ...(all.headers || {}),
-      contentSecurityPolicy: contentSecurityPolicy({ httpsSite, nonce: true }),
-      strictTransportSecurity: httpsSite ? { maxAge: 15_552_000, includeSubdomains: false, preload: false } : false,
-    };
-  });
-
-  nitroApp.hooks.hook('request', (event) => {
-    setResponseHeaders(event, headers);
-  });
+  securityHeadersPlugin({ siteUrl: useRuntimeConfig().public.siteUrl })(nitroApp);
 });

@@ -42,6 +42,8 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useIntegrationDays()',
     'requireIntegrationToken(e)',
     'useTournaments()',
+    'useRateLimits()',
+    "authRateLimit('login')",
   ])(
     'rejects the auto-imported call %s',
     async (call) => {
@@ -222,6 +224,22 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
     const code = "import { describeVaultContract } from '@towerism/selfhost-kit/testing';\nexport const f = describeVaultContract;";
     expect(await errors('server/modules/x/y.test.ts', code)).toEqual([]);
   });
+
+  const contractSuite = "import { describeJsonOnly } from '@towerism/selfhost-kit/testing';\nexport const f = describeJsonOnly;";
+
+  it.each(['server/modules/roster/service.ts', 'server/utils/x.ts', 'server/plugins/x.ts', 'server/bootstrap/x.ts', 'server/api/x.get.ts', 'nuxt.config.ts', 'scripts/x.mjs'])(
+    "rejects the kit's test-only /testing entry in production code: %s",
+    async (file) => {
+      expect(await errors(file, contractSuite)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+    },
+  );
+
+  it.each(['server/modules/x/y.test.ts', 'server/bootstrap/x.test.ts', 'test/unit/x.test.ts', 'test/server/x.test.ts'])(
+    'lets tests use the contract suites: %s',
+    async (file) => {
+      expect(await errors(file, contractSuite)).toEqual([]);
+    },
+  );
 
   it('lets server/utils take secrets from the kit', async () => {
     expect(await errors('server/utils/x.ts', "import { aes256Key } from '@towerism/selfhost-kit';\nexport const f = aes256Key;")).toEqual([]);
