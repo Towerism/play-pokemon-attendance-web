@@ -721,3 +721,45 @@ export const tournamentScheduleOverride = sqliteTable(
   },
   (t) => [index('tournament_schedule_override_schedule_idx').on(t.scheduleId, t.slotPosition)],
 );
+
+/**
+ * An event the league must hold every period (ADR-0010 decision 12): a series match × product × cadence, seeded with
+ * League Cup quarterly and League Challenge monthly for TCG, VGC and GO. Turned off, never deleted (#95).
+ */
+export const tournamentRequirement = sqliteTable(
+  'tournament_requirement',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** Part of play-tools' series name, matched case-insensitively (e.g. `League Cup`). */
+    seriesMatch: text('series_match').notNull(),
+    product: text('product', { enum: ['tcg', 'vg', 'pgo'] }).notNull(),
+    cadence: text('cadence', { enum: ['month', 'quarter'] }).notNull(),
+    minCount: integer('min_count').notNull().default(1),
+    /** Days before a period's latest date an uncovered period turns at risk. */
+    warnDays: integer('warn_days').notNull(),
+    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('tournament_requirement_league_idx').on(t.leagueId)],
+);
+
+/** A period covered by an event the app can't see, e.g. one run by a professor who isn't connected (decision 12). */
+export const requirementManualCover = sqliteTable(
+  'requirement_manual_cover',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    requirementId: integer('requirement_id')
+      .notNull()
+      .references(() => tournamentRequirement.id),
+    /** The first day of the cadence period, `YYYY-MM-DD` (#102). */
+    periodStart: text('period_start').notNull(),
+    note: text('note').notNull(),
+    /** The username who recorded it. */
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [uniqueIndex('requirement_manual_cover_period_unique').on(t.requirementId, t.periodStart)],
+);
