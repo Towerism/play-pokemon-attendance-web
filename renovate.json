@@ -1,0 +1,64 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigestsToSemver",
+    "security:minimumReleaseAgeNpm"
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"],
+    "minimumReleaseAge": null
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The pnpm the image installs; grouped with package.json's packageManager pin, which CI uses",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["\\nARG PNPM_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)\\n"],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "pnpm"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "engines.node is the kit's Node floor, not a pin",
+      "matchDepTypes": ["engines"],
+      "enabled": false
+    },
+    {
+      "description": "@types/node follows the Node major, which is a manual change (esbuild target, node-toolchain.test.ts)",
+      "matchPackageNames": ["@types/node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": ".node-version and the Dockerfile's Node images must match (node-toolchain.test.ts), so they move in one PR",
+      "matchDepNames": ["node"],
+      "matchManagers": ["nodenv", "dockerfile"],
+      "groupName": "Node.js"
+    },
+    {
+      "description": "CI's pnpm (packageManager) and the image's pnpm (Dockerfile) move in one PR",
+      "matchDepNames": ["pnpm"],
+      "groupName": "pnpm"
+    },
+    {
+      "description": "The kit's npm version and its reusable-workflow SHAs move in one PR (kit-pins.test.ts); a fix(deps) commit releases a patch. Kit ADR-0005, security fixes §4",
+      "matchPackageNames": ["@towerism/selfhost-kit", "Towerism/selfhost-kit"],
+      "groupName": "selfhost-kit",
+      "minimumReleaseAge": "0 days",
+      "schedule": ["at any time"],
+      "semanticCommitType": "fix",
+      "semanticCommitScope": "deps",
+      "rangeStrategy": "pin"
+    },
+    {
+      "description": "Kit patches and minors automerge once the required checks pass; majors and moved tags (digest) wait for review",
+      "matchPackageNames": ["@towerism/selfhost-kit", "Towerism/selfhost-kit"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true
+    }
+  ]
+}
