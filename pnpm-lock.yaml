@@ -15,8 +15,8 @@ importers:
         specifier: ^4.11.3
         version: 4.11.3(ba3cb7e5d2f02a4a0b0d5fc6aa7ad5c3)
       '@towerism/selfhost-kit':
-        specifier: 0.4.0
-        version: 0.4.0(@semantic-release/exec@7.1.0(semantic-release@25.0.9(typescript@5.9.3)))(conventional-changelog-conventionalcommits@9.3.1)(h3@1.15.11)(semantic-release@25.0.9(typescript@5.9.3))(vitest@3.2.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.33.0)(msw@2.15.0(@types/node@24.19.2)(typescript@5.9.3))(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))
+        specifier: 0.4.2
+        version: 0.4.2(@semantic-release/exec@7.1.0(semantic-release@25.0.9(typescript@5.9.3)))(conventional-changelog-conventionalcommits@9.3.1)(h3@1.15.11)(semantic-release@25.0.9(typescript@5.9.3))(vitest@3.2.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.33.0)(msw@2.15.0(@types/node@24.19.2)(typescript@5.9.3))(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -2286,8 +2286,8 @@ packages:
       y-protocols: ^1.0.1
       yjs: ^13.5.38
 
-  '@towerism/selfhost-kit@0.4.0':
-    resolution: {integrity: sha512-V9RX7dxcYXNOGfYXnDcqvoiC90U/oCNzwj0qBtDNdANeA3yp8wrKhrKU2agTzl1NiSM92Kz4XoLI7qqyqXa9Xg==}
+  '@towerism/selfhost-kit@0.4.2':
+    resolution: {integrity: sha512-bcnbpfoeQIqN7JhePERPVIrO7JeeUUaYgPVhPB2woJxy03mnMMJRZxhIUxku3gnuSZkPrGOUbNBw91fD7ypSWA==}
     engines: {node: '>=24.11'}
     hasBin: true
     peerDependencies:
@@ -9500,7 +9500,7 @@ snapshots:
       y-protocols: 1.0.7(yjs@13.6.33)
       yjs: 13.6.33
 
-  '@towerism/selfhost-kit@0.4.0(@semantic-release/exec@7.1.0(semantic-release@25.0.9(typescript@5.9.3)))(conventional-changelog-conventionalcommits@9.3.1)(h3@1.15.11)(semantic-release@25.0.9(typescript@5.9.3))(vitest@3.2.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.33.0)(msw@2.15.0(@types/node@24.19.2)(typescript@5.9.3))(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))':
+  '@towerism/selfhost-kit@0.4.2(@semantic-release/exec@7.1.0(semantic-release@25.0.9(typescript@5.9.3)))(conventional-changelog-conventionalcommits@9.3.1)(h3@1.15.11)(semantic-release@25.0.9(typescript@5.9.3))(vitest@3.2.7(@types/node@24.19.2)(jiti@2.7.0)(lightningcss@1.33.0)(msw@2.15.0(@types/node@24.19.2)(typescript@5.9.3))(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))':
     dependencies:
       pino: 10.4.0
       pino-pretty: 13.2.0

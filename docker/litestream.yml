@@ -1,8 +1,0 @@
-# Litestream config for the `app` image (ADR-0002), used only when
-# LITESTREAM_REPLICA_URL is set (docker/entrypoint.sh). Litestream expands the
-# env references and reads LITESTREAM_ACCESS_KEY_ID / LITESTREAM_SECRET_ACCESS_KEY
-# itself. Only the database is replicated; /data/secrets/ never leaves the box.
-dbs:
-  - path: ${NUXT_DATABASE_PATH}
-    replica:
-      url: ${LITESTREAM_REPLICA_URL}
