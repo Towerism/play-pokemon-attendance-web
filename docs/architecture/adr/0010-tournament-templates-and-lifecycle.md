@@ -19,6 +19,10 @@
 - Updated: 2026-10-13 ([#93](https://github.com/Towerism/play-pokemon-attendance-web/issues/93), building edit and
   reschedule): the reschedule rules apply to a date change, an uncertain edit is settled by one re-read, and rows a
   schedule override shouldn't change are held. See [Update (#93)](#update-93-edit-and-reschedule-as-built).
+- Updated: 2026-10-14 ([#95](https://github.com/Towerism/play-pokemon-attendance-web/issues/95), building required
+  events): coverage reads the `US` windows, shows the previous period, takes status from the listing's application
+  state, is `unknown` with no connection, and keeps play-tools traffic paced and shared. See
+  [Update (#95)](#update-95-required-events-as-built).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
@@ -728,6 +732,41 @@ Building **Cancel…** settled what decision 8 left to it:
    reaches a tournament with registrants unless someone typed its display id. Like an edit, a cancel in flight at a
    crash is `unknown`, a 5xx is settled by one re-read and never resent by the job, and recovery leaves the planned row
    and staff alone until a retry finds out.
+
+## Update (#95): required events as built
+
+Building coverage (decision 12) settled what it left open:
+
+1. **Country `US`.** Series windows are per country and the app keeps no league country, so coverage reads the `US`
+   windows, the default the form options already use (Update #91). Planned rows resolve their series exactly as
+   Upcoming does: the template organizer's series list and the venue's country.
+2. **The grid shows the previous period too:** the previous, current and next two months for `month`, and the
+   previous, current and next quarter for `quarter`. So a period in its last chance, or missed, stays on screen.
+3. **Status comes from the listing's `application_state`** (else `status`). The port's `Tournament` carries it, and
+   details are read only for the series, which a professor can't change, so their cache never goes stale. `sanctioned`
+   or `complete` count, `approval-pending` is pending, `sanctioning-error` is a problem, cancelled, deleted and
+   invalidated are ignored, and any other value is pending, never covered.
+4. **No connection or no league is `unknown` too.** With nobody connected, or no league selected, nothing can be
+   confirmed, so no uncovered period shows `missing`.
+5. **Any tournament job's end drops every cached listing**, not only its professor's. A listing read in flight then
+   isn't cached, so a just-created tournament is never hidden behind a stale listing.
+6. **The minimum count:** with `m` the minimum, a period is `sanctioned` with `m` sanctioned tournaments, else
+   `covered (manual)` with a cover, else `pending` when sanctioned and pending reach `m`, else `planned` when planned ones
+   bring it to `m`, else `problem` with any errored one, else `missing`.
+7. **Planned rows count while they aren't in play-tools** (`planned`, `creating`, `failed`, `unknown`, no guid), from
+   the creatable window on, by the league-`TZ` date of their start, after `unknown` rows are linked to what the listing
+   shows. When their organizer's series can't be read, the template's own series match stands in; a row with a series
+   pick can't be judged then, and its period is `unknown`, never `missing`.
+8. **The listing cache is coverage's for now.** Upcoming keeps its live read; This week and Upcoming move onto it with
+   their pages (#98, #99). Coverage names a failed listing `needs_reconnect`, `upstream_unavailable` (a 429 or 5xx) or
+   `refused` (any other play-tools error).
+9. **Human-scale traffic.** Details reads run one at a time and stop at the first 429 or 5xx; the rest wait for the
+   next request, their periods `unknown` meanwhile. Concurrent reads (the grid, the banner and the badge) share one
+   listing and one details read per tournament. A league has at most 50 requirements.
+10. **Tournaments without `start_date_v2`** can't be placed in a period and are left out, as Upcoming leaves them
+    out. Only legacy tournaments lack it; a manual cover covers one if it ever matters.
+11. **Requirements are never deleted**, only turned off, so the six are seeded once, when a league has no rows. A
+    cadence change is refused while manual covers hold the old cadence's periods (`requirement_has_covers`).
 
 ## Consequences
 
