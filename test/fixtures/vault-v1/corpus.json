@@ -1,0 +1,119 @@
+{
+  "generatedFrom": "4fb84effa638de011efed1eee62a77646367364f",
+  "generator": "test/fixtures/vault-v1/generate.ts",
+  "legacyBlobIds": {
+    "server/modules/vault/vault.ts": "5750a4c3016b791bbccec4240bacca150f3b4d57",
+    "server/modules/pokemon/vault/vault.ts": "bfb21549347391b89ee42eacc1496b9965ef781c"
+  },
+  "entries": [
+    {
+      "name": "token: refresh token, pokemon_connection:1",
+      "vault": "token",
+      "api": "string",
+      "key": "4Eni9mSWk3IJxlRzEhW7VjWJTF44XqOqCYpF3jU7IqQ=",
+      "aad": "pokemon_connection:1",
+      "plaintextBase64": "b3J5X3J0X1MyUlU0Y3pMMXhJZlZwaWEzdVdnUFZZMmJpMy1iREd5",
+      "plaintextSha256": "1a4fea96089884b01da61f00dad43777bc4d17340455808a23457cb2caeb2e14",
+      "blobBase64": "Ab+WmRGCmmKL0Z2txeGqowTodn1qt4POLGdPjl7uy8dZDz97aJQYv67McMRJpDKoQp47IjT71gld2wQGQ+NGFh3tMJk="
+    },
+    {
+      "name": "token: refresh token, pokemon_connection:2147483647",
+      "vault": "token",
+      "api": "string",
+      "key": "fsiFjQnI3aREfEjUwP8W+fbkV4lUxbrXpdfDFJqe+ag=",
+      "aad": "pokemon_connection:2147483647",
+      "plaintextBase64": "b3J5X3J0X3A2TlNuTEN2TlVpRjJKWXhicmVGRTFwdHpLRXY2d2FL",
+      "plaintextSha256": "76afed7fee69114796578706d60d2d8d9ffdb30b66a40d1371154ae435eafc52",
+      "blobBase64": "AS/wskugGIArV1AZbzFxrhBI0bAK75uDRgIa6aGEKjq0Y9eTTEsaTESw4BMoMVW+QAY9lCzt5Zpl0f+ojj20Ft9aqj0="
+    },
+    {
+      "name": "token: multi-byte UTF-8, pokemon_connection:7",
+      "vault": "token",
+      "api": "string",
+      "key": "fnJfn1xIiYzGuDGV39I0fZ+FD+7+GYZT8hFMaeXuKKc=",
+      "aad": "pokemon_connection:7",
+      "plaintextBase64": "UG9rw6ltb24g44Od44Kx44Oi44OzIPCfg48gb3J5X3J0X3g=",
+      "plaintextSha256": "f2176cdd7dea9182fb15a5b1bd595c6b3e66913dcb6b2f4d86698868bfcaed64",
+      "blobBase64": "AfIZ2uOYb0/ECC6cHZ6ysid9JZS2l41iQY6ouBLNfhNrSUwOl+u5Vj4PU7iY9YlrLhu5IADg3Z2rIKBdO5H29w=="
+    },
+    {
+      "name": "token: carried-over refresh token sealed with the league id (default)",
+      "vault": "token",
+      "api": "string",
+      "key": "Z+xWOYtROrQAvxQ8NrK7xrEprWkY22TIHYJlDZEywfY=",
+      "aad": "default",
+      "plaintextBase64": "b3J5X3J0X1ZaM3NHcndIanJ3QUJhbFIybjBqczdXcHdsRTB5Vlh1",
+      "plaintextSha256": "32cd5fc9855cb756728c21058d2fe1c117ca25869cfd0d25d7fc4e54456d1411",
+      "blobBase64": "AYen692vmzosnTA0sasXes3VgdCee2gwEMhGFoWKp3ALSo/R+5uISOm3MYoTk9wEELrUjc5Lwdz+0CWHB4NIcPmmCWg="
+    },
+    {
+      "name": "token: empty plaintext, pokemon_connection:3",
+      "vault": "token",
+      "api": "bytes",
+      "key": "dw2NOzy6YJ/viV8LdgUw4Y5c3BBYIuAmm/21UFW/SP8=",
+      "aad": "pokemon_connection:3",
+      "plaintextBase64": "",
+      "plaintextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "blobBase64": "AV1SaZ2Z51772U/spwB7X6KUHq0rduWJ54KXRps="
+    },
+    {
+      "name": "token: every byte value, pokemon_connection:4",
+      "vault": "token",
+      "api": "bytes",
+      "key": "1FoW4OBLvuPsz909HRhb1OofNSPGiFVUHhQW7MIvhng=",
+      "aad": "pokemon_connection:4",
+      "plaintextBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+      "plaintextSha256": "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880",
+      "blobBase64": "AaQCS9A0znkcoPqBdFzniF6OjzoA1WV1gabFmS/u33yJbQqBYVwW4ha0EQt92PZBZyOiYlhF67300aetiwygoGViTDlCClEbM/swoJob0QX1KldnDFHT278EFgSbl/4FK/8OvIxEk2P+iKp8ELkmEvBfrJaup/NiLFENN/1WnTyVN63xK19NHmKn9orkaY2zHEEAba8+lEMK2w6/nN39a7Ib76kWQnRJs6FluucPluAC5I7mGjhvPXuwP9pNWVVF/RnbjS9dpbS1B1SJzcmcffVd4pWR1puekHI2dpPvodFNVFQDo5vD5oxlUAxbDcIkNqzLU4C3mtwsxkE+yhKIY4TmeCVsWXDMnBnbjMrKu+nZcw4jdfELRFpTB9Hn"
+    },
+    {
+      "name": "TDF: gzipped TDF, tdf_file:default",
+      "vault": "TDF",
+      "api": "bytes",
+      "key": "Bem/M6Jssl2P8z/e7hpTicnslNHsN5yBNBU4gNXcodY=",
+      "aad": "tdf_file:default:b0279d551adcd7775f58b8c466da3a3e211439d8d31a900d566db35d69ecd8fd",
+      "plaintextBase64": "H4sIAAAAAAAAA02QQW/CMAyF7/yKyHeWthJsBzeogq6b1HFgcEYRMSVSmlaNi+i/n0o3mE/PT8/+LOPqVjtxpS7YxqcQv0QgyJ8aY32VwmH/Pn+DlZohN33ndU2eBQ8tpZCACKwrSmEB/+dfQVS6pim032Wbz21xXGe7zbHIvnIQdWMohTLPikO+/sjKMt8WOSg0mrXCEaG+B88XYnsShs66dyxK0lVPYn3RzpGvCOU9iNaoZDmP4nk0VozSGoUny4PaU+CrdY5Q3nsMrDs2mklFsYwSmUTJEuXTRTld0Do9UBf+hOgDddakEE8IUHi2XeA7PwsXlM8Wnf5V+U3X7ch+OCinfQ8RFMrnU9XsB9x3biOJAQAA",
+      "plaintextSha256": "9599fd8a71a0d42e2094fc317a45c6df8d49f0f87996a0b91b6365841b72df48",
+      "blobBase64": "AfiB3nUr9mPxhBX2ovA4X2XHg2dCyROiGLL6T/5fGG6qvkzeyDabllowK3QmFbocXmjMxo66XJY+yhahGPtX6/WWQLuFpXL2671bU62A23H7soGhcg7E7nh5736kPJvKdhWAl26aRDYFRjYKxedgYxTNhCHVGu9DXJjRXE7NjK2CkaIx2pAP0iW/129aueh6Uv9AwJj4Ms91e4OG4iojEhflYl9EjOdDt3eHfnYERGdPqt0BDgDdrT+AvS6s22AyjL9S5GS+KcgC6H5d1C2vQxa4XcjNPTDCzYQaGH7A8oTGMKo5ncTpkDc/DbwSr8mzOdqr2dbGGGB/Xmn4iLQZWknUbUJwf5dQypiaJZ1drPbjCph8ZxUkbl7hnq78IOnPUzi5+hTV5mHpGYWdT+XTFQ/gYeQ="
+    },
+    {
+      "name": "TDF: gzipped TDF, tdf_file:other-league",
+      "vault": "TDF",
+      "api": "bytes",
+      "key": "+yKAc1JZB0iaJlUE3gRafISkgbAGv65Tdz1vHrypdnc=",
+      "aad": "tdf_file:other-league:df11227ea707aeeb8f22e8e3537f8acc49bf2dbc0a30e3daea2fe533726e5801",
+      "plaintextBase64": "H4sIAAAAAAAAA01QwW7CMAy98xWR713aSmM7uEEVdN2kjgODM4qI10ZKU5QYRP9+gm4wX/ze07OfZVxceifOFKIdfAHZUwqC/GEw1rcF7LZvySss1Ax5OAWve/IseDxSATmIyLqlAp7h//wLiFb3NJm2m3L1sa73y3Kz2tflZwWiHwwV0FRlvauW72XTVOu6AoVGs1Z4jVBfo+eO2B7EwB2FxJFuTySaqS077Rz5llDe3GiNyudJmiXptTKU1ig8WB7VliKfrXOE8sYxsg5sNJNKM5nmMk/zOcqHinI64+j0SCH+AXGKFKwpIJsiQOG3DZFv+WXsUD4oOv2Lqovuj9fsu4Jy2ncHUaF8fFbNfgBbD4aLjgEAAA==",
+      "plaintextSha256": "4fc01efd79c4ff4c0c1adfc19b5d58482f83785b7151156579b274001d19c97e",
+      "blobBase64": "AUP3BQ9EzgfwT4oXjiLMzuJZy8sepptB16lETBaN3zP7dvdYgtl/2ePIp+B8DYXcNEAGZdbooclBf4XwVsSDJc73VfkwrwWRE2/G54FkION0L5IwGgCIBGNRBVwAD44rpIkrZXKNRzo27A6j7iI32+dF/7OmHJAGHT5QbNopxrXrFdT67QCPMY/x+TA0lFPXkM7uQCPCLxI4Qq79LxOnvoh6wiEwO/tnZwftj+l0HjYV39oYJ9CBnZja1IRE2nF9qnsG02ziZPWOpdWIOagQlziVbrTFT2E3RLGF9Se43efA+PvmR3rCa5CHk2s5kWPPT30k6f2YtPjr8UqOZIrtRKEaj7qu/wv1j2mbRyaHBythW6m2sA+uKsp4S65B0T2Nyl4das2nWZLPS2/Iiw+Ii0oqdSU4"
+    },
+    {
+      "name": "TDF: empty plaintext, tdf_file:default",
+      "vault": "TDF",
+      "api": "bytes",
+      "key": "3aNWyi2dxMEoHyHJIxF9Iz0phvDGP5CnJv8it5eW+2g=",
+      "aad": "tdf_file:default:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "plaintextBase64": "",
+      "plaintextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "blobBase64": "ATwUJnzS85xfnBTEu3Dc5xXB1i1lYX0ejA9fPH8="
+    },
+    {
+      "name": "TDF: every byte value, tdf_file:default",
+      "vault": "TDF",
+      "api": "bytes",
+      "key": "IpxMCorMPX057aYivV5Gu09nLU8VLSViQoWHz8zeLhM=",
+      "aad": "tdf_file:default:40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880",
+      "plaintextBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
+      "plaintextSha256": "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880",
+      "blobBase64": "ATCoRLIBPprtwMT2qiZGxZWQj2N8d4ICmqPBML2bEZONfQcRQTCP+r0Jed0CgpTNmGdSj14/PlzpxkrpuzE8OiALT3ylhGmwWs6RxLIpJ3SP9c9SZjlnCPnAC2z2IrItm03GMyU62N9/ZTHFOAeYKImVW8JQquHPWf+odj4SqtPa/w+vyShB6R4dqTgFKqaCI4nrbMsWXeDTcvcJcwD5u6nkR6Q1xMtY0tpH9wZFlToFAzxJ2VjzGvGkoF9hoynC3Zw0upvM4VvgSl8QGvLryBFWshfH1HkmI5gzc0K+ZGAIuF2YaFlQ7JvykiagrROF520AGqPuWcc/3l4bXsGZENkUqk2EIRNIJFUZZCBml0PrJnVHff2I6tDd+g+i"
+    },
+    {
+      "name": "TDF: 2 MiB random, tdf_file:default",
+      "vault": "TDF",
+      "api": "bytes",
+      "key": "jGX7BXHqGoUkI9Pn1FxdJ7ywku3pedF4tNqN1pVWdMg=",
+      "aad": "tdf_file:default:a3926344a9f5f3568c4b8911678bf1b444d73e3918acd27279a4a69346d1009e",
+      "plaintextSha256": "a3926344a9f5f3568c4b8911678bf1b444d73e3918acd27279a4a69346d1009e",
+      "blobFile": "tdf-2mib.bin"
+    }
+  ]
+}
