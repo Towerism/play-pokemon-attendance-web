@@ -253,3 +253,28 @@ describe("every logger is attendance's configured one (server/logging/app-logger
     expect(await errors('server/utils/x.ts', "import { createAppLogger } from '../logging/app-logger';\nexport const f = createAppLogger;")).toEqual([]);
   });
 });
+
+describe("the launcher logs through attendance's configured logger", () => {
+  // runLauncher builds a logger that hides only the kit's base keys when it isn't given one.
+  const launch = (options: string) => `export const run = () => runLauncher({ prepare, server${options} });`;
+
+  it.each([
+    ['no logger', ''],
+    ["the kit's unconfigured logger", ", logger: createLogger({ scope: 'startup' })"],
+  ])('rejects runLauncher with %s', async (_label, options) => {
+    expect(await errors('server/bootstrap/launcher.ts', launch(options))).toEqual([expect.stringMatching(/^no-restricted-syntax: Give runLauncher `logger: createAppLogger/)]);
+  });
+
+  it('rejects a configured logger nested elsewhere in the options, not given to the launcher', async () => {
+    const code = 'export const run = () => runLauncher({ prepare: (e) => f(e, { logger: createAppLogger({}) }), server });';
+    expect(await errors('server/bootstrap/launcher.ts', code)).toEqual([expect.stringMatching(/^no-restricted-syntax: Give runLauncher `logger: createAppLogger/)]);
+  });
+
+  it('rejects an unconfigured launcher anywhere in server code', async () => {
+    expect(await errors('server/utils/x.ts', launch(''))).toEqual([expect.stringMatching(/^no-restricted-syntax: Give runLauncher `logger: createAppLogger/)]);
+  });
+
+  it('accepts runLauncher given createAppLogger', async () => {
+    expect(await errors('server/bootstrap/launcher.ts', launch(", logger: createAppLogger({ scope: 'startup' })"))).toEqual([]);
+  });
+});

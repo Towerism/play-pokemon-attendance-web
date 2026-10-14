@@ -126,7 +126,7 @@ flowchart LR
 | Backups          | Unraid *Appdata Backup* of `/data`, plus optional Litestream → S3-compatible bucket (Backblaze B2 / R2) | One folder to back up. Litestream adds continuous, point-in-time restore when it is configured. |
 | XML              | `fast-xml-parser` (entities disabled)                                     | Same parser the CLI uses, with the TDF shape already proven.                                         |
 | Crypto           | Node `crypto` AES-256-GCM (refresh-token vault)                           | No extra service is needed.                                                                          |
-| Platform code    | **`@towerism/selfhost-kit`**, pinned to an exact version: setup code, rate limiter, client address and trusted proxies, request ids, CSP and security headers (A1); the logger and log redaction, configured with attendance's keys in `server/logging/app-logger.ts` (A2); the secrets, launcher, vault and entrypoint follow in A3–A7 | One shared copy of the security-sensitive code with Tournament Genie. See [ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md). |
+| Platform code    | **`@towerism/selfhost-kit`**, pinned to an exact version: setup code, rate limiter, client address and trusted proxies, request ids, CSP and security headers (A1); the logger and log redaction, configured with attendance's keys in `server/logging/app-logger.ts` (A2); the secret bootstrap, runtime env and launcher, configured with attendance's secrets in `server/bootstrap/app-env.ts` (A3); the vault and entrypoint follow in A4–A7 | One shared copy of the security-sensitive code with Tournament Genie. See [ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md). |
 | Packaging        | Single `linux/amd64` Docker image on GHCR running `node .output/server/index.mjs`, built by pnpm, plus an Unraid template | **Production runs on Unraid** ([ADR-0006](adr/0006-docker-on-unraid.md)). The same image runs on any Docker host. |
 | Testing          | Vitest + `@nuxt/test-utils` (unit tests; server tests drive the built app over HTTP), an in-process HTTP fake of the Pokémon APIs (`test/server/fake-pokemon.ts`, reached through `NUXT_POKEMON_*_URL`) for the server and E2E tests, Playwright for the browser journeys (`test/e2e/`, Chromium at phone size) |                                                     |
 | Quality          | `@nuxt/eslint`, `vue-tsc` typecheck in CI                                  |                                                                                                      |
@@ -167,7 +167,8 @@ shared/                      auto-imported in app/ and server/ (Nuxt 4)
 nuxt.config.ts
 Dockerfile                   multi-stage: pnpm build → node:24-slim runtime + litestream
 docker/entrypoint.sh         PUID/PGID chown + gosu drop, UMASK, optional Litestream supervision (M7)
-server/bootstrap/launcher.ts production entry (`.output/launcher.mjs`): secret bootstrap and derived env, then loads Nitro
+server/bootstrap/launcher.ts production entry (`.output/launcher.mjs`): the kit's `runLauncher` resolves secrets and derived env, then loads Nitro
+server/bootstrap/app-env.ts  attendance's secret specs and checked env vars, passed to the kit's `prepareRuntimeEnv`
 deploy/unraid/               Unraid Docker template (XML) + icon
 docs/architecture/           this document + ADRs
 docs/deploy/unraid.md        install / first run / backup / restore guide
@@ -1477,7 +1478,7 @@ flowchart LR
   - `NUXT_STAFF_DELAY_MS` (1000, never under 500; M8). Optional tuning, not in the template.
   - `NUXT_TOURNAMENT_DELAY_MS` (5000, never under 2000; M9, #92): the gap between tournament creates; their settle window after a 5xx is `NUXT_SUBMISSION_SETTLE_MS`. Optional tuning, not in the template.
   - `NUXT_POKEMON_ACCESS_URL` / `NUXT_POKEMON_API_URL`. **Test doubles only**: they point the adapters at a fake upstream (`test/server/fake-pokemon.ts`). Unset means the real Pokémon hosts; never set them in the template.
-  - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag, HSTS and absolute links are right. The launcher sets `NUXT_SESSION_COOKIE_SECURE` from it (`https:` → Secure) unless that is set explicitly; on plain HTTP a Secure cookie would never come back and login would fail.
+  - `NUXT_PUBLIC_SITE_URL`. Optional. Set it when the app is behind a reverse proxy, so the cookie `Secure` flag, HSTS and absolute links are right. The launcher sets `NUXT_SESSION_COOKIE_SECURE` from it (Secure when the URL parses as `https:`, the same check as HSTS) unless that is set explicitly; on plain HTTP a Secure cookie would never come back and login would fail.
   - `NUXT_TRUSTED_PROXIES`. Optional *Advanced* template field. Comma-separated addresses or CIDR ranges whose `X-Forwarded-For` is believed for the login rate limit, or `none`. Blank means the default `127.0.0.0/8,::1/128,172.16.0.0/12`, which covers Caddy on the same Unraid box or Docker network. Set it to the proxy's exact address when Caddy runs on `br0` or another host, or when Docker hides client addresses behind its gateway (rootless or userland-proxy setups). An invalid entry fails startup.
   - `NUXT_AUTH_RATE_LIMIT_LOGIN_MAX` (10), `NUXT_AUTH_RATE_LIMIT_SETUP_MAX` (5), `NUXT_AUTH_RATE_LIMIT_LOGIN_WINDOW_MS` / `NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS` (900000). Optional tuning, not in the template; the server tests lower them. Anything but a positive integer fails startup.
   - `NITRO_SHUTDOWN_TIMEOUT` (the image sets `8000` ms) keeps graceful shutdown inside Docker's 10 s stop timeout.
@@ -1515,8 +1516,10 @@ flowchart LR
     `server/modules/*` take a `Logger` (a type from the kit) as a dependency. ESLint bans `console` in server code,
     and rejects the kit's `createLogger`/`createRedactor` outside `app-logger.ts` and any `pino` import in server
     and script code (`app/` and `shared/` don't log; a pino import there is a review check), because either would log
-    without attendance's keys. ESLint doesn't see `require` or a dynamic `import()`, and a kit API that builds its
-    own logger when none is passed (`runLauncher`) must be given `createAppLogger(...)`: both are review checks.
+    without attendance's keys. ESLint doesn't see `require` or a dynamic `import()` (a review check). A kit API that builds its own logger
+    when none is passed must be given `createAppLogger(...)`: for `runLauncher`, ESLint requires
+    `logger: createAppLogger(...)` directly in its options (an aliased import, a namespace call, options built elsewhere or a later
+    spread overriding `logger` are review checks).
   - `server/routes/healthz.get.ts` (used by the image `HEALTHCHECK`) and `server/routes/readyz.get.ts` endpoints.
     The submission history in the UI *is* the audit log.
 - **Expected cost:** $0 on existing Unraid hardware, plus cents per month if a Litestream bucket is used.
