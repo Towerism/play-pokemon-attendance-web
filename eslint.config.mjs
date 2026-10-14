@@ -53,6 +53,15 @@ const NO_KIT_IN_BROWSER = {
   message: '@towerism/selfhost-kit is server-only; app/ and shared/ are bundled for the browser.',
 };
 
+// The kit's runLauncher builds a logger that hides only the kit's base keys when it isn't given one (architecture
+// §10), so it must be handed createAppLogger(...) directly in its options. Not seen (review checks): an aliased
+// import, options built outside the call, a logger from a variable, a later spread overriding `logger`.
+const LAUNCHER_WITH_APP_LOGGER = {
+  selector:
+    "CallExpression[callee.name='runLauncher']:not(:has(> ObjectExpression:has(> Property[key.name='logger'][value.type='CallExpression'][value.callee.name='createAppLogger'])))",
+  message: "Give runLauncher `logger: createAppLogger({ scope: 'startup' })` (server/logging/app-logger): its default logger redacts only the kit's base keys.",
+};
+
 const NO_NUXT_IN_MODULES = {
   selector: `CallExpression[callee.name=${SERVER_AUTO_IMPORTS}]`,
   message: 'server/modules/* are plain TS: take dependencies as arguments instead of using h3/Nitro auto-imports.',
@@ -71,7 +80,8 @@ export default withNuxt(
       'eslint.config.mjs',
       'test/unit/module-boundaries.test.ts',
     ],
-    rules: { 'no-restricted-syntax': ['error', ...POKEMON_HOSTS] },
+    // server/modules/** reset this rule below; they can't import runLauncher (not on KIT_FOR_MODULES).
+    rules: { 'no-restricted-syntax': ['error', ...POKEMON_HOSTS, LAUNCHER_WITH_APP_LOGGER] },
   },
   {
     // M0 throwaway scripts (S2 still runs from them); not worth churning.
