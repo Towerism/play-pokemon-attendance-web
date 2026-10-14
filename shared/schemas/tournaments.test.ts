@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CreateThroughBody,
+  CreateThroughQuery,
+  CreateTournamentsBody,
   IdParam,
   OptionsQuery,
   PlannedBody,
@@ -177,5 +180,40 @@ describe('queries and params', () => {
     ['12345678901', false],
   ])('id %s → %s', (id, valid) => {
     expect(ok(IdParam, { id })).toBe(valid);
+  });
+});
+
+describe('creating in play-tools (#92)', () => {
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+  it.each([
+    [0, false],
+    [1, true],
+    [60, true],
+    [61, false],
+  ])('takes %i planned ids: %s', (n, valid) => {
+    expect(CreateTournamentsBody.safeParse({ plannedIds: ids(n) }).success).toBe(valid);
+  });
+
+  it('defaults both confirmations to false, and takes only booleans', () => {
+    expect(CreateTournamentsBody.parse({ plannedIds: [3] })).toEqual({ plannedIds: [3], acknowledgeShortNotice: false, retryUnknown: false });
+    expect(CreateTournamentsBody.safeParse({ plannedIds: [3], retryUnknown: 'true' }).success).toBe(false);
+    expect(CreateTournamentsBody.safeParse({ plannedIds: [3], acknowledgeShortNotice: 1 }).success).toBe(false);
+  });
+
+  it.each([[[1, 1]], [[1.5]], [['1']], [[0]]])('refuses planned ids %j', (plannedIds) => {
+    expect(CreateTournamentsBody.safeParse({ plannedIds }).success).toBe(false);
+  });
+
+  it('refuses unknown fields', () => {
+    expect(CreateTournamentsBody.safeParse({ plannedIds: [1], force: true }).success).toBe(false);
+  });
+
+  it('takes a calendar date to create through', () => {
+    expect(CreateThroughQuery.parse({ date: '2026-12-31' })).toEqual({ date: '2026-12-31' });
+    expect(CreateThroughQuery.safeParse({ date: '2026-02-30' }).success).toBe(false);
+    expect(CreateThroughQuery.safeParse({}).success).toBe(false);
+    expect(CreateThroughBody.parse({ date: '2026-12-31' })).toEqual({ date: '2026-12-31', acknowledgeShortNotice: false });
+    expect(CreateThroughBody.safeParse({ date: '31/12/2026' }).success).toBe(false);
   });
 });

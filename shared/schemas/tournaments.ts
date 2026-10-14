@@ -153,6 +153,25 @@ export const PlannedPatch = z
   .refine((p) => Object.keys(p).length > 0, 'Change at least one field');
 export type PlannedPatch = z.infer<typeof PlannedPatch>;
 
+/** **Create in play-tools** (`POST /tournaments/create`, #92): 1–60 distinct planned tournaments. */
+export const CreateTournamentsBody = z.strictObject({
+  plannedIds: z
+    .array(id)
+    .min(1, 'Choose a tournament')
+    .max(60, 'At most 60 at a time')
+    .refine((ids) => new Set(ids).size === ids.length, 'Each tournament once'),
+  /** Some are less than 7 days ahead (ADR-0010 decision 6). */
+  acknowledgeShortNotice: z.boolean().default(false),
+  /** Some are `unknown`: an earlier create may still land (#100). */
+  retryUnknown: z.boolean().default(false),
+});
+export type CreateTournamentsBody = z.infer<typeof CreateTournamentsBody>;
+
+/** **Create through date…** (`GET /tournament-schedules/{id}/create-through`). */
+export const CreateThroughQuery = z.object({ date: localDate });
+export const CreateThroughBody = z.strictObject({ date: localDate, acknowledgeShortNotice: z.boolean().default(false) });
+export type CreateThroughBody = z.infer<typeof CreateThroughBody>;
+
 /** At most 366 days, so a year of planned tournaments fits. */
 export const MAX_UPCOMING_DAYS = 366;
 export const UpcomingQuery = z

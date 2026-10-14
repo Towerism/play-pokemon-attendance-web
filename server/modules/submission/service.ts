@@ -2,7 +2,7 @@ import { and, desc, eq, gt, inArray, ne } from 'drizzle-orm';
 import { type Logger, silentLogger } from '../../logging/types';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
-import { staffBatch, staffBatchItem, submission, submissionEvent, submissionItem, submissionLock } from '../../db/schema';
+import { staffBatch, staffBatchItem, submission, submissionEvent, submissionItem, submissionLock, submissionTournamentItem } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { type PokemonErrorCode, PokemonUpstreamError } from '../pokemon/ports/errors';
@@ -10,6 +10,8 @@ import type { BulkResult, PlayToolsGateway, Tournament, TournamentParticipant } 
 import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
 import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
+import { TournamentsError } from '../tournaments/errors';
+import type { CreatePlan, TournamentCreation, TournamentsService } from '../tournaments/service';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
 import { dateIn } from '../../../shared/time/local-time';
@@ -80,6 +82,41 @@ export interface SubmissionView extends SubmissionSummary {
   staffImport?: StaffImportResult;
   /** A player import's result; absent for other kinds. */
   playerImport?: PlayerImportResult;
+  /** A tournament job's items, in start order; empty for other kinds. */
+  tournamentItems: TournamentItemView[];
+}
+
+export type TournamentItemOutcome = (typeof submissionTournamentItem.$inferSelect)['outcome'];
+
+/** One tournament of a tournament job (#92). */
+export interface TournamentItemView {
+  position: number;
+  plannedTournamentId: number | null;
+  tournamentId: string | null;
+  label: string;
+  outcome: TournamentItemOutcome;
+  /** `forbidden`, `refused`, `rate_limited`, `series_not_found`, `venue_not_found`, …; null when it went through. */
+  errorCode: string | null;
+  error: string | null;
+  sentAt: string | null;
+  shortNotice: boolean;
+  support: SupportDetails | null;
+}
+
+/**
+ * What Pokémon support needs to find a refused call (ADR-0010 decision 7): never a token, a request body or player
+ * data.
+ */
+export interface SupportDetails {
+  action: 'create';
+  sentAt: string | null;
+  league: { displayId: string | null };
+  tournament: { displayId: string | null; name: string; date: string };
+  professor: { playerId: string; name: string | null };
+  status: number | null;
+  code: string | null;
+  message: string | null;
+  correlationId: string | null;
 }
 
 /** What a staff import read and found (ADR-0007 decision 5). */
@@ -119,7 +156,9 @@ export type SubmissionEventType =
   /** A staff import gave up on one tournament and went on with the rest. */
   | 'tournament_failed'
   /** A staff import could not read one professor's tournaments and went on with the other professors (#75). */
-  | 'professor_failed';
+  | 'professor_failed'
+  /** A tournament job dealt with one tournament (#92). */
+  | 'tournament_sent';
 
 /** Progress, persisted before it is pushed. `done` of `total` players to add are dealt with. */
 export interface SubmissionEvent {
@@ -204,6 +243,20 @@ export interface SubmissionService {
   staffBatch(leagueId: string, batchId: number): StaffBatchView;
   /** The date's latest running staff batch, if any. */
   runningStaffBatch(leagueId: string, date: SessionDate): StaffBatchView | null;
+  /**
+   * **Create in play-tools** (ADR-0010 decision 5): a `tournament_create` job for 1–60 planned tournaments, each
+   * created as its template's organizer, adopted instead when play-tools already has it.
+   * @throws TournamentsError (the rows' checks), SubmissionError `submission_running`, `shutting_down`
+   */
+  createTournaments(
+    leagueId: string,
+    input: { plannedIds: readonly number[]; acknowledgeShortNotice: boolean; retryUnknown: boolean; startedBy: string },
+  ): Promise<{ submissionId: number }>;
+  /**
+   * **Create through date…**: the same job for every row a schedule plans through `date`, as its preview lists them.
+   * @throws TournamentsError (also `too_many_tournaments`, `nothing_to_create`), SubmissionError
+   */
+  createThrough(leagueId: string, input: { scheduleId: number; date: string; acknowledgeShortNotice: boolean; startedBy: string }): Promise<{ submissionId: number }>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -239,8 +292,14 @@ export interface SubmissionDeps {
     | 'changeStaffRole'
     | 'unassignStaff'
   >;
+  /** The calls a tournament job makes besides the tournaments module's reads, as one professor's connection (#92). */
+  tournamentGateway?: (connectionId: number) => Pick<PlayToolsGateway, 'createTournament' | 'getTournament'>;
   staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
+  /** Planned tournaments, for `tournament_create` jobs (#92); only those jobs need it. */
+  tournaments?: { creation: TournamentCreation; createThrough: TournamentsService['createThrough'] };
+  /** At least this long between tournament creates (NUXT_TOURNAMENT_DELAY_MS): default 5 s, never under 2 s (ADR-0010 decision 5). */
+  tournamentDelayMs?: number;
   /** The league timezone (ADR-0006): a staff import is dated by the day it starts in it. Default: the process's. */
   timeZone?: string;
   now?: () => Date;
@@ -318,6 +377,8 @@ class StaffStop extends Error {
 
 /** Upstream errors after which a staff job sends nothing more to the tournament. */
 const STAFF_STOPS = new Set(['tournament_locked', 'forbidden']);
+/** Upstream errors after which a tournament job sends nothing more (ADR-0010 decision 5). */
+const CREATE_STOPS = new Set(['forbidden', 'needs_reconnect', 'not_connected']);
 /** Upstream errors that stop any job: the connection itself is gone. */
 const CONNECTION_LOST = new Set(['needs_reconnect', 'not_connected']);
 
@@ -330,7 +391,7 @@ class Interrupted extends Error {
 
 /** How logs name a job. */
 const what = (row: { kind: SubmissionKind }) =>
-  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', ...IMPORT_LABEL })[row.kind];
+  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', tournament_create: 'Tournament create', ...IMPORT_LABEL })[row.kind];
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -362,12 +423,15 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const settlePollMs = deps.settlePollMs ?? 15_000;
   const undoDelayMs = deps.undoDelayMs ?? 1_000;
   const staffDelayMs = Math.max(500, deps.staffDelayMs ?? 1_000);
+  const tournamentDelayMs = Math.max(2_000, deps.tournamentDelayMs ?? 5_000);
   const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const log = deps.log ?? silentLogger;
 
   const running = new Set<Promise<void>>();
   /** Per league, when its last staff write went out: the spacing holds across one batch's jobs too (#76). */
   const lastStaffWrite = new Map<string, number>();
+  /** Per league, when its last tournament create went out. */
+  const lastTournamentPost = new Map<string, number>();
   const listeners = new Map<number, Set<(event: SubmissionEvent) => void>>();
   const stop = new AbortController();
 
@@ -445,6 +509,17 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   function counts(row: Pick<Row, 'id' | 'kind'>): SubmissionCounts {
+    if (row.kind === 'tournament_create') {
+      const outcomes = tournamentItems(row.id).map((i) => i.outcome);
+      const count = (...o: TournamentItemOutcome[]) => outcomes.filter((x) => o.includes(x)).length;
+      return {
+        added: count('created'),
+        alreadyPresent: count('already_exists'),
+        failed: count('refused', 'failed', 'unknown', 'date_too_far_past', 'date_too_far_ahead'),
+        skipped: count('skipped'),
+        unrequested: 0,
+      };
+    }
     const outcomes = db
       .select({ outcome: submissionItem.outcome })
       .from(submissionItem)
@@ -1478,6 +1553,330 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return { ...rest, playersFound: staffersFound };
   }
 
+  // --- tournament jobs (#92) -------------------------------------------------
+
+  function tournamentGateway(connectionId: number) {
+    if (!deps.tournamentGateway) throw new Error('This app was built without the tournaments module.');
+    return deps.tournamentGateway(connectionId);
+  }
+
+  function creation(): TournamentCreation {
+    if (!deps.tournaments) throw new Error('This app was built without the tournaments module.');
+    return deps.tournaments.creation;
+  }
+
+  function tournamentItems(submissionId: number) {
+    return db
+      .select()
+      .from(submissionTournamentItem)
+      .where(eq(submissionTournamentItem.submissionId, submissionId))
+      .orderBy(submissionTournamentItem.position)
+      .all();
+  }
+
+  function setTournamentItem(submissionId: number, position: number, set: Partial<typeof submissionTournamentItem.$inferInsert>): void {
+    db.update(submissionTournamentItem)
+      .set(set)
+      .where(and(eq(submissionTournamentItem.submissionId, submissionId), eq(submissionTournamentItem.position, position)))
+      .run();
+  }
+
+  /** Who a connection is, for support details. */
+  function professorAs(connectionId: number) {
+    const c = deps.connections.listActingConnections().find((x) => x.id === connectionId);
+    return { playerId: c?.professorPlayerId ?? '', name: c?.professorName ?? null };
+  }
+
+  /** Support details for a refused or uncertain create (ADR-0010 decision 7). */
+  function support(
+    leagueId: string,
+    at: { name: string; date: string; connectionId: number; sentAt: Date | null },
+    err?: PokemonUpstreamError,
+  ): SupportDetails {
+    return {
+      action: 'create',
+      sentAt: at.sentAt?.toISOString() ?? null,
+      league: { displayId: deps.connections.getStatus(leagueId).league?.displayId ?? null },
+      tournament: { displayId: null, name: at.name, date: at.date },
+      professor: professorAs(at.connectionId),
+      status: err?.details.status ?? null,
+      code: err?.details.upstream?.code ?? null,
+      message: err?.details.upstream?.message ?? null,
+      correlationId: err?.details.upstream?.correlationId ?? null,
+    };
+  }
+
+  /** Stops a tournament job; the message is the code History shows. */
+  class TournamentStop extends Error {
+    override name = 'TournamentStop';
+  }
+
+  /**
+   * `tournament_create` (ADR-0010 decision 5, #100): for each held planned tournament in start order, as its
+   * organizer, adopt a matching tournament or send one create, paced. A create that may have landed is settled by
+   * re-listing and never sent again; with no match it is `unknown`. The window is checked again before each send.
+   */
+  async function runTournamentCreate(row: Row): Promise<void> {
+    const { leagueId } = row;
+    const t = creation();
+    setStatus(row, 'running');
+    const items = tournamentItems(row.id);
+    const total = items.length;
+    let done = 0;
+    emit(row, 'planned', `${total} ${total === 1 ? 'tournament' : 'tournaments'} to create.`, 0, total);
+    /** Each tournament the job holds a guid for, and the connection to re-read it as. */
+    const created: { position: number; plannedId: number; tournamentId: string; connectionId: number }[] = [];
+
+    const step = (message: string) => {
+      done += 1;
+      emit(row, 'tournament_sent', message, done, total);
+    };
+
+    /** Keeps creates at least `tournamentDelayMs` apart across the league's jobs; stops on shutdown. */
+    async function pace(): Promise<void> {
+      if (stop.signal.aborted) throw stop.signal.reason;
+      const last = lastTournamentPost.get(leagueId);
+      const wait = last === undefined ? 0 : last + tournamentDelayMs - now().getTime();
+      renewLock(row, Math.max(0, wait));
+      if (wait > 0) await sleep(wait, stop.signal);
+    }
+
+    /** After a create that may have landed: re-list until the settle window ends. Null: not seen, or not readable. */
+    async function settle(plan: Extract<CreatePlan, { kind: 'send' }>): Promise<string | null> {
+      const deadline = now().getTime() + settleMs;
+      for (;;) {
+        if (stop.signal.aborted) throw stop.signal.reason;
+        renewLock(row, settlePollMs);
+        await sleep(settlePollMs, stop.signal);
+        try {
+          const found = await t.findLanded(leagueId, plan.connectionId, plan.match);
+          if (found) return found;
+        } catch (err) {
+          if (!(err instanceof PokemonUpstreamError)) throw err;
+          return null;
+        }
+        if (now().getTime() >= deadline) return null;
+      }
+    }
+
+    for (const item of items) {
+      if (item.outcome !== 'pending') continue;
+      if (stop.signal.aborted) throw stop.signal.reason;
+      renewLock(row);
+      const plannedId = item.plannedTournamentId!;
+      const name = item.label.replace(/ · \d{4}-\d{2}-\d{2}$/, '');
+      const date = item.label.slice(-10);
+
+      let plan: CreatePlan;
+      try {
+        plan = await t.planItem(leagueId, plannedId);
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        setTournamentItem(row.id, item.position, { outcome: 'refused', errorCode: err.code, error: err.message });
+        t.recordFailed(leagueId, plannedId, err.code);
+        step(`${item.label}: ${err.code}.`);
+        throw new TournamentStop(err.code);
+      }
+      if (plan.kind === 'adopt') {
+        setTournamentItem(row.id, item.position, { outcome: 'already_exists', tournamentId: plan.tournamentId });
+        t.recordCreated(leagueId, plannedId, plan.tournamentId);
+        created.push({ position: item.position, plannedId, tournamentId: plan.tournamentId, connectionId: plan.connectionId });
+        step(`${item.label}: already in play-tools.`);
+        continue;
+      }
+      if (plan.kind === 'fail') {
+        setTournamentItem(row.id, item.position, {
+          outcome: 'failed',
+          errorCode: plan.code,
+          error: plan.message,
+          ...(plan.error && { support: support(leagueId, { name, date, connectionId: plan.connectionId ?? 0, sentAt: null }, plan.error) }),
+        });
+        t.recordFailed(leagueId, plannedId, plan.code);
+        step(`${item.label}: ${plan.code}.`);
+        continue;
+      }
+
+      await pace();
+      const problem = t.windowProblem(plan.localDate);
+      if (problem) {
+        setTournamentItem(row.id, item.position, { outcome: problem, errorCode: problem, error: `${plan.localDate} is no longer in the creatable window.` });
+        t.recordFailed(leagueId, plannedId, problem);
+        step(`${item.label}: ${problem}.`);
+        continue;
+      }
+      const sentAt = now();
+      db.transaction(() => {
+        setTournamentItem(row.id, item.position, { sentAt });
+        t.recordSent(leagueId, plannedId, sentAt);
+      });
+      const at = { name: plan.tournament.name, date: plan.localDate, connectionId: plan.connectionId, sentAt };
+      try {
+        lastTournamentPost.set(leagueId, now().getTime());
+        const { tournamentId } = await tournamentGateway(plan.connectionId).createTournament(plan.tournament);
+        setTournamentItem(row.id, item.position, { outcome: 'created', tournamentId });
+        t.recordCreated(leagueId, plannedId, tournamentId);
+        created.push({ position: item.position, plannedId, tournamentId, connectionId: plan.connectionId });
+        step(`Created ${item.label}.`);
+      } catch (err) {
+        if (err instanceof TypeError) {
+          setTournamentItem(row.id, item.position, { outcome: 'failed', errorCode: 'invalid_input', error: err.message });
+          t.recordFailed(leagueId, plannedId, 'invalid_input');
+          step(`${item.label}: invalid_input.`);
+          continue;
+        }
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        if (err.code === 'unavailable' || err.code === 'unexpected_shape') {
+          emit(row, 'retrying', `${err.message} Waiting to see whether play-tools created it anyway; it is never sent twice.`, done, total);
+          const landed = await settle(plan);
+          if (landed) {
+            setTournamentItem(row.id, item.position, { outcome: 'created', tournamentId: landed });
+            t.recordCreated(leagueId, plannedId, landed);
+            created.push({ position: item.position, plannedId, tournamentId: landed, connectionId: plan.connectionId });
+            step(`Created ${item.label}.`);
+          } else {
+            setTournamentItem(row.id, item.position, {
+              outcome: 'unknown',
+              errorCode: err.code,
+              error: `${err.message} The tournament may still appear in play-tools: the app links it when it does. Retry create only if it doesn't.`,
+              support: support(leagueId, at, err),
+            });
+            t.recordUnknown(leagueId, plannedId);
+            step(`${item.label}: may have been created.`);
+          }
+          continue;
+        }
+        setTournamentItem(row.id, item.position, { outcome: 'refused', errorCode: err.code, error: err.message, support: support(leagueId, at, err) });
+        t.recordFailed(leagueId, plannedId, err.code);
+        step(`${item.label}: refused.`);
+        if (CREATE_STOPS.has(err.code)) throw new TournamentStop(err.code);
+      }
+    }
+
+    // Reconcile: play-tools' status for each tournament the job now holds (approval-pending is shown as it is).
+    for (const c of created) {
+      try {
+        const details = await tournamentGateway(c.connectionId).getTournament(c.tournamentId);
+        t.recordReconciled(leagueId, c.plannedId, { displayId: details.displayId, status: details.applicationState ?? details.status });
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        log.warn(`Tournament create #${row.id} could not re-read ${c.tournamentId}: ${err.code}`, { submissionId: row.id, code: err.code });
+      }
+    }
+    const ok = created.length;
+    emit(row, 'reconciled', `play-tools has ${ok} of the ${total} tournaments.`, total, total);
+    const status = ok === total ? 'succeeded' : ok > 0 ? 'partial' : 'failed';
+    setStatus(row, status);
+    if (status === 'succeeded' && row.throughScheduleId !== null && row.throughDate !== null) {
+      t.recordCreatedThrough(leagueId, row.throughScheduleId, row.throughDate);
+    }
+    emit(row, 'finished', `Tournament create ${status}.`, total, total);
+  }
+
+  /** A tournament job that stopped: a create sent with no answer may have landed (`unknown`); the rest are released. */
+  function stopTournamentItems(row: Row): void {
+    const t = creation();
+    for (const item of tournamentItems(row.id)) {
+      if (item.outcome !== 'pending') continue;
+      if (item.sentAt) {
+        setTournamentItem(row.id, item.position, { outcome: 'unknown', error: 'The app stopped while this create was in flight: it may still appear in play-tools.' });
+        t.recordUnknown(row.leagueId, item.plannedTournamentId!);
+      } else {
+        setTournamentItem(row.id, item.position, { outcome: 'skipped' });
+        t.release(row.leagueId, item.plannedTournamentId!);
+      }
+    }
+  }
+
+  /**
+   * Starts a `tournament_create` job: the rows are checked, then held, the job inserted and the lease taken in one
+   * transaction, with no await in between.
+   */
+  async function beginTournamentCreate(
+    leagueId: string,
+    input: {
+      plannedIds: readonly number[];
+      acknowledgeShortNotice: boolean;
+      retryUnknown: boolean;
+      startedBy: string;
+      label?: string;
+      through?: { scheduleId: number; date: string };
+      /** A retry: rows short notice now must have been in the original job. */
+      wasShortNotice?: ReadonlySet<number>;
+    },
+    retryOf: number | null,
+  ): Promise<{ submissionId: number }> {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    assertUnlocked(leagueId);
+    const t = creation();
+    const targets = t.prepare(leagueId, input.plannedIds, { retryUnknown: input.retryUnknown, acknowledgeShortNotice: input.acknowledgeShortNotice });
+    if (input.wasShortNotice) {
+      const newly = targets.filter((x) => x.shortNotice && !input.wasShortNotice!.has(x.plannedId)).map((x) => x.plannedId);
+      if (newly.length > 0) {
+        throw new TournamentsError('short_notice_not_acknowledged', 'Some are now less than 7 days away. Create them from Upcoming to acknowledge it.', {
+          plannedTournamentIds: newly,
+        });
+      }
+    }
+    const organizers = new Set(targets.map((x) => x.organizer.playerId));
+    const only = organizers.size === 1 ? targets[0]!.organizer : null;
+    const row = db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: dateIn(now(), timeZone),
+          playSessionId: '',
+          playSessionLabel: input.label ?? `Create ${targets.length} ${targets.length === 1 ? 'tournament' : 'tournaments'}`,
+          startedBy: input.startedBy,
+          professorPlayerId: only?.playerId ?? null,
+          professorName: only?.name ?? null,
+          startedAt: now(),
+          status: 'planned',
+          retryOf,
+          kind: 'tournament_create',
+          throughScheduleId: input.through?.scheduleId ?? null,
+          throughDate: input.through?.date ?? null,
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      t.hold(
+        leagueId,
+        targets.map((x) => x.plannedId),
+      );
+      db.insert(submissionTournamentItem)
+        .values(
+          targets.map((x, position) => ({
+            submissionId: created.id,
+            position,
+            plannedTournamentId: x.plannedId,
+            label: x.label,
+            outcome: 'pending' as const,
+            shortNotice: x.shortNotice,
+          })),
+        )
+        .run();
+      return created;
+    });
+    launch(row);
+    return { submissionId: row.id };
+  }
+
+  function tournamentItemView(i: typeof submissionTournamentItem.$inferSelect): TournamentItemView {
+    return {
+      position: i.position,
+      plannedTournamentId: i.plannedTournamentId,
+      tournamentId: i.tournamentId,
+      label: i.label,
+      outcome: i.outcome,
+      errorCode: i.errorCode,
+      error: i.error,
+      sentAt: i.sentAt?.toISOString() ?? null,
+      shortNotice: i.shortNotice,
+      support: (i.support as SupportDetails | null) ?? null,
+    };
+  }
+
   /** A job that stops early: whoever was not sent yet is skipped. */
   function stopEarly(row: Row, status: 'failed' | 'interrupted', error: string): void {
     db.update(submissionItem)
@@ -1486,6 +1885,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .run();
     if (row.kind === 'undo' || row.kind === 'clear') finishRemoval(row);
     if (row.kind === 'staff') finishStaff(row);
+    if (row.kind === 'tournament_create') stopTournamentItems(row);
     setStatus(row, status, error);
     if (isImport(row)) {
       const r = importProgress(row);
@@ -1508,7 +1908,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           ? runClear(row)
           : row.kind === 'staff'
             ? runStaff(row)
-            : isImport(row)
+            : row.kind === 'tournament_create'
+              ? runTournamentCreate(row)
+              : isImport(row)
               ? runImport(row)
               : run(row)
     )
@@ -1912,6 +2314,27 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       if (row.kind === 'clear') return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (isImport(row)) return beginImport(row.kind, leagueId, startedBy, row.id);
+      if (row.kind === 'tournament_create') {
+        const items = tournamentItems(row.id);
+        const plannedIds = creation().retryable(
+          leagueId,
+          items.flatMap((i) => (i.plannedTournamentId === null ? [] : [i.plannedTournamentId])),
+        );
+        if (plannedIds.length === 0) throw new TournamentsError('nothing_to_create', 'Every tournament of this job is in play-tools, unknown or skipped.');
+        return beginTournamentCreate(
+          leagueId,
+          {
+            plannedIds,
+            acknowledgeShortNotice: true,
+            retryUnknown: false,
+            startedBy,
+            label: row.playSessionLabel,
+            ...(row.throughScheduleId !== null && row.throughDate !== null && { through: { scheduleId: row.throughScheduleId, date: row.throughDate } }),
+            wasShortNotice: new Set(items.filter((i) => i.shortNotice).map((i) => i.plannedTournamentId!)),
+          },
+          row.id,
+        );
+      }
       return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
     },
 
@@ -1946,6 +2369,32 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     importPlayers: async (leagueId, startedBy) => beginImport('player_import', leagueId, startedBy, null),
 
     applyStaffAll: async (leagueId, date, input) => beginStaffBatch(leagueId, date, input.tournamentIds, input.startedBy),
+
+    createTournaments: async (leagueId, input) => beginTournamentCreate(leagueId, input, null),
+
+    async createThrough(leagueId, input) {
+      if (!deps.tournaments) throw new Error('This app was built without the tournaments module.');
+      const preview = await deps.tournaments.createThrough(leagueId, input.scheduleId, input.date);
+      if (preview.tooMany) {
+        throw new TournamentsError('too_many_tournaments', `That is ${preview.count} tournaments; one job creates at most 60. Try a nearer date.`, {
+          count: preview.count,
+          suggestedThrough: preview.suggestedThrough,
+        });
+      }
+      if (preview.count === 0) throw new TournamentsError('nothing_to_create', `Nothing to create through ${input.date}.`);
+      return beginTournamentCreate(
+        leagueId,
+        {
+          plannedIds: preview.tournaments.map((e) => e.plannedId!),
+          acknowledgeShortNotice: input.acknowledgeShortNotice,
+          retryUnknown: false,
+          startedBy: input.startedBy,
+          label: `Create ${preview.scaffoldName} through ${input.date}`,
+          through: { scheduleId: input.scheduleId, date: input.date },
+        },
+        null,
+      );
+    },
 
     staffBatch(leagueId, batchId) {
       assertLeagueChosen(leagueId);
@@ -1995,6 +2444,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         })),
         ...(row.kind === 'staff_import' ? { staffImport: staffImportResult(row, items, names) } : {}),
         ...(row.kind === 'player_import' ? { playerImport: playerImportResult(row, items, names) } : {}),
+        tournamentItems: row.kind === 'tournament_create' ? tournamentItems(row.id).map(tournamentItemView) : [],
       };
     },
 

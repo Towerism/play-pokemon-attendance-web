@@ -32,6 +32,12 @@ const STATUS: Record<TournamentsErrorCode, number> = {
   scaffold_archived: 422,
   date_too_far_past: 422,
   date_too_far_ahead: 422,
+  not_creatable: 409,
+  schedule_inactive: 409,
+  retry_not_confirmed: 422,
+  short_notice_not_acknowledged: 422,
+  too_many_tournaments: 422,
+  nothing_to_create: 422,
 };
 
 /**

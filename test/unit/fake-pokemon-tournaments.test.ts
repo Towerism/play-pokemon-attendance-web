@@ -154,6 +154,31 @@ describe('fake play-tools: the tournament lifecycle', () => {
   });
 });
 
+describe('fake play-tools: creates that may have landed (#92)', () => {
+  it('answers 500 to a create that lands later: hidden from every read until land()', async () => {
+    fake.createLandsLate = true;
+    const err = await upstreamError(gateway.createTournament(newTournament()));
+    expect(err.code).toBe('unavailable');
+    expect(await gateway.listTournaments()).toEqual([]);
+    expect(fake.createLandsLate).toBe(false);
+
+    fake.land();
+    const listed = await gateway.listTournaments();
+    expect(listed.map((t) => t.name)).toEqual(['Tuesday League Challenge']);
+    expect((await gateway.getTournament(listed[0]!.id)).category).toBe('tcg_std');
+  });
+
+  it('holds creates at a gate until released, logging each as it arrives', async () => {
+    const gate = fake.holdCreates();
+    const pending = gateway.createTournament(newTournament());
+    await gate.arrived;
+    expect(fake.requests.filter((r) => r.method === 'POST' && r.path === '/services/core/tournament')).toHaveLength(1);
+    expect(fake.tournaments).toEqual([]);
+    gate.release();
+    expect((await pending).tournamentId).toMatch(/^t-/);
+  });
+});
+
 describe('fake play-tools: TDF results', () => {
   beforeEach(() => {
     fake.tournaments.push(fakeTournament('t-1', { organizer: ORGANIZER, displayId: '26-10-900001' }));

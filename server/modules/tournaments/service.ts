@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, inArray, isNull, lte, ne } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, ne } from 'drizzle-orm';
 import { expandSchedule, occurrenceDates } from '../../../shared/schedule/expand';
 import type { ScheduleRule } from '../../../shared/schedule/rule';
 import type {
@@ -25,14 +25,15 @@ import {
 } from '../../db/schema';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { PlayToolsGateway, Series, Tournament } from '../pokemon/ports/play-tools-gateway';
+import type { NewTournament, PlayToolsGateway, Series, Tournament, Venue } from '../pokemon/ports/play-tools-gateway';
+import { type AdoptionTarget, type LeftOutReason, adoptionCandidates, isShortNotice, newTournament, selectCreateThrough } from './create';
 import { addDays, addMonths, type LocalDate, timeIn } from './dates';
 import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
 import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, planSchedule, type PlannedRowState } from './plan';
 import { type RegistrationSettings, type SettingsOverrides, type TemplateVenue, resolveSettings } from './settings';
 import { type TemplateType, type TypeResolution, offeredOn, resolveSeries } from './series';
-import { checkCreatable, creatableWindow, sanctionBy } from './window';
+import { type WindowProblem, checkCreatable, creatableWindow, sanctionBy } from './window';
 
 export interface Template {
   id: number;
@@ -102,7 +103,8 @@ export interface OrganizerView {
   needsReconnect: boolean;
 }
 
-export type UpcomingAction = 'create' | 'skip' | 'unskip';
+/** `retry_create`: an `unknown` row, a create that may have landed, sent again only by this click (#100). */
+export type UpcomingAction = 'create' | 'skip' | 'unskip' | 'retry_create';
 
 /** One tournament on Upcoming: a planned row (perhaps already in play-tools), or a play-tools one the app didn't plan. */
 export interface UpcomingEntry {
@@ -135,6 +137,8 @@ export interface UpcomingEntry {
   displayId: string | null;
   upstreamStatus: string | null;
   errorCode: string | null;
+  /** When a create was last sent (ISO); the Retry create dialog says it may still land. */
+  lastAttemptAt: string | null;
   actions: UpcomingAction[];
 }
 
@@ -205,6 +209,78 @@ export interface TournamentsService {
    * @throws TournamentsError `connection_not_found`, `needs_reconnect`, `league_not_selected`; PokemonUpstreamError
    */
   options(leagueId: string, query: { professor: string; country: string; date?: LocalDate }): Promise<TournamentOptions>;
+  /**
+   * **Create through date…** (ADR-0010 decision 5): plans the schedule up to `through` (past its horizon if need be)
+   * and lists what a create job would take, and what it leaves out. Creates nothing.
+   * @throws TournamentsError `not_found`, `schedule_inactive`, `date_too_far_past`, `date_too_far_ahead`
+   */
+  createThrough(leagueId: string, scheduleId: number, through: LocalDate): Promise<CreateThroughPreview>;
+  /** What the submission module's `tournament_create` job uses (#92), as it uses `StaffingService`. */
+  creation: TournamentCreation;
+}
+
+export interface CreateThroughPreview {
+  scheduleId: number;
+  scaffoldName: string;
+  /** The creatable window's start. */
+  from: LocalDate;
+  through: LocalDate;
+  tournaments: (UpcomingEntry & { shortNotice: boolean })[];
+  leftOut: { entry: UpcomingEntry; reason: LeftOutReason }[];
+  count: number;
+  tooMany: boolean;
+  suggestedThrough: LocalDate | null;
+  unread: UnreadProfessor[];
+}
+
+/** A planned row a create job may take, as `prepare` found it. */
+export interface CreateTarget {
+  plannedId: number;
+  /** The resolved name and the local date. */
+  label: string;
+  localDate: LocalDate;
+  shortNotice: boolean;
+  organizer: { playerId: string; name: string | null };
+}
+
+/** What adoption compares: the listing's fields, and the format from the details. */
+export type CreateMatch = AdoptionTarget & { category: string };
+
+/** What a job does with one held row: adopt a tournament play-tools has, send a create, or fail it before any write. */
+export type CreatePlan =
+  | { kind: 'adopt'; connectionId: number; tournamentId: string }
+  | { kind: 'send'; connectionId: number; localDate: LocalDate; match: CreateMatch; tournament: NewTournament }
+  | { kind: 'fail'; code: string; message: string; error?: PokemonUpstreamError; connectionId?: number };
+
+export interface TournamentCreation {
+  /**
+   * The rows a create job may take, in start order. Changes nothing.
+   * @throws TournamentsError `league_not_selected`, `not_found`, `not_creatable`, `date_too_far_past`, `date_too_far_ahead`,
+   *   `organizer_not_connected`, `needs_reconnect`, `retry_not_confirmed`, `short_notice_not_acknowledged`
+   */
+  prepare(leagueId: string, plannedIds: readonly number[], opts: { retryUnknown: boolean; acknowledgeShortNotice: boolean }): CreateTarget[];
+  /** Rows a job takes become `creating`, so no replan deletes them. Call inside the job's transaction. */
+  hold(leagueId: string, plannedIds: readonly number[]): void;
+  /**
+   * Settings, adoption, series and venue for one held row, as its organizer. Reads only.
+   * @throws PokemonUpstreamError `not_connected`, `needs_reconnect`, `forbidden`: the job stops
+   */
+  planItem(leagueId: string, plannedId: number): Promise<CreatePlan>;
+  /** A tournament matching a create that may have landed (adoption only). @throws PokemonUpstreamError when play-tools can't be read */
+  findLanded(leagueId: string, connectionId: number, match: CreateMatch): Promise<string | null>;
+  /** Null when the date is still in the creatable window, by this module's clock. */
+  windowProblem(localDate: LocalDate): WindowProblem | null;
+  recordSent(leagueId: string, plannedId: number, at: Date): void;
+  recordCreated(leagueId: string, plannedId: number, tournamentId: string): void;
+  recordReconciled(leagueId: string, plannedId: number, read: { displayId: string | null; status: string | null }): void;
+  recordUnknown(leagueId: string, plannedId: number): void;
+  recordFailed(leagueId: string, plannedId: number, code: string): void;
+  /** A held row the job never sent: `unknown` when an earlier attempt was sent, else `planned`. */
+  release(leagueId: string, plannedId: number): void;
+  /** Of these rows, the ones still `planned` or `failed`, in the order given: what a retry takes. */
+  retryable(leagueId: string, plannedIds: readonly number[]): number[];
+  /** A create-through job succeeded: the schedule is in play-tools through `date`, never moved back. */
+  recordCreatedThrough(leagueId: string, scheduleId: number, date: LocalDate): void;
 }
 
 export interface TournamentOptions {
@@ -217,7 +293,7 @@ export interface TournamentOptions {
 }
 
 /** The play-tools reads this module makes, as one professor. */
-export type TournamentsGateway = Pick<PlayToolsGateway, 'listTournaments' | 'listSeries' | 'listFormats' | 'listVenues'>;
+export type TournamentsGateway = Pick<PlayToolsGateway, 'listTournaments' | 'getTournament' | 'listSeries' | 'listFormats' | 'listVenues'>;
 
 export interface TournamentsDeps {
   db: Db;
@@ -242,6 +318,9 @@ const MAX_UPCOMING_DAYS = 366;
 
 /** How far ahead a preview looks: the recurrence engine's longest range. */
 const PREVIEW_DAYS = 400;
+
+/** Upstream errors that mean the organizer can't act at all: a create job stops (ADR-0010 decision 5). */
+const STOPS: ReadonlySet<string> = new Set(['forbidden', 'needs_reconnect', 'not_connected']);
 
 export function createTournamentsService(deps: TournamentsDeps): TournamentsService {
   const { db } = deps;
@@ -365,7 +444,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   }
 
   /** Brings one schedule's rows in line with it (ADR-0010 decision 4): see `planSchedule`. */
-  function syncSchedule(leagueId: string, schedule: ScheduleRow) {
+  function syncSchedule(leagueId: string, schedule: ScheduleRow, through?: LocalDate) {
     const rows = db.select().from(plannedTournament).where(eq(plannedTournament.scheduleId, schedule.id)).all();
     const takenElsewhere = new Set(
       db
@@ -392,6 +471,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       today: today(),
       windowStart: creatableWindow(now(), deps.timeZone).from,
       takenElsewhere,
+      ...(through !== undefined && { through }),
     });
     if (plan.delete.length > 0) db.delete(plannedTournament).where(inArray(plannedTournament.id, plan.delete)).run();
     for (const { id, ...set } of plan.update) db.update(plannedTournament).set(set).where(eq(plannedTournament.id, id)).run();
@@ -492,16 +572,21 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     return resolveSeries({ type, product: template.product, country: template.venueCountry, date: row.localDate, pick }, list);
   }
 
-  function entryOf(row: PlannedRow, ctx: EntryContext): UpcomingEntry {
-    const template = ctx.templates.get(row.templateId)!;
-    const schedule = row.scheduleId === null ? undefined : ctx.schedules.get(row.scheduleId);
+  /** A row's settings as it would be created now: template, schedule overrides in effect, its own (decision 11). */
+  function settingsOf(row: PlannedRow, ctx: EntryContext) {
     const scheduleOverrides = ctx.overrides
       .filter((o) => o.scheduleId === row.scheduleId && o.slotPosition === row.slotPosition)
       .map((o) => ({ effectiveFrom: o.effectiveFrom, fields: o.fields as SettingsOverrides }));
-    const settings = resolveSettings(templateView(template), scheduleOverrides, row.overrides as SettingsOverrides, {
+    return resolveSettings(templateView(ctx.templates.get(row.templateId)!), scheduleOverrides, row.overrides as SettingsOverrides, {
       occurrenceDate: row.occurrenceDate ?? row.localDate,
       localDate: row.localDate,
     });
+  }
+
+  function entryOf(row: PlannedRow, ctx: EntryContext): UpcomingEntry {
+    const template = ctx.templates.get(row.templateId)!;
+    const schedule = row.scheduleId === null ? undefined : ctx.schedules.get(row.scheduleId);
+    const settings = settingsOf(row, ctx);
     let startsAt: string | null = null;
     let timeProblem: LocalTimeError['reason'] | undefined;
     try {
@@ -513,13 +598,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     const organizer = organizerOf(template.organizerPlayerId, ctx.conns);
     const type = typeFor(row, template, ctx);
     const replannable = row.state === 'planned' || row.state === 'failed';
-    const creatable =
-      replannable &&
-      organizer.connected &&
-      startsAt !== null &&
-      checkCreatable(row.localDate, now(), deps.timeZone) === null &&
-      type !== null &&
-      (type.kind === 'custom' || type.status === 'resolved');
+    const actable = organizer.connected && startsAt !== null && checkCreatable(row.localDate, now(), deps.timeZone) === null;
+    const creatable = replannable && actable && type !== null && (type.kind === 'custom' || type.status === 'resolved');
     return {
       plannedId: row.id,
       tournamentId: row.tournamentId,
@@ -542,7 +622,13 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       displayId: row.displayId,
       upstreamStatus: row.upstreamStatus,
       errorCode: row.errorCode,
-      actions: [...(creatable ? (['create'] as const) : []), ...(replannable ? (['skip'] as const) : []), ...(row.state === 'skipped' ? (['unskip'] as const) : [])],
+      lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null,
+      actions: [
+        ...(creatable ? (['create'] as const) : []),
+        ...(replannable ? (['skip'] as const) : []),
+        ...(row.state === 'skipped' ? (['unskip'] as const) : []),
+        ...(row.state === 'unknown' && actable ? (['retry_create'] as const) : []),
+      ],
     };
   }
 
@@ -629,6 +715,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       displayId: t.displayId,
       upstreamStatus: t.status,
       errorCode: null,
+      lastAttemptAt: null,
       actions: [],
     };
   }
@@ -649,6 +736,315 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       if (t.archivedAt) throw new TournamentsError('template_archived', `“${t.name}” is archived.`, { templateId: id });
     }
   }
+
+  /** Planned rows in the range (already materialised) merged with the league's play-tools tournaments, by start. */
+  async function read(leagueId: string, from: LocalDate, to: LocalDate): Promise<Upcoming> {
+    const rowsIn = () =>
+      db
+        .select()
+        .from(plannedTournament)
+        .where(and(eq(plannedTournament.leagueId, leagueId), gte(plannedTournament.localDate, from), lte(plannedTournament.localDate, to)))
+        .all();
+    let rows = rowsIn();
+    const conns = deps.connections.listActingConnections();
+    const group = conns.length === 0 ? null : (deps.connections.getStatus(leagueId).league?.id ?? null);
+    const status = conns.length === 0 ? 'not_connected' : group === null ? 'league_not_selected' : 'read';
+    const listed = group === null ? { tournaments: [], unread: [] } : await listLeagueTournaments(conns, group, from, to);
+    if (group !== null && (await linkUnknown(leagueId, group, rows, listed.tournaments))) rows = rowsIn();
+    const ctx = contextFor(rows);
+    ctx.series = await seriesByOrganizer(rows, ctx.templates, conns, group);
+
+    const byId = new Map(listed.tournaments.map((l) => [l.tournament.id, l.tournament]));
+    const linked = new Set(
+      listed.tournaments.length === 0
+        ? []
+        : db
+            .select({ id: plannedTournament.tournamentId })
+            .from(plannedTournament)
+            .where(and(eq(plannedTournament.leagueId, leagueId), inArray(plannedTournament.tournamentId, [...byId.keys()])))
+            .all()
+            .map((r) => r.id),
+    );
+    const planned = rows.map((r) => {
+      const entry = entryOf(r, ctx);
+      const upstreamOne = r.tournamentId === null ? undefined : byId.get(r.tournamentId);
+      return upstreamOne ? { ...entry, displayId: upstreamOne.displayId ?? entry.displayId, upstreamStatus: upstreamOne.status } : entry;
+    });
+    const others = listed.tournaments
+      .filter((l) => !linked.has(l.tournament.id))
+      .map((l) => upstreamEntry(l.tournament, organizerOf(l.organizer.professorPlayerId!, conns)))
+      .filter((e) => e.localDate >= from && e.localDate <= to);
+    const tournaments = [...planned, ...others].sort(
+      (a, b) => a.localDate.localeCompare(b.localDate) || (a.startsAt ?? a.startTime).localeCompare(b.startsAt ?? b.startTime) || (a.plannedId ?? 0) - (b.plannedId ?? 0),
+    );
+    return { timeZone: deps.timeZone, from, to, tournaments, upstream: status, unread: listed.unread };
+  }
+
+  /** Every play-tools guid a planned row of the league holds: adoption never takes one (#100). */
+  function linkedGuids(leagueId: string): Set<string> {
+    return new Set(
+      db
+        .select({ id: plannedTournament.tournamentId })
+        .from(plannedTournament)
+        .where(and(eq(plannedTournament.leagueId, leagueId), isNotNull(plannedTournament.tournamentId)))
+        .all()
+        .map((r) => r.id!),
+    );
+  }
+
+  /** The candidate whose details have the same format, or null. A failed details read throws: it can't rule a match out. */
+  async function pickByFormat(connectionId: number, candidates: readonly Tournament[], category: string) {
+    for (const t of candidates) {
+      const details = await deps.gateway(connectionId).getTournament(t.id);
+      if (details.category === category) return details;
+    }
+    return null;
+  }
+
+  /** The organizer's tournament a create would duplicate (ADR-0010 decision 5), from a fresh listing at its start. */
+  async function findMatch(leagueId: string, connectionId: number, match: CreateMatch): Promise<string | null> {
+    const listed = await deps.gateway(connectionId).listTournaments({ from: match.startsAt, to: new Date(match.startsAt.getTime() + 1) });
+    const found = await pickByFormat(connectionId, adoptionCandidates(match, listed, linkedGuids(leagueId)), match.category);
+    return found?.id ?? null;
+  }
+
+  /**
+   * Links `unknown` rows (a create that may have landed) to a tournament the listing already holds (#100): no write,
+   * and one details read per candidate, for its format. A row whose candidate can't be read stays unknown.
+   * Returns whether any row was linked.
+   */
+  async function linkUnknown(
+    leagueId: string,
+    group: string,
+    rows: readonly PlannedRow[],
+    listed: readonly { tournament: Tournament; organizer: ActingConnection }[],
+  ): Promise<boolean> {
+    const unknown = rows.filter((r) => r.state === 'unknown');
+    if (unknown.length === 0 || listed.length === 0) return false;
+    const ctx = contextFor(unknown);
+    let any = false;
+    for (const row of unknown) {
+      const template = ctx.templates.get(row.templateId)!;
+      const settings = settingsOf(row, ctx);
+      let startsAt: Date;
+      try {
+        startsAt = localInstant(row.localDate, row.startTime, settings.venue.timeZone);
+      } catch (err) {
+        if (err instanceof LocalTimeError) continue;
+        throw err;
+      }
+      const theirs = listed.filter((l) => l.organizer.professorPlayerId === template.organizerPlayerId);
+      if (theirs.length === 0) continue;
+      const target = { startsAt, product: template.product, name: settings.name, groupId: group };
+      const candidates = adoptionCandidates(target, theirs.map((l) => l.tournament), linkedGuids(leagueId));
+      try {
+        const found = await pickByFormat(theirs[0]!.organizer.id, candidates, settings.category);
+        if (!found) continue;
+        setPlanned(leagueId, row.id, { state: 'created', tournamentId: found.id, displayId: found.displayId, upstreamStatus: found.applicationState ?? found.status, errorCode: null });
+        any = true;
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+      }
+    }
+    return any;
+  }
+
+  /** The organizer's connection, if they can act; a job stops otherwise. */
+  function actingAs(playerId: string): ActingConnection {
+    const c = deps.connections.listActingConnections().find((x) => x.professorPlayerId === playerId);
+    if (!c) throw new PokemonUpstreamError('not_connected', `Professor ${playerId}'s Pokémon account is no longer connected.`);
+    if (c.status === 'needs_reconnect') throw new PokemonUpstreamError('needs_reconnect', `Reconnect ${c.professorName ?? `Professor ${playerId}`} in Settings.`);
+    return c;
+  }
+
+  function setPlanned(leagueId: string, id: number, set: Partial<typeof plannedTournament.$inferInsert>) {
+    db.update(plannedTournament)
+      .set(set)
+      .where(and(eq(plannedTournament.leagueId, leagueId), eq(plannedTournament.id, id)))
+      .run();
+  }
+
+  const creation: TournamentCreation = {
+    prepare(leagueId, plannedIds, opts) {
+      const group = deps.connections.getStatus(leagueId).league?.id;
+      if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
+      const rows = db
+        .select()
+        .from(plannedTournament)
+        .where(and(eq(plannedTournament.leagueId, leagueId), inArray(plannedTournament.id, [...plannedIds])))
+        .all();
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      for (const id of plannedIds) {
+        if (!byId.has(id)) throw new TournamentsError('not_found', `No planned tournament ${id}.`, { plannedTournamentId: id });
+      }
+      const ctx = contextFor(rows);
+      for (const id of plannedIds) {
+        const row = byId.get(id)!;
+        if (!(row.state === 'planned' || row.state === 'failed' || row.state === 'unknown')) {
+          throw new TournamentsError('not_creatable', 'This tournament is in play-tools, skipped, cancelled, or being created already.', {
+            plannedTournamentId: id,
+            state: row.state,
+          });
+        }
+        const problem = checkCreatable(row.localDate, now(), deps.timeZone);
+        if (problem) {
+          const message = problem === 'date_too_far_past' ? `${row.localDate} is too far back to create.` : `${row.localDate} is more than 12 months ahead.`;
+          throw new TournamentsError(problem, message, { plannedTournamentId: id });
+        }
+        const organizer = ctx.templates.get(row.templateId)!.organizerPlayerId;
+        const c = ctx.conns.find((x) => x.professorPlayerId === organizer);
+        if (!c) {
+          throw new TournamentsError('organizer_not_connected', `Professor ${organizer} isn't connected. Connect their Pokémon account in Settings.`, {
+            plannedTournamentId: id,
+            professorPlayerId: organizer,
+          });
+        }
+        if (c.status === 'needs_reconnect') {
+          throw new TournamentsError('needs_reconnect', `Reconnect ${c.professorName ?? `Professor ${organizer}`} in Settings.`, {
+            plannedTournamentId: id,
+            professorPlayerId: organizer,
+          });
+        }
+      }
+      const unknown = plannedIds.filter((id) => byId.get(id)!.state === 'unknown');
+      if (unknown.length > 0 && !opts.retryUnknown) {
+        throw new TournamentsError('retry_not_confirmed', 'An earlier create may still appear in play-tools. Confirm to try again.', {
+          plannedTournamentIds: unknown,
+        });
+      }
+      const short = plannedIds.filter((id) => isShortNotice(byId.get(id)!.localDate, today()));
+      if (short.length > 0 && !opts.acknowledgeShortNotice) {
+        throw new TournamentsError('short_notice_not_acknowledged', 'Some are less than 7 days away; the league is expected to sanction 7 days ahead.', {
+          plannedTournamentIds: short,
+        });
+      }
+      return rows
+        .map((r) => entryOf(r, ctx))
+        .sort((a, b) => a.localDate.localeCompare(b.localDate) || (a.startsAt ?? a.startTime).localeCompare(b.startsAt ?? b.startTime) || a.plannedId! - b.plannedId!)
+        .map((e) => ({
+          plannedId: e.plannedId!,
+          label: `${e.name} · ${e.localDate}`,
+          localDate: e.localDate,
+          shortNotice: isShortNotice(e.localDate, today()),
+          organizer: { playerId: e.organizer!.playerId, name: e.organizer!.name },
+        }));
+    },
+
+    hold(leagueId, plannedIds) {
+      db.update(plannedTournament)
+        .set({ state: 'creating' })
+        .where(and(eq(plannedTournament.leagueId, leagueId), inArray(plannedTournament.id, [...plannedIds])))
+        .run();
+    },
+
+    async planItem(leagueId, plannedId) {
+      const row = plannedRow(leagueId, plannedId);
+      const ctx = contextFor([row]);
+      const template = ctx.templates.get(row.templateId)!;
+      const settings = settingsOf(row, ctx);
+      let startsAt: Date;
+      try {
+        startsAt = localInstant(row.localDate, row.startTime, settings.venue.timeZone);
+      } catch (err) {
+        if (!(err instanceof LocalTimeError)) throw err;
+        return { kind: 'fail', code: 'start_time_invalid', message: `${row.startTime} on ${row.localDate} is skipped or repeated by a clock change.` };
+      }
+      const c = actingAs(template.organizerPlayerId);
+      const group = deps.connections.getStatus(leagueId).league?.id;
+      if (!group) return { kind: 'fail', code: 'league_not_selected', message: 'Choose the league in Settings first.' };
+      const match: CreateMatch = { startsAt, product: template.product, name: settings.name, groupId: group, category: settings.category };
+
+      let adopted: string | null;
+      try {
+        adopted = await findMatch(leagueId, c.id, match);
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError) || STOPS.has(err.code)) throw err;
+        return { kind: 'fail', code: 'listing_unavailable', message: `Couldn't check play-tools for this tournament first: ${err.message}`, error: err, connectionId: c.id };
+      }
+      if (adopted) return { kind: 'adopt', connectionId: c.id, tournamentId: adopted };
+
+      let seriesId: string | null = null;
+      const premier = row.seriesOverride !== 'custom' && (row.seriesOverride !== null || template.eventType === 'premier');
+      if (premier) {
+        let list: readonly Series[];
+        try {
+          list = await live.series(c.id, group);
+        } catch (err) {
+          if (!(err instanceof PokemonUpstreamError) || STOPS.has(err.code)) throw err;
+          return { kind: 'fail', code: 'series_unavailable', message: `Couldn't read play-tools' series: ${err.message}`, error: err, connectionId: c.id };
+        }
+        const type: TemplateType = template.eventType === 'premier' ? { kind: 'premier', seriesMatch: template.seriesMatch ?? '' } : { kind: 'custom' };
+        const resolved = resolveSeries({ type, product: template.product, country: settings.venue.country, date: row.localDate, pick: row.seriesOverride }, list);
+        if (resolved.kind === 'premier') {
+          if (resolved.status !== 'resolved') {
+            return { kind: 'fail', code: resolved.status, message: `No single play-tools series for ${row.localDate}: pick the type on this tournament.` };
+          }
+          seriesId = resolved.series.id;
+          if (!list.find((x) => x.id === seriesId)!.categories.includes(settings.category)) {
+            return { kind: 'fail', code: 'format_not_in_series', message: `${resolved.series.name} doesn't offer the format ${settings.category}.` };
+          }
+        }
+      }
+      let venues: readonly Venue[];
+      try {
+        venues = await live.venues(c.id, group, settings.venue.country);
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError) || STOPS.has(err.code)) throw err;
+        return { kind: 'fail', code: 'venue_unavailable', message: `Couldn't read the organizer's venues: ${err.message}`, error: err, connectionId: c.id };
+      }
+      if (!venues.some((v) => v.id === settings.venue.id)) {
+        return { kind: 'fail', code: 'venue_not_found', message: `${settings.venue.label} is no longer in the organizer's address book. Pick another venue on the template.` };
+      }
+      return {
+        kind: 'send',
+        connectionId: c.id,
+        localDate: row.localDate,
+        match,
+        tournament: newTournament(settings, { startsAt, groupId: group, product: template.product, seriesId }),
+      };
+    },
+
+    findLanded: (leagueId, connectionId, match) => findMatch(leagueId, connectionId, match),
+
+    windowProblem: (localDate) => checkCreatable(localDate, now(), deps.timeZone),
+
+    recordSent(leagueId, plannedId, at) {
+      setPlanned(leagueId, plannedId, { lastAttemptAt: at });
+    },
+    recordCreated(leagueId, plannedId, tournamentId) {
+      setPlanned(leagueId, plannedId, { state: 'created', tournamentId, errorCode: null });
+    },
+    recordReconciled(leagueId, plannedId, fresh) {
+      setPlanned(leagueId, plannedId, { displayId: fresh.displayId, upstreamStatus: fresh.status });
+    },
+    recordUnknown(leagueId, plannedId) {
+      setPlanned(leagueId, plannedId, { state: 'unknown', errorCode: null });
+    },
+    recordFailed(leagueId, plannedId, code) {
+      setPlanned(leagueId, plannedId, { state: 'failed', errorCode: code });
+    },
+    release(leagueId, plannedId) {
+      setPlanned(leagueId, plannedId, { state: plannedRow(leagueId, plannedId).lastAttemptAt ? 'unknown' : 'planned' });
+    },
+    retryable(leagueId, plannedIds) {
+      if (plannedIds.length === 0) return [];
+      const open = new Set(
+        db
+          .select({ id: plannedTournament.id })
+          .from(plannedTournament)
+          .where(and(eq(plannedTournament.leagueId, leagueId), inArray(plannedTournament.id, [...plannedIds]), inArray(plannedTournament.state, ['planned', 'failed'])))
+          .all()
+          .map((r) => r.id),
+      );
+      return plannedIds.filter((id) => open.has(id));
+    },
+    recordCreatedThrough(leagueId, scheduleId, date) {
+      const row = scheduleRow(leagueId, scheduleId);
+      if (row.createdThrough === null || row.createdThrough < date) {
+        db.update(tournamentSchedule).set({ createdThrough: date }).where(eq(tournamentSchedule.id, scheduleId)).run();
+      }
+    },
+  };
 
   return {
     listTemplates(leagueId, opts) {
@@ -895,43 +1291,39 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         throw new TournamentsError('invalid_range', `Choose a range of at most ${MAX_UPCOMING_DAYS} days, ending after it starts.`);
       }
       materialise(leagueId);
-      const rows = db
-        .select()
-        .from(plannedTournament)
-        .where(and(eq(plannedTournament.leagueId, leagueId), gte(plannedTournament.localDate, from), lte(plannedTournament.localDate, to)))
-        .all();
-      const conns = deps.connections.listActingConnections();
-      const group = conns.length === 0 ? null : (deps.connections.getStatus(leagueId).league?.id ?? null);
-      const read = conns.length === 0 ? 'not_connected' : group === null ? 'league_not_selected' : 'read';
-      const listed = group === null ? { tournaments: [], unread: [] } : await listLeagueTournaments(conns, group, from, to);
-      const ctx = contextFor(rows);
-      ctx.series = await seriesByOrganizer(rows, ctx.templates, conns, group);
-
-      const byId = new Map(listed.tournaments.map((l) => [l.tournament.id, l.tournament]));
-      const linked = new Set(
-        listed.tournaments.length === 0
-          ? []
-          : db
-              .select({ id: plannedTournament.tournamentId })
-              .from(plannedTournament)
-              .where(and(eq(plannedTournament.leagueId, leagueId), inArray(plannedTournament.tournamentId, [...byId.keys()])))
-              .all()
-              .map((r) => r.id),
-      );
-      const planned = rows.map((r) => {
-        const entry = entryOf(r, ctx);
-        const upstreamOne = r.tournamentId === null ? undefined : byId.get(r.tournamentId);
-        return upstreamOne ? { ...entry, displayId: upstreamOne.displayId ?? entry.displayId, upstreamStatus: upstreamOne.status } : entry;
-      });
-      const others = listed.tournaments
-        .filter((l) => !linked.has(l.tournament.id))
-        .map((l) => upstreamEntry(l.tournament, organizerOf(l.organizer.professorPlayerId!, conns)))
-        .filter((e) => e.localDate >= from && e.localDate <= to);
-      const tournaments = [...planned, ...others].sort(
-        (a, b) => a.localDate.localeCompare(b.localDate) || (a.startsAt ?? a.startTime).localeCompare(b.startsAt ?? b.startTime) || (a.plannedId ?? 0) - (b.plannedId ?? 0),
-      );
-      return { timeZone: deps.timeZone, from, to, tournaments, upstream: read, unread: listed.unread };
+      return read(leagueId, from, to);
     },
+
+    async createThrough(leagueId, scheduleId, through) {
+      const schedule = scheduleRow(leagueId, scheduleId);
+      if (!scheduleActive(schedule)) {
+        throw new TournamentsError('schedule_inactive', 'This schedule is paused or archived. Resume it to create its tournaments.');
+      }
+      const window = creatableWindow(now(), deps.timeZone);
+      if (through < window.from) throw new TournamentsError('date_too_far_past', `Choose a date from ${window.from} on.`);
+      if (through > window.to) throw new TournamentsError('date_too_far_ahead', `${through} is more than 12 months ahead.`);
+      db.transaction(() => syncSchedule(leagueId, schedule, through));
+      materialise(leagueId);
+      const listed = await read(leagueId, window.from, through);
+      const rows = listed.tournaments
+        .filter((e) => e.scheduleId === scheduleId && e.plannedId !== null)
+        .map((entry) => ({ id: entry.plannedId!, localDate: entry.localDate, state: entry.state as PlannedRowState, startsAt: entry.startsAt ?? entry.startTime, entry }));
+      const picked = selectCreateThrough(rows, { windowStart: window.from, through });
+      return {
+        scheduleId,
+        scaffoldName: scheduleView(schedule).scaffoldName,
+        from: window.from,
+        through,
+        tournaments: picked.tournaments.map((r) => ({ ...r.entry, shortNotice: isShortNotice(r.localDate, today()) })),
+        leftOut: picked.leftOut.map((l) => ({ entry: l.row.entry, reason: l.reason })),
+        count: picked.count,
+        tooMany: picked.tooMany,
+        suggestedThrough: picked.suggestedThrough,
+        unread: listed.unread,
+      };
+    },
+
+    creation,
 
     async options(leagueId, query) {
       const c = deps.connections.listActingConnections().find((x) => x.professorPlayerId === query.professor);

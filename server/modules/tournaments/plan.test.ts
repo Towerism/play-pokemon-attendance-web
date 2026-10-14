@@ -43,6 +43,18 @@ describe('materialising a schedule', () => {
     expect(plan.delete).toEqual([]);
   });
 
+  it('plans past the horizon up to a create-through date (#92), and never short of the horizon', () => {
+    expect(keys(planSchedule(input({ through: '2026-11-17' })).insert).filter((k) => k.endsWith('#0'))).toEqual([
+      '2026-10-13#0',
+      '2026-10-20#0',
+      '2026-10-27#0',
+      '2026-11-03#0',
+      '2026-11-10#0',
+      '2026-11-17#0',
+    ]);
+    expect(planSchedule(input({ through: '2026-10-20' })).insert).toEqual(planSchedule(input()).insert);
+  });
+
   it('adds nothing for an occurrence that already has a row, in any state', () => {
     const states: PlannedRowState[] = ['planned', 'skipped', 'creating', 'created', 'failed', 'cancelled', 'unknown', 'planned'];
     const dates = ['2026-10-13', '2026-10-20', '2026-10-27', '2026-11-03'];

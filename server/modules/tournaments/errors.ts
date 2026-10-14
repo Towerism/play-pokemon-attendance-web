@@ -28,7 +28,19 @@ export type TournamentsErrorCode =
   /** No connected professor with that player id. */
   | 'connection_not_found'
   /** That professor's connection needs a reconnect (`details.professorPlayerId`). */
-  | 'needs_reconnect';
+  | 'needs_reconnect'
+  /** A create job takes only `planned`, `failed` or (confirmed) `unknown` rows (`details.plannedTournamentId`, `state`; #92). */
+  | 'not_creatable'
+  /** An `unknown` row, a create that may have landed, sent without `retryUnknown` (`details.plannedTournamentIds`; #100). */
+  | 'retry_not_confirmed'
+  /** Rows less than 7 days ahead, sent without `acknowledgeShortNotice` (`details.plannedTournamentIds`; ADR-0010 decision 6). */
+  | 'short_notice_not_acknowledged'
+  /** **Create through date…** on a paused or archived schedule, or one whose scaffold is archived. */
+  | 'schedule_inactive'
+  /** More than 60 tournaments in one create job (`details.count`, `suggestedThrough`). */
+  | 'too_many_tournaments'
+  /** Nothing left to create. */
+  | 'nothing_to_create';
 
 export class TournamentsError extends Error {
   override name = 'TournamentsError';

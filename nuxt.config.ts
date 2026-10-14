@@ -53,6 +53,9 @@ export default defineNuxtConfig({
     undo: { delayMs: 1_000 },
     // A staff job sends one write at a time, at least this far apart (never under 500 ms). NUXT_STAFF_DELAY_MS.
     staff: { delayMs: 1_000 },
+    // A create job sends one tournament create at a time, at least this far apart (never under 2 s; ADR-0010
+    // decision 5). NUXT_TOURNAMENT_DELAY_MS. Its settle window is the submission one.
+    tournament: { delayMs: 5_000 },
     // Per-client limits on login and first-run setup (architecture §9).
     // NUXT_AUTH_RATE_LIMIT_*: optional tuning, validated by the launcher; not in the template.
     authRateLimit: {

@@ -70,6 +70,15 @@ export interface FakePokemon {
   venues: FakeVenue[];
   /** Display id → the errors the next TDF validation for that tournament reports (`{type, message}` or a bare code), then cleared. */
   tdfErrors: Map<string, (string | { type: string; message: string })[]>;
+  /**
+   * The next create answers 500 but is stored hidden, as a create that lands after a gateway timeout does (ADR-0004
+   * update, #100); `land()` reveals it. Cleared once used.
+   */
+  createLandsLate: boolean;
+  /** Reveals the tournaments hidden by `createLandsLate`. */
+  land(): void;
+  /** Holds every create (after it is logged) until `release()`; `arrived` resolves when the first is held. */
+  holdCreates(): { arrived: Promise<void>; release(): void };
   /** Ends a confirmed upload's processing: `completed` makes the tournament `complete`; `upload_failed` leaves it sanctioned. */
   finishUpload(tournamentId: string, outcome: 'completed' | 'upload_failed'): void;
   /** Refuse the account's next refresh with `invalid_grant` (default account when no player id is given). */
@@ -266,6 +275,9 @@ function applyTournamentFields(t: FakeTournament, sent: Record<string, unknown>)
 
 export async function startFakePokemon(): Promise<FakePokemon> {
   let serial = 0;
+  /** Creates `createLandsLate` stored but no read shows yet. */
+  const hidden: FakeTournament[] = [];
+  let createGate: { released: Promise<void>; arrive: () => void } | undefined;
   const issued: string[] = [];
   const accounts: AccountState[] = [];
   const uploads: FakeUpload[] = [];
@@ -307,6 +319,24 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     },
     venues: [FAKE_VENUE],
     tdfErrors: new Map(),
+    createLandsLate: false,
+    land: () => {
+      fake.tournaments.push(...hidden.splice(0));
+    },
+    holdCreates: () => {
+      let release!: () => void;
+      const released = new Promise<void>((r) => (release = r));
+      let arrive!: () => void;
+      const arrived = new Promise<void>((r) => (arrive = r));
+      createGate = { released, arrive };
+      return {
+        arrived,
+        release: () => {
+          createGate = undefined;
+          release();
+        },
+      };
+    },
     finishUpload: (tournamentId, outcome) => {
       const t = fake.tournaments.find((x) => x.guid === tournamentId);
       if (!t) throw new Error(`fake: no tournament ${tournamentId}`);
@@ -580,6 +610,15 @@ export async function startFakePokemon(): Promise<FakePokemon> {
         address: fake.venues.find((v) => v.guid === sent.address_id)?.formatted_address ?? null,
       };
       applyTournamentFields(created, sent);
+      if (createGate) {
+        createGate.arrive();
+        await createGate.released;
+      }
+      if (fake.createLandsLate) {
+        fake.createLandsLate = false;
+        hidden.push(created);
+        return json(res, 500, { code: 'op.generic.server_error', message: 'Internal server error.' });
+      }
       fake.tournaments.push(created);
       return json(res, 201, { guid });
     }

@@ -211,11 +211,18 @@ export const submission = sqliteTable(
      * `staff` applies a tournament's staff assignments (M8): `play_session_id` then holds the tournament GUID and
      * `play_session_label` "Staff for <tournament>". `staff_import` reads every tournament the account organizes
      * into the staff list (M8): `play_session_id` is '' and `play_session_label` "Staff import". `player_import` reads
-     * the same tournaments into the league's players (#35): `play_session_label` "Player import".
+     * the same tournaments into the league's players (#35): `play_session_label` "Player import". `tournament_create`
+     * creates planned tournaments in play-tools (#92, ADR-0010 decision 5): `play_session_id` is '' and its items are
+     * `submission_tournament_item` rows.
      */
-    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import'] }).notNull().default('submit'),
+    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create'] })
+      .notNull()
+      .default('submit'),
     /** For an undo: the submission whose added records it removes. */
     undoOf: integer('undo_of'),
+    /** A **Create through date…** job (#92): the schedule, and the date it creates through. */
+    throughScheduleId: integer('through_schedule_id'),
+    throughDate: text('through_date'),
   },
   (t) => [index('submission_league_date_idx').on(t.leagueId, t.sessionDate)],
 );
@@ -269,6 +276,37 @@ export const submissionItem = sqliteTable(
     suggestedPlayerId: text('suggested_player_id'),
   },
   (t) => [primaryKey({ columns: [t.submissionId, t.playerId] })],
+);
+
+/**
+ * Per tournament: what a tournament job found or did (ADR-0010 decision 7), in start order. Owned by the submission
+ * module; `planned_tournament_id` points into the tournaments module, which it reaches only through its service.
+ */
+export const submissionTournamentItem = sqliteTable(
+  'submission_tournament_item',
+  {
+    submissionId: integer('submission_id')
+      .notNull()
+      .references(() => submission.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    plannedTournamentId: integer('planned_tournament_id'),
+    /** The upstream guid, once known. */
+    tournamentId: text('tournament_id'),
+    /** The resolved name and local date. */
+    label: text('label').notNull(),
+    outcome: text('outcome', {
+      enum: ['pending', 'created', 'already_exists', 'refused', 'failed', 'skipped', 'unknown', 'date_too_far_past', 'date_too_far_ahead'],
+    }).notNull(),
+    /** Written just before the create is sent (#100): boot recovery reads it. */
+    sentAt: integer('sent_at', { mode: 'timestamp_ms' }),
+    /** Less than 7 days ahead when the job started; the job's `started_by` acknowledged it. */
+    shortNotice: integer('short_notice', { mode: 'boolean' }).notNull().default(false),
+    errorCode: text('error_code'),
+    error: text('error'),
+    /** JSON support details (ADR-0010 decision 7): never a token, a request body or player data. */
+    support: text('support', { mode: 'json' }),
+  },
+  (t) => [primaryKey({ columns: [t.submissionId, t.position] })],
 );
 
 /** Progress, persisted before it is pushed to the browser over SSE. */
