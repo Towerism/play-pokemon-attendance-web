@@ -154,6 +154,8 @@ export const ActivityTournament = z.looseObject({
   product: z.string(),
   start_date_v2: z.iso.datetime().nullable(),
   status: z.string(),
+  /** `sanctioned` / `approval-pending` / `sanctioning-error` / `cancelled`…; stays `sanctioned` once `status` is `complete`. */
+  application_state: z.string().nullable().optional(),
   activity_group: z.looseObject({ guid: Guid }).nullable().optional(),
 });
 export type ActivityTournament = z.infer<typeof ActivityTournament>;

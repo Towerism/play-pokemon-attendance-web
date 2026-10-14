@@ -213,6 +213,11 @@ export interface Tournament {
   readonly startsAt: Date | null;
   /** Upstream status, e.g. `sanctioned`, `complete`. */
   readonly status: string;
+  /**
+   * Sanctioning state, e.g. `sanctioned`, `approval-pending`, `sanctioning-error`; it stays `sanctioned` once `status`
+   * is `complete`. Null when play-tools didn't send it. Optional so callers building a `Tournament` needn't set it.
+   */
+  readonly applicationState?: string | null;
   /** Staff edits close then (start + 90 days); null when the start is unknown. */
   readonly editableUntil: Date | null;
 }

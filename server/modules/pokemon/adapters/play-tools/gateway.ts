@@ -562,6 +562,7 @@ function toTournament(t: ActivityTournament): Tournament {
     products: [t.product],
     startsAt,
     status: t.status,
+    applicationState: t.application_state ?? null,
     editableUntil: startsAt && new Date(startsAt.getTime() + STAFF_EDIT_WINDOW_MS),
   };
 }
