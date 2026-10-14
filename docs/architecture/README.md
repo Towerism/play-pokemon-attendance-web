@@ -126,7 +126,7 @@ flowchart LR
 | Backups          | Unraid *Appdata Backup* of `/data`, plus optional Litestream → S3-compatible bucket (Backblaze B2 / R2) | One folder to back up. Litestream adds continuous, point-in-time restore when it is configured. |
 | XML              | `fast-xml-parser` (entities disabled)                                     | Same parser the CLI uses, with the TDF shape already proven.                                         |
 | Crypto           | Node `crypto` AES-256-GCM (refresh-token vault)                           | No extra service is needed.                                                                          |
-| Platform code    | **`@towerism/selfhost-kit`**, pinned to an exact version: setup code, rate limiter, client address and trusted proxies, request ids, CSP and security headers (A1; the logger, secrets, launcher, vault and entrypoint follow in A2–A7) | One shared copy of the security-sensitive code with Tournament Genie. See [ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md). |
+| Platform code    | **`@towerism/selfhost-kit`**, pinned to an exact version: setup code, rate limiter, client address and trusted proxies, request ids, CSP and security headers (A1); the logger and log redaction, configured with attendance's keys in `server/logging/app-logger.ts` (A2); the secrets, launcher, vault and entrypoint follow in A3–A7 | One shared copy of the security-sensitive code with Tournament Genie. See [ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md). |
 | Packaging        | Single `linux/amd64` Docker image on GHCR running `node .output/server/index.mjs`, built by pnpm, plus an Unraid template | **Production runs on Unraid** ([ADR-0006](adr/0006-docker-on-unraid.md)). The same image runs on any Docker host. |
 | Testing          | Vitest + `@nuxt/test-utils` (unit tests; server tests drive the built app over HTTP), an in-process HTTP fake of the Pokémon APIs (`test/server/fake-pokemon.ts`, reached through `NUXT_POKEMON_*_URL`) for the server and E2E tests, Playwright for the browser journeys (`test/e2e/`, Chromium at phone size) |                                                     |
 | Quality          | `@nuxt/eslint`, `vue-tsc` typecheck in CI                                  |                                                                                                      |
@@ -157,6 +157,7 @@ server/                      Nitro side
   utils/                     auto-imported helpers: useDb(), requireLeague(event), container
                              (the setup code, rate limiter, client address, request ids and CSP/headers come from
                              the `@towerism/selfhost-kit` package, ADR-0014; there is no server/modules/security)
+  logging/app-logger.ts      createAppLogger: the kit's logger with attendance's redaction keys (§10)
 shared/                      auto-imported in app/ and server/ (Nuxt 4)
   schemas/                   Zod DTOs
   types/                     PlayerId, SessionDate
@@ -177,7 +178,7 @@ Module rules:
 - Modules talk to each other only through their exported service interfaces, never through each other's tables.
 - Only `server/modules/pokemon/adapters/*` may make HTTP calls to `*.pokemon.com`. Enforce this with an ESLint `no-restricted-imports` / boundaries rule.
 - Modules don't import h3 or Nuxt APIs, so they unit-test as plain TS.
-- From `@towerism/selfhost-kit`, modules may import only the plain helpers on the ESLint allowlist in `eslint.config.mjs` (e.g. `setupCodeMatches`, `createFixedWindowLimiter`, `Clock`), never `@towerism/selfhost-kit/nitro`. Loggers, request ids, secrets and vaults are wired outside `server/modules` (`server/utils`, `server/plugins`, `server/bootstrap`) and injected. `app/` and `shared/` never import the kit ([ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md)).
+- From `@towerism/selfhost-kit`, modules may import only the plain helpers on the ESLint allowlist in `eslint.config.mjs` (e.g. `setupCodeMatches`, `createFixedWindowLimiter`, `Clock`), never `@towerism/selfhost-kit/nitro`. Loggers, request ids, secrets and vaults are wired outside `server/modules` (`server/utils`, `server/plugins`, `server/bootstrap`) and injected; modules take the `Logger` type and `silentLogger` from the kit, and every logger is built by `createAppLogger` (§10). `app/` and `shared/` never import the kit ([ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md)).
 
 ## 4. Pokémon integration (the risky part)
 
@@ -1493,20 +1494,28 @@ flowchart LR
     `[YYYY-MM-DD HH:mm:ss.SSS] LEVEL: [scope] message {fields}` in the container's `TZ`, with an error's stack
     indented below it and no colour codes off a terminal. `NUXT_LOG_FORMAT=json` prints one JSON object per line instead.
     The setup code is always the line `… INFO: [setup] No organizer account yet. Open the app and enter this setup code: XXXX-XXXX`.
-  - **Redaction runs before formatting** (`server/logging/redact.ts`). Values under an exact list of keys are hidden at
-    any depth, matched case-insensitively and ignoring `_`/`-`: `token`, `accessToken`, `refreshToken`, `idToken`,
-    `authorization`, `proxyAuthorization`, `cookie`, `setCookie`, `password`, `sessionPassword`, `secret`,
-    `clientSecret`, `secretAccessKey`, `tokenVaultKey`, `codeVerifier`, `authorizationCode`, `birthdate`, `dateOfBirth`,
-    `dob` (and the `NUXT_`/`LITESTREAM_` env names of the secrets). Look-alikes such as `tokenCount` stay visible.
-    `Bearer …` and `name=…` / `"name":"…"` values of those names are scrubbed from messages and stacks. The play-tools
-    adapter logs only the outline of a response it doesn't understand (keys and schema issues), never its values.
+  - **Redaction runs before formatting.** The logger and the redactor come from `@towerism/selfhost-kit`
+    ([ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md)); attendance configures them in
+    `server/logging/app-logger.ts`. Values under an exact list of keys are hidden at any depth, matched
+    case-insensitively and ignoring `_`/`-`: the kit's base keys (`token`, `accessToken`, `refreshToken`, `idToken`,
+    `authorization`, `proxyAuthorization`, `cookie`, `setCookie`, `password`, `sessionPassword`,
+    `nuxtSessionPassword`, `secret`, `clientSecret`, `secretAccessKey`, `litestreamSecretAccessKey`, `codeVerifier`,
+    `authorizationCode`) plus attendance's `ATTENDANCE_LOG_KEYS`: `birthdate`, `dateOfBirth`, `dob`, `content` and
+    `payload` (a TDF's body and birthdates, ADR-0011/0012) and the secrets' env names with and without `NUXT_`
+    (`tokenVaultKey`, `tdfVaultKey`, …). A kit release may add base keys; it never removes one. Look-alikes such as
+    `tokenCount` stay visible. `Bearer …` and `name=…` / `"name":"…"` values of those names are scrubbed from
+    messages and stacks. The play-tools adapter logs only the outline of a response it doesn't understand (keys and
+    schema issues), never its values.
   - **Request ids:** each request uses a well-formed incoming `X-Request-Id` (`[A-Za-z0-9._:-]{1,64}`) or a new
     UUID (`acceptRequestId` from `@towerism/selfhost-kit`), returns it as `X-Request-Id` on every response, and tags every record it causes with `reqId`, including module
     logs and the submission job it starts (Nitro `experimental.asyncContext`; `server/plugins/logging.ts`). Each
     request logs one `http` line (method, path without the query, status, duration); `/healthz` and `/readyz` only at `debug`.
-  - **Wiring:** `server/logging/*` is plain TS (the launcher uses it before Nitro loads); Nitro code calls
-    `useLogger(scope)`; `server/modules/*` take a `Logger` (`server/logging/types.ts`) as a dependency. ESLint bans
-    `console` in server code.
+  - **Wiring:** every logger is built by `createAppLogger` (`server/logging/app-logger.ts`, plain TS: the launcher
+    uses it before Nitro loads), which always applies attendance's redactor. Nitro code calls `useLogger(scope)`;
+    `server/modules/*` take a `Logger` (a type from the kit) as a dependency. ESLint bans `console` in server code,
+    and rejects the kit's `createLogger`/`createRedactor` outside `app-logger.ts` and any `pino` import, because
+    either would log without attendance's keys. A kit API that builds its own logger when none is passed
+    (`runLauncher`) must be given `createAppLogger(...)`; ESLint can't see that, so it is a review check.
   - `server/routes/healthz.get.ts` (used by the image `HEALTHCHECK`) and `server/routes/readyz.get.ts` endpoints.
     The submission history in the UI *is* the audit log.
 - **Expected cost:** $0 on existing Unraid hardware, plus cents per month if a Litestream bucket is used.
