@@ -167,6 +167,8 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
     "import { aes256Key } from '@towerism/selfhost-kit';\nexport const f = aes256Key;",
     "import { resolveSecret } from '@towerism/selfhost-kit';\nexport const f = resolveSecret;",
     "import { createVault } from '@towerism/selfhost-kit';\nexport const f = createVault;",
+    "import { stringVault } from '@towerism/selfhost-kit';\nexport const f = stringVault;",
+    "import { isAes256Key } from '@towerism/selfhost-kit';\nexport const f = isAes256Key;",
     "import * as kit from '@towerism/selfhost-kit';\nexport const f = kit;",
     "export { aes256Key } from '@towerism/selfhost-kit';",
     "import { jsonOnly } from '@towerism/selfhost-kit/nitro';\nexport const f = jsonOnly;",
@@ -177,6 +179,8 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
   it.each([
     "import { setupCodeMatches } from '@towerism/selfhost-kit';\nexport const f = setupCodeMatches;",
     "import type { Clock } from '@towerism/selfhost-kit';\nexport type C = Clock;",
+    "import type { Vault, StringVault } from '@towerism/selfhost-kit';\nexport type V = Vault | StringVault;",
+    "import { VaultError } from '@towerism/selfhost-kit';\nexport const isVaultError = (e: unknown) => e instanceof VaultError;",
   ])('allows in a module: %s', async (code) => {
     expect(await errors(module, code)).toEqual([]);
   });
