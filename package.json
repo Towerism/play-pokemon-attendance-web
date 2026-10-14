@@ -33,7 +33,7 @@
   "dependencies": {
     "@iconify-json/lucide": "^1.2.142",
     "@nuxt/ui": "^4.11.3",
-    "@towerism/selfhost-kit": "0.4.0",
+    "@towerism/selfhost-kit": "0.4.2",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.4",
     "fast-xml-parser": "^5.11.2",

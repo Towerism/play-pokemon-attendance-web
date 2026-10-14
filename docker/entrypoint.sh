@@ -1,5 +1,7 @@
 #!/bin/sh
-# Container entrypoint (ADR-0006).
+# Container entrypoint, shipped by @towerism/selfhost-kit (ADR-0004). An app's Dockerfile copies it
+# out of node_modules with `selfhost-kit docker-assets <dir>`. Its env names, log lines and exit
+# codes are public API (ADR-0005): change them only in a major release.
 #
 # Started as root: fix ownership of /data for PUID:PGID (Unraid's nobody:users
 # by default), apply UMASK, then drop privileges with gosu. Started as a
@@ -8,7 +10,7 @@
 # Secrets are bootstrapped by the Node launcher, after the drop, so generated
 # files are owned by PUID:PGID.
 #
-# Optional Litestream (ADR-0002): with LITESTREAM_REPLICA_URL set, restore the
+# Optional Litestream: with LITESTREAM_REPLICA_URL set, restore the
 # database from the replica when it is missing, then run the command as the
 # child of `litestream replicate`. A failed restore or a litestream that cannot
 # start stops the container: running without the backups that were asked for
@@ -30,8 +32,10 @@ esac
 AS_APP_USER=""
 if [ "$(id -u)" = "0" ]; then
   mkdir -p "$DATA_DIR"
-  # Only touch what is wrong: appdata can be large and on slow array disks.
-  find "$DATA_DIR" \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown "$PUID:$PGID" {} +
+  # Only touch what is wrong: appdata can be large and on slow array disks. -h: re-own a symlink itself,
+  # never its target (a link the app left could point at any file the container can see). This guards the
+  # last path component; it assumes nothing else writes to /data while the container starts.
+  find "$DATA_DIR" \( ! -user "$PUID" -o ! -group "$PGID" \) -exec chown -h "$PUID:$PGID" {} +
   AS_APP_USER="gosu $PUID:$PGID"
 fi
 
