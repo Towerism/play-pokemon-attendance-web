@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, runToExit, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 
@@ -53,5 +53,23 @@ describe('an /api body without a Content-Length', () => {
 
     expect(res.status).toBe(411);
     expect(await res.json()).toMatchObject({ message: 'Content-Length is required.' });
+  });
+});
+
+describe('a rate-limit setting the limiter refuses, by a path the launcher does not check', () => {
+  const limit = (name: string) => `Invalid rate limit (NUXT_${name}_MAX / NUXT_${name}_WINDOW_MS, or their NITRO_ or JSON-object override): `;
+
+  it.each([
+    ['NITRO_AUTH_RATE_LIMIT_LOGIN_MAX', '0', limit('AUTH_RATE_LIMIT_LOGIN')],
+    ['NITRO_AUTH_RATE_LIMIT_SETUP_WINDOW_MS', '0', limit('AUTH_RATE_LIMIT_SETUP')],
+    ['NITRO_INTEGRATION_RATE_LIMIT_MAX', '0', limit('INTEGRATION_RATE_LIMIT')],
+    // 2^53 + 1: whole digits, so the launcher lets it through, but not a safe integer.
+    ['NUXT_AUTH_RATE_LIMIT_LOGIN_MAX', '9007199254740993', limit('AUTH_RATE_LIMIT_LOGIN')],
+    ['NITRO_TRUSTED_PROXIES', 'not-an-ip', 'NUXT_TRUSTED_PROXIES has an invalid entry "not-an-ip"'],
+  ])('fails startup for %s=%j with exit code 1, before the database opens, naming the setting', async (name, value, message) => {
+    const { code, output } = await runToExit({ [name]: value });
+    expect(code).toBe(1);
+    expect(output).toContain(message);
+    expect(output).not.toMatch(/setup code/i);
   });
 });
