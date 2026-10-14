@@ -116,8 +116,8 @@ after. ESLint keeps `@towerism/selfhost-kit/testing` out of every non-test file 
 `server/logging/app-logger.ts` (a known gap). Three differences are deliberate, and each fails closed:
 - a POST/PUT/PATCH/DELETE under `/api` (except the TDF preview) sent with `Transfer-Encoding` and no `Content-Length`
   gets 411 before the route runs (the kit's K2 decision). It used to be read with no size cap. A chunked non-JSON body
-  therefore gets 411 rather than 415, still before any handler. Browsers always send a length, and the TDF preview's
-  own 411 has long shown that installs behind their proxies keep it. A malformed length is still refused by Node's
+  therefore gets 411 rather than 415, still before any handler. Browsers always send a length, and the TDF preview,
+  which has always answered 411 without one, shows that the proxies installs use pass it on. A malformed length is still refused by Node's
   parser with 400, as before;
 - a DELETE body over 2 MiB gets 413;
 - a rate-limit or trusted-proxy value the kit refuses now fails startup (exit 1, a message naming the variables, before

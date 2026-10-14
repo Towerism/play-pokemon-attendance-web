@@ -27,7 +27,8 @@ export function buildRateLimits(config: RateLimitConfig): RateLimits {
   const integration = config.integrationRateLimit;
   return {
     auth: {
-      // The auth limits reach the limiter as configured; the integration limit is coerced, as before.
+      // The auth limits reach the limiter as configured (a cast, not Number(): a JSON override's string such as
+      // '{"max":"5"}' must keep failing, as since A1); the integration limit is coerced, as before.
       login: limiter('NUXT_AUTH_RATE_LIMIT_LOGIN', login as { max: number; windowMs: number }),
       setup: limiter('NUXT_AUTH_RATE_LIMIT_SETUP', setup as { max: number; windowMs: number }),
     },

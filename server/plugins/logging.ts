@@ -8,6 +8,7 @@ import { requestLogPlugin } from '@towerism/selfhost-kit/nitro';
  * never. The kit's `http` and `app` children of this logger are the same
  * loggers as `useLogger('http')` and `useLogger('app')`.
  */
+// Built inside the plugin, not at import, so the logger and its config are read when Nitro boots.
 export default defineNitroPlugin((nitroApp) => {
   requestLogPlugin({ logger: useLogger('app') })(nitroApp);
 });

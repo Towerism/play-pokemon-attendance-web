@@ -7,6 +7,7 @@ import { securityHeadersPlugin } from '@towerism/selfhost-kit/nitro';
  * HSTS and `upgrade-insecure-requests` follow `NUXT_PUBLIC_SITE_URL` at
  * runtime: a plain-HTTP LAN install gets neither.
  */
+// Built inside the plugin, not at import, so the site URL is read from runtime config when Nitro boots.
 export default defineNitroPlugin((nitroApp) => {
   securityHeadersPlugin({ siteUrl: useRuntimeConfig().public.siteUrl })(nitroApp);
 });
