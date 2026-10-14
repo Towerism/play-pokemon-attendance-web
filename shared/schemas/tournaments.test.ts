@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ApplyBody,
+  CancelBody,
   CreateThroughBody,
   EditBody,
   EditTargetParam,
@@ -261,5 +262,22 @@ describe('editing (#93)', () => {
 
   it.each(['0', 'abc', '../x', ''])('refuses the id %j', (id) => {
     expect(ok(EditTargetParam, { id })).toBe(false);
+  });
+});
+
+describe('cancelling (#94)', () => {
+  it('takes no body, or the typed confirmation exactly as typed', () => {
+    expect(CancelBody.parse({})).toEqual({});
+    expect(CancelBody.parse({ confirmation: ' 26-10-000001' })).toEqual({ confirmation: ' 26-10-000001' });
+    expect(ok(CancelBody, { confirmation: 'x'.repeat(32) })).toBe(true);
+  });
+
+  it.each([
+    ['an unknown field', { confirmDisplayId: '26-10-000001' }],
+    ['a number', { confirmation: 261000001 }],
+    ['null', { confirmation: null }],
+    ['33 characters', { confirmation: 'x'.repeat(33) }],
+  ])('refuses %s', (_what, body) => {
+    expect(ok(CancelBody, body)).toBe(false);
   });
 });

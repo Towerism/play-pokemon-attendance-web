@@ -237,6 +237,13 @@ export const EditTargetParam = z.object({
 });
 export type EditTarget = z.infer<typeof EditTargetParam>['id'];
 
+/**
+ * `POST /api/tournaments/{id}/cancel` (#94): what the organizer typed to confirm, when anyone is registered. Kept
+ * exactly as typed; the server compares it with the display id (or date) from its own fresh read.
+ */
+export const CancelBody = z.strictObject({ confirmation: z.string().max(32).optional() });
+export type CancelBody = z.infer<typeof CancelBody>;
+
 /** At most 366 days, so a year of planned tournaments fits. */
 export const MAX_UPCOMING_DAYS = 366;
 export const UpcomingQuery = z
