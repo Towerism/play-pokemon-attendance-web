@@ -48,6 +48,8 @@ Module rules (enforce, don't erode):
   `server/api/integrations/v1/*`, which takes only an integration bearer token
   (`requireIntegrationToken`, ADR-0013); no other route may accept one.
 - `server/modules/*` are plain TS — no h3 or Nuxt imports.
+- From `@towerism/selfhost-kit` (ADR-0014), modules take only the plain helpers on the ESLint allowlist, never
+  `/nitro`; loggers, request ids, secrets and vaults are injected from `server/utils`. `app/` and `shared/` never import the kit.
 - Modules talk only through each other's exported services, never each other's tables.
 - Only `server/modules/pokemon/adapters/*` may call `*.pokemon.com`. Upstream payload
   shapes never leak past the `PlayToolsGateway` / `TokenProvider` ports.
