@@ -180,7 +180,7 @@ emulated under QEMU on every push to `main`, more than doubled the image build t
 - (−) `docker pull` on an arm64 host fails with "no matching manifest". Tags published before this change
   stay multi-arch in GHCR.
 - The Dockerfile keeps its per-arch checksums for supercronic and Litestream, so a local `docker build` on
-  an arm64 machine still works. CI simply never asks for arm64.
+  an arm64 machine still works. CI simply never asks for arm64. (For Litestream, superseded by the A6 amendment below.)
 - *Amended by A6 (#134, [ADR-0014](0014-shared-platform-code-from-selfhost-kit.md)):* Litestream is now installed by
   the shared kit's `fetch-litestream.sh`, which pins linux/amd64 only. A local build of the `app` target on an arm64
   host fails in the `litestream` stage; build it with `--platform linux/amd64`, which needs QEMU/binfmt emulation on
