@@ -119,7 +119,7 @@ export function createCancelling(ctx: CancellingContext): TournamentCancelling {
       name: read.name,
       localDate: read.startsAt ? dateIn(read.startsAt, zone) : null,
       startTime: read.startsAt ? timeIn(read.startsAt, zone) : null,
-      organizer: { playerId: organizer.professorPlayerId!, name: organizer.professorName },
+      organizer: { playerId: organizer.professorPlayerId!, name: read.organizerName ?? organizer.professorName },
       upstreamStatus: read.applicationState ?? read.status,
       players: counts.players,
       staff: counts.staff,
