@@ -1,5 +1,8 @@
-/** A kit reusable-workflow reference: `uses: Towerism/selfhost-kit/.github/workflows/<file>@<ref><rest of line>`. */
-const KIT_USE = /^\s*(?:-\s+)?uses:\s*Towerism\/selfhost-kit\/\.github\/workflows\/(\S+?)@(\S+)(.*)$/gm;
+/**
+ * A kit reusable-workflow reference: `uses: Towerism/selfhost-kit/.github/workflows/<file>@<ref><rest of line>`,
+ * quoted or not, with the owner in any case (GitHub accepts both), so a restyled line can't slip past the check.
+ */
+const KIT_USE = /^\s*(?:-\s+)?uses:\s*['"]?towerism\/selfhost-kit\/\.github\/workflows\/([^\s'"]+?)@([^\s'"]+)['"]?(.*)$/gim;
 const PINNED = /^[0-9a-f]{40}$/;
 const VERSION_COMMENT = /^\s+#\s+v(\d+\.\d+\.\d+)\s*$/;
 

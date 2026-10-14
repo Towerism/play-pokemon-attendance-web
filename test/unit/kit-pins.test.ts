@@ -55,6 +55,14 @@ describe('kit pins', () => {
     expect(kitPinProblems(pins({ workflows })).join('\n')).toMatch(/app-release\.yml.*not pinned/);
   });
 
+  it.each([
+    ['quoted', (line: string) => line.replace(/uses: (\S+)/, "uses: '$1'")],
+    ['with the owner in lower case', (line: string) => line.replace('Towerism/', 'towerism/')],
+  ])('still checks a kit workflow written %s', (_, restyle) => {
+    const workflows = { 'ci.yml': ciYaml(kitUse('app-image.yml'), restyle(kitUse('app-release.yml', OTHER_SHA))) };
+    expect(kitPinProblems(pins({ workflows })).join('\n')).toMatch(/different commits/);
+  });
+
   it('rejects workflows that use no kit workflow at all, so a move cannot pass vacuously', () => {
     const workflows = { 'ci.yml': 'jobs:\n  check:\n    steps:\n      - uses: actions/checkout@v5\n' };
     expect(kitPinProblems(pins({ workflows })).join('\n')).toMatch(/no workflow uses/);
