@@ -38,6 +38,11 @@ const KIT_FOR_MODULES = [
   'Logger',
   'LogFields',
   'silentLogger',
+  // The vault's port: modules get a Vault or StringVault injected and catch VaultError; server/bootstrap/vaults.ts
+  // builds the vaults.
+  'Vault',
+  'StringVault',
+  'VaultError',
 ];
 
 // A bare pino logger has no redaction at all (architecture §10): every logger is built by
