@@ -1,22 +1,5 @@
 /**
- * The logger port. `server/modules/*` depend on this (never on pino or on
- * `logger.ts`) and receive a `Logger` from `server/utils`.
+ * Shim (kit ADR-0007 step A2): the logger port now comes from `@towerism/selfhost-kit`.
+ * Removed once call sites switch.
  */
-export type LogFields = Record<string, unknown> & { err?: unknown };
-
-export interface Logger {
-  error(msg: string, fields?: LogFields): void;
-  warn(msg: string, fields?: LogFields): void;
-  info(msg: string, fields?: LogFields): void;
-  debug(msg: string, fields?: LogFields): void;
-  child(scope: string, bindings?: Record<string, unknown>): Logger;
-}
-
-/** For services built without a logger (unit tests). */
-export const silentLogger: Logger = {
-  error() {},
-  warn() {},
-  info() {},
-  debug() {},
-  child: () => silentLogger,
-};
+export { type LogFields, type Logger, silentLogger } from '@towerism/selfhost-kit';
