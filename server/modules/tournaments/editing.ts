@@ -137,6 +137,8 @@ export interface TournamentEditing {
   recordReconciled(leagueId: string, plannedId: number, fresh: { displayId: string | null; status: string | null }): void;
   /** Null when the date is still in the creatable window, by this module's clock. */
   windowProblem(localDate: LocalDate): WindowProblem | null;
+  /** Less than 7 days ahead now (ADR-0010 decision 6): a retry of a reschedule that has become short notice is refused. */
+  isShortNotice(localDate: LocalDate): boolean;
 }
 
 /** The service internals editing works with. */
@@ -718,6 +720,8 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
     },
 
     windowProblem: (localDate) => checkCreatable(localDate, ctx.now(), ctx.timeZone),
+
+    isShortNotice: (localDate) => isShortNotice(localDate, ctx.today()),
   };
 
   return {

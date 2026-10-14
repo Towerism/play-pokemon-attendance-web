@@ -11,6 +11,8 @@ import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
 import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
 import { TournamentsError } from '../tournaments/errors';
+import type { ApplyBody, EditTarget } from '../../../shared/schemas/tournaments';
+import type { EditItem, ItemRead, TournamentEditing } from '../tournaments/editing';
 import type { CreatePlan, TournamentCreation, TournamentsService } from '../tournaments/service';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
@@ -108,7 +110,7 @@ export interface TournamentItemView {
  * data.
  */
 export interface SupportDetails {
-  action: 'create';
+  action: 'create' | 'edit' | 'reschedule';
   sentAt: string | null;
   league: { displayId: string | null };
   tournament: { displayId: string | null; name: string; date: string };
@@ -257,6 +259,12 @@ export interface SubmissionService {
    * @throws TournamentsError (also `too_many_tournaments`, `nothing_to_create`), SubmissionError
    */
   createThrough(leagueId: string, input: { scheduleId: number; date: string; acknowledgeShortNotice: boolean; startedBy: string }): Promise<{ submissionId: number }>;
+  /**
+   * **Edit…** (ADR-0010 decisions 8 and 11): the local changes, and a `tournament_edit` job for the tournaments in
+   * play-tools, in one transaction. No job (`submissionId: null`) when only planned rows change.
+   * @throws TournamentsError (the edit's refusals), SubmissionError `submission_running`, `shutting_down`
+   */
+  editTournaments(leagueId: string, input: { target: EditTarget; body: ApplyBody; startedBy: string }): Promise<{ submissionId: number | null; updatedLocally: number }>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -293,11 +301,11 @@ export interface SubmissionDeps {
     | 'unassignStaff'
   >;
   /** The calls a tournament job makes besides the tournaments module's reads, as one professor's connection (#92). */
-  tournamentGateway?: (connectionId: number) => Pick<PlayToolsGateway, 'createTournament' | 'getTournament'>;
+  tournamentGateway?: (connectionId: number) => Pick<PlayToolsGateway, 'createTournament' | 'editTournament' | 'getTournament'>;
   staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
   /** Planned tournaments, for `tournament_create` jobs (#92); only those jobs need it. */
-  tournaments?: { creation: TournamentCreation; createThrough: TournamentsService['createThrough'] };
+  tournaments?: { creation: TournamentCreation; createThrough: TournamentsService['createThrough']; editing?: TournamentEditing };
   /** At least this long between tournament creates (NUXT_TOURNAMENT_DELAY_MS): default 5 s, never under 2 s (ADR-0010 decision 5). */
   tournamentDelayMs?: number;
   /** The league timezone (ADR-0006): a staff import is dated by the day it starts in it. Default: the process's. */
@@ -388,6 +396,9 @@ class Interrupted extends Error {
     super('The app stopped while this submission was running. Resume it to finish.');
   }
 }
+
+/** Jobs whose items are `submission_tournament_item` rows (ADR-0010 decision 7). */
+const isTournamentJob = (row: { kind: SubmissionKind }) => row.kind === 'tournament_create' || row.kind === 'tournament_edit';
 
 /** How logs name a job. */
 const what = (row: { kind: SubmissionKind }) =>
@@ -509,12 +520,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   function counts(row: Pick<Row, 'id' | 'kind'>): SubmissionCounts {
-    if (row.kind === 'tournament_create') {
+    if (isTournamentJob(row)) {
       const outcomes = tournamentItems(row.id).map((i) => i.outcome);
       const count = (...o: TournamentItemOutcome[]) => outcomes.filter((x) => o.includes(x)).length;
       return {
-        added: count('created'),
-        alreadyPresent: count('already_exists'),
+        added: count('created', 'edited'),
+        alreadyPresent: count('already_exists', 'already_applied'),
         failed: count('refused', 'failed', 'unknown', 'date_too_far_past', 'date_too_far_ahead'),
         skipped: count('skipped'),
         unrequested: 0,
@@ -1590,14 +1601,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   /** Support details for a refused or uncertain create (ADR-0010 decision 7). */
   function support(
     leagueId: string,
-    at: { name: string; date: string; connectionId: number; sentAt: Date | null },
+    at: { name: string; date: string; connectionId: number; sentAt: Date | null; action?: SupportDetails['action']; displayId?: string | null },
     err?: PokemonUpstreamError,
   ): SupportDetails {
     return {
-      action: 'create',
+      action: at.action ?? 'create',
       sentAt: at.sentAt?.toISOString() ?? null,
       league: { displayId: deps.connections.getStatus(leagueId).league?.displayId ?? null },
-      tournament: { displayId: null, name: at.name, date: at.date },
+      tournament: { displayId: at.displayId ?? null, name: at.name, date: at.date },
       professor: professorAs(at.connectionId),
       status: err?.details.status ?? null,
       code: err?.details.upstream?.code ?? null,
@@ -1774,6 +1785,18 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   /** A tournament job that stopped: a create sent with no answer may have landed (`unknown`); the rest are released. */
   function stopTournamentItems(row: Row): void {
+    if (row.kind === 'tournament_edit') {
+      // An edit is idempotent: one in flight is `unknown`, and a retry re-reads before sending it again.
+      for (const item of tournamentItems(row.id)) {
+        if (item.outcome !== 'pending') continue;
+        setTournamentItem(
+          row.id,
+          item.position,
+          item.sentAt ? { outcome: 'unknown', error: 'The app stopped while this edit was in flight: it may have been applied.' } : { outcome: 'skipped' },
+        );
+      }
+      return;
+    }
     const t = creation();
     for (const item of tournamentItems(row.id)) {
       if (item.outcome !== 'pending') continue;
@@ -1862,6 +1885,243 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return { submissionId: row.id };
   }
 
+  function editing(): TournamentEditing {
+    if (!deps.tournaments?.editing) throw new Error('This app was built without the tournaments module.');
+    return deps.tournaments.editing;
+  }
+
+  type ItemRow = typeof submissionTournamentItem.$inferSelect;
+
+  const editItemOf = (i: ItemRow): EditItem => ({
+    plannedId: i.plannedTournamentId,
+    tournamentId: i.tournamentId!,
+    label: i.label,
+    changes: (i.changes ?? {}) as EditItem['changes'],
+    professorPlayerId: i.professorPlayerId!,
+    shortNotice: i.shortNotice,
+  });
+
+  /** Inserts a `tournament_edit` job and its items and takes the lease; `local` runs in the same transaction. */
+  function insertEditJob(leagueId: string, input: { label: string; items: readonly EditItem[]; startedBy: string; retryOf: number | null; local?: () => number }) {
+    const organizers = new Set(input.items.map((i) => i.professorPlayerId));
+    const only = organizers.size === 1 ? deps.connections.listActingConnections().find((c) => c.professorPlayerId === input.items[0]!.professorPlayerId) : undefined;
+    return db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: dateIn(now(), timeZone),
+          playSessionId: '',
+          playSessionLabel: input.label,
+          startedBy: input.startedBy,
+          professorPlayerId: organizers.size === 1 ? input.items[0]!.professorPlayerId : null,
+          professorName: only?.professorName ?? null,
+          startedAt: now(),
+          status: 'planned',
+          retryOf: input.retryOf,
+          kind: 'tournament_edit',
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      const updatedLocally = input.local?.() ?? 0;
+      db.insert(submissionTournamentItem)
+        .values(
+          input.items.map((x, position) => ({
+            submissionId: created.id,
+            position,
+            plannedTournamentId: x.plannedId,
+            tournamentId: x.tournamentId,
+            label: x.label,
+            outcome: 'pending' as const,
+            shortNotice: x.shortNotice,
+            changes: x.changes,
+            professorPlayerId: x.professorPlayerId,
+          })),
+        )
+        .run();
+      return { row: created, updatedLocally };
+    });
+  }
+
+  /** **Edit…**: the local writes, and a job for what is in play-tools, together (ADR-0010 decision 11). */
+  async function beginTournamentEdit(leagueId: string, input: { target: EditTarget; body: ApplyBody; startedBy: string }) {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    const e = editing();
+    const plan = await e.prepare(leagueId, input.target, input.body);
+    if (plan.items.length === 0) return { submissionId: null, updatedLocally: db.transaction(() => e.applyLocal(leagueId, plan, input.startedBy)) };
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    const { row, updatedLocally } = insertEditJob(leagueId, {
+      label: plan.label,
+      items: plan.items,
+      startedBy: input.startedBy,
+      retryOf: null,
+      local: () => e.applyLocal(leagueId, plan, input.startedBy),
+    });
+    launch(row);
+    return { submissionId: row.id, updatedLocally };
+  }
+
+  /** Retry of an edit job: the items it didn't get through, with the same changes; each re-reads first. */
+  function retryTournamentEdit(row: Row, startedBy: string): { submissionId: number } {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    const e = editing();
+    const open = tournamentItems(row.id).filter((i) => i.outcome !== 'edited' && i.outcome !== 'already_applied');
+    if (open.length === 0) throw new TournamentsError('nothing_to_edit', 'Every tournament of this job has the edit.');
+    const items = open.map(editItemOf);
+    const newly = items.filter((i) => !i.shortNotice && i.changes.localDate !== undefined && e.isShortNotice(i.changes.localDate));
+    if (newly.length > 0) {
+      throw new TournamentsError('short_notice_not_acknowledged', 'The new date is now less than 7 days away. Edit it again to acknowledge it.', {
+        plannedTournamentIds: newly.flatMap((i) => (i.plannedId === null ? [] : [i.plannedId])),
+      });
+    }
+    const { row: created } = insertEditJob(row.leagueId, { label: row.playSessionLabel, items, startedBy, retryOf: row.id });
+    launch(created);
+    return { submissionId: created.id };
+  }
+
+  /**
+   * `tournament_edit` (ADR-0010 decisions 8 and 11): for each tournament in start order, as its organizer, a fresh
+   * read, then one `PATCH` with only the fields that differ, paced. A 5xx is settled by one re-read, never resent.
+   */
+  async function runTournamentEdit(row: Row): Promise<void> {
+    const { leagueId } = row;
+    const e = editing();
+    setStatus(row, 'running');
+    const items = tournamentItems(row.id);
+    const total = items.length;
+    let done = 0;
+    emit(row, 'planned', `${total} ${total === 1 ? 'tournament' : 'tournaments'} to edit.`, 0, total);
+    /** Each tournament the edit reached, and the connection to re-read it as. */
+    const landed: { position: number; plannedId: number | null; tournamentId: string; connectionId: number }[] = [];
+    const step = (message: string) => {
+      done += 1;
+      emit(row, 'tournament_sent', message, done, total);
+    };
+
+    /** Keeps PATCHes at least `tournamentDelayMs` apart across the league's tournament jobs; stops on shutdown. */
+    async function pace(): Promise<void> {
+      if (stop.signal.aborted) throw stop.signal.reason;
+      const last = lastTournamentPost.get(leagueId);
+      const wait = last === undefined ? 0 : last + tournamentDelayMs - now().getTime();
+      renewLock(row, Math.max(0, wait));
+      if (wait > 0) await sleep(wait, stop.signal);
+    }
+
+    function land(item: ItemRow, it: EditItem, read: Extract<ItemRead, { kind: 'send' | 'already_applied' }>, outcome: 'edited' | 'already_applied') {
+      setTournamentItem(row.id, item.position, { outcome, errorCode: null, error: null });
+      e.recordEdited(leagueId, it, read);
+      landed.push({ position: item.position, plannedId: it.plannedId, tournamentId: it.tournamentId, connectionId: read.connectionId });
+    }
+
+    for (const item of items) {
+      if (item.outcome !== 'pending') continue;
+      if (stop.signal.aborted) throw stop.signal.reason;
+      renewLock(row);
+      const it = editItemOf(item);
+      const name = item.label.replace(/ · \d{4}-\d{2}-\d{2}$/, '');
+      const date = item.label.slice(-10);
+
+      let read: ItemRead;
+      try {
+        read = await e.readItem(leagueId, it);
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        setTournamentItem(row.id, item.position, { outcome: 'refused', errorCode: err.code, error: err.message });
+        step(`${item.label}: ${err.code}.`);
+        throw new TournamentStop(err.code);
+      }
+      if (read.kind === 'already_applied') {
+        land(item, it, read, 'already_applied');
+        step(`${item.label}: already in play-tools.`);
+        continue;
+      }
+      if (read.kind === 'fail') {
+        const windowed = read.code === 'date_too_far_past' || read.code === 'date_too_far_ahead';
+        setTournamentItem(row.id, item.position, {
+          outcome: windowed ? (read.code as 'date_too_far_past' | 'date_too_far_ahead') : 'failed',
+          errorCode: read.code,
+          error: read.message,
+          ...(read.error &&
+            read.connectionId !== undefined && { support: support(leagueId, { name, date, connectionId: read.connectionId, sentAt: null, action: 'edit' }, read.error) }),
+        });
+        step(`${item.label}: ${read.code}.`);
+        continue;
+      }
+
+      await pace();
+      // The creatable window again, with the job's clock: a reschedule can fall out of it at midnight (#100).
+      const problem = read.reschedule && read.localDate ? e.windowProblem(read.localDate) : null;
+      if (problem) {
+        setTournamentItem(row.id, item.position, { outcome: problem, errorCode: problem, error: `${read.localDate} is no longer in the creatable window.` });
+        step(`${item.label}: ${problem}.`);
+        continue;
+      }
+      const sentAt = now();
+      setTournamentItem(row.id, item.position, { sentAt });
+      const at = { name, date, connectionId: read.connectionId, sentAt, action: read.reschedule ? ('reschedule' as const) : ('edit' as const), displayId: read.read.displayId };
+      try {
+        lastTournamentPost.set(leagueId, now().getTime());
+        await tournamentGateway(read.connectionId).editTournament(it.tournamentId, read.delta);
+        land(item, it, read, 'edited');
+        step(`Edited ${item.label}.`);
+      } catch (err) {
+        if (err instanceof TypeError) {
+          setTournamentItem(row.id, item.position, { outcome: 'failed', errorCode: 'invalid_input', error: err.message });
+          step(`${item.label}: invalid_input.`);
+          continue;
+        }
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        if (err.code === 'unavailable' || err.code === 'unexpected_shape') {
+          emit(row, 'retrying', `${err.message} Reading the tournament again to see whether the edit landed; it is never sent twice.`, done, total);
+          let again: ItemRead | null = null;
+          try {
+            again = await e.readItem(leagueId, it);
+          } catch (readErr) {
+            if (!(readErr instanceof PokemonUpstreamError)) throw readErr;
+          }
+          if (again?.kind === 'already_applied') {
+            land(item, it, again, 'edited');
+            step(`Edited ${item.label}.`);
+          } else {
+            setTournamentItem(row.id, item.position, {
+              outcome: 'failed',
+              errorCode: 'unavailable',
+              error: `${err.message} play-tools doesn't show the change. Retry to send it again; the retry reads first.`,
+              support: support(leagueId, at, err),
+            });
+            step(`${item.label}: unavailable.`);
+          }
+          continue;
+        }
+        const outcome = err.code === 'tournament_locked' ? 'failed' : 'refused';
+        setTournamentItem(row.id, item.position, { outcome, errorCode: err.code, error: err.message, support: support(leagueId, at, err) });
+        step(`${item.label}: ${outcome}.`);
+        if (CREATE_STOPS.has(err.code)) throw new TournamentStop(err.code);
+      }
+    }
+
+    // Reconcile: play-tools' status for each edited tournament; a reschedule may send it back for approval.
+    for (const l of landed) {
+      try {
+        const details = await tournamentGateway(l.connectionId).getTournament(l.tournamentId);
+        const status = details.applicationState ?? details.status;
+        if (l.plannedId !== null) e.recordReconciled(leagueId, l.plannedId, { displayId: details.displayId, status });
+        if (status === 'approval-pending' || status === 'sanctioning-error') {
+          setTournamentItem(row.id, l.position, { error: `play-tools now shows this tournament as ${status}: it may need approval again.` });
+        }
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        log.warn(`Tournament edit #${row.id} could not re-read ${l.tournamentId}: ${err.code}`, { submissionId: row.id, code: err.code });
+      }
+    }
+    const ok = landed.length;
+    emit(row, 'reconciled', `play-tools has the edit on ${ok} of the ${total} tournaments.`, total, total);
+    const status = ok === total ? 'succeeded' : ok > 0 ? 'partial' : 'failed';
+    setStatus(row, status);
+    emit(row, 'finished', `Tournament edit ${status}.`, total, total);
+  }
+
   function tournamentItemView(i: typeof submissionTournamentItem.$inferSelect): TournamentItemView {
     return {
       position: i.position,
@@ -1885,7 +2145,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .run();
     if (row.kind === 'undo' || row.kind === 'clear') finishRemoval(row);
     if (row.kind === 'staff') finishStaff(row);
-    if (row.kind === 'tournament_create') stopTournamentItems(row);
+    if (isTournamentJob(row)) stopTournamentItems(row);
     setStatus(row, status, error);
     if (isImport(row)) {
       const r = importProgress(row);
@@ -1910,6 +2170,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
             ? runStaff(row)
             : row.kind === 'tournament_create'
               ? runTournamentCreate(row)
+              : row.kind === 'tournament_edit'
+              ? runTournamentEdit(row)
               : isImport(row)
               ? runImport(row)
               : run(row)
@@ -2314,6 +2576,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       if (row.kind === 'clear') return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (isImport(row)) return beginImport(row.kind, leagueId, startedBy, row.id);
+      if (row.kind === 'tournament_edit') return retryTournamentEdit(row, startedBy);
       if (row.kind === 'tournament_create') {
         const items = tournamentItems(row.id);
         const plannedIds = creation().retryable(
@@ -2396,6 +2659,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       );
     },
 
+    editTournaments: async (leagueId, input) => beginTournamentEdit(leagueId, input),
+
     staffBatch(leagueId, batchId) {
       assertLeagueChosen(leagueId);
       const batch = db
@@ -2444,7 +2709,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         })),
         ...(row.kind === 'staff_import' ? { staffImport: staffImportResult(row, items, names) } : {}),
         ...(row.kind === 'player_import' ? { playerImport: playerImportResult(row, items, names) } : {}),
-        tournamentItems: row.kind === 'tournament_create' ? tournamentItems(row.id).map(tournamentItemView) : [],
+        tournamentItems: isTournamentJob(row) ? tournamentItems(row.id).map(tournamentItemView) : [],
       };
     },
 
