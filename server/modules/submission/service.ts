@@ -391,7 +391,7 @@ class Interrupted extends Error {
 
 /** How logs name a job. */
 const what = (row: { kind: SubmissionKind }) =>
-  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', tournament_create: 'Tournament create', ...IMPORT_LABEL })[row.kind];
+  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', tournament_create: 'Tournament create', tournament_edit: 'Tournament edit', ...IMPORT_LABEL })[row.kind];
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

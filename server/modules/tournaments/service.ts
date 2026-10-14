@@ -2,6 +2,8 @@ import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, ne } from 'drizzle-
 import { expandSchedule, occurrenceDates } from '../../../shared/schedule/expand';
 import type { ScheduleRule } from '../../../shared/schedule/rule';
 import type {
+  EditBody,
+  EditTarget,
   PlannedBody,
   PlannedPatch,
   ScaffoldBody,
@@ -26,8 +28,10 @@ import {
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { NewTournament, PlayToolsGateway, Series, Tournament, Venue } from '../pokemon/ports/play-tools-gateway';
+import type { StaffingService } from '../staffing/service';
 import { type AdoptionTarget, type LeftOutReason, adoptionCandidates, isShortNotice, newTournament, selectCreateThrough } from './create';
 import { addDays, addMonths, type LocalDate, timeIn } from './dates';
+import { type EditForm, type EditPreview, type TournamentEditing, createEditing } from './editing';
 import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
 import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, planSchedule, type PlannedRowState } from './plan';
@@ -217,6 +221,16 @@ export interface TournamentsService {
   createThrough(leagueId: string, scheduleId: number, through: LocalDate): Promise<CreateThroughPreview>;
   /** What the submission module's `tournament_create` job uses (#92), as it uses `StaffingService`. */
   creation: TournamentCreation;
+  /**
+   * **Edit…** (#93, ADR-0010 decision 11): the form for a planned row or a play-tools tournament, from its resolved
+   * settings or a fresh read as its organizer.
+   * @throws TournamentsError `not_found`, `not_editable`, `organizer_not_connected`, `needs_reconnect`, `league_not_selected`
+   */
+  editForm(leagueId: string, target: EditTarget): Promise<EditForm>;
+  /** Every tournament an edit would touch, with before → after; changes nothing. @throws TournamentsError (FR-9's refusals) */
+  editPreview(leagueId: string, target: EditTarget, body: EditBody): Promise<EditPreview>;
+  /** What the submission module's `tournament_edit` job uses (#93). */
+  editing: TournamentEditing;
 }
 
 export interface CreateThroughPreview {
@@ -300,6 +314,8 @@ export interface TournamentsDeps {
   connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
   /** Play-tools as one professor's connection. */
   gateway: (connectionId: number) => TournamentsGateway;
+  /** A rescheduled tournament's staff move with it (ADR-0010 decision 8). */
+  staffing?: Pick<StaffingService, 'moveTournament'>;
   /** The league time zone (ADR-0006): the creatable window and Upcoming's dates are in it. */
   timeZone: string;
   now?: () => Date;
@@ -590,7 +606,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     let startsAt: string | null = null;
     let timeProblem: LocalTimeError['reason'] | undefined;
     try {
-      startsAt = localInstant(row.localDate, row.startTime, template.venueTimeZone).toISOString();
+      startsAt = localInstant(row.localDate, row.startTime, settings.venue.timeZone).toISOString();
     } catch (err) {
       if (!(err instanceof LocalTimeError)) throw err;
       timeProblem = err.reason;
@@ -1046,7 +1062,27 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     },
   };
 
+  const edits = createEditing({
+    db,
+    connections: deps.connections,
+    gateway: deps.gateway,
+    live,
+    ...(deps.staffing && { staffing: deps.staffing }),
+    timeZone: deps.timeZone,
+    now,
+    today,
+    plannedRow,
+    settingsFor(rows) {
+      const ctx = contextFor(rows);
+      return new Map(rows.map((r) => [r.id, settingsOf(r, ctx)]));
+    },
+    rowAt,
+    templateColumns: (t) => templateColumns(t),
+  });
+
   return {
+    ...edits,
+
     listTemplates(leagueId, opts) {
       const rows = db
         .select()

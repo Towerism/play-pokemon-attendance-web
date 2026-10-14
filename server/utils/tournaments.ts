@@ -9,6 +9,7 @@ export function useTournaments(): TournamentsService {
     db: useDb(),
     connections: usePokemon(),
     gateway: connectionGateway,
+    staffing: useStaffing(),
     timeZone: leagueTimeZone(),
   });
   return tournaments;
@@ -38,6 +39,17 @@ const STATUS: Record<TournamentsErrorCode, number> = {
   short_notice_not_acknowledged: 422,
   too_many_tournaments: 422,
   nothing_to_create: 422,
+  tournament_locked: 422,
+  reschedule_window_not_open: 422,
+  reschedule_window_closed: 422,
+  outside_series_window: 422,
+  format_not_in_series: 422,
+  venue_not_found: 422,
+  start_time_invalid: 422,
+  nothing_to_change: 422,
+  not_in_schedule: 422,
+  no_template: 422,
+  nothing_to_edit: 422,
 };
 
 /**

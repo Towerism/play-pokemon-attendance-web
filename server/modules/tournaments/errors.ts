@@ -40,7 +40,30 @@ export type TournamentsErrorCode =
   /** More than 60 tournaments in one create job (`details.count`, `suggestedThrough`). */
   | 'too_many_tournaments'
   /** Nothing left to create. */
-  | 'nothing_to_create';
+  | 'nothing_to_create'
+  // Edit… (#93, ADR-0010 decisions 8 and 11)
+  /** play-tools no longer lets a professor edit it: cancelled, complete, or past its edit window. */
+  | 'tournament_locked'
+  /** A date change before the current date − 3 days (`details.opensOn`). */
+  | 'reschedule_window_not_open'
+  /** A date change after the current date + 90 days (`details.closesOn`). */
+  | 'reschedule_window_closed'
+  /** A premier event's new date outside its series' window (`details.window`). */
+  | 'outside_series_window'
+  /** A premier event's new format isn't one of its series'. */
+  | 'format_not_in_series'
+  /** The new venue isn't in the organizer's address book. */
+  | 'venue_not_found'
+  /** A clock change skips or repeats the new start. */
+  | 'start_time_invalid'
+  /** No field differs from what the tournament has. */
+  | 'nothing_to_change'
+  /** A scope or siblings for a tournament that isn't from a schedule. */
+  | 'not_in_schedule'
+  /** **Update the template** for a tournament made in play-tools. */
+  | 'no_template'
+  /** Everything was excluded or left out. */
+  | 'nothing_to_edit';
 
 export class TournamentsError extends Error {
   override name = 'TournamentsError';

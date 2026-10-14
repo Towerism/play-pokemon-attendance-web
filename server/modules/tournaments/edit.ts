@@ -231,7 +231,7 @@ const sameRegistration = (a: Registration | null, b: Registration | null) =>
  * moves with the start. Empty when the read already holds every change, so a landed edit is recognised. Pure.
  */
 export function editDelta(read: TournamentDetails, changes: EditChanges, opts: { fallbackZone: string }): Delta {
-  const out: TournamentChanges & Record<string, unknown> = {};
+  const out: { -readonly [K in keyof TournamentChanges]: TournamentChanges[K] } = {};
   const zone = read.venue?.timeZone ?? opts.fallbackZone;
   const newZone = changes.venue?.timeZone ?? zone;
 
