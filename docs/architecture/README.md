@@ -1465,7 +1465,7 @@ flowchart LR
   RP["Optional: SWAG / NPM / Tailscale<br/>for HTTPS remote access"] --> HOST
 ```
 
-- **One container.** `pnpm build` (`nuxt build` with the Nitro `node-server` preset, plus the bundled launcher) produces `.output/`. `node .output/launcher.mjs` resolves the secrets into `process.env` first (Nitro reads runtime config from env when it is imported, so a Nitro plugin would be too late), then loads `.output/server/index.mjs`, which serves both the app and `/api`. Drizzle migrations run from a Nitro plugin on boot (`server/plugins/database.ts`), which also prints the setup code while no account exists.
+- **One container.** `pnpm build` (`nuxt build` with the Nitro `node-server` preset, plus the bundled launcher) produces `.output/`. `node .output/launcher.mjs` resolves the secrets into `process.env` first (Nitro reads runtime config from env when it is imported, so a Nitro plugin would be too late), then loads `.output/server/index.mjs`, which serves both the app and `/api`. `pnpm dev` never runs the launcher, so a dev-only Nuxt `ready` hook (`server/bootstrap/dev-env.ts`) resolves the same secrets the same way, before the Nitro dev server loads (into `.data/secrets/` by default). Drizzle migrations run from a Nitro plugin on boot (`server/plugins/database.ts`), which also prints the setup code while no account exists.
 - **Unraid template** (`deploy/unraid/play-pokemon-attendance.xml`). It sets the WebUI link, port `3000`, and `/data` → `/mnt/user/appdata/play-pokemon-attendance`. **No field is required.** Secret overrides are masked and hidden under *Advanced*.
 - **Install, end to end:**
   1. *Add Container* from the template and click *Apply*.

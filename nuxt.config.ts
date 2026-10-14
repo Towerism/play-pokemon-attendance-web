@@ -1,4 +1,5 @@
 import { DEFAULT_TRUSTED_PROXIES, contentSecurityPolicy, securityHeaders } from '@towerism/selfhost-kit';
+import { devEnvHook } from './server/bootstrap/dev-env';
 
 // The kit's Permissions-Policy (`camera=(), …`), for nuxt-security's HTML shell. test/server/security.test.ts
 // asserts the same literal on the shell and on every other response.
@@ -9,6 +10,10 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-10-01',
   devtools: { enabled: true },
   modules: ['@nuxt/ui', '@nuxt/eslint', 'nuxt-auth-utils', 'nuxt-security'],
+
+  // `nuxt dev` never runs the production launcher: resolve the same secrets (into .data/secrets/) before
+  // the Nitro dev server loads. A no-op for build, prepare and typecheck.
+  hooks: { ready: (nuxt) => devEnvHook(nuxt) },
 
   // Architecture §9. nuxt-security nonces the HTML shell's inline scripts;
   // server/plugins/security-headers.ts (the kit's plugin) puts the same headers on every other
@@ -43,7 +48,7 @@ export default defineNuxtConfig({
     // Overridden by env (NUXT_DATABASE_PATH etc.). The image sets /data/app.db.
     databasePath: '.data/app.db',
     migrationsDir: 'server/db/migrations',
-    // Filled from env or /data/secrets/ by server/bootstrap/launcher.ts.
+    // Filled from env or /data/secrets/ by server/bootstrap/launcher.ts (under `nuxt dev`, by server/bootstrap/dev-env.ts).
     tokenVaultKey: '',
     tdfVaultKey: '',
     // Empty means the real Pokémon hosts. Only test doubles set these
