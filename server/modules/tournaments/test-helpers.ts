@@ -93,6 +93,8 @@ export function stubPlayTools() {
     /** Every `cancelTournament` call, with the connection it was made as. */
     cancels: [] as { as: number; tournamentId: string }[],
     calls: [] as string[],
+    /** Awaited at the start of every call, after it is logged: a test holds a call open with it. */
+    gate: undefined as ((name: string, as: number) => Promise<void>) | undefined,
     connection: {
       status: 'connected',
       reason: null,
@@ -106,6 +108,7 @@ export function stubPlayTools() {
 
   async function call<T>(as: number, name: string, run: (who: string) => T): Promise<T> {
     state.calls.push(`${name}@${as}`);
+    await state.gate?.(name, as);
     for (const key of [`${name}@${as}`, name]) {
       const failure = state.failNext.get(key);
       if (failure) {
@@ -125,7 +128,7 @@ export function stubPlayTools() {
         state.tournaments
           .filter((t) => t.organizer === who)
           .filter((t) => !range || (t.startsAt && t.startsAt >= range.from && t.startsAt < range.to))
-          .map(({ organizer: _o, category: _c, applicationState: _a, details: _d, ...t }) => t),
+          .map(({ organizer: _o, category: _c, applicationState, details: _d, ...t }) => ({ ...t, ...(applicationState !== undefined && { applicationState }) })),
       ),
     getTournament: (tournamentId: string) =>
       call(as, 'getTournament', (): TournamentDetails => {

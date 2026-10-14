@@ -1,5 +1,6 @@
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, ne } from 'drizzle-orm';
 import { expandSchedule, occurrenceDates } from '../../../shared/schedule/expand';
+import type { PlannedInput, PlannedSeries } from '../../../shared/requirements/coverage';
 import type { ScheduleRule } from '../../../shared/schedule/rule';
 import type {
   EditBody,
@@ -35,6 +36,8 @@ import { type TournamentCancelling, createCancelling } from './cancelling';
 import { type EditForm, type EditPreview, type TournamentEditing, createEditing } from './editing';
 import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
+import { type ListedTournament, type RequiredEvents, createRequiredEvents } from './required-events';
+import { type TournamentRequirements, createRequirements } from './requirements';
 import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, planSchedule, type PlannedRowState } from './plan';
 import { type RegistrationSettings, type SettingsOverrides, type TemplateVenue, resolveSettings } from './settings';
 import { type TemplateType, type TypeResolution, offeredOn, resolveSeries } from './series';
@@ -234,6 +237,10 @@ export interface TournamentsService {
   editing: TournamentEditing;
   /** **Cancel…** (#94, ADR-0010 decision 8): the confirm preview, and what the `tournament_cancel` job uses. */
   cancelling: TournamentCancelling;
+  /** Required events (#95, ADR-0010 decision 12): what the league must hold each period, and manual covers. */
+  requirements: TournamentRequirements;
+  /** Required events coverage, and the listing cache a tournament job's end drops. */
+  requiredEvents: RequiredEvents;
 }
 
 export interface CreateThroughPreview {
@@ -337,6 +344,9 @@ const MAX_UPCOMING_DAYS = 366;
 
 /** How far ahead a preview looks: the recurrence engine's longest range. */
 const PREVIEW_DAYS = 400;
+
+/** Planned rows coverage counts while they aren't in play-tools (#95). */
+const COUNTED: ReadonlySet<PlannedRowState> = new Set(['planned', 'creating', 'failed', 'unknown']);
 
 /** Upstream errors that mean the organizer can't act at all: a create job stops (ADR-0010 decision 5). */
 const STOPS: ReadonlySet<string> = new Set(['forbidden', 'needs_reconnect', 'not_connected']);
@@ -1093,9 +1103,70 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     plannedRow,
   });
 
+  const requirements = createRequirements({ db, now });
+
+  /** Planned rows coverage counts: not in play-tools yet, from the creatable window on (ADR-0010 decision 12, #95). */
+  async function plannedForCoverage(
+    leagueId: string,
+    to: LocalDate,
+    group: string | null,
+    listed: readonly ListedTournament[],
+    opts: { link: boolean },
+  ): Promise<PlannedInput[]> {
+    materialise(leagueId);
+    const from = creatableWindow(now(), deps.timeZone).from;
+    const rowsIn = () =>
+      db
+        .select()
+        .from(plannedTournament)
+        .where(and(eq(plannedTournament.leagueId, leagueId), gte(plannedTournament.localDate, addDays(from, -1)), lte(plannedTournament.localDate, addDays(to, 1))))
+        .all();
+    let rows = rowsIn();
+    if (opts.link && group !== null && (await linkUnknown(leagueId, group, rows, listed))) rows = rowsIn();
+    rows = rows.filter((r) => r.tournamentId === null && COUNTED.has(r.state));
+    const ctx = contextFor(rows);
+    ctx.series = await seriesByOrganizer(rows, ctx.templates, ctx.conns, group);
+    return rows.flatMap((row): PlannedInput[] => {
+      const template = ctx.templates.get(row.templateId)!;
+      const settings = settingsOf(row, ctx);
+      let localDate = row.localDate;
+      try {
+        localDate = dateIn(localInstant(row.localDate, row.startTime, settings.venue.timeZone), deps.timeZone);
+      } catch (err) {
+        if (!(err instanceof LocalTimeError)) throw err;
+      }
+      if (localDate < from) return [];
+      const type = typeFor(row, template, ctx);
+      const series: PlannedSeries =
+        type === null || type.kind === 'custom'
+          ? { kind: 'none' }
+          : type.status === 'resolved'
+            ? { kind: 'resolved', name: type.series.name }
+            : type.status === 'unavailable'
+              ? row.seriesOverride === null
+                ? { kind: 'fallback', match: template.seriesMatch ?? '' }
+                : { kind: 'unjudged' }
+              : { kind: 'none' };
+      const organizer = organizerOf(template.organizerPlayerId, ctx.conns);
+      return [{ plannedId: row.id, localDate, product: template.product, series, organizer: { playerId: organizer.playerId, name: organizer.name } }];
+    });
+  }
+
+  const requiredEvents = createRequiredEvents({
+    connections: deps.connections,
+    gateway: deps.gateway,
+    live,
+    requirements,
+    planned: plannedForCoverage,
+    timeZone: deps.timeZone,
+    now,
+  });
+
   return {
     ...edits,
     cancelling,
+    requirements,
+    requiredEvents,
 
     listTemplates(leagueId, opts) {
       const rows = db

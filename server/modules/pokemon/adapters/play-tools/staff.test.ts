@@ -126,6 +126,7 @@ describe('listTournaments (S6: core/activities, organizer only)', () => {
         products: ['tcg'],
         startsAt: new Date('2026-10-25T17:30:00Z'),
         status: 'sanctioned',
+        applicationState: 'sanctioned',
         editableUntil: new Date(Date.parse('2026-10-25T17:30:00Z') + 90 * DAY_MS),
       },
       {
@@ -136,6 +137,7 @@ describe('listTournaments (S6: core/activities, organizer only)', () => {
         products: ['tcg'],
         startsAt: new Date('2026-10-25T21:30:00Z'),
         status: 'sanctioned',
+        applicationState: 'sanctioned',
         editableUntil: new Date(Date.parse('2026-10-25T21:30:00Z') + 90 * DAY_MS),
       },
     ]);
@@ -221,6 +223,19 @@ describe('listTournaments (S6: core/activities, organizer only)', () => {
       ['keep-pending', LEAGUE, 'approval-pending'],
       ['keep-sanctioned', LEAGUE, 'sanctioned'],
       ['keep-unknown-status', LEAGUE, 'on-hold'],
+    ]);
+  });
+
+  it('carries the application state, which stays sanctioned once a tournament is complete, and null when absent', async () => {
+    const { application_state: _dropped, ...bare } = row('2026-10-25T17:00:00Z', { guid: 'bare' });
+    const rows = [row('2026-10-25T16:00:00Z', { guid: 'held', status: 'complete', application_state: 'sanctioned' }), bare];
+    upstream.use(http.get(ACTIVITIES_URL, () => HttpResponse.json(page(rows))));
+
+    const found = await gateway().listTournaments(day('2026-10-25'));
+
+    expect(found.map((t) => [t.id, t.status, t.applicationState])).toEqual([
+      ['held', 'complete', 'sanctioned'],
+      ['bare', 'sanctioned', null],
     ]);
   });
 

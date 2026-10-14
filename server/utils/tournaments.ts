@@ -53,6 +53,10 @@ const STATUS: Record<TournamentsErrorCode, number> = {
   not_in_play_tools: 409,
   confirmation_mismatch: 422,
   nothing_to_cancel: 422,
+  requirement_exists: 409,
+  requirement_has_covers: 409,
+  invalid_period: 400,
+  too_many_requirements: 422,
 };
 
 /**

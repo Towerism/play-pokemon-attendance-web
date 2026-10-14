@@ -99,7 +99,7 @@ function build(over: { tournamentDelayMs?: number } = {}): SubmissionService {
       clock = new Date(clock.getTime() + ms);
       onSleep?.();
     },
-    log: { warn: () => {}, info: (message, meta) => logged.push({ message, meta }) },
+    log: { warn: (message, meta) => logged.push({ message, meta }), info: (message, meta) => logged.push({ message, meta }) },
     ...(over.tournamentDelayMs !== undefined && { tournamentDelayMs: over.tournamentDelayMs }),
   });
 }
@@ -183,6 +183,46 @@ const UNTOUCHED = [
   { player_id: '00111', state: 'pending', tombstoned: 0 },
   { player_id: '00222', state: 'assigned', tombstoned: 0 },
 ];
+
+describe("dropping coverage's cached listings (#95)", () => {
+  /** The status of every job each time the listings are dropped. */
+  let drops: string[][];
+  beforeEach(() => {
+    drops = [];
+    (tournaments.requiredEvents as { listingsChanged: () => void }).listingsChanged = () =>
+      drops.push((database.sqlite.prepare('select status from submission order by id').all() as { status: string }[]).map((r) => r.status));
+  });
+
+  it('drops them once when a tournament job has ended, and not before', async () => {
+    const id = created();
+    await cancel(id);
+    expect(drops).toEqual([['succeeded']]);
+  });
+
+  it('drops them when a tournament job ends badly too', async () => {
+    const id = created();
+    onCancel = () => ({ fail: new PokemonUpstreamError('forbidden', 'Request not authorized for attempted action.') });
+    const { submissionId } = await cancel(id);
+    expect(service.get(L, submissionId!).status).not.toBe('running');
+    expect(drops).toHaveLength(1);
+  });
+
+  it('still ends the job cleanly if dropping them throws', async () => {
+    (tournaments.requiredEvents as { listingsChanged: () => void }).listingsChanged = () => {
+      throw new Error('cache gone');
+    };
+    const id = created();
+    const { submissionId } = await cancel(id);
+    expect(service.get(L, submissionId!).status).toBe('succeeded');
+    expect(logged.some((l) => l.message.includes('cache gone'))).toBe(true);
+  });
+
+  it('leaves them alone for a job that is not a tournament job', async () => {
+    await service.importPlayers(L, 'organizer');
+    await service.idle();
+    expect(drops).toEqual([]);
+  });
+});
 
 describe('the tournament_cancel job', () => {
   it('sends one cancel as the organizer, then cancels the planned row and drops or tombstones its staff', async () => {

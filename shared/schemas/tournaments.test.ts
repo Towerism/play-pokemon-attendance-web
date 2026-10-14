@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ApplyBody,
   CancelBody,
+  CoverBody,
+  CoverParams,
+  CoverageQuery,
   CreateThroughBody,
   EditBody,
   EditTargetParam,
@@ -11,6 +14,8 @@ import {
   OptionsQuery,
   PlannedBody,
   PlannedPatch,
+  RequirementBody,
+  RequirementPatch,
   ScaffoldBody,
   ScaffoldPatch,
   ScheduleBody,
@@ -279,5 +284,80 @@ describe('cancelling (#94)', () => {
     ['33 characters', { confirmation: 'x'.repeat(33) }],
   ])('refuses %s', (_what, body) => {
     expect(ok(CancelBody, body)).toBe(false);
+  });
+});
+
+describe('required events (#95)', () => {
+  const BODY = { seriesMatch: 'League Cup', product: 'tcg', cadence: 'quarter' };
+
+  it('takes a requirement with only its match, game and cadence, trimming the match', () => {
+    expect(RequirementBody.parse({ ...BODY, seriesMatch: '  League Cup ' })).toEqual(BODY);
+    expect(ok(RequirementBody, { ...BODY, minCount: 2, warnDays: 30, active: false })).toBe(true);
+  });
+
+  it.each([
+    ['an empty body', {}],
+    ['no match', { product: 'tcg', cadence: 'quarter' }],
+    ['no product', { seriesMatch: 'x', cadence: 'quarter' }],
+    ['no cadence', { seriesMatch: 'x', product: 'tcg' }],
+    ['an unknown product', { ...BODY, product: 'mtg' }],
+    ['an unknown cadence', { ...BODY, cadence: 'week' }],
+    ['a blank match', { ...BODY, seriesMatch: '   ' }],
+    ['a 101-character match', { ...BODY, seriesMatch: 'x'.repeat(101) }],
+    ['min count 0', { ...BODY, minCount: 0 }],
+    ['min count 11', { ...BODY, minCount: 11 }],
+    ['min count 1.5', { ...BODY, minCount: 1.5 }],
+    ['min count as text', { ...BODY, minCount: '2' }],
+    ['warn days 0', { ...BODY, warnDays: 0 }],
+    ['warn days 181', { ...BODY, warnDays: 181 }],
+    ['a null match', { ...BODY, seriesMatch: null }],
+    ['an unknown field', { ...BODY, league: 'other' }],
+  ])('refuses %s', (_label, body) => {
+    expect(ok(RequirementBody, body)).toBe(false);
+  });
+
+  it.each([
+    ['a 1-character match', { seriesMatch: 'x' }],
+    ['a 100-character match', { seriesMatch: 'x'.repeat(100) }],
+    ['min count 1', { minCount: 1 }],
+    ['min count 10', { minCount: 10 }],
+    ['warn days 1', { warnDays: 1 }],
+    ['warn days 180', { warnDays: 180 }],
+  ])('takes %s', (_label, over) => {
+    expect(ok(RequirementBody, { ...BODY, ...over })).toBe(true);
+  });
+
+  it('takes a patch of any fields, but not an empty one', () => {
+    expect(RequirementPatch.parse({ active: false })).toEqual({ active: false });
+    expect(RequirementPatch.parse({ seriesMatch: ' Cup ' })).toEqual({ seriesMatch: 'Cup' });
+    expect(ok(RequirementPatch, {})).toBe(false);
+    expect(ok(RequirementPatch, { minCount: 0 })).toBe(false);
+  });
+
+  it('takes a note of 1 to 500 characters after trimming', () => {
+    expect(CoverBody.parse({ note: ' run by Prof Oak ' })).toEqual({ note: 'run by Prof Oak' });
+    expect(ok(CoverBody, { note: 'x'.repeat(500) })).toBe(true);
+    expect(ok(CoverBody, { note: 'x'.repeat(501) })).toBe(false);
+    expect(ok(CoverBody, { note: '  ' })).toBe(false);
+    expect(ok(CoverBody, {})).toBe(false);
+  });
+
+  it('takes a requirement id and a calendar date for a cover', () => {
+    expect(CoverParams.parse({ id: '3', periodStart: '2026-10-01' })).toEqual({ id: 3, periodStart: '2026-10-01' });
+    for (const bad of [
+      { id: '0', periodStart: '2026-10-01' },
+      { id: 'abc', periodStart: '2026-10-01' },
+      { id: '3', periodStart: '2026-13-01' },
+      { id: '3', periodStart: '20261001' },
+    ]) {
+      expect(ok(CoverParams, bad)).toBe(false);
+    }
+  });
+
+  it('takes refresh=1 only', () => {
+    expect(CoverageQuery.parse({})).toEqual({ refresh: false });
+    expect(CoverageQuery.parse({ refresh: '1' })).toEqual({ refresh: true });
+    expect(ok(CoverageQuery, { refresh: 'yes' })).toBe(false);
+    expect(ok(CoverageQuery, { refresh: 'true' })).toBe(false);
   });
 });

@@ -315,7 +315,14 @@ export interface SubmissionDeps {
   staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
   resolver: PlaySessionResolver;
   /** Planned tournaments, for `tournament_create` jobs (#92); only those jobs need it. */
-  tournaments?: { creation: TournamentCreation; createThrough: TournamentsService['createThrough']; editing?: TournamentEditing; cancelling?: TournamentCancelling };
+  tournaments?: {
+    creation: TournamentCreation;
+    createThrough: TournamentsService['createThrough'];
+    editing?: TournamentEditing;
+    cancelling?: TournamentCancelling;
+    /** Required-events coverage: its cached listings are dropped when a tournament job ends (#95). */
+    requiredEvents?: Pick<TournamentsService['requiredEvents'], 'listingsChanged'>;
+  };
   /** At least this long between tournament creates (NUXT_TOURNAMENT_DELAY_MS): default 5 s, never under 2 s (ADR-0010 decision 5). */
   tournamentDelayMs?: number;
   /** The league timezone (ADR-0006): a staff import is dated by the day it starts in it. Default: the process's. */
@@ -2423,7 +2430,16 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         const status = load(row.leagueId, submissionId)?.status;
         log.info(`${what(row)} #${submissionId} ${status}`, { submissionId, status });
       })
-      .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }));
+      .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
+      // However it ended, play-tools may have changed: coverage lists again (ADR-0010 decision 12).
+      .finally(() => {
+        if (!isTournamentJob(row)) return;
+        try {
+          deps.tournaments?.requiredEvents?.listingsChanged();
+        } catch (err) {
+          log.warn(`${what(row)} #${submissionId} could not drop coverage's cached listings: ${(err as Error).message}`, { submissionId });
+        }
+      });
   }
 
   function launch(row: Row): void {

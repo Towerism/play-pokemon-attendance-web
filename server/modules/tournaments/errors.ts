@@ -70,7 +70,16 @@ export type TournamentsErrorCode =
   /** Anyone is registered, and the display id (or date) typed doesn't match exactly (`details.required`). */
   | 'confirmation_mismatch'
   /** A retry of a cancel job whose tournament is already cancelled. */
-  | 'nothing_to_cancel';
+  | 'nothing_to_cancel'
+  // Required events (#95, ADR-0010 decision 12)
+  /** Another requirement has the same product, cadence and series match. */
+  | 'requirement_exists'
+  /** A cadence change while manual covers hold the old cadence's periods. */
+  | 'requirement_has_covers'
+  /** A cover's period start isn't the first day of one of the requirement's periods. */
+  | 'invalid_period'
+  /** The league already has the most requirements it may. */
+  | 'too_many_requirements';
 
 export class TournamentsError extends Error {
   override name = 'TournamentsError';

@@ -190,6 +190,14 @@ describe('creating planned tournaments', () => {
     expect(job.tournamentItems[1]!.sentAt).not.toBeNull();
   });
 
+  it("drops coverage's cached listings once the create job has ended (#95)", async () => {
+    const statuses: string[][] = [];
+    (tournaments.requiredEvents as { listingsChanged: () => void }).listingsChanged = () =>
+      statuses.push((database.sqlite.prepare('select status from submission order by id').all() as { status: string }[]).map((r) => r.status));
+    await create([plan(customTemplate().id, '2026-11-06')]);
+    expect(statuses).toEqual([['succeeded']]);
+  });
+
   it('names the organizer on a job whose tournaments all share one', async () => {
     const t = customTemplate();
     const job = await create([plan(t.id, '2026-11-06')]);
