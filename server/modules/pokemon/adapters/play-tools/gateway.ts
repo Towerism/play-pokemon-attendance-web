@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { type Logger, silentLogger } from '../../../../logging/types';
+import { type Logger, silentLogger } from '@towerism/selfhost-kit';
 import { PokemonUpstreamError, type UpstreamReply } from '../../ports/errors';
 import { type PlayerId, toPlayerId } from '../../../../../shared/types/ids';
 import type {

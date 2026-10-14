@@ -7,7 +7,7 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
-import { silentLogger } from '../../logging/types';
+import { silentLogger } from '@towerism/selfhost-kit';
 import { type RosterService, createRosterService } from '../roster/service';
 import { TdfKeyMismatchError } from '../tdf-archive/errors';
 import { type TdfArchiveService, createTdfArchiveService } from '../tdf-archive/service';

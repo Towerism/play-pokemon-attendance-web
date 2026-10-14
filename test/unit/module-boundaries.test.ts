@@ -58,9 +58,27 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     },
   );
 
-  it('allows the Logger port', async () => {
-    expect(await errors(file, "import { type Logger, silentLogger } from '../../logging/types';\nexport const l: Logger = silentLogger;")).toEqual([]);
+  it("rejects attendance's logger configuration: modules get a Logger injected", async () => {
+    expect(await errors(file, "import { createAppLogger } from '../../logging/app-logger';\nexport const f = createAppLogger;")).toEqual([
+      expect.stringMatching(/no-restricted-imports/),
+    ]);
   });
+
+  it('allows the Logger port', async () => {
+    expect(await errors(file, "import { type Logger, silentLogger } from '@towerism/selfhost-kit';\nexport const l: Logger = silentLogger;")).toEqual([]);
+  });
+
+  it('allows the LogFields type', async () => {
+    expect(await errors(file, "import type { LogFields } from '@towerism/selfhost-kit';\nexport type F = LogFields;")).toEqual([]);
+  });
+
+  it.each(["import pino from 'pino';\nexport const p = pino;", "import { prettyFactory } from 'pino-pretty';\nexport const p = prettyFactory;"])(
+    'rejects a bare pino logger, which has no redaction: %s',
+    async (code) => {
+      expect(await errors(file, code)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+      expect(await errors('server/modules/roster/service.test.ts', code)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+    },
+  );
 
   it('allows plain TS and other modules', async () => {
     expect(await errors(file, "import { z } from 'zod';\nimport type { Db } from '../../db/client';\nexport const s = z.string();\nexport type D = Db;")).toEqual([]);
@@ -163,6 +181,12 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
     expect(await errors(module, code)).toEqual([]);
   });
 
+  it('rejects the kit redactor in a module', async () => {
+    expect(await errors(module, "import { createRedactor } from '@towerism/selfhost-kit';\nexport const f = createRedactor;")).toEqual([
+      expect.stringMatching(/no-restricted-imports/),
+    ]);
+  });
+
   it('still rejects h3 in a module next to the kit rules', async () => {
     expect(await errors(module, "import { createError } from 'h3';\nexport { createError };")).toEqual([expect.stringMatching(/no-restricted-imports/)]);
   });
@@ -191,5 +215,41 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
     expect(await errors('shared/schemas/x.ts', "import { z } from 'zod';\nexport const s = z.string();")).toEqual([
       expect.stringMatching(/no-restricted-imports/),
     ]);
+  });
+});
+
+describe("every logger is attendance's configured one (server/logging/app-logger)", () => {
+  const unconfigured = [
+    "import { createLogger } from '@towerism/selfhost-kit';\nexport const f = createLogger;",
+    "import { createRedactor } from '@towerism/selfhost-kit';\nexport const f = createRedactor;",
+    "import * as kit from '@towerism/selfhost-kit';\nexport const f = kit;",
+    "export { createLogger } from '@towerism/selfhost-kit';",
+    "import pino from 'pino';\nexport const p = pino;",
+    "import { prettyFactory } from 'pino-pretty';\nexport const p = prettyFactory;",
+    "import build from 'pino/file';\nexport const p = build;",
+  ];
+
+  // ESM syntax only, in .cjs too: no-restricted-imports doesn't see require() or import() (a review check).
+  it.each(['server/utils/x.ts', 'server/plugins/x.ts', 'server/bootstrap/x.ts', 'server/api/x.get.ts', 'nuxt.config.ts', 'scripts/x.mjs', 'scripts/x.cjs'])(
+    'rejects an unconfigured kit logger, redactor or bare pino in %s',
+    async (file) => {
+      for (const code of unconfigured) {
+        expect(await errors(file, code), code).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+      }
+    },
+  );
+
+  it('lets server/logging/app-logger.ts build them', async () => {
+    const code = "import { createLogger, createRedactor } from '@towerism/selfhost-kit';\nexport const f = [createLogger, createRedactor];";
+    expect(await errors('server/logging/app-logger.ts', code)).toEqual([]);
+  });
+
+  it('still lets server code take other kit exports', async () => {
+    expect(await errors('server/utils/x.ts', "import { aes256Key } from '@towerism/selfhost-kit';\nexport const f = aes256Key;")).toEqual([]);
+    expect(await errors('nuxt.config.ts', "import { contentSecurityPolicy } from '@towerism/selfhost-kit';\nexport const f = contentSecurityPolicy;")).toEqual([]);
+  });
+
+  it('lets server code use the configured logger', async () => {
+    expect(await errors('server/utils/x.ts', "import { createAppLogger } from '../logging/app-logger';\nexport const f = createAppLogger;")).toEqual([]);
   });
 });

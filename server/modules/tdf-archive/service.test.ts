@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BIRTHDATE, type TomPlayer, tomTdf } from '../../../shared/tdf/__fixtures__/tom';
 import { TdfError } from '../../../shared/tdf/parse';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
-import type { LogFields, Logger } from '../../logging/types';
+import type { LogFields, Logger } from '@towerism/selfhost-kit';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { createVault } from '../vault/vault';
 import { TdfFileNotFoundError, TdfKeyMismatchError } from './errors';

@@ -4,11 +4,11 @@
  * Resolves secrets and derived settings into `process.env` *before* Nitro
  * loads, because Nitro reads its runtime config from env at import time.
  */
-import { createLogger } from '../logging/logger';
+import { createAppLogger } from '../logging/app-logger';
 import { InvalidConfigError, prepareRuntimeEnv } from './runtime-env';
 import { InvalidSecretError } from './secrets';
 
-const log = createLogger({ scope: 'startup' });
+const log = createAppLogger({ scope: 'startup' });
 try {
   const { env, log: lines } = prepareRuntimeEnv(process.env);
   for (const name of Object.keys(process.env)) if (!(name in env)) Reflect.deleteProperty(process.env, name);

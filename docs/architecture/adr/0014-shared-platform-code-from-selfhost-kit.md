@@ -1,6 +1,6 @@
 # ADR-0014: Shared platform code from `@towerism/selfhost-kit`
 
-- Status: Accepted (2026-10-13, #128, first applied in #129)
+- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130)
 - Date: 2026-10-13
 - Amends: §3 (tech stack, module rules), §9 and §10, which described these pieces as attendance's own code
 - Companion: [selfhost-kit ADR-0001](https://github.com/Towerism/selfhost-kit/blob/main/docs/architecture/adr/0001-share-as-a-package.md)
@@ -49,6 +49,25 @@ A1 (#129) moved the setup code, the fixed-window limiter, client address and tru
 CSP/security headers (including `nuxt.config.ts`'s imports). The Nitro wiring around them
 (`server/plugins/security-headers.ts`, `server/plugins/logging.ts`, `server/utils/rate-limit.ts`, `requireIntegrationToken`)
 stays attendance's until A5.
+
+A2 (#130) moved the logger and log redaction. The kit's `createLogger` hides only its base keys unless it is given
+a redactor, so attendance configures both in one place, `server/logging/app-logger.ts`:
+- `createRedactor({ extraKeys: ATTENDANCE_LOG_KEYS })` adds `birthdate`, `dateOfBirth`, `dob`, `content`, `payload` and
+  the secrets' env names to the kit's base keys. That is exactly the set attendance hid before.
+- `createAppLogger` always applies that redactor.
+
+ESLint rejects the kit's `createLogger`/`createRedactor` anywhere else, and any direct `pino` import in server and
+script code. In `app/` and `shared/`, which don't log, a pino import is left to review. Modules take the `Logger`
+type and `silentLogger` from the kit root.
+
+Two formatter differences from attendance's own code are accepted:
+- the kit prints `String(msg)` where attendance printed `String(msg ?? '')`. This can't happen, because messages are
+  always strings;
+- for a logged `err` that is not an `Error` and has no string stack, the kit prints a non-string `type` as `Error`
+  and a non-string `message` as empty, where attendance printed `String(...)` of each. The kit prints less, never
+  more.
+
+A kit API that builds its own logger when none is passed (`runLauncher`, A3) must be given `createAppLogger(...)`.
 
 ## Consequences
 

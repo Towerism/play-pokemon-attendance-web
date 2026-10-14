@@ -1,4 +1,4 @@
-import { type Logger, silentLogger } from '../../logging/types';
+import { type Logger, silentLogger } from '@towerism/selfhost-kit';
 import { asc, count, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { leagueUpstream, pokemonConnection } from '../../db/schema';
