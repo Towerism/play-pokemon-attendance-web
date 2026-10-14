@@ -306,6 +306,29 @@ describe('sessionStaff', () => {
     expect(view.tournaments[0]!.assignments).toHaveLength(1);
   });
 
+  it('shows only the live assignments of a tournament play-tools no longer lists', async () => {
+    database.sqlite.prepare("insert into player (player_id, display_name, first_seen_at) values ('00456', 'Misty', 0)").run();
+    addAssignment({ tournamentId: 'gone', playerId: '00123' });
+    addAssignment({ tournamentId: 'gone', playerId: '00456', recordId: 'rec-1', removedAt: 5 });
+
+    const view = await staffing.sessionStaff(L, WED);
+
+    expect(view.tournaments).toEqual([expect.objectContaining({ tournamentId: 'gone', missing: true })]);
+    expect(view.tournaments[0]!.assignments).toEqual([expect.objectContaining({ playerId: '00123', state: 'pending' })]);
+  });
+
+  it('shows the tombstones again, as removing, if a tournament thought cancelled is listed after all', async () => {
+    upstream.state.tournaments = [tournament('t-1')];
+    upstream.state.participants.set('t-1', [staffer('00123', 'judge', '', 'rec-ours')]);
+    addAssignment({ tournamentId: 't-1', playerId: '00123', recordId: 'rec-ours' });
+    staffing.cancelTournament(L, 't-1');
+
+    const [t] = (await staffing.sessionStaff(L, WED)).tournaments;
+
+    expect(t).toMatchObject({ tournamentId: 't-1', assignments: [expect.objectContaining({ playerId: '00123', state: 'removing' })] });
+    expect(t!.missing).toBeUndefined();
+  });
+
   it('shows nothing for a cancelled tournament whose staff were only tombstoned, and keeps the tombstones', async () => {
     upstream.state.tournaments = [tournament('t-1')];
     addAssignment({ tournamentId: 't-1', playerId: '00123', recordId: 'rec-ours' });
@@ -440,6 +463,20 @@ describe('sessionStaff with several professors (#75)', () => {
     const shown = view.tournaments.find((t) => t.tournamentId === 'cancelled')!;
     expect(shown).toMatchObject({ unavailable: true, editable: false, organizer: null });
     expect(shown.missing).toBeUndefined();
+  });
+
+  it("keeps a tombstone on a tournament nobody listed while a professor couldn't be read, since it may still be theirs", async () => {
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, state, record_id, removed_at, created_by, created_at)
+         values (?, ?, 'maybe-brocks', 'Stored label', '00123', 'judge', 'removing', 'rec-1', 5, 'organizer', 0)`,
+      )
+      .run(L, WED);
+    upstream.state.failNextAs.set('listTournaments@2', new PokemonUpstreamError('unavailable', 'down'));
+
+    const shown = (await staffing.sessionStaff(L, WED)).tournaments.find((t) => t.tournamentId === 'maybe-brocks');
+
+    expect(shown).toMatchObject({ unavailable: true, assignments: [expect.objectContaining({ playerId: '00123', state: 'removing' })] });
   });
 
   it('answers with no tournaments and every professor named when nobody can be read', async () => {

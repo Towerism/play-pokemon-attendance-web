@@ -73,7 +73,7 @@ export interface TournamentStaffView {
   startsAt: string | null;
   /** False past the edit window, or when the organizer can't act. */
   editable: boolean;
-  /** Play-tools no longer lists it (cancelled or deleted): its assignments stay visible. */
+  /** Play-tools no longer lists it (cancelled or deleted): its live assignments stay visible, tombstones don't (#148). */
   missing?: true;
   /** Nobody listed it, but a professor couldn't be read, so it may be theirs: read-only. */
   unavailable?: true;
@@ -693,7 +693,10 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
 
       const shown = new Set(reads.map((r) => r.tournament.id));
       const missing = new Map<string, AssignmentRow[]>();
-      for (const row of rows.filter((r) => !shown.has(r.tournamentId) && !r.removedAt)) {
+      // Once everyone was read and nobody lists it, its staff records went with it and no staff job can reach it: a
+      // tombstone there would show as removing forever (#148). Someone unread may still list it, so theirs stay.
+      const pending = (r: AssignmentRow) => !r.removedAt || unread.length > 0;
+      for (const row of rows.filter((r) => !shown.has(r.tournamentId) && pending(r))) {
         missing.set(row.tournamentId, [...(missing.get(row.tournamentId) ?? []), row]);
       }
       for (const [tournamentId, group] of missing) {
