@@ -21,6 +21,7 @@ const SERVER_AUTO_IMPORTS =
 // Tests use Pokémon URLs as data (the play-tools callback); MSW and test/server/fake-pokemon.ts
 // keep them off the network, so the host rule doesn't apply to them.
 const TEST_FILES = ['**/*.test.ts', '**/test-helpers.ts', 'test/**'];
+const MODULE_TEST_FILES = TEST_FILES.map((glob) => `server/modules/${glob}`);
 
 // What server/modules/* may take from @towerism/selfhost-kit (architecture §3). Everything else in the kit
 // (logger factory, redactor, request id, secrets, vault, launcher) is wired outside server/modules and injected.
@@ -68,6 +69,47 @@ const LAUNCHER_WITH_APP_LOGGER = {
   message: "Give runLauncher `logger: createAppLogger({ scope: 'startup' })` (server/logging/app-logger): its default logger redacts only the kit's base keys.",
 };
 
+// server/modules/*'s import rules, in one place: two blocks use them (module code and module tests), and a later
+// block that sets no-restricted-imports replaces a rule's options rather than merging them.
+const MODULE_IMPORT_PATTERNS = [
+  {
+    regex: '^(h3|nitropack|nitro|nuxt|nuxt-auth-utils|#imports|#app|#auth-utils|#nitro)(/.*)?$',
+    message: 'server/modules/* are plain TS: no h3 or Nuxt imports.',
+  },
+  {
+    regex: '(^|/)logging/',
+    message:
+      "server/modules/* import nothing under server/logging: they take a Logger (a type from '@towerism/selfhost-kit') as a dependency, and server/utils injects it.",
+  },
+  NO_BARE_PINO,
+  {
+    regex: '^@towerism/selfhost-kit/nitro$',
+    message: 'server/modules/* are plain TS: the kit’s /nitro adapters are h3-based.',
+  },
+];
+
+const moduleImports = (extraPatterns) => [
+  'error',
+  {
+    patterns: [...MODULE_IMPORT_PATTERNS, ...extraPatterns],
+    paths: [
+      {
+        name: '@towerism/selfhost-kit',
+        allowImportNames: KIT_FOR_MODULES,
+        message:
+          'server/modules/* take only plain helpers from the kit; loggers, request ids, secrets and vaults are wired outside server/modules and injected.',
+      },
+    ],
+  },
+];
+
+// Vaults and secrets are attendance's configuration (server/bootstrap), built outside server/modules and injected.
+// Module tests may build the real vaults from server/bootstrap/vaults.ts.
+const NO_BOOTSTRAP_IN_MODULES = {
+  regex: '(^|/)bootstrap/',
+  message: 'server/modules/* take their vaults and secrets injected; server/bootstrap is wired by server/utils and server/plugins.',
+};
+
 const NO_NUXT_IN_MODULES = {
   selector: `CallExpression[callee.name=${SERVER_AUTO_IMPORTS}]`,
   message: 'server/modules/* are plain TS: take dependencies as arguments instead of using h3/Nitro auto-imports.',
@@ -96,37 +138,13 @@ export default withNuxt(
   },
   {
     files: ['server/modules/**/*.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              regex: '^(h3|nitropack|nitro|nuxt|nuxt-auth-utils|#imports|#app|#auth-utils|#nitro)(/.*)?$',
-              message: 'server/modules/* are plain TS: no h3 or Nuxt imports.',
-            },
-            {
-              regex: '(^|/)logging/',
-              message:
-                "server/modules/* import nothing under server/logging: they take a Logger (a type from '@towerism/selfhost-kit') as a dependency, and server/utils injects it.",
-            },
-            NO_BARE_PINO,
-            {
-              regex: '^@towerism/selfhost-kit/nitro$',
-              message: 'server/modules/* are plain TS: the kit’s /nitro adapters are h3-based.',
-            },
-          ],
-          paths: [
-            {
-              name: '@towerism/selfhost-kit',
-              allowImportNames: KIT_FOR_MODULES,
-              message:
-                'server/modules/* take only plain helpers from the kit; loggers, request ids, secrets and vaults are wired outside server/modules and injected.',
-            },
-          ],
-        },
-      ],
-    },
+    ignores: MODULE_TEST_FILES,
+    rules: { 'no-restricted-imports': moduleImports([NO_BOOTSTRAP_IN_MODULES]) },
+  },
+  {
+    // Module tests keep every module rule, and may build the real vaults from server/bootstrap/vaults.ts.
+    files: MODULE_TEST_FILES,
+    rules: { 'no-restricted-imports': moduleImports([]) },
   },
   {
     files: ['server/modules/**/*.ts'],
@@ -192,7 +210,7 @@ export default withNuxt(
   },
   {
     // Module tests may hold Pokémon URLs as data, but stay plain TS.
-    files: TEST_FILES.map((glob) => `server/modules/${glob}`),
+    files: MODULE_TEST_FILES,
     rules: { 'no-restricted-syntax': ['error', NO_NUXT_IN_MODULES] },
   },
 );
