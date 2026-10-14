@@ -11,7 +11,7 @@ import { silentLogger } from '@towerism/selfhost-kit';
 import { type RosterService, createRosterService } from '../roster/service';
 import { TdfKeyMismatchError } from '../tdf-archive/errors';
 import { type TdfArchiveService, createTdfArchiveService } from '../tdf-archive/service';
-import { createVault } from '../vault/vault';
+import { tdfVault } from '../../bootstrap/vaults';
 import { type SessionsService, createSessionsService } from './service';
 import {
   TdfFileDeletedError,
@@ -48,7 +48,7 @@ let now: Date;
 function archiveWith(key: string): TdfArchiveService {
   return createTdfArchiveService({
     db: database.db,
-    vault: createVault(key, 'tdf'),
+    vault: tdfVault(key),
     referrers: () => [createTdfUploadReferrer(database.db)],
     log: silentLogger,
     now: () => now,

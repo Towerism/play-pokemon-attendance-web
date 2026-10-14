@@ -167,6 +167,8 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
     "import { aes256Key } from '@towerism/selfhost-kit';\nexport const f = aes256Key;",
     "import { resolveSecret } from '@towerism/selfhost-kit';\nexport const f = resolveSecret;",
     "import { createVault } from '@towerism/selfhost-kit';\nexport const f = createVault;",
+    "import { stringVault } from '@towerism/selfhost-kit';\nexport const f = stringVault;",
+    "import { isAes256Key } from '@towerism/selfhost-kit';\nexport const f = isAes256Key;",
     "import * as kit from '@towerism/selfhost-kit';\nexport const f = kit;",
     "export { aes256Key } from '@towerism/selfhost-kit';",
     "import { jsonOnly } from '@towerism/selfhost-kit/nitro';\nexport const f = jsonOnly;",
@@ -177,6 +179,8 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
   it.each([
     "import { setupCodeMatches } from '@towerism/selfhost-kit';\nexport const f = setupCodeMatches;",
     "import type { Clock } from '@towerism/selfhost-kit';\nexport type C = Clock;",
+    "import type { Vault, StringVault } from '@towerism/selfhost-kit';\nexport type V = Vault | StringVault;",
+    "import { VaultError } from '@towerism/selfhost-kit';\nexport const isVaultError = (e: unknown) => e instanceof VaultError;",
   ])('allows in a module: %s', async (code) => {
     expect(await errors(module, code)).toEqual([]);
   });
@@ -189,6 +193,29 @@ describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
 
   it('still rejects h3 in a module next to the kit rules', async () => {
     expect(await errors(module, "import { createError } from 'h3';\nexport { createError };")).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+  });
+
+  it('rejects building vaults (or anything else) from server/bootstrap in a module: they are injected', async () => {
+    for (const code of [
+      "import { tokenVault } from '../../bootstrap/vaults';\nexport const f = tokenVault;",
+      "import { SECRETS } from '../../bootstrap/app-env';\nexport const s = SECRETS;",
+    ]) {
+      expect(await errors(module, code)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+    }
+  });
+
+  it('lets module tests build the real vaults from server/bootstrap/vaults', async () => {
+    const code = "import { tdfVault, tokenVault } from '../../bootstrap/vaults';\nexport const f = [tdfVault, tokenVault];";
+    expect(await errors('server/modules/x/y.test.ts', code)).toEqual([]);
+  });
+
+  it.each([
+    "import { createError } from 'h3';\nexport { createError };",
+    "import { createAppLogger } from '../../logging/app-logger';\nexport const f = createAppLogger;",
+    "import { jsonOnly } from '@towerism/selfhost-kit/nitro';\nexport const f = jsonOnly;",
+    "import { createVault } from '@towerism/selfhost-kit';\nexport const f = createVault;",
+  ])('keeps the other module rules in module tests: %s', async (code) => {
+    expect(await errors('server/modules/x/y.test.ts', code)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
   });
 
   it('lets module tests use the contract suites', async () => {

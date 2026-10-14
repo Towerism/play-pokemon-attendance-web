@@ -7,7 +7,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { createTokenVault } from '../../server/modules/pokemon/vault/vault';
+import { createTokenVault } from '../fixtures/vault-v1/legacy/pokemon/vault/vault';
 import { FAKE_PLAYER_ID, type FakePokemon, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from './harness';
 

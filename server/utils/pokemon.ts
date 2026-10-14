@@ -1,3 +1,4 @@
+import { tokenVault } from '../bootstrap/vaults';
 import { createPlayToolsHttpAdapter } from '../modules/pokemon/adapters/play-tools/gateway';
 import { createPtcOAuthClient } from '../modules/pokemon/adapters/ptc-oauth/client';
 import {
@@ -12,7 +13,6 @@ import {
 } from '../modules/pokemon/connection';
 import { PokemonUpstreamError } from '../modules/pokemon/ports/errors';
 import type { League } from '../modules/pokemon/ports/play-tools-gateway';
-import { createTokenVault } from '../modules/pokemon/vault/vault';
 
 let pokemon: PokemonConnectionService | undefined;
 
@@ -22,7 +22,7 @@ export function usePokemon(): PokemonConnectionService {
     const config = useRuntimeConfig();
     pokemon = createPokemonConnectionService({
       db: useDb(),
-      vault: createTokenVault(config.tokenVaultKey),
+      vault: tokenVault(config.tokenVaultKey),
       oauth: createPtcOAuthClient({ baseUrl: config.pokemon.accessUrl }),
       gateway: (tokens, connectionId) =>
         createPlayToolsHttpAdapter({ tokens, connectionId, baseUrl: config.pokemon.apiUrl, log: useLogger('pokemon') }),

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BIRTHDATE, type TomPlayer, tomTdf } from '../../../shared/tdf/__fixtures__/tom';
@@ -6,7 +6,7 @@ import { TdfError } from '../../../shared/tdf/parse';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import type { LogFields, Logger } from '@towerism/selfhost-kit';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
-import { createVault } from '../vault/vault';
+import { tdfVault } from '../../bootstrap/vaults';
 import { TdfFileNotFoundError, TdfKeyMismatchError } from './errors';
 import { type TdfArchiveService, type TdfFileReferrer, createTdfArchiveService } from './service';
 
@@ -51,7 +51,7 @@ function referrers(): TdfFileReferrer[] {
 function archiveWith(base64Key: string): TdfArchiveService {
   return createTdfArchiveService({
     db: database.db,
-    vault: createVault(base64Key, 'tdf'),
+    vault: tdfVault(base64Key),
     referrers,
     log: recordingLogger(),
     now: () => now,
@@ -151,6 +151,35 @@ describe('read', () => {
     blob[blob.length - 1]! ^= 0x01;
     database.sqlite.prepare('update tdf_file set ciphertext = ? where id = ?').run(blob, a);
     expect(() => archive.read(L, a)).toThrow(TdfKeyMismatchError);
+  });
+});
+
+describe('the AAD binds each file to its league and hash (the kit refuses an empty one)', () => {
+  it('seals and opens with tdf_file:<league>:<sha256 of the file>, in every league', () => {
+    const aads: { op: 'seal' | 'open'; aad: string }[] = [];
+    const real = tdfVault(key);
+    archive = createTdfArchiveService({
+      db: database.db,
+      // Records each call's AAD before delegating to the real vault.
+      vault: {
+        seal: (plaintext, aad) => (aads.push({ op: 'seal', aad }), real.seal(plaintext, aad)),
+        open: (blob, aad) => (aads.push({ op: 'open', aad }), real.open(blob, aad)),
+      },
+      referrers,
+      log: recordingLogger(),
+      now: () => now,
+    });
+    const content = tomTdf({ name: 'AAD Cup' });
+    const sha = createHash('sha256').update(content, 'utf8').digest('hex');
+
+    for (const league of [L, OTHER]) archive.read(league, store(content, 'cup.tdf', league).fileId);
+
+    expect(aads).toEqual([
+      { op: 'seal', aad: `tdf_file:${L}:${sha}` },
+      { op: 'open', aad: `tdf_file:${L}:${sha}` },
+      { op: 'seal', aad: `tdf_file:${OTHER}:${sha}` },
+      { op: 'open', aad: `tdf_file:${OTHER}:${sha}` },
+    ]);
   });
 });
 
