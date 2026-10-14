@@ -1,9 +1,15 @@
 # syntax=docker/dockerfile:1.7
 #
 # One image definition for the project, one stage per role:
-#   app     (default) the Nuxt server behind docker/entrypoint.sh (ADR-0006),
-#           with an optional Litestream supervisor (ADR-0002)
+#   app     (default) the Nuxt server behind the entrypoint (ADR-0006), with an
+#           optional Litestream supervisor (ADR-0002)
 #   spikes  M0 spike tooling with an hourly S2 token refresh (supercronic)
+#
+# The entrypoint, litestream.yml and the Litestream installer come from
+# @towerism/selfhost-kit (ADR-0014, A6), copied out of node_modules at build time
+# by its `selfhost-kit docker-assets` bin, so the image always carries the pinned
+# kit version's bytes. The ADR-0004/ADR-0005 references inside those files are
+# the kit's ADRs, not this project's.
 
 ARG NODE_IMAGE=node:24.21.0-alpine3.23
 ARG NODE_SLIM_IMAGE=node:24.21.0-slim
@@ -49,7 +55,7 @@ CMD ["supercronic", "-passthrough-logs", "/app/spikes/crontab"]
 
 # ------------------------------------------------------------------- app ----
 
-FROM ${NODE_SLIM_IMAGE} AS app-build
+FROM ${NODE_SLIM_IMAGE} AS app-deps
 ARG PNPM_VERSION
 WORKDIR /app
 RUN npm install -g pnpm@${PNPM_VERSION} && npm cache clean --force
@@ -57,28 +63,21 @@ COPY package.json pnpm-lock.yaml ./
 # `postinstall` (nuxt prepare) needs the sources; `nuxt build` prepares anyway.
 # better-sqlite3 ships prebuilt binaries, so no compiler is needed.
 RUN pnpm install --frozen-lockfile --ignore-scripts
+# The kit's Docker assets, as real files (pnpm's node_modules are symlinks).
+# Outside .output, which `nuxt build` empties; depends only on the lockfile.
+RUN pnpm exec selfhost-kit docker-assets /opt/selfhost-kit
+
+FROM app-deps AS app-build
 COPY . .
 RUN pnpm run build
 
-# Optional off-box backups (ADR-0002). The release binary is static, so it is
-# fetched and verified here and only the binary is copied into the runtime.
+# Optional off-box backups (ADR-0002). The kit's installer fetches its one pinned
+# release (linux/amd64) and verifies its sha256 before extracting; only the static
+# binary is copied into the runtime.
 FROM ${NODE_IMAGE} AS litestream
 ARG TARGETARCH
-ARG LITESTREAM_VERSION=0.5.17
-ARG LITESTREAM_SHA256_amd64=cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d
-ARG LITESTREAM_SHA256_arm64=f8ca4a050095c1efbda2c4365172e61bf9d955ea0d9ac42f448b52e51819baa5
-RUN set -eu; \
-    case "${TARGETARCH:-amd64}" in \
-      amd64) arch=x86_64; sha="${LITESTREAM_SHA256_amd64}" ;; \
-      arm64) arch=arm64;  sha="${LITESTREAM_SHA256_arm64}" ;; \
-      *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    tarball="litestream-${LITESTREAM_VERSION}-linux-${arch}.tar.gz"; \
-    wget -qO "/tmp/${tarball}" \
-      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/${tarball}"; \
-    echo "${sha}  /tmp/${tarball}" | sha256sum -c -; \
-    tar -xzf "/tmp/${tarball}" -C /usr/local/bin litestream; \
-    /usr/local/bin/litestream version
+COPY --from=app-deps /opt/selfhost-kit/fetch-litestream.sh /tmp/fetch-litestream.sh
+RUN sh /tmp/fetch-litestream.sh /usr/local/bin
 
 FROM ${NODE_SLIM_IMAGE} AS app
 # gosu: drop root after fixing /data ownership. tini: PID 1 that forwards SIGTERM.
@@ -90,8 +89,8 @@ WORKDIR /app
 COPY --from=app-build /app/.output ./.output
 COPY --from=app-build /app/server/db/migrations ./server/db/migrations
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
-COPY docker/litestream.yml /etc/litestream.yml
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --from=app-deps /opt/selfhost-kit/litestream.yml /etc/litestream.yml
+COPY --from=app-deps /opt/selfhost-kit/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
