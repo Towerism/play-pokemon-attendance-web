@@ -695,8 +695,8 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
       const missing = new Map<string, AssignmentRow[]>();
       // Once everyone was read and nobody lists it, its staff records went with it and no staff job can reach it: a
       // tombstone there would show as removing forever (#148). Someone unread may still list it, so theirs stay.
-      const pending = (r: AssignmentRow) => !r.removedAt || unread.length > 0;
-      for (const row of rows.filter((r) => !shown.has(r.tournamentId) && pending(r))) {
+      const shownUnlisted = (r: AssignmentRow) => r.removedAt === null || unread.length > 0;
+      for (const row of rows.filter((r) => !shown.has(r.tournamentId) && shownUnlisted(r))) {
         missing.set(row.tournamentId, [...(missing.get(row.tournamentId) ?? []), row]);
       }
       for (const [tournamentId, group] of missing) {

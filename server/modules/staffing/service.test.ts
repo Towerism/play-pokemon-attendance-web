@@ -322,7 +322,11 @@ describe('sessionStaff', () => {
     upstream.state.participants.set('t-1', [staffer('00123', 'judge', '', 'rec-ours')]);
     addAssignment({ tournamentId: 't-1', playerId: '00123', recordId: 'rec-ours' });
     staffing.cancelTournament(L, 't-1');
+    const listed = upstream.state.tournaments;
+    upstream.state.tournaments = [];
+    expect((await staffing.sessionStaff(L, WED)).tournaments).toEqual([]);
 
+    upstream.state.tournaments = listed;
     const [t] = (await staffing.sessionStaff(L, WED)).tournaments;
 
     expect(t).toMatchObject({ tournamentId: 't-1', assignments: [expect.objectContaining({ playerId: '00123', state: 'removing' })] });
