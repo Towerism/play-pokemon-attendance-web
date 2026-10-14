@@ -3,7 +3,7 @@ import { parseBearer } from '../modules/integrations/bearer';
 import { IntegrationError, type IntegrationErrorCode } from '../modules/integrations/errors';
 import { type IntegrationDayService, createIntegrationDayService } from '../modules/integrations/service';
 import { type AuthenticatedToken, type IntegrationTokenService, createIntegrationTokenService } from '../modules/integrations/tokens';
-import { type FixedWindowLimiter, createFixedWindowLimiter } from '../modules/security/rate-limit';
+import { type FixedWindowLimiter, createFixedWindowLimiter } from '@towerism/selfhost-kit';
 
 let tokens: IntegrationTokenService | undefined;
 let days: IntegrationDayService | undefined;

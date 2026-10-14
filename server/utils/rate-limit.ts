@@ -1,6 +1,5 @@
 import type { H3Event } from 'h3';
-import { type TrustedProxies, clientKey, parseTrustedProxies } from '../modules/security/client-address';
-import { type FixedWindowLimiter, createFixedWindowLimiter } from '../modules/security/rate-limit';
+import { type FixedWindowLimiter, type TrustedProxies, clientKey, createFixedWindowLimiter, parseTrustedProxies } from '@towerism/selfhost-kit';
 
 type AuthRoute = 'login' | 'setup';
 

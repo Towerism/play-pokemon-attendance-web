@@ -1,5 +1,5 @@
 import type { H3Error } from 'h3';
-import { acceptRequestId } from '../logging/request-id';
+import { acceptRequestId } from '@towerism/selfhost-kit';
 
 const HEALTH = new Set(['/healthz', '/readyz']);
 

@@ -139,3 +139,57 @@ describe('browser-side code gets Zod from shared/zod (jitless: no eval under the
     expect(await errors('shared/schemas/x.ts', "import { z } from '../zod';\nexport const s = z.string();")).toEqual([]);
   });
 });
+
+describe('@towerism/selfhost-kit stays out of where it does not belong', () => {
+  const module = 'server/modules/roster/service.ts';
+
+  it.each([
+    "import { acceptRequestId } from '@towerism/selfhost-kit';\nexport const f = acceptRequestId;",
+    "import { createLogger } from '@towerism/selfhost-kit';\nexport const f = createLogger;",
+    "import { aes256Key } from '@towerism/selfhost-kit';\nexport const f = aes256Key;",
+    "import { resolveSecret } from '@towerism/selfhost-kit';\nexport const f = resolveSecret;",
+    "import { createVault } from '@towerism/selfhost-kit';\nexport const f = createVault;",
+    "import * as kit from '@towerism/selfhost-kit';\nexport const f = kit;",
+    "export { aes256Key } from '@towerism/selfhost-kit';",
+    "import { jsonOnly } from '@towerism/selfhost-kit/nitro';\nexport const f = jsonOnly;",
+  ])('rejects in a module: %s', async (code) => {
+    expect(await errors(module, code)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+  });
+
+  it.each([
+    "import { setupCodeMatches } from '@towerism/selfhost-kit';\nexport const f = setupCodeMatches;",
+    "import type { Clock } from '@towerism/selfhost-kit';\nexport type C = Clock;",
+  ])('allows in a module: %s', async (code) => {
+    expect(await errors(module, code)).toEqual([]);
+  });
+
+  it('still rejects h3 in a module next to the kit rules', async () => {
+    expect(await errors(module, "import { createError } from 'h3';\nexport { createError };")).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+  });
+
+  it('lets module tests use the contract suites', async () => {
+    const code = "import { describeVaultContract } from '@towerism/selfhost-kit/testing';\nexport const f = describeVaultContract;";
+    expect(await errors('server/modules/x/y.test.ts', code)).toEqual([]);
+  });
+
+  it('lets server/utils take secrets from the kit', async () => {
+    expect(await errors('server/utils/x.ts', "import { aes256Key } from '@towerism/selfhost-kit';\nexport const f = aes256Key;")).toEqual([]);
+  });
+
+  it.each(['app/utils/x.ts', 'shared/schemas/x.ts', 'shared/zod.ts'])('rejects the kit in browser-bundled %s', async (file) => {
+    expect(await errors(file, "import { isHttpsSite } from '@towerism/selfhost-kit';\nexport const f = isHttpsSite;")).toEqual([
+      expect.stringMatching(/no-restricted-imports/),
+    ]);
+  });
+
+  it('rejects the kit in a Vue page', async () => {
+    const code = "<script setup lang=\"ts\">\nimport { isHttpsSite } from '@towerism/selfhost-kit';\nconsole.log(isHttpsSite(''));\n</script>";
+    expect(await errors('app/pages/x.vue', code)).toEqual([expect.stringMatching(/no-restricted-imports/)]);
+  });
+
+  it('still rejects a direct zod import next to the kit rule', async () => {
+    expect(await errors('shared/schemas/x.ts', "import { z } from 'zod';\nexport const s = z.string();")).toEqual([
+      expect.stringMatching(/no-restricted-imports/),
+    ]);
+  });
+});
