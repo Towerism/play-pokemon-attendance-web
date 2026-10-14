@@ -213,6 +213,11 @@ export interface StaffingService {
    * to its new local date. Nothing is sent. Returns how many moved.
    */
   moveTournament(leagueId: string, tournamentId: string, to: SessionDate): number;
+  /**
+   * A cancelled tournament keeps no wanted staff (ADR-0010 decision 8): assignments that never reached play-tools are
+   * deleted, the rest tombstoned as `removeAssignment` does. Nothing is sent. Returns how many of each.
+   */
+  cancelTournament(leagueId: string, tournamentId: string): { dropped: number; removed: number };
 }
 
 /** The play-tools calls staffing makes. */
@@ -819,6 +824,18 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
         .set({ sessionDate: to })
         .where(and(eq(staffAssignment.leagueId, leagueId), eq(staffAssignment.tournamentId, tournamentId)))
         .run().changes;
+    },
+
+    cancelTournament(leagueId, tournamentId) {
+      const ofIt = and(eq(staffAssignment.leagueId, leagueId), eq(staffAssignment.tournamentId, tournamentId));
+      return db.transaction(() => ({
+        dropped: db.delete(staffAssignment).where(and(ofIt, isNull(staffAssignment.recordId))).run().changes,
+        removed: db
+          .update(staffAssignment)
+          .set({ removedAt: now(), state: 'removing' })
+          .where(and(ofIt, isNotNull(staffAssignment.recordId), isNull(staffAssignment.removedAt)))
+          .run().changes,
+      }));
     },
   };
 }

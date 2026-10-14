@@ -1091,3 +1091,52 @@ describe('moveTournament: a rescheduled tournament keeps its staff (ADR-0010 dec
     expect(staffing.moveTournament('other-league', 't-1', '2026-10-22' as SessionDate)).toBe(0);
   });
 });
+
+describe('cancelTournament: a cancelled tournament keeps no wanted staff (ADR-0010 decision 8)', () => {
+  const insert = (tournamentId: string, playerId: string, set: { state?: string; recordId?: string | null; removedAt?: number | null } = {}) =>
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, state, record_id, created_by, created_at, removed_at)
+         values (?, '2026-10-20', ?, 'Cup', ?, 'judge', ?, ?, 'organizer', 0, ?)`,
+      )
+      .run(L, tournamentId, playerId, set.state ?? 'pending', set.recordId ?? null, set.removedAt ?? null);
+  const rows = () =>
+    database.sqlite
+      .prepare('select tournament_id, player_id, state, record_id, removed_at from staff_assignment order by tournament_id, player_id')
+      .all();
+
+  beforeEach(() => {
+    for (const [id, name] of [
+      ['00456', 'Misty'],
+      ['00789', 'Brock'],
+      ['00999', 'Gary'],
+    ]) {
+      database.sqlite.prepare('insert into player (player_id, display_name, first_seen_at) values (?, ?, 0)').run(id, name);
+    }
+  });
+
+  it('drops what never reached play-tools, tombstones what did, and keeps an existing tombstone as it was', () => {
+    insert('t-1', '00123'); // pending, never sent
+    insert('t-1', '00456', { state: 'failed' }); // never reached play-tools
+    insert('t-1', '00789', { state: 'assigned', recordId: 'rec-789' });
+    insert('t-1', '00999', { state: 'removing', recordId: 'rec-999', removedAt: 5 });
+    insert('t-2', '00123', { state: 'assigned', recordId: 'rec-x' });
+
+    expect(staffing.cancelTournament(L, 't-1')).toEqual({ dropped: 2, removed: 1 });
+
+    expect(rows()).toEqual([
+      { tournament_id: 't-1', player_id: '00789', state: 'removing', record_id: 'rec-789', removed_at: Math.floor(NOW.getTime() / 1000) },
+      { tournament_id: 't-1', player_id: '00999', state: 'removing', record_id: 'rec-999', removed_at: 5 },
+      { tournament_id: 't-2', player_id: '00123', state: 'assigned', record_id: 'rec-x', removed_at: null },
+    ]);
+  });
+
+  it('changes nothing the second time, and nothing of another league', () => {
+    insert('t-1', '00789', { state: 'assigned', recordId: 'rec-789' });
+    staffing.cancelTournament(L, 't-1');
+    const after = rows();
+    expect(staffing.cancelTournament(L, 't-1')).toEqual({ dropped: 0, removed: 0 });
+    expect(staffing.cancelTournament('other-league', 't-1')).toEqual({ dropped: 0, removed: 0 });
+    expect(rows()).toEqual(after);
+  });
+});
