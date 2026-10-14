@@ -39,8 +39,8 @@ contract tests. It was built to match attendance's behaviour.
 3. Any difference from today's behaviour is named in that step's PR. A kit gap is filed on the kit, not worked
    around with a local copy.
 4. Module boundaries still hold. `server/modules/*` may import only plain helpers from the kit root (an ESLint
-   allowlist), and never `@towerism/selfhost-kit/nitro`. Loggers, request ids, secrets and vaults are wired in
-   `server/utils` and injected. `app/` and `shared/` never import the kit; it is server-only.
+   allowlist), and never `@towerism/selfhost-kit/nitro`. Loggers, request ids, secrets and vaults are
+   wired outside `server/modules` (`server/utils`, `server/plugins`, `server/bootstrap`) and injected. `app/` and `shared/` never import the kit; it is server-only.
 5. **Security fixes reach attendance only through a version bump.** Until attendance has a Renovate config (#126) that
    proposes kit bumps on release and on advisories (kit ADR-0005 rule 4), the owner bumps by hand on each kit release
    or advisory.

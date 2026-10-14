@@ -23,7 +23,7 @@ const SERVER_AUTO_IMPORTS =
 const TEST_FILES = ['**/*.test.ts', '**/test-helpers.ts', 'test/**'];
 
 // What server/modules/* may take from @towerism/selfhost-kit (architecture §3). Everything else in the kit
-// (logger, request id, secrets, vault, launcher) is wired in server/utils and injected. Each migration step
+// (logger, request id, secrets, vault, launcher) is wired outside server/modules and injected. Each migration step
 // that gives modules a kit type extends this list. Like every no-restricted-imports rule, it doesn't see a
 // dynamic import() or require: that stays a review check.
 const KIT_FOR_MODULES = ['setupCodeMatches', 'generateSetupCode', 'createFixedWindowLimiter', 'systemClock', 'Clock', 'FixedWindowLimiter', 'HitResult'];
@@ -84,7 +84,7 @@ export default withNuxt(
               name: '@towerism/selfhost-kit',
               allowImportNames: KIT_FOR_MODULES,
               message:
-                'server/modules/* take only plain helpers from the kit; loggers, request ids, secrets and vaults are injected by server/utils.',
+                'server/modules/* take only plain helpers from the kit; loggers, request ids, secrets and vaults are wired outside server/modules and injected.',
             },
           ],
         },

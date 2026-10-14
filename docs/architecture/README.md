@@ -155,6 +155,8 @@ server/                      Nitro side
   tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (hourly)
   db/                        drizzle schema, migrations, client
   utils/                     auto-imported helpers: useDb(), requireLeague(event), container
+                             (the setup code, rate limiter, client address, request ids and CSP/headers come from
+                             the `@towerism/selfhost-kit` package, ADR-0014; there is no server/modules/security)
 shared/                      auto-imported in app/ and server/ (Nuxt 4)
   schemas/                   Zod DTOs
   types/                     PlayerId, SessionDate
@@ -175,7 +177,7 @@ Module rules:
 - Modules talk to each other only through their exported service interfaces, never through each other's tables.
 - Only `server/modules/pokemon/adapters/*` may make HTTP calls to `*.pokemon.com`. Enforce this with an ESLint `no-restricted-imports` / boundaries rule.
 - Modules don't import h3 or Nuxt APIs, so they unit-test as plain TS.
-- From `@towerism/selfhost-kit`, modules may import only the plain helpers on the ESLint allowlist in `eslint.config.mjs` (e.g. `setupCodeMatches`, `createFixedWindowLimiter`, `Clock`), never `@towerism/selfhost-kit/nitro`. Loggers, request ids, secrets and vaults are wired in `server/utils` and injected. `app/` and `shared/` never import the kit ([ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md)).
+- From `@towerism/selfhost-kit`, modules may import only the plain helpers on the ESLint allowlist in `eslint.config.mjs` (e.g. `setupCodeMatches`, `createFixedWindowLimiter`, `Clock`), never `@towerism/selfhost-kit/nitro`. Loggers, request ids, secrets and vaults are wired outside `server/modules` (`server/utils`, `server/plugins`, `server/bootstrap`) and injected. `app/` and `shared/` never import the kit ([ADR-0014](adr/0014-shared-platform-code-from-selfhost-kit.md)).
 
 ## 4. Pokémon integration (the risky part)
 
