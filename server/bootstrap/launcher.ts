@@ -3,21 +3,17 @@
  *
  * Resolves secrets and derived settings into `process.env` *before* Nitro
  * loads, because Nitro reads its runtime config from env at import time.
+ * The kit's `runLauncher` does that, then imports the server; on a malformed
+ * secret or config it logs one startup error and exits with 1. It is given
+ * attendance's configured logger: its default would redact only the kit's
+ * base keys (ESLint enforces this).
  */
+import { prepareRuntimeEnv, runLauncher } from '@towerism/selfhost-kit';
 import { createAppLogger } from '../logging/app-logger';
-import { InvalidConfigError, prepareRuntimeEnv } from './runtime-env';
-import { InvalidSecretError } from './secrets';
+import { RUNTIME_ENV } from './app-env';
 
-const log = createAppLogger({ scope: 'startup' });
-try {
-  const { env, log: lines } = prepareRuntimeEnv(process.env);
-  for (const name of Object.keys(process.env)) if (!(name in env)) Reflect.deleteProperty(process.env, name);
-  Object.assign(process.env, env);
-  for (const line of lines) log.info(line);
-} catch (err) {
-  if (!(err instanceof InvalidSecretError) && !(err instanceof InvalidConfigError)) throw err;
-  log.error(err.message);
-  process.exit(1);
-}
-
-await import(new URL('./server/index.mjs', import.meta.url).href);
+await runLauncher({
+  prepare: (env) => prepareRuntimeEnv(env, RUNTIME_ENV),
+  server: new URL('./server/index.mjs', import.meta.url),
+  logger: createAppLogger({ scope: 'startup' }),
+});
