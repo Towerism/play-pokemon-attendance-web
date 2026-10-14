@@ -254,6 +254,38 @@ export const UpcomingQuery = z
     path: ['to'],
   });
 
+// Required events (#95, ADR-0010 decision 12)
+
+const requirementFields = {
+  /** Part of play-tools' series name, e.g. `League Cup`. */
+  seriesMatch: z.string().trim().min(1).max(100),
+  product: z.enum(['tcg', 'pgo', 'vg']),
+  cadence: z.enum(['month', 'quarter']),
+  minCount: z.int().min(1).max(10).optional(),
+  /** Days before a period's latest date an uncovered period turns at risk. */
+  warnDays: z.int().min(1).max(180).optional(),
+  active: z.boolean().optional(),
+};
+export const RequirementBody = z.strictObject(requirementFields);
+export type RequirementBody = z.infer<typeof RequirementBody>;
+export const RequirementPatch = z
+  .strictObject(requirementFields)
+  .partial()
+  .refine((p) => Object.keys(p).length > 0, 'Change at least one field');
+export type RequirementPatch = z.infer<typeof RequirementPatch>;
+
+/** **Mark as covered…**: what covered it, e.g. who ran it and its display id. */
+export const CoverBody = z.strictObject({ note: z.string().trim().min(1).max(500) });
+export const CoverParams = z.object({
+  id: z
+    .string()
+    .regex(/^[1-9]\d{0,9}$/, 'Not an id')
+    .transform(Number),
+  periodStart: localDate,
+});
+/** `?refresh=1` reads every professor's tournaments again; nothing else is accepted. */
+export const CoverageQuery = z.object({ refresh: z.literal('1').optional() }).transform((q) => ({ refresh: q.refresh === '1' }));
+
 export const IdParam = z.object({
   id: z
     .string()
