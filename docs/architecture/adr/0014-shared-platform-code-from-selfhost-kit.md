@@ -1,6 +1,6 @@
 # ADR-0014: Shared platform code from `@towerism/selfhost-kit`
 
-- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131; A4 in #132)
+- Status: Accepted (2026-10-13, #128, first applied in #129; A2 in #130; A3 in #131; A4 in #132; A5 in #133)
 - Date: 2026-10-13
 - Amends: §3 (tech stack, module rules), §9 and §10, which described these pieces as attendance's own code
 - Companion: [selfhost-kit ADR-0001](https://github.com/Towerism/selfhost-kit/blob/main/docs/architecture/adr/0001-share-as-a-package.md)
@@ -97,6 +97,32 @@ visible to an install:
   never seals an empty plaintext (refresh tokens are non-empty at the OAuth wire, TDF files are gzip output);
 - `TokenVaultError` is gone: the kit's `VaultError` is thrown unwrapped, and no log or response shows its name.
 
+A5 (#133) moved the Nitro wiring around the A1 pieces to the kit's `/nitro` adapters. Each file keeps its name and holds
+only attendance's configuration:
+- `server/middleware/json-only.ts` is `jsonOnly()`;
+- `server/middleware/body-size.ts` is `bodySizeLimit({ maxBytes: 2 MiB, exempt: [the TDF preview] })`;
+- `server/plugins/security-headers.ts` is `securityHeadersPlugin({ siteUrl })`;
+- `server/plugins/logging.ts` is `requestLogPlugin({ logger: useLogger('app') })`, whose `http` and `app` children are the
+  same loggers as before;
+- `server/error.ts` is `jsonErrorHandler()`;
+- login and setup call the kit's `enforceRateLimit(event, authRateLimit(route))`.
+
+The limiters and trusted proxies are built once at boot by `server/bootstrap/rate-limits.ts`, called from
+`server/plugins/0.rate-limits.ts`, which sorts and runs before every other attendance plugin. The integrations limiter is
+built there too, but it keeps its own per-token check, because the kit guard keys by client address. Attendance runs the
+kit's `describeJsonOnly`, `describeBodySize` and `describeSecurityHeaders` against its configuration
+(`test/unit/kit-nitro-contracts.test.ts`), and every existing `test/server` file passed unchanged against the shim and
+after. ESLint keeps `@towerism/selfhost-kit/testing` out of every non-test file it lints, except
+`server/logging/app-logger.ts` (a known gap). Three differences are deliberate, and each fails closed:
+- a POST/PUT/PATCH/DELETE under `/api` (except the TDF preview) sent with `Transfer-Encoding` and no `Content-Length`
+  gets 411 before the route runs (the kit's K2 decision). It used to be read with no size cap. A chunked non-JSON body
+  therefore gets 411 rather than 415, still before any handler. Browsers always send a length, and the TDF preview's
+  own 411 has long shown that installs behind their proxies keep it. A malformed length is still refused by Node's
+  parser with 400, as before;
+- a DELETE body over 2 MiB gets 413;
+- a rate-limit or trusted-proxy value the kit refuses now fails startup (exit 1, a message naming the variables, before
+  the database opens) instead of making the limited routes answer 500 (see Consequences).
+
 A4 is a pure refactor and releases nothing, departing from kit ADR-0007's "each step ships as its own release" in
 favour of its "pure refactors release nothing"; a rollback is a revert PR.
 
@@ -104,12 +130,18 @@ favour of its "pure refactors release nothing"; a rollback is a revert PR.
 
 - (+) There is one copy of the security code. A fix lands once and reaches both apps by a version bump.
 - (+) Each step has a narrow diff, a specific safety check and a one-PR rollback.
-- (−) The kit's limiter refuses a `max`/`windowMs` that isn't a safe integer ≥ 1. Attendance builds its limiters lazily,
-  so such a value reaching them by a path the launcher doesn't validate (`NITRO_`-prefixed names, whole-object JSON
-  overrides, `pnpm dev`, or a `NUXT_` value of 2^53 or more) makes the rate-limited routes answer 500. Before, such a
-  value disabled the limit, tightened it or simply worked, depending on the value. None of these paths is in the
-  template. The ≥ 2^53 path is closed at startup by [selfhost-kit#22](https://github.com/Towerism/selfhost-kit/issues/22);
-  the rest by A5, when the kit's guard builds the limiters at boot.
+- (−) The kit's limiter refuses a `max`/`windowMs` that isn't a safe integer ≥ 1. Such a value can reach runtime config
+  by a path the launcher doesn't validate:
+  - `NITRO_`-prefixed names;
+  - whole-object JSON overrides;
+  - `pnpm dev`;
+  - a `NUXT_` value of 2^53 or more, until [selfhost-kit#22](https://github.com/Towerism/selfhost-kit/issues/22).
+
+  Before the kit, such a value disabled the limit, tightened it or simply worked, depending on the value. From A1 to
+  A4 it made the rate-limited routes answer 500. Since A5 the limiters are built at boot, so it **fails startup** with
+  a message naming the variables. An install whose only bad value is the integrations limit loses the whole app until
+  the value is fixed, not just the integrations reads. Failing closed and loudly is deliberate. None of these paths is
+  in the template.
 - (−) Until #126, a kit security fix waits for a manual bump.
 - (−) The kit's own unit tests are the proof for the moved pieces. Attendance's server tests stay as the evidence that
   its wiring is right.
