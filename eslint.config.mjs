@@ -16,7 +16,7 @@ const POKEMON_HOSTS = [
 
 // h3 / Nitro / nuxt-auth-utils / server/utils auto-imports: invisible to no-restricted-imports.
 const SERVER_AUTO_IMPORTS =
-  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts|useRoster|useSessions|useTdfImports|useTdfArchive|useSightings|usePokemon|useSubmissions|useMetrics|usePlaySessionResolver|useStaffing|requireLeague|useLogger|useIntegrationTokens|useIntegrationDays|requireIntegrationToken|useTournaments)$/;
+  /^(define(EventHandler|NitroPlugin|CachedEventHandler)|useRuntimeConfig|useNitroApp|useStorage|useEvent|createError|send(Error|Redirect|Stream)?|setResponse(Status|Header)|getRequestHeaders?|getQuery|getRouterParams?|getValidated(Query|RouterParams)|readBody|readValidatedBody|readMultipartFormData|getUserSession|setUserSession|requireUserSession|clearUserSession|hashPassword|verifyPassword|useDb|useDatabase|useAccounts|useRoster|useSessions|useTdfImports|useTdfArchive|useSightings|usePokemon|useSubmissions|useMetrics|usePlaySessionResolver|useStaffing|requireLeague|useLogger|useIntegrationTokens|useIntegrationDays|requireIntegrationToken|useTournaments|useRateLimits|authRateLimit)$/;
 
 // Tests use Pokémon URLs as data (the play-tools callback); MSW and test/server/fake-pokemon.ts
 // keep them off the network, so the host rule doesn't apply to them.
@@ -51,6 +51,12 @@ const KIT_FOR_MODULES = [
 const NO_BARE_PINO = {
   regex: '^pino(-pretty)?(/.*)?$',
   message: "Log through createAppLogger (server/logging/app-logger) or an injected Logger: a bare pino logger redacts nothing.",
+};
+
+// The kit's /testing entry (contract suites, fixtures) needs Vitest, a devDependency: test files only.
+const NO_KIT_TESTING = {
+  regex: '^@towerism/selfhost-kit/testing$',
+  message: "@towerism/selfhost-kit/testing is for tests only (it needs Vitest, which never ships).",
 };
 
 // Browser-bundled code: the kit is server-only (node:crypto, node:fs, pino).
@@ -139,7 +145,7 @@ export default withNuxt(
   {
     files: ['server/modules/**/*.ts'],
     ignores: MODULE_TEST_FILES,
-    rules: { 'no-restricted-imports': moduleImports([NO_BOOTSTRAP_IN_MODULES]) },
+    rules: { 'no-restricted-imports': moduleImports([NO_BOOTSTRAP_IN_MODULES, NO_KIT_TESTING]) },
   },
   {
     // Module tests keep every module rule, and may build the real vaults from server/bootstrap/vaults.ts.
@@ -172,7 +178,7 @@ export default withNuxt(
               message: "Build loggers with createAppLogger (server/logging/app-logger): it applies attendance's redactor.",
             },
           ],
-          patterns: [NO_BARE_PINO],
+          patterns: [NO_BARE_PINO, NO_KIT_TESTING],
         },
       ],
     },
