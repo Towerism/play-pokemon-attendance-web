@@ -22,6 +22,18 @@ const SERVER_AUTO_IMPORTS =
 // keep them off the network, so the host rule doesn't apply to them.
 const TEST_FILES = ['**/*.test.ts', '**/test-helpers.ts', 'test/**'];
 
+// What server/modules/* may take from @towerism/selfhost-kit (architecture §3). Everything else in the kit
+// (logger, request id, secrets, vault, launcher) is wired in server/utils and injected. Each migration step
+// that gives modules a kit type extends this list. Like every no-restricted-imports rule, it doesn't see a
+// dynamic import() or require: that stays a review check.
+const KIT_FOR_MODULES = ['setupCodeMatches', 'generateSetupCode', 'createFixedWindowLimiter', 'systemClock', 'Clock', 'FixedWindowLimiter', 'HitResult'];
+
+// Browser-bundled code: the kit is server-only (node:crypto, node:fs, pino).
+const NO_KIT_IN_BROWSER = {
+  regex: '^@towerism/selfhost-kit(/.*)?$',
+  message: '@towerism/selfhost-kit is server-only; app/ and shared/ are bundled for the browser.',
+};
+
 const NO_NUXT_IN_MODULES = {
   selector: `CallExpression[callee.name=${SERVER_AUTO_IMPORTS}]`,
   message: 'server/modules/* are plain TS: take dependencies as arguments instead of using h3/Nitro auto-imports.',
@@ -62,6 +74,18 @@ export default withNuxt(
               regex: '(^|/)logging/(logger|request-id)$',
               message: 'server/modules/* take a Logger (server/logging/types) as a dependency; server/utils injects it.',
             },
+            {
+              regex: '^@towerism/selfhost-kit/nitro$',
+              message: 'server/modules/* are plain TS: the kit’s /nitro adapters are h3-based.',
+            },
+          ],
+          paths: [
+            {
+              name: '@towerism/selfhost-kit',
+              allowImportNames: KIT_FOR_MODULES,
+              message:
+                'server/modules/* take only plain helpers from the kit; loggers, request ids, secrets and vaults are injected by server/utils.',
+            },
           ],
         },
       ],
@@ -95,10 +119,17 @@ export default withNuxt(
               regex: '^zod(/.*)?$',
               message: "Import z from shared/zod (jitless), not 'zod': the CSP forbids Zod's eval probe in the browser.",
             },
+            NO_KIT_IN_BROWSER,
           ],
         },
       ],
     },
+  },
+  {
+    // shared/zod.ts is exempt from the zod rule above but is still browser-bundled. No other block sets
+    // no-restricted-imports on it, so this overrides nothing.
+    files: ['shared/zod.ts'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [NO_KIT_IN_BROWSER] }] },
   },
   {
     // Module tests may hold Pokémon URLs as data, but stay plain TS.
