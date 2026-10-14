@@ -1,4 +1,4 @@
-import { contentSecurityPolicy, isHttpsSite, securityHeaders } from '../modules/security/headers';
+import { contentSecurityPolicy, isHttpsSite, securityHeaders } from '@towerism/selfhost-kit';
 
 /**
  * Security headers on every response (architecture §9), errors and API calls

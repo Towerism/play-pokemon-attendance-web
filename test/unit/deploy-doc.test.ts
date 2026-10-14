@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 import { XMLParser } from 'fast-xml-parser';
 import { describe, expect, it } from 'vitest';
-import { parseTrustedProxies } from '../../server/modules/security/client-address';
+import { parseTrustedProxies } from '@towerism/selfhost-kit';
 
 /**
  * docs/deploy/unraid.md is the organizer's install, backup and restore guide.

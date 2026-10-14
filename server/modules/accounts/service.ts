@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { count, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { appUser } from '../../db/schema';
-import { setupCodeMatches } from './setup-code';
+import { setupCodeMatches } from '@towerism/selfhost-kit';
 
 /** scrypt in production (nuxt-auth-utils `hashPassword` / `verifyPassword`). */
 export interface PasswordHasher {

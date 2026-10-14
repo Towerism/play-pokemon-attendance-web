@@ -1,5 +1,5 @@
 import { type AccountsService, createAccountsService } from '../modules/accounts/service';
-import { generateSetupCode } from '../modules/accounts/setup-code';
+import { generateSetupCode } from '@towerism/selfhost-kit';
 
 let accounts: AccountsService | undefined;
 // A fresh code per boot. It only works while no account exists (ADR-0006).

@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { InvalidTrustedProxiesError, parseTrustedProxies } from '../modules/security/client-address';
+import { InvalidTrustedProxiesError, parseTrustedProxies } from '@towerism/selfhost-kit';
 import { SESSION_PASSWORD, type SecretSpec, TDF_VAULT_KEY, TOKEN_VAULT_KEY, resolveSecret } from './secrets';
 
 type Env = Record<string, string | undefined>;

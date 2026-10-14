@@ -1,5 +1,8 @@
-import { DEFAULT_TRUSTED_PROXIES } from './server/modules/security/client-address';
-import { PERMISSIONS_POLICY, contentSecurityPolicy } from './server/modules/security/headers';
+import { DEFAULT_TRUSTED_PROXIES, contentSecurityPolicy, securityHeaders } from '@towerism/selfhost-kit';
+
+// The kit's Permissions-Policy (`camera=(), …`), for nuxt-security's HTML shell. test/server/security.test.ts
+// asserts the same literal on the shell and on every other response.
+const PERMISSIONS_POLICY = securityHeaders({ httpsSite: false })['Permissions-Policy']!;
 
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
