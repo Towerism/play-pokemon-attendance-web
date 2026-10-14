@@ -24,7 +24,7 @@ const TEST_FILES = ['**/*.test.ts', '**/test-helpers.ts', 'test/**'];
 const MODULE_TEST_FILES = TEST_FILES.map((glob) => `server/modules/${glob}`);
 
 // What server/modules/* may take from @towerism/selfhost-kit (architecture §3). Everything else in the kit
-// (logger factory, redactor, request id, secrets, vault, launcher) is wired outside server/modules and injected.
+// (logger factory, redactor, request id, secrets, vault construction, launcher) is wired outside server/modules and injected.
 // Modules take the Logger port (`Logger`, `LogFields`, `silentLogger`) and get a logger injected. Each migration
 // step that gives modules a kit type extends this list. Like every no-restricted-imports rule, it doesn't see a
 // dynamic import() or require: that stays a review check.

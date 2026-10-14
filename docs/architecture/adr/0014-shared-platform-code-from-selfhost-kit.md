@@ -87,7 +87,7 @@ A4 (#132) moved the vault, merging attendance's two vault files (the cipher and 
 `server/utils` and the tests share. The keys still reach it only from runtime config, through
 `server/utils/pokemon.ts` (token) and `server/utils/tdf-archive.ts` (TDF), and the vaults are injected into the modules.
 Modules take `Vault`, `StringVault` and `VaultError` from the kit root and nothing from `server/bootstrap` (ESLint;
-module tests may build the real vaults there). The kit's cipher is byte-identical to attendance's. The compatibility
+module tests may build the real vaults there). The kit's wire format, key check and messages are identical to attendance's. The compatibility
 evidence stays in CI: a corpus sealed by the pre-migration code (every AAD shape, the carried-over league-id form
 included; empty, binary and 2 MiB plaintexts) opens with the kit, and kit-sealed blobs open with a pinned copy of
 that code (`test/fixtures/vault-v1/`, `test/unit/vault-compat.test.ts`). Three differences are accepted, none
