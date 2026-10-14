@@ -1,6 +1,6 @@
 import type { AttendanceDayV1 } from '../../../shared/schemas/integrations';
 import type { SessionDate } from '../../../shared/types/ids';
-import type { Logger } from '../../logging/types';
+import type { Logger } from '@towerism/selfhost-kit';
 import type { PokemonConnectionService } from '../pokemon/connection';
 import type { StaffingService } from '../staffing/service';
 import { toAttendanceDay } from './day';

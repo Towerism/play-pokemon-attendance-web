@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, inArray, ne } from 'drizzle-orm';
-import { type Logger, silentLogger } from '../../logging/types';
+import { type Logger, silentLogger } from '@towerism/selfhost-kit';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { staffBatch, staffBatchItem, submission, submissionEvent, submissionItem, submissionLock, submissionTournamentItem } from '../../db/schema';

@@ -23,10 +23,29 @@ const SERVER_AUTO_IMPORTS =
 const TEST_FILES = ['**/*.test.ts', '**/test-helpers.ts', 'test/**'];
 
 // What server/modules/* may take from @towerism/selfhost-kit (architecture §3). Everything else in the kit
-// (logger, request id, secrets, vault, launcher) is wired outside server/modules and injected. Each migration step
-// that gives modules a kit type extends this list. Like every no-restricted-imports rule, it doesn't see a
+// (logger factory, redactor, request id, secrets, vault, launcher) is wired outside server/modules and injected.
+// Modules take the Logger port (`Logger`, `LogFields`, `silentLogger`) and get a logger injected. Each migration
+// step that gives modules a kit type extends this list. Like every no-restricted-imports rule, it doesn't see a
 // dynamic import() or require: that stays a review check.
-const KIT_FOR_MODULES = ['setupCodeMatches', 'generateSetupCode', 'createFixedWindowLimiter', 'systemClock', 'Clock', 'FixedWindowLimiter', 'HitResult'];
+const KIT_FOR_MODULES = [
+  'setupCodeMatches',
+  'generateSetupCode',
+  'createFixedWindowLimiter',
+  'systemClock',
+  'Clock',
+  'FixedWindowLimiter',
+  'HitResult',
+  'Logger',
+  'LogFields',
+  'silentLogger',
+];
+
+// A bare pino logger has no redaction at all (architecture §10): every logger is built by
+// server/logging/app-logger.ts, with attendance's redactor.
+const NO_BARE_PINO = {
+  regex: '^pino(-pretty)?(/.*)?$',
+  message: "Log through createAppLogger (server/logging/app-logger) or an injected Logger: a bare pino logger redacts nothing.",
+};
 
 // Browser-bundled code: the kit is server-only (node:crypto, node:fs, pino).
 const NO_KIT_IN_BROWSER = {
@@ -71,9 +90,11 @@ export default withNuxt(
               message: 'server/modules/* are plain TS: no h3 or Nuxt imports.',
             },
             {
-              regex: '(^|/)logging/(logger|request-id)$',
-              message: 'server/modules/* take a Logger (server/logging/types) as a dependency; server/utils injects it.',
+              regex: '(^|/)logging/',
+              message:
+                "server/modules/* import nothing under server/logging: they take a Logger (a type from '@towerism/selfhost-kit') as a dependency, and server/utils injects it.",
             },
+            NO_BARE_PINO,
             {
               regex: '^@towerism/selfhost-kit/nitro$',
               message: 'server/modules/* are plain TS: the kit’s /nitro adapters are h3-based.',
@@ -99,6 +120,28 @@ export default withNuxt(
   {
     files: ['server/modules/pokemon/adapters/**/*.ts'],
     rules: { 'no-restricted-syntax': ['error', NO_NUXT_IN_MODULES] },
+  },
+  {
+    // Every logger is attendance's configured one: the kit's createLogger without attendance's redactor hides only
+    // the kit's base keys, not birthdates, TDF bodies or the vault key names (architecture §10). server/modules,
+    // app/ and shared/ are left out because their own blocks set no-restricted-imports (this one would override them).
+    files: ['**/*.{ts,mts,cts,js,mjs,cjs}'],
+    ignores: ['server/modules/**', 'app/**', 'shared/**', 'server/logging/app-logger.ts', ...TEST_FILES],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@towerism/selfhost-kit',
+              importNames: ['createLogger', 'createRedactor'],
+              message: "Build loggers with createAppLogger (server/logging/app-logger): it applies attendance's redactor.",
+            },
+          ],
+          patterns: [NO_BARE_PINO],
+        },
+      ],
+    },
   },
   {
     // Server code logs through pino (redacted, request-tagged), never the console (architecture §10).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createLogger } from './logger';
+import { createAppLogger } from './app-logger';
 
 // The logger is timed against plain JSON.stringify of the same records,
 // measured in the same process at the same moment, so the limits hold on a
@@ -28,7 +28,7 @@ function timeBaseline(): number {
 
 function timeLogger(format: 'json' | 'pretty'): number {
   let bytes = 0;
-  const log = createLogger({ scope: 'bench', level: 'info', format, destination: { write: (l) => (bytes += l.length) } });
+  const log = createAppLogger({ scope: 'bench', level: 'info', format, destination: { write: (l) => (bytes += l.length) } });
   const start = performance.now();
   for (let i = 0; i < RECORDS; i++) log.info('record', record(i));
   const elapsed = performance.now() - start;

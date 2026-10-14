@@ -4,7 +4,7 @@ import { and, desc, eq, lt } from 'drizzle-orm';
 import { parseTdf } from '../../../shared/tdf/parse';
 import type { Db } from '../../db/client';
 import { tdfFile } from '../../db/schema';
-import type { Logger } from '../../logging/types';
+import type { Logger } from '@towerism/selfhost-kit';
 import { type Vault, VaultError } from '../vault/vault';
 import { TdfFileNotFoundError, TdfKeyMismatchError } from './errors';
 

@@ -1,5 +1,5 @@
-import { createLogger } from '../logging/logger';
-import type { Logger } from '../logging/types';
+import { createAppLogger } from '../logging/app-logger';
+import type { Logger } from '@towerism/selfhost-kit';
 
 let root: Logger | undefined;
 
@@ -9,7 +9,7 @@ let root: Logger | undefined;
  * job), carry its `reqId`. Modules get theirs injected; they never call this.
  */
 export function useLogger(scope: string, bindings?: Record<string, unknown>): Logger {
-  root ??= createLogger({ scope: 'app', context: requestContext });
+  root ??= createAppLogger({ scope: 'app', context: requestContext });
   return root.child(scope, bindings);
 }
 
