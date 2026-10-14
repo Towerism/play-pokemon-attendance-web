@@ -306,6 +306,16 @@ describe('sessionStaff', () => {
     expect(view.tournaments[0]!.assignments).toHaveLength(1);
   });
 
+  it('shows nothing for a cancelled tournament whose staff were only tombstoned, and keeps the tombstones', async () => {
+    upstream.state.tournaments = [tournament('t-1')];
+    addAssignment({ tournamentId: 't-1', playerId: '00123', recordId: 'rec-ours' });
+    staffing.cancelTournament(L, 't-1');
+    upstream.state.tournaments = []; // play-tools stops listing a cancelled tournament
+
+    expect((await staffing.sessionStaff(L, WED)).tournaments).toEqual([]);
+    expect(staffing.assignmentsFor(L, 't-1')).toEqual([expect.objectContaining({ playerId: '00123', removed: true })]);
+  });
+
   it('leaves out a tournament deleted between listing it and reading it', async () => {
     upstream.state.tournaments = [tournament('t-1'), tournament('t-2', { startsAt: new Date('2026-10-14T23:45:00Z') })];
     upstream.state.gone.add('t-1');

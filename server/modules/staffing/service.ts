@@ -693,7 +693,7 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
 
       const shown = new Set(reads.map((r) => r.tournament.id));
       const missing = new Map<string, AssignmentRow[]>();
-      for (const row of rows.filter((r) => !shown.has(r.tournamentId))) {
+      for (const row of rows.filter((r) => !shown.has(r.tournamentId) && !r.removedAt)) {
         missing.set(row.tournamentId, [...(missing.get(row.tournamentId) ?? []), row]);
       }
       for (const [tournamentId, group] of missing) {
