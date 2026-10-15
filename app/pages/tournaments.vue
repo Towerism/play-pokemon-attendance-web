@@ -4,8 +4,10 @@ import type { Requirement } from '../../server/modules/tournaments/requirements'
 import type { Template, Upcoming } from '../../server/modules/tournaments/service';
 
 /**
- * Tournaments (ADR-0010 decision 10, architecture §8, #98): Required events on top, then Upcoming, Templates and
- * Schedules. Every dialog that reaches play-tools lists what it changes and waits for its confirm.
+ * Tournaments (ADR-0010 decisions 10 and 12, architecture §8, #98, #162): tabs Upcoming, Required events, Templates
+ * and Schedules. Required events keeps its grid to its own tab, with the nav badge's count; the other tabs show the
+ * compact banner above, so nothing at risk is hidden. Every dialog that reaches play-tools lists what it changes and
+ * waits for its confirm.
  */
 useHead({ title: 'Tournaments' });
 
@@ -29,14 +31,10 @@ watch(
 const timeZone = computed(() => coverage.value?.timeZone ?? upcoming.value?.timeZone ?? zoneFromUpcoming.value);
 const today = computed(() => coverage.value?.today ?? (timeZone.value ? todayIn(timeZone.value, new Date()) : null));
 
-const TABS = [
-  { value: 'upcoming', label: 'Upcoming' },
-  { value: 'templates', label: 'Templates' },
-  { value: 'schedules', label: 'Schedules' },
-];
+const tabs = computed(() => tournamentsTabs(badgeCount(coverage.value)));
 const tab = computed({
   get: () => tabFromQuery(route.query.tab),
-  set: (value: string) => void router.replace({ query: { ...route.query, tab: value === 'upcoming' ? undefined : value } }),
+  set: (value: string) => void router.replace({ query: tabQuery(route.query, tabFromQuery(value)) as Record<string, string> }),
 });
 
 // Dialogs
@@ -71,25 +69,34 @@ function templateSaved(t: Template) {
       <p class="text-sm text-muted">Plan the league's tournaments, create them in play-tools, and never miss a League Cup or League Challenge.</p>
     </div>
 
-    <RequiredEventsGrid @plan="planOne" @create="(id) => (creating = { plannedIds: [id], retry: false })" />
-
-    <p v-if="!today || !timeZone" class="text-sm text-muted">Reading the league's time zone…</p>
-    <template v-else>
+    <RequiredEventsBanner v-if="tab !== 'required'" />
     <div class="space-y-4">
-      <UTabs v-model="tab" :items="TABS" :content="false" class="w-full" />
-      <UpcomingList
-        v-if="tab === 'upcoming'"
-        :today="today"
-        @new="planning = { templateId: null, missingFor: null }"
-        @create="(ids) => (creating = { plannedIds: ids, retry: false })"
-        @retry="(id) => (creating = { plannedIds: [id], retry: true })"
-        @edit="(id) => (editing = id)"
-        @cancel="(id) => (cancelling = id)"
-      />
-      <TemplatesTab v-else-if="tab === 'templates'" :time-zone="timeZone" :today="today" />
-      <SchedulesTab v-else :today="today" />
+      <UTabs v-model="tab" :items="tabs" :content="false" class="w-full">
+        <template #default="{ item }">
+          <span aria-hidden="true">{{ item.label }}</span><span class="sr-only">{{ item.ariaLabel ?? item.label }}</span>
+        </template>
+        <template #trailing="{ item }">
+          <UBadge v-if="item.badge" :label="item.badge" color="warning" variant="subtle" size="sm" aria-hidden="true" />
+        </template>
+      </UTabs>
+      <RequiredEventsGrid v-if="tab === 'required'" @plan="planOne" @create="(id) => (creating = { plannedIds: [id], retry: false })" />
+      <p v-else-if="!today || !timeZone" class="text-sm text-muted">Reading the league's time zone…</p>
+      <template v-else>
+        <UpcomingList
+          v-if="tab === 'upcoming'"
+          :today="today"
+          @new="planning = { templateId: null, missingFor: null }"
+          @create="(ids) => (creating = { plannedIds: ids, retry: false })"
+          @retry="(id) => (creating = { plannedIds: [id], retry: true })"
+          @edit="(id) => (editing = id)"
+          @cancel="(id) => (cancelling = id)"
+        />
+        <TemplatesTab v-else-if="tab === 'templates'" :time-zone="timeZone" :today="today" />
+        <SchedulesTab v-else :today="today" />
+      </template>
     </div>
 
+    <template v-if="today && timeZone">
     <NewTournamentDialog
       v-if="planning"
       :key="`${planning.templateId}-${planning.date}`"

@@ -36,6 +36,8 @@ import {
   rowActions,
   sanctionTag,
   tabFromQuery,
+  tabQuery,
+  tournamentsTabs,
   upcomingNotice,
   upcomingQuery,
   AS_TEMPLATE,
@@ -661,6 +663,7 @@ describe('requirementPatch', () => {
 
 describe('tabFromQuery', () => {
   it.each([
+    ['required', 'required'],
     ['templates', 'templates'],
     ['schedules', 'schedules'],
     ['upcoming', 'upcoming'],
@@ -669,6 +672,28 @@ describe('tabFromQuery', () => {
     [['schedules'], 'upcoming'],
   ] as const)('%j → %s', (q, tab) => {
     expect(tabFromQuery(q)).toBe(tab);
+  });
+});
+
+describe('the Tournaments tabs (#162)', () => {
+  it('lists Upcoming, Required events, Templates and Schedules, in that order', () => {
+    expect(tournamentsTabs(0).map((t) => [t.value, t.label])).toEqual([
+      ['upcoming', 'Upcoming'],
+      ['required', 'Required events'],
+      ['templates', 'Templates'],
+      ['schedules', 'Schedules'],
+    ]);
+  });
+
+  it('puts the count of required events needing attention on their tab, in its accessible name too', () => {
+    expect(tournamentsTabs(3)[1]).toEqual({ value: 'required', label: 'Required events', badge: '3', ariaLabel: 'Required events, 3 need attention' });
+    expect(tournamentsTabs(1)[1]!.ariaLabel).toBe('Required events, 1 needs attention');
+    expect(tournamentsTabs(0)[1]).toEqual({ value: 'required', label: 'Required events' });
+  });
+
+  it('keeps Upcoming out of the URL', () => {
+    expect(tabQuery({ tab: 'templates', from: 'x' }, 'upcoming')).toEqual({ from: 'x' });
+    expect(tabQuery({}, 'required')).toEqual({ tab: 'required' });
   });
 });
 

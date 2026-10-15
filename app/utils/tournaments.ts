@@ -459,11 +459,29 @@ export function requirementPatch(before: Requirement, form: RequirementFields): 
   return out as Partial<RequirementFields>;
 }
 
-export type TournamentsTab = 'upcoming' | 'templates' | 'schedules';
+export type TournamentsTab = 'upcoming' | 'required' | 'templates' | 'schedules';
 
 /** `?tab=`; anything else is Upcoming. */
 export function tabFromQuery(q: unknown): TournamentsTab {
-  return q === 'templates' || q === 'schedules' ? q : 'upcoming';
+  return q === 'required' || q === 'templates' || q === 'schedules' ? q : 'upcoming';
+}
+
+/** The route query with `tab` set; Upcoming, the default, is left out of the URL. */
+export function tabQuery(query: Record<string, unknown>, tab: TournamentsTab): Record<string, unknown> {
+  const { tab: _old, ...rest } = query;
+  return tab === 'upcoming' ? rest : { ...rest, tab };
+}
+
+/**
+ * The Tournaments tabs (#162; ADR-0010 decisions 10 and 12): Required events is its own tab, carrying the nav
+ * badge's count (cells at risk or worse) when there is any, in its accessible name as well.
+ */
+export function tournamentsTabs(attention: number): { value: TournamentsTab; label: string; badge?: string; ariaLabel?: string }[] {
+  const required =
+    attention > 0
+      ? { value: 'required' as const, label: 'Required events', badge: String(attention), ariaLabel: `Required events, ${attention} need${attention === 1 ? 's' : ''} attention` }
+      : { value: 'required' as const, label: 'Required events' };
+  return [{ value: 'upcoming', label: 'Upcoming' }, required, { value: 'templates', label: 'Templates' }, { value: 'schedules', label: 'Schedules' }];
 }
 
 /**
