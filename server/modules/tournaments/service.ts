@@ -321,10 +321,10 @@ export interface TournamentOptions {
   venues: { id: string; label: string; country: string | null; timeZone: string | null }[];
 }
 
-/** The play-tools reads this module makes, as one professor. */
 /** Where Upcoming's listings come from: the shared cache, a fresh read kept in it, or play-tools without the cache. */
 type ListingMode = 'cached' | 'refresh' | 'live';
 
+/** The play-tools reads this module makes, as one professor. */
 export type TournamentsGateway = Pick<PlayToolsGateway, 'listTournaments' | 'getTournament' | 'listTournamentParticipants' | 'listSeries' | 'listFormats' | 'listVenues'>;
 
 export interface TournamentsDeps {
