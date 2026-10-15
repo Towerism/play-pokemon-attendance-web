@@ -17,5 +17,6 @@ export async function refreshUpcoming(opts: { upstream?: boolean } = {}): Promis
     return fresh;
   }
   await refreshNuxtData(UPCOMING_KEY);
-  return useNuxtData<Upcoming>(UPCOMING_KEY).data.value!;
+  // With the Upcoming tab never shown (Create from the grid on another tab), nothing holds the key: read it directly.
+  return useNuxtData<Upcoming>(UPCOMING_KEY).data.value ?? (await $fetch<Upcoming>('/api/tournaments/upcoming'));
 }

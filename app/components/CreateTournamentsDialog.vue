@@ -15,6 +15,8 @@ const open = ref(true);
 const entries = ref<UpcomingEntry[]>([]);
 const sameDay = ref<UpcomingEntry[]>([]);
 const sentAt = ref<string | null>(null);
+/** Why the confirm is held back: an id the read doesn't list, or a retry the fresh read can't vouch for. */
+const blocked = ref<string | null>(null);
 const loading = ref(true);
 const loadError = ref<string | null>(null);
 const error = ref<string | null>(null);
@@ -25,7 +27,9 @@ const submissionId = ref<number | null>(null);
 const finished = ref(false);
 
 const shortNotice = computed(() => entries.value.filter((e) => isShortNotice(e.localDate, props.today) || serverShortNotice.value.includes(e.plannedId!)));
-const confirmLabel = computed(() => (props.retry ? 'Retry create' : shortNotice.value.length ? 'Create anyway' : 'Create in play-tools'));
+const confirmLabel = computed(() =>
+  props.retry ? (shortNotice.value.length ? 'Retry create anyway' : 'Retry create') : shortNotice.value.length ? 'Create anyway' : 'Create in play-tools',
+);
 
 watch(open, (o) => {
   if (!o) emit('close');
@@ -36,10 +40,13 @@ onMounted(async () => {
     // A retry reads play-tools fresh (not the 5-minute cache): its list decides whether a duplicate is risked.
     const upcoming = await refreshUpcoming({ upstream: !!props.retry });
     entries.value = props.plannedIds.map((id) => upcoming.tournaments.find((e) => e.plannedId === id)).filter((e): e is UpcomingEntry => !!e);
+    // Only what is listed here is sent: a tournament the read no longer shows is left for another look.
+    if (entries.value.length < props.plannedIds.length) blocked.value = 'Some of these tournaments changed meanwhile. Close this and look at Upcoming again.';
     if (props.retry && entries.value[0]) {
-      const ctx = retryContext(entries.value[0], upcoming.tournaments);
+      const ctx = retryContext(entries.value[0], upcoming.tournaments, upcoming.unread);
       sameDay.value = ctx.sameDay;
       sentAt.value = ctx.sentAt;
+      blocked.value = ctx.blocked ?? blocked.value;
     }
   } catch (err) {
     loadError.value = apiErrorMessage(err, 'Could not read play-tools.');
@@ -54,7 +61,7 @@ async function start() {
   try {
     const started = await $fetch<{ submissionId: number }>('/api/tournaments/create', {
       method: 'POST',
-      body: { plannedIds: props.plannedIds, acknowledgeShortNotice: shortNotice.value.length > 0, retryUnknown: !!props.retry },
+      body: { plannedIds: entries.value.map((e) => e.plannedId!), acknowledgeShortNotice: shortNotice.value.length > 0, retryUnknown: !!props.retry },
     });
     submissionId.value = started.submissionId;
   } catch (err) {
@@ -114,6 +121,7 @@ async function done(view: SubmissionView) {
           description="less than 7 days before it is held; the league is expected to sanction 7 days ahead."
         />
         <p class="text-xs text-muted">Each is created as its organizer, one at a time. A tournament already in play-tools is linked, not created again.</p>
+        <UAlert v-if="blocked" color="warning" variant="subtle" icon="i-lucide-circle-alert" :title="blocked" />
         <p v-if="error" class="text-sm text-error">{{ error }}</p>
       </div>
     </template>
@@ -124,7 +132,7 @@ async function done(view: SubmissionView) {
           v-if="!submissionId"
           icon="i-lucide-send"
           :color="retry ? 'warning' : 'primary'"
-          :disabled="loading || !!loadError || entries.length === 0"
+          :disabled="loading || !!loadError || !!blocked || entries.length === 0"
           :loading="starting"
           @click="start"
         >

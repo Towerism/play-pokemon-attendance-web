@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PeriodCoverage } from '../../shared/requirements/coverage';
 import type { Requirement } from '../../server/modules/tournaments/requirements';
-import type { Template } from '../../server/modules/tournaments/service';
+import type { Template, Upcoming } from '../../server/modules/tournaments/service';
 
 /**
  * Tournaments (ADR-0010 decision 10, architecture §8, #98): Required events on top, then Upcoming, Templates and
@@ -13,10 +13,21 @@ const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 
-const { data: coverage } = await useRequiredEvents();
-const timeZone = computed(() => coverage.value?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
-// The league's date: coverage's, else today in its time zone, never the browser's own date.
-const today = computed(() => coverage.value?.today ?? todayIn(timeZone.value, new Date()));
+const { data: coverage, error: coverageError } = await useRequiredEvents();
+// The league's time zone and date: coverage's, else Upcoming's, never the browser's own (a venue saved with a
+// missing zone takes the league's, and short notice counts from the league's date).
+const upcoming = useNuxtData<Upcoming>(UPCOMING_KEY).data;
+const zoneFromUpcoming = ref<string | null>(null);
+watch(
+  coverageError,
+  async (err) => {
+    if (!err || upcoming.value) return;
+    zoneFromUpcoming.value = (await $fetch<Upcoming>('/api/tournaments/upcoming').catch(() => null))?.timeZone ?? null;
+  },
+  { immediate: true },
+);
+const timeZone = computed(() => coverage.value?.timeZone ?? upcoming.value?.timeZone ?? zoneFromUpcoming.value);
+const today = computed(() => coverage.value?.today ?? (timeZone.value ? todayIn(timeZone.value, new Date()) : null));
 
 const TABS = [
   { value: 'upcoming', label: 'Upcoming' },
@@ -36,9 +47,10 @@ const planning = ref<{ templateId: number | null; date?: string; missingFor: Req
 const newTemplateFor = ref<{ requirement: Requirement; date: string } | null>(null);
 
 async function planOne(requirement: Requirement, period: PeriodCoverage) {
+  if (!today.value) return;
   try {
     const { templates } = await $fetch<{ templates: Template[] }>('/api/tournament-templates');
-    const defaults = planOneDefaults(requirement, period, templates, today.value);
+    const defaults = planOneDefaults(requirement, period, templates, today.value!);
     if (!defaults) return;
     planning.value = { templateId: defaults.template?.id ?? null, date: defaults.date, missingFor: defaults.template ? null : requirement };
   } catch (err) {
@@ -61,6 +73,8 @@ function templateSaved(t: Template) {
 
     <RequiredEventsGrid @plan="planOne" @create="(id) => (creating = { plannedIds: [id], retry: false })" />
 
+    <p v-if="!today || !timeZone" class="text-sm text-muted">Reading the league's time zone…</p>
+    <template v-else>
     <div class="space-y-4">
       <UTabs v-model="tab" :items="TABS" :content="false" class="w-full" />
       <UpcomingList
@@ -97,5 +111,6 @@ function templateSaved(t: Template) {
     <CreateTournamentsDialog v-if="creating" :planned-ids="creating.plannedIds" :retry="creating.retry" :today="today" @close="creating = null" />
     <EditTournamentDialog v-if="editing" :id="editing" :time-zone="timeZone" @close="editing = null" />
     <CancelTournamentDialog v-if="cancelling" :id="cancelling" @close="cancelling = null" />
+    </template>
   </div>
 </template>

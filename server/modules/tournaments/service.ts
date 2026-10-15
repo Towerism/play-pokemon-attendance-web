@@ -211,10 +211,10 @@ export interface TournamentsService {
   updatePlanned(leagueId: string, id: number, patch: PlannedPatch): { planned: UpcomingEntry; warnings: 'another_planned_at_time'[] };
   /**
    * Plans every schedule up to its horizon, then lists the planned tournaments and the league's play-tools ones
-   * whose local date is in the range, by start. Reads play-tools as each connected professor.
+   * whose local date is in the range, by start. Reads play-tools as each connected professor, through the 5-minute
+   * listing cache unless `refresh` (#98).
    * @throws TournamentsError `invalid_range`
    */
-  /** Planned and play-tools tournaments by date; listings come from the 5-minute cache unless `refresh`. */
   upcoming(leagueId: string, range: { from?: LocalDate; to?: LocalDate; refresh?: boolean }): Promise<Upcoming>;
   /**
    * A form's live choices as one professor: Custom and the premier series play-tools offers for the date (or

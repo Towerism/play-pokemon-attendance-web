@@ -219,11 +219,23 @@ export function groupByDate(entries: readonly UpcomingEntry[]): { date: LocalDat
  * The Retry create dialog's facts (ADR-0010 decision 5): when the earlier create was sent, and the organizer's
  * tournaments in play-tools that day, from a fresh read, so the organizer can see whether it landed.
  */
-export function retryContext(e: UpcomingEntry, all: readonly UpcomingEntry[]): { sentAt: string | null; sameDay: UpcomingEntry[] } {
+export function retryContext(
+  e: UpcomingEntry,
+  all: readonly UpcomingEntry[],
+  unread: Upcoming['unread'],
+): { sentAt: string | null; sameDay: UpcomingEntry[]; blocked: string | null } {
   const sameDay = all.filter(
     (x) => x !== e && x.localDate === e.localDate && (x.state === 'created' || x.state === 'upstream') && x.organizer?.playerId === e.organizer?.playerId,
   );
-  return { sentAt: e.lastAttemptAt, sameDay };
+  const unreadOrganizer = unread.find((u) => u.professor.playerId === e.organizer?.playerId);
+  // Without the organizer's listing, "None listed" would hide a create that landed.
+  const blocked =
+    e.state !== 'unknown'
+      ? 'It landed in play-tools: nothing to retry.'
+      : unreadOrganizer
+        ? `Couldn’t read ${professorName(unreadOrganizer.professor)}’s tournaments from play-tools, so a retry could make a duplicate. Try again later.`
+        : null;
+  return { sentAt: e.lastAttemptAt, sameDay, blocked };
 }
 
 /** Why Upcoming shows no play-tools tournaments, and one warning per professor who couldn't be read. */

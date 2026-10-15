@@ -11,8 +11,12 @@ const emit = defineEmits<{ close: [] }>();
 const toast = useToast();
 
 const open = ref(true);
+/** Eight weeks ahead: a weekly schedule's default horizon (ADR-0010 decision 3). */
 const date = ref(addDays(props.today, 56));
 const preview = ref<CreateThroughPreview | null>(null);
+/** The date the shown preview is for: the confirm sends this one, never a date typed since. */
+const previewedDate = ref<string | null>(null);
+let previewSeq = 0;
 const busy = ref(false);
 const error = ref<string | null>(null);
 const submissionId = ref<number | null>(null);
@@ -22,28 +26,38 @@ const view = computed(() => (preview.value ? createThroughView(preview.value) : 
 watch(open, (o) => {
   if (!o) emit('close');
 });
-watch(date, () => (preview.value = null));
+watch(date, () => {
+  previewSeq++;
+  preview.value = null;
+  previewedDate.value = null;
+});
 
 async function showPreview() {
+  const seq = ++previewSeq;
+  const asked = date.value;
   busy.value = true;
   error.value = null;
   try {
-    preview.value = await $fetch<CreateThroughPreview>(`/api/tournament-schedules/${props.schedule.id}/create-through`, { query: { date: date.value } });
+    const res = await $fetch<CreateThroughPreview>(`/api/tournament-schedules/${props.schedule.id}/create-through`, { query: { date: asked } });
+    // A date changed while the live read ran makes this answer stale: it is dropped, never shown.
+    if (seq !== previewSeq) return;
+    preview.value = res;
+    previewedDate.value = asked;
   } catch (err) {
-    error.value = apiErrorMessage(err, 'Could not preview the tournaments.');
+    if (seq === previewSeq) error.value = apiErrorMessage(err, 'Could not preview the tournaments.');
   } finally {
-    busy.value = false;
+    if (seq === previewSeq) busy.value = false;
   }
 }
 
 async function create() {
-  if (!preview.value || !view.value?.confirmLabel) return;
+  if (!preview.value || !previewedDate.value || !view.value?.confirmLabel) return;
   busy.value = true;
   error.value = null;
   try {
     const res = await $fetch<{ submissionId: number }>(`/api/tournament-schedules/${props.schedule.id}/create-through`, {
       method: 'POST',
-      body: { date: date.value, acknowledgeShortNotice: view.value.shortNotice > 0 },
+      body: { date: previewedDate.value, acknowledgeShortNotice: view.value.shortNotice > 0 },
     });
     submissionId.value = res.submissionId;
   } catch (err) {
@@ -51,6 +65,13 @@ async function create() {
   } finally {
     busy.value = false;
   }
+}
+
+async function useSuggested(through: string) {
+  date.value = through;
+  // Let the date's watcher clear the old preview before reading the new one.
+  await nextTick();
+  await showPreview();
 }
 
 async function done(job: SubmissionView) {
@@ -73,7 +94,7 @@ async function done(job: SubmissionView) {
         <template v-if="preview && view">
           <UAlert v-if="view.disabledReason" color="warning" variant="subtle" icon="i-lucide-circle-alert" :title="view.disabledReason">
             <template v-if="view.suggestedThrough" #actions>
-              <UButton size="xs" variant="outline" @click="(date = view.suggestedThrough!), showPreview()">Use {{ dayLabel(view.suggestedThrough) }}</UButton>
+              <UButton size="xs" variant="outline" @click="useSuggested(view.suggestedThrough!)">Use {{ dayLabel(view.suggestedThrough) }}</UButton>
             </template>
           </UAlert>
           <ul v-if="preview.tournaments.length" aria-label="Tournaments to create" class="space-y-1">

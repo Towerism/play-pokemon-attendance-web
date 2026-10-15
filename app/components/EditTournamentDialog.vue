@@ -101,6 +101,8 @@ function body() {
 async function showPreview() {
   busy.value = true;
   error.value = null;
+  // Clearing overrides is chosen on the preview that shows them, never carried over from an earlier one.
+  clearShadowing.value = false;
   try {
     preview.value = await $fetch<EditPreview>(`/api/tournaments/${props.id}/edit/preview`, { method: 'POST', body: body() });
     kept.value = new Set(allEntries.value.map((e) => e.key));
@@ -137,7 +139,7 @@ async function save() {
         ...body(),
         excluded: excludedKeys(allEntries.value, kept.value),
         acknowledgeShortNotice: preview.value.shortNotice,
-        clearShadowingOverrides: clearShadowing.value,
+        clearShadowingOverrides: clearShadowing.value && !!preview.value.template?.shadowedBy.length,
       },
     });
     if (res.submissionId !== null) {

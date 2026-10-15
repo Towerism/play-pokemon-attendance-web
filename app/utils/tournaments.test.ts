@@ -359,7 +359,20 @@ describe('retryContext', () => {
     const otherOrganizer = entry({ plannedId: null, state: 'upstream', tournamentId: 'g3', localDate: '2026-10-30', organizer: { playerId: '9999992', name: 'Brock', connected: true, needsReconnect: false } });
     const otherDay = entry({ plannedId: null, state: 'upstream', tournamentId: 'g4', localDate: '2026-10-31' });
     const planned = entry({ plannedId: 7, localDate: '2026-10-30' });
-    expect(retryContext(unknown, [unknown, sameDay, linked, otherOrganizer, otherDay, planned])).toEqual({ sentAt: '2026-10-14T17:05:00.000Z', sameDay: [sameDay, linked] });
+    expect(retryContext(unknown, [unknown, sameDay, linked, otherOrganizer, otherDay, planned], [])).toEqual({
+      sentAt: '2026-10-14T17:05:00.000Z',
+      sameDay: [sameDay, linked],
+      blocked: null,
+    });
+  });
+
+  it('blocks the retry when the organizer’s tournaments couldn’t be read, or the fresh read linked it', () => {
+    const unknown = entry({ plannedId: 5, state: 'unknown', lastAttemptAt: '2026-10-14T17:05:00.000Z' });
+    const unread = [{ professor: { playerId: '9999991', name: 'Olive' }, code: 'unavailable', message: 'down' }];
+    expect(retryContext(unknown, [unknown], unread).blocked).toBe('Couldn’t read Olive’s tournaments from play-tools, so a retry could make a duplicate. Try again later.');
+    expect(retryContext(unknown, [unknown], [{ ...unread[0]!, professor: { playerId: '9999992', name: 'Brock' } }]).blocked).toBeNull();
+    const landed = { ...unknown, state: 'created' as const, tournamentId: 'g1' };
+    expect(retryContext(landed, [landed], []).blocked).toBe('It landed in play-tools: nothing to retry.');
   });
 });
 

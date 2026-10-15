@@ -22,7 +22,7 @@ const idOf = (e: UpcomingEntry) => String(e.plannedId ?? e.tournamentId);
 
 // A refresh can take `create` away (the row is being created): it leaves the selection.
 watch(upcoming, (u) => {
-  const creatable = new Set((u?.tournaments ?? []).filter((e) => e.actions.includes('create')).map((e) => e.plannedId!));
+  const creatable = new Set((u?.tournaments ?? []).filter((e) => rowActions(e).actions.includes('create')).map((e) => e.plannedId!));
   selected.value = new Set([...selected.value].filter((id) => creatable.has(id)));
 });
 
@@ -66,7 +66,8 @@ async function download(e: UpcomingEntry) {
     a.href = url;
     a.download = downloadName(res.headers.get('content-disposition'), e.displayId);
     a.click();
-    URL.revokeObjectURL(url);
+    // Revoked once the browser has started the download, not before.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (err) {
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not download the TDF.') });
   } finally {
@@ -116,7 +117,7 @@ async function download(e: UpcomingEntry) {
           <li v-for="e in g.entries" :key="keyOf(e)" :aria-label="name(e)" class="rounded border border-default p-3 text-sm space-y-2 min-w-0">
             <div class="flex items-start gap-2">
               <UCheckbox
-                v-if="e.actions.includes('create')"
+                v-if="rowActions(e).actions.includes('create')"
                 :model-value="selected.has(e.plannedId!)"
                 :aria-label="`Select ${name(e)}`"
                 class="pt-0.5"

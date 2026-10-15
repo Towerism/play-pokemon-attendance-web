@@ -50,17 +50,21 @@ watch(open, (o) => {
   if (!o) emit('close');
 });
 
+let optionsSeq = 0;
 async function loadOptions() {
   if (!organizer.value) return;
+  const seq = ++optionsSeq;
   loadingOptions.value = true;
   optionsError.value = null;
+  options.value = null;
   try {
-    options.value = await $fetch<TournamentOptions>('/api/tournament-templates/options', { query: { professor: organizer.value, date: choicesDate.value } });
+    const res = await $fetch<TournamentOptions>('/api/tournament-templates/options', { query: { professor: organizer.value, date: choicesDate.value } });
+    // A slower answer for an earlier organizer or date never replaces the current one.
+    if (seq === optionsSeq) options.value = res;
   } catch (err) {
-    options.value = null;
-    optionsError.value = apiErrorMessage(err, 'Could not read play-tools’ choices.');
+    if (seq === optionsSeq) optionsError.value = apiErrorMessage(err, 'Could not read play-tools’ choices.');
   } finally {
-    loadingOptions.value = false;
+    if (seq === optionsSeq) loadingOptions.value = false;
   }
 }
 watch([organizer, choicesDate], () => void loadOptions(), { immediate: true });

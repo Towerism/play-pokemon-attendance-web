@@ -163,7 +163,7 @@ describe('Upcoming’s listing cache (#98)', () => {
     expect(fresh.tournaments.map((t) => t.tournamentId)).toContain('late-cup');
   });
 
-  it.each(['yes', '', 'true'])('refuses refresh=%j with 400, before any upstream call', async (value) => {
+  it.each(['yes', '', 'true', '1&refresh=1'])('refuses refresh=%j with 400, before any upstream call', async (value) => {
     const res = await api(`/tournaments/upcoming?refresh=${value}`);
     expect(res.status).toBe(400);
     expect(playToolsCalls()).toEqual([]);
