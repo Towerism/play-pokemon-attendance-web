@@ -123,14 +123,10 @@ function done(view: SubmissionView) {
 </script>
 
 <template>
-  <UModal v-model:open="open" title="Upload results" :description="`${label} · ${dayLabel(date)}`" :dismissible="!submissionId || finished">
+  <UModal v-model:open="open" title="Upload results" :description="`${label} · ${dayLabel(current.tournament.date)}`" :dismissible="!submissionId || finished">
     <template #body>
       <TournamentJobProgress v-if="submissionId" :submission-id="submissionId" @finished="done" />
       <div v-else class="space-y-4 text-sm">
-        <p class="break-words">
-          {{ current.tournament.name ?? label }}<template v-if="current.tournament.displayId"> · {{ current.tournament.displayId }}</template> ·
-          {{ dayLabel(current.tournament.date) }}
-        </p>
         <p class="break-words text-muted">{{ current.file.filename }} · {{ players(current.file.playerCount) }}</p>
 
         <form v-if="current.needsOrganizerFullName" class="space-y-2" @submit.prevent="saveName">

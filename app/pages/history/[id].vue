@@ -171,6 +171,10 @@ async function retry() {
 
       <!-- A tournament job lists tournaments, each with its support details; it has no players and no undo. -->
       <TournamentItems v-if="isTournamentJob(submission.kind)" :items="submission.tournamentItems" />
+      <!-- A results upload is sent again only from its card's dialog (ADR-0011 decision 5), never retried from here. -->
+      <UButton v-if="!liveId && uploadAgainOffered(submission)" :to="`/?date=${submission.date}`" variant="outline" icon="i-lucide-upload">
+        Upload again on This week
+      </UButton>
 
       <div v-if="!liveId && !isTournamentJob(submission.kind)" class="flex flex-wrap items-center gap-2">
         <UButton v-if="submission.undoable" color="error" variant="soft" icon="i-lucide-undo-2" @click="undoOpen = true">

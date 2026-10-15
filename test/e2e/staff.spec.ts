@@ -1,6 +1,6 @@
 import type { Locator, Page, Request } from '@playwright/test';
 import { type FakePokemon, fakeRecord, fakeTournament } from '../server/fake-pokemon';
-import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, connectOverApi, expect, finishedStatus, loggedInUrl, quietRequiredEvents, test } from './fixtures';
+import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, connectOverApi, expect, finishedStatus, loggedInUrl, quietRequiredEvents, quietUpcoming, test } from './fixtures';
 
 // This week → Staff (ADR-0007): one card per tournament the league runs on the
 // date. The client must never offer someone the app may not assign (the
@@ -233,11 +233,12 @@ test('when play-tools fails, This week still works and Try again brings the staf
   fake.failOnce.set('/services/core/activities', 502);
   // The one failure is for the staff read, not the nav badge's.
   await quietRequiredEvents(page);
+  await quietUpcoming(page);
   const reads = spyStaffReads(page);
   await page.goto(`/?date=${TUESDAY}`);
 
-  const staff = page.getByRole('region', { name: 'Staff', exact: true });
-  await expect(staff.getByRole('button', { name: 'Try again' })).toBeVisible();
+  const staff = page.getByRole('region', { name: 'Tournaments', exact: true });
+  await expect(staff.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
   // One read per load: a failure is not resent to play-tools behind the organizer's back.
   expect(reads).toHaveLength(1);
   await expect(page.getByRole('table').first()).toContainText('Walk In');
@@ -247,7 +248,7 @@ test('when play-tools fails, This week still works and Try again brings the staf
   await expect(submit).not.toContainText(/staff/i);
   await submit.getByRole('button', { name: 'Cancel' }).click();
 
-  await staff.getByRole('button', { name: 'Try again' }).click();
+  await staff.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(staffCard(page).getByRole('heading', { name: CUP_LABEL })).toBeVisible();
 
   // No tournament that day.
@@ -270,7 +271,7 @@ async function holdResponses(page: Page, url: string): Promise<() => void> {
 test("changing the date shows the tournaments loading, never the previous date's cards", async ({ page, connected: _connected, fake }) => {
   cupTonight(fake);
   const NEXT_WEEK = '2026-10-20';
-  const staff = page.getByRole('region', { name: 'Staff', exact: true });
+  const staff = page.getByRole('region', { name: 'Tournaments', exact: true });
   const loading = staff.getByRole('status');
   const releaseTuesday = await holdResponses(page, `**/api/sessions/${TUESDAY}/staff`);
   await page.goto(`/?date=${TUESDAY}`);
@@ -300,12 +301,12 @@ test("another professor's refused login hides only their tournaments: the Staff 
   fake.revokeChain(BROCK);
   await page.goto(`/?date=${TUESDAY}`);
 
-  const staff = page.getByRole('region', { name: 'Staff', exact: true });
+  const staff = page.getByRole('region', { name: 'Tournaments', exact: true });
   await expect(staff.getByText('Reconnect Brock Harrison in Settings to see their tournaments.')).toBeVisible();
   await expect(staff.getByRole('link', { name: 'Open Settings' })).toBeVisible();
   await expect(staffCard(page).getByText('Organized by Professor 9999991')).toBeVisible();
-  // Brock doesn't submit attendance, so the global banner stays down (#66).
-  await expect(page.getByText(/no longer accepts/)).toHaveCount(0);
+  // Brock doesn't submit attendance, so the global banner stays down (#66). (The required-events banner names his read.)
+  await expect(page.getByText(/Reconnect before submitting attendance/)).toHaveCount(0);
 });
 
 test("every professor's tournaments load on This week, each staffed as its organizer", async ({ page, connected, fake }) => {
@@ -317,14 +318,15 @@ test("every professor's tournaments load on This week, each staffed as its organ
   fake.failOnce.set(`/services/core/activities@${BROCK}`, 502);
   // The one failure is for the staff read, not the nav badge's.
   await quietRequiredEvents(page);
+  await quietUpcoming(page);
   await page.goto(`/?date=${TUESDAY}`);
 
-  const staff = page.getByRole('region', { name: 'Staff', exact: true });
+  const staff = page.getByRole('region', { name: 'Tournaments', exact: true });
   await expect(staffCard(page).getByText('Organized by Professor 9999991')).toBeVisible();
   const warning = staff.getByText("Couldn't read Brock Harrison's tournaments from play-tools.");
   await expect(warning).toBeVisible();
   const reread = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/sessions/${TUESDAY}/staff`);
-  await staff.getByRole('button', { name: 'Try again' }).click();
+  await staff.getByRole('button', { name: 'Try again', exact: true }).click();
   await reread;
   await expect(warning).toHaveCount(0);
   const brocks = staffCard(page, BROCK_CUP_LABEL);
@@ -352,7 +354,7 @@ test('a tournament past its window, or gone from play-tools, offers no staff act
   await expect(june).toContainText('Read-only: more than 90 days past its start.');
   await expect(june).toContainText('Old Judge');
   await expect(june.getByRole('combobox')).toHaveCount(0);
-  await expect(june.getByRole('button')).toHaveCount(0);
+  await expect(june.getByRole('group', { name: 'Staff' }).getByRole('button')).toHaveCount(0);
 
   cupTonight(fake);
   await wantStaff(connected, ASH_LOCAL, 'judge', 'Ash Local');
@@ -362,6 +364,7 @@ test('a tournament past its window, or gone from play-tools, offers no staff act
   await expect(gone).toContainText('No longer listed in play-tools');
   await expect(gone).toContainText('Ash Local');
   await expect(gone.getByRole('combobox')).toHaveCount(0);
+  // Nothing at all: no staff actions, no menu, and no Results for a tournament play-tools no longer lists.
   await expect(gone.getByRole('button')).toHaveCount(0);
 });
 

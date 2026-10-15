@@ -74,6 +74,16 @@ export async function quietRequiredEvents(page: Page): Promise<void> {
   );
 }
 
+/**
+ * Answers This week's Upcoming read for the date (its cards' status and planned rows, #99) with nothing. That read lists
+ * play-tools too, so a journey that injects one listing failure for the Staff read uses this to keep it from racing.
+ */
+export async function quietUpcoming(page: Page): Promise<void> {
+  await page.route('**/api/tournaments/upcoming*', (route) =>
+    route.fulfill({ json: { timeZone: LEAGUE_TZ, from: leagueDay(0), to: leagueDay(0), tournaments: [], upstream: 'read', unread: [] } }),
+  );
+}
+
 /** No horizontal page scroll at the current viewport (mobile-first, architecture §8). */
 export async function expectNoHorizontalScroll(page: Page): Promise<void> {
   const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));

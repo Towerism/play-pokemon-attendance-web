@@ -7,6 +7,7 @@ const props = defineProps<{ date: string; tournament: TournamentStaffView; roles
 const emit = defineEmits<{ changed: [] }>();
 const toast = useToast();
 
+const headingId = useId();
 const editable = computed(() => props.tournament.editable && !props.tournament.missing && !props.tournament.unavailable);
 
 const STATE: Record<StaffAssignmentView['state'], { label: string; color: 'neutral' | 'success' | 'error' | 'warning' }> = {
@@ -58,8 +59,8 @@ async function remove(a: StaffAssignmentView) {
 </script>
 
 <template>
-  <div class="space-y-3">
-    <h4 class="font-medium">Staff</h4>
+  <div role="group" :aria-labelledby="headingId" class="space-y-3">
+    <h4 :id="headingId" class="font-medium">Staff</h4>
 
     <ul v-if="rows.length" aria-label="Wanted staff" class="divide-y divide-default">
       <li v-for="a in rows" :key="a.id" class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
