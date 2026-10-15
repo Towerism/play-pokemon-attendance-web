@@ -446,6 +446,38 @@ describe('never sent again on its own', () => {
     expect(r.sentOnBoot).toBe(1);
   });
 
+  it('keeps an outcome the upload already recorded when the crash came just after it', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let arrived!: () => void;
+    const arrival = new Promise<void>((r) => (arrived = r));
+    const p = await preview();
+    onSend = (what) => {
+      if (what === 'validate') {
+        arrived();
+        return held;
+      }
+    };
+    const { submissionId } = await service.uploadResults(L, {
+      date: DATE,
+      tournamentId: GUID,
+      uploadId: p.uploadId,
+      body: { importAttendance: false, acknowledgedWarnings: p.fingerprint! },
+      startedBy: 'o',
+    });
+    await arrival;
+    // The validate answered with errors and the upload recorded it; the process died before the item did.
+    database.sqlite
+      .prepare("update tournament_result_upload set state = 'not_accepted', upstream_upload_id = 'upload-1' where id = ?")
+      .run(p.uploadId);
+    const booted = build();
+    booted.recoverInterrupted();
+    expect(booted.get(L, submissionId).tournamentItems[0]!.outcome).toBe('not_accepted');
+    expect(uploadRow(p.uploadId).state).toBe('not_accepted');
+    onSend = undefined;
+    release();
+  });
+
   it('after confirm went out: processing, settled on read', async () => {
     const r = await crashAt('confirm');
     expect(r.job.tournamentItems[0]!.outcome).toBe('processing');

@@ -15,7 +15,7 @@ import type { ApplyBody, CancelBody, EditTarget } from '../../../shared/schemas/
 import type { CancelItem, CancelRead, TournamentCancelling } from '../tournaments/cancelling';
 import type { EditItem, ItemRead, TournamentEditing } from '../tournaments/editing';
 import type { CreatePlan, TournamentCreation, TournamentsService } from '../tournaments/service';
-import type { ConfirmPlan, RemovalPlan, TournamentResults } from '../tournaments/results';
+import type { ConfirmPlan, RemovalPlan, TournamentResults, UploadState } from '../tournaments/results';
 import type { ResultsConfirmBody } from '../../../shared/schemas/results';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
@@ -2616,6 +2616,16 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     const upload = r.peek(row.resultsUploadId);
     if (upload?.state === 'processing') {
       setTournamentItem(row.id, item.position, { outcome: 'processing' });
+    } else if (upload && upload.state !== 'sending' && upload.state !== 'previewed') {
+      // The upload recorded how it ended just before the crash: the item follows it.
+      const settled: Partial<Record<UploadState, TournamentItemOutcome>> = {
+        not_accepted: 'not_accepted',
+        warnings_changed: 'warnings_changed',
+        validate_unknown: 'validate_unknown',
+        complete: 'uploaded',
+        failed: 'failed',
+      };
+      setTournamentItem(row.id, item.position, { outcome: settled[upload.state] ?? 'failed', errorCode: upload.errorCode });
     } else if (item.sentAt && !upload?.upstreamUploadId) {
       setTournamentItem(row.id, item.position, {
         outcome: 'validate_unknown',
