@@ -27,6 +27,9 @@
   one-off **New tournament** may change any of its template's details but the organizer and the game (decision 4), and
   Required events moves from the top of Tournaments to its own tab, with the banner on the other tabs (decisions 10
   and 12). See [Update (#162)](#update-162-one-offs-change-any-detail-required-events-gets-a-tab).
+- Updated: 2026-10-15 ([#125](https://github.com/Towerism/play-pokemon-attendance-web/issues/125), building decision 5's
+  "when skipped"): a skipped `unknown` row is flagged and held until it is unskipped, linked on read while staying
+  skipped, and cancellable once linked. See [Update (#125)](#update-125-skipping-a-create-that-may-have-landed).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
@@ -818,6 +821,29 @@ periods pushed the tabs below the fold.
   place (Update #91), and covers no requirement; coverage then shows the period missing.
 - (−) Edit…'s **Also clear these overrides** (opt-in, previewed) can clear a one-off's overrides of the fields it
   carries, as for any planned row. The name isn't carried unless ticked.
+
+## Update (#125): skipping a create that may have landed
+
+Building decision 5's "when skipped" (an `unknown` tournament skipped locally is still linked if it later appears)
+settled what it left open:
+
+1. **Skip is offered on an `unknown` row**, and only skip: `PATCH {skipped: true}`, with nothing sent. Any other
+   change to it stays `not_editable`.
+2. **The row remembers it.** `planned_tournament.skipped_while_unknown` is set by that skip. A *held* skipped row is
+   `skipped` with the flag set. `last_attempt_at` can't tell it apart, since a refused create also had a `POST` sent.
+3. **It is held like an `unknown` row** until it is unskipped. Replanning never deletes or moves it (it is shown as
+   no longer in the schedule when it doesn't fit), and its occurrence isn't planned again. **Edit…** is refused
+   (`not_editable`), and a schedule-wide edit leaves it out (`skipped_while_unknown`) and holds what it resolves to
+   (Update #93 item 7). Its date, time and series can't be changed, since the create may land under them.
+4. **Linked on read, staying skipped.** Every read that links `unknown` rows also links held ones, by the same
+   adoption. A linked held row keeps `skipped` and shows "In play-tools, skipped here", with **Cancel…** (Update #94
+   item 5). It is never cancelled automatically. Before it is linked, Cancel is `not_editable`, as for `unknown`.
+5. **Unskipping** gives `created` when the row was linked meanwhile, else `unknown` again (with **Retry create**),
+   and clears the flag.
+6. **The link is written as the row is now.** Adoption reads a candidate's details before writing, and the row can
+   change meanwhile. The write checks the row again with no await in between: `unknown` becomes `created`, a held
+   row stays `skipped`, anything else (a job took it, or it was linked) is left alone, and a tournament another row
+   took meanwhile isn't linked to a second one, so the read doesn't fail on the unique index.
 
 ## Consequences
 

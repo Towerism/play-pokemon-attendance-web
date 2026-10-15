@@ -200,11 +200,32 @@ describe('a create that may have landed (#100)', () => {
 
     expect(job.status).toBe('failed');
     expect(job.tournamentItems[0]).toMatchObject({ outcome: 'unknown', support: { action: 'create', status: 500, league: { displayId: 'L5012' } } });
-    expect(await entry(id)).toMatchObject({ state: 'unknown', lastAttemptAt: expect.any(String), actions: ['retry_create'] });
+    expect(await entry(id)).toMatchObject({ state: 'unknown', lastAttemptAt: expect.any(String), actions: ['skip', 'retry_create'] });
 
     fake.land();
     expect(await entry(id, { refresh: true })).toMatchObject({ state: 'created', tournamentId: expect.stringMatching(/^t-/) });
     expect(creates()).toHaveLength(1);
+  });
+
+  it('can be skipped, is linked once it lands while staying skipped here, and can then be cancelled (#125)', async () => {
+    const id = await planned(await template(), day(27));
+    fake.createLandsLate = true;
+    await finished(await post('/tournaments/create', { plannedIds: [id] }));
+    const patch = (json: unknown) => api(`/planned-tournaments/${id}`, { method: 'PATCH', json });
+
+    expect((await patch({ localDate: day(28) })).status).toBe(409);
+    const skipped = await patch({ skipped: true });
+    expect(skipped.status).toBe(200);
+    expect((await body<{ planned: Entry & { skippedWhileUnknown: boolean } }>(skipped)).planned).toMatchObject({ state: 'skipped', skippedWhileUnknown: true, actions: ['unskip'] });
+    const moved = await patch({ startTime: '13:00' });
+    expect([moved.status, await code(moved)]).toEqual([409, 'not_editable']);
+
+    fake.requests.length = 0;
+    fake.land();
+    expect(await entry(id, { refresh: true })).toMatchObject({ state: 'skipped', tournamentId: expect.stringMatching(/^t-/), actions: ['unskip'] });
+    expect(fake.requests.filter((r) => r.method !== 'GET')).toEqual([]);
+    expect(creates()).toEqual([]);
+    expect((await api(`/tournaments/${id}/cancel`)).status).toBe(200);
   });
 
   it('Retry create needs confirming, then adopts the late tournament without a second POST', async () => {

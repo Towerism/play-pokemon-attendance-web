@@ -284,6 +284,7 @@ function entry(overrides: Partial<UpcomingEntry> = {}): UpcomingEntry {
     upstreamStatus: null,
     errorCode: null,
     lastAttemptAt: null,
+    skippedWhileUnknown: false,
     tdfAvailable: false,
     actions: ['create', 'skip'],
     ...overrides,
@@ -295,6 +296,8 @@ describe('entryStatus', () => {
     [{ state: 'planned' }, 'Planned', 'neutral'],
     [{ state: 'skipped' }, 'Skipped', 'neutral'],
     [{ state: 'skipped', tournamentId: 'g1' }, 'In play-tools, skipped here', 'warning'],
+    [{ state: 'skipped', skippedWhileUnknown: true }, 'Skipped, may be in play-tools', 'warning'],
+    [{ state: 'skipped', skippedWhileUnknown: true, tournamentId: 'g1' }, 'In play-tools, skipped here', 'warning'],
     [{ state: 'creating' }, 'Creating…', 'info'],
     [{ state: 'failed', errorCode: 'refused' }, 'Create failed (refused)', 'error'],
     [{ state: 'failed' }, 'Create failed', 'error'],
@@ -317,7 +320,9 @@ describe('rowActions', () => {
     ['skipped', entry({ state: 'skipped', actions: ['unskip'] }), ['unskip', 'edit']],
     ['skipped here but in play-tools', entry({ state: 'skipped', tournamentId: 'g1', actions: [] }), ['edit', 'cancel']],
     ['creating', entry({ state: 'creating', actions: [] }), []],
-    ['unknown', entry({ state: 'unknown', actions: ['retry_create'] }), ['retry_create']],
+    ['unknown', entry({ state: 'unknown', actions: ['skip', 'retry_create'] }), ['skip', 'retry_create']],
+    ['skipped while it may have been created', entry({ state: 'skipped', skippedWhileUnknown: true, actions: ['unskip'] }), ['unskip']],
+    ['skipped while it may have been created, then linked', entry({ state: 'skipped', skippedWhileUnknown: true, tournamentId: 'g1', actions: ['unskip'] }), ['unskip', 'cancel']],
     ['failed', entry({ state: 'failed', actions: ['create', 'skip'] }), ['create', 'skip', 'edit']],
     ['created', entry({ state: 'created', tournamentId: 'g1', actions: [], upstreamStatus: 'sanctioned' }), ['edit', 'cancel']],
     ['created with results', entry({ state: 'created', tournamentId: 'g1', actions: [], upstreamStatus: 'complete', tdfAvailable: true }), ['edit', 'download']],
@@ -333,6 +338,10 @@ describe('rowActions', () => {
     const gone = entry({ organizer: { playerId: '9999992', name: null, connected: false, needsReconnect: false } });
     expect(rowActions(gone)).toEqual({ actions: ['skip'], organizerNote: 'Connect Professor 9999992’s Pokémon account in Settings to change this tournament.', settings: true });
     expect(rowActions(entry({ organizer: null }))).toMatchObject({ actions: ['skip'], settings: true });
+    const unknown = entry({ state: 'unknown', actions: ['skip'], organizer: { playerId: '9999992', name: null, connected: false, needsReconnect: false } });
+    expect(rowActions(unknown).actions).toEqual(['skip']);
+    const held = entry({ state: 'skipped', skippedWhileUnknown: true, tournamentId: 'g1', actions: ['unskip'], organizer: null });
+    expect(rowActions(held).actions).toEqual(['unskip']);
   });
 });
 
