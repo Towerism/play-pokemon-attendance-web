@@ -7,6 +7,12 @@ export type PlannedRowState = 'planned' | 'skipped' | 'creating' | 'created' | '
 /** Rows that haven't reached play-tools and no job holds: only these are ever replanned (ADR-0010 decision 4, #100). */
 export const REPLANNABLE: ReadonlySet<PlannedRowState> = new Set(['planned', 'skipped', 'failed']);
 
+/** Skipped while its create may have landed (#125): held like an `unknown` row until unskipped, linked on read. */
+export const heldSkipped = (r: { state: PlannedRowState; skippedWhileUnknown?: boolean }) => r.state === 'skipped' && r.skippedWhileUnknown === true;
+
+/** Only these rows are replanned: replannable states, less a held skipped row. */
+export const replannable = (r: { state: PlannedRowState; skippedWhileUnknown?: boolean }) => REPLANNABLE.has(r.state) && !heldSkipped(r);
+
 export interface PlanSlot {
   position: number;
   templateId: number;
@@ -25,6 +31,8 @@ export interface PlanRow {
   state: PlannedRowState;
   /** A date or time set on the row itself sticks across replans. */
   overrides: { localDate?: LocalDate; startTime?: string };
+  /** Skipped while its create may have landed (#125): held like an `unknown` row. */
+  skippedWhileUnknown?: boolean;
 }
 
 export interface PlanInput {
@@ -86,12 +94,12 @@ export function planSchedule(input: PlanInput): Plan {
   for (const r of input.rows) {
     existing.add(`${r.occurrenceDate}#${r.slotPosition}`);
     if (r.occurrenceDate < windowStart) continue;
-    const replannable = REPLANNABLE.has(r.state);
+    const free = replannable(r);
     if (!fits(r)) {
-      (replannable ? plan.delete : plan.notInSchedule).push(r.id);
+      (free ? plan.delete : plan.notInSchedule).push(r.id);
       continue;
     }
-    if (!replannable) continue;
+    if (!free) continue;
     const slot = slots.get(r.slotPosition)!;
     const want = {
       templateId: slot.templateId,

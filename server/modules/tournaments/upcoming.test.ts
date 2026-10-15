@@ -75,6 +75,7 @@ describe('Upcoming with play-tools’ tournaments', () => {
       upstreamStatus: 'sanctioned',
       errorCode: null,
       lastAttemptAt: null,
+      skippedWhileUnknown: false,
       tdfAvailable: false,
       actions: [],
     });

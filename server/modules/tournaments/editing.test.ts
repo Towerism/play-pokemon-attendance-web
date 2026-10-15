@@ -158,6 +158,18 @@ describe('the edit form', () => {
     await expect(service.editForm(L, planned(rows[1]!.id))).rejects.toMatchObject({ code: 'not_editable', details: { state } });
   });
 
+  it.each([
+    ['not linked', 'null'],
+    ['linked', `'${guid(1)}'`],
+  ])('refuses a row skipped while its create may have landed (%s), until it is unskipped (#125)', async (_, tournamentId) => {
+    const { rows } = await weekly();
+    setRow(rows[1]!.id, `state = 'skipped', skipped_while_unknown = 1, tournament_id = ${tournamentId}`);
+    const refused = { code: 'not_editable', details: { state: 'skipped', skippedWhileUnknown: true } };
+    await expect(service.editForm(L, planned(rows[1]!.id))).rejects.toMatchObject(refused);
+    await expect(service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }))).rejects.toMatchObject(refused);
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'New' } }))).rejects.toMatchObject(refused);
+  });
+
   it('marks a cancelled or old tournament as locked', async () => {
     const { rows } = await weekly();
     inPlayTools(rows[1]!.id, 1, { applicationState: 'cancelled' });
@@ -359,6 +371,20 @@ describe('applying locally', () => {
 
     expect(plan.items.map((i) => i.plannedId)).toEqual([rows[1]!.id]);
     expect((await service.editForm(L, planned(rows[3]!.id))).values.venue).toEqual(VENUE);
+    expect((await service.editForm(L, planned(rows[4]!.id))).values.venue).toEqual(LIBRARY);
+  });
+
+  it('leaves a row skipped while its create may have landed out, as it was (#125)', async () => {
+    const { rows } = await weekly();
+    const held = rows[3]!.id;
+    setRow(held, "state = 'skipped', skipped_while_unknown = 1");
+
+    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ venue: LIBRARY }, { scope: 'later' }));
+    expect(preview.leftOut).toEqual([{ entry: expect.objectContaining({ plannedId: held }), reason: 'skipped_while_unknown' }]);
+    await apply(planned(rows[1]!.id), { changes: { venue: LIBRARY }, scope: 'later' });
+
+    setRow(held, "state = 'planned', skipped_while_unknown = 0");
+    expect((await service.editForm(L, planned(held))).values.venue).toEqual(VENUE);
     expect((await service.editForm(L, planned(rows[4]!.id))).values.venue).toEqual(LIBRARY);
   });
 

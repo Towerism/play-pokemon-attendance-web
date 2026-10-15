@@ -1,0 +1,1 @@
+ALTER TABLE `planned_tournament` ADD `skipped_while_unknown` integer DEFAULT false NOT NULL;

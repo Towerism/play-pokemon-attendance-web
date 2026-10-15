@@ -29,7 +29,7 @@ import {
 import { TournamentsError } from './errors';
 import { organizerReads } from './organizer';
 import type { LiveReads } from './live-reads';
-import { REPLANNABLE } from './plan';
+import { REPLANNABLE, heldSkipped } from './plan';
 import type { TemplateSettings } from './settings';
 import { type WindowProblem, checkCreatable, creatableWindow } from './window';
 
@@ -209,6 +209,9 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
     }
     if (row.state === 'creating' || row.state === 'unknown' || row.state === 'cancelled') {
       throw new TournamentsError('not_editable', 'This tournament is being created, may have been created, or is cancelled.', { state: row.state });
+    }
+    if (heldSkipped(row)) {
+      throw new TournamentsError('not_editable', 'This tournament may be in play-tools. Unskip it first.', { state: 'skipped', skippedWhileUnknown: true });
     }
     const template = db.select().from(tournamentTemplate).where(eq(tournamentTemplate.id, row.templateId)).get()!;
     const schedule = row.scheduleId === null ? null : (db.select().from(tournamentSchedule).where(eq(tournamentSchedule.id, row.scheduleId)).get() ?? null);
@@ -394,7 +397,14 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
   async function scope(leagueId: string, body: EditBody, t: Resolved, out: Computed) {
     const rows = db.select().from(plannedTournament).where(eq(plannedTournament.scheduleId, t.schedule!.id)).all();
     const byId = new Map(rows.map((r) => [r.id, r]));
-    const scopeRow = (r: PlannedRow) => ({ id: r.id, slotPosition: r.slotPosition!, occurrenceDate: r.occurrenceDate!, localDate: r.localDate, state: r.state });
+    const scopeRow = (r: PlannedRow) => ({
+      id: r.id,
+      slotPosition: r.slotPosition!,
+      occurrenceDate: r.occurrenceDate!,
+      localDate: r.localDate,
+      state: r.state,
+      skippedWhileUnknown: r.skippedWhileUnknown,
+    });
     const picked = selectScope(rows.map(scopeRow), scopeRow(t.row!), { scope: body.scope, withSiblings: body.withSiblings, windowStart: creatableWindow(ctx.now(), ctx.timeZone).from });
     const count = out.items.length + picked.inScope.filter((p) => byId.get(p.row.id)!.state === 'created').length;
     if (count > MAX_EDIT) {
@@ -420,7 +430,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
 
     for (const { row: sr, sibling, reason } of picked.leftOut) {
       const r = byId.get(sr.id)!;
-      if (reason === 'creating' || reason === 'unknown') hold(r, sibling);
+      if (reason === 'creating' || reason === 'unknown' || reason === 'skipped_while_unknown') hold(r, sibling);
       out.preview.leftOut.push({ entry: targetOf(r, sibling), reason });
     }
     for (const { row: sr, sibling } of picked.inScope) {
