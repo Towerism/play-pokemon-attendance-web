@@ -1,5 +1,5 @@
 import { and, eq, isNull, lt } from 'drizzle-orm';
-import { type TdfInvalidRow, type TdfTournament, parseTdf } from '../../../shared/tdf/parse';
+import { type ParsedTdf, type TdfInvalidRow, type TdfTournament, parseTdf } from '../../../shared/tdf/parse';
 import type { SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { sessionPlayer, tdfUpload } from '../../db/schema';
@@ -63,6 +63,11 @@ export interface TdfImportService {
    * @throws UploadNotFoundError, TdfFileDeletedError, TdfKeyMismatchError
    */
   commit(leagueId: string, date: SessionDate, uploadId: number): TdfCommitResult;
+  /**
+   * The import as it stands, classified against the league now, from its archived file: what a TDF results upload
+   * (#96) shows on a recheck without previewing the corrected file again. Null when the import, or its file, is gone.
+   */
+  view(leagueId: string, date: SessionDate, uploadId: number): TdfPreview | null;
   /** Drops previews never committed within a day, then the archived files nothing uses any more. */
   expirePreviews(): { uploads: number; files: number };
 }
@@ -116,6 +121,35 @@ export function createTdfImportService(deps: {
         .map((r) => r.playerId),
     );
 
+  /** Each of the file's players against the league and the date's session players, now. */
+  function classify(leagueId: string, draftId: number, upload: { id: number; filename: string; status: string }, parsed: ParsedTdf): TdfPreview {
+    const known = new Map(roster.getPlayers(leagueId, parsed.players.map((p) => p.playerId)).map((p) => [p.playerId, p]));
+    const listed = listedIds(draftId);
+    const players = parsed.players.map((p) => {
+      const onFile = known.get(p.playerId);
+      const status: TdfPlayerStatus = onFile?.isRegular ? 'regular' : listed.has(p.playerId) ? 'listed' : onFile ? 'known' : 'new';
+      return { playerId: p.playerId, name: onFile?.displayName || p.name, status };
+    });
+    const tally = (s: TdfPlayerStatus) => players.filter((p) => p.status === s).length;
+
+    return {
+      uploadId: upload.id,
+      filename: upload.filename,
+      tournament: parsed.tournament,
+      alreadyImported: upload.status === 'committed',
+      counts: {
+        new: tally('new'),
+        known: tally('known'),
+        regulars: tally('regular'),
+        listed: tally('listed'),
+        invalid: parsed.invalid.length,
+        duplicates: parsed.duplicates,
+      },
+      players,
+      invalid: parsed.invalid,
+    };
+  }
+
   return {
     preview(leagueId, date, { filename, content, by }) {
       const parsed = parseTdf(content);
@@ -153,38 +187,21 @@ export function createTdfImportService(deps: {
             .run();
         }
 
-        const known = new Map(roster.getPlayers(leagueId, parsed.players.map((p) => p.playerId)).map((p) => [p.playerId, p]));
-        const listed = listedIds(draft.id);
-        const players = parsed.players.map((p) => {
-          const onFile = known.get(p.playerId);
-          const status: TdfPlayerStatus = onFile?.isRegular
-            ? 'regular'
-            : listed.has(p.playerId)
-              ? 'listed'
-              : onFile
-                ? 'known'
-                : 'new';
-          return { playerId: p.playerId, name: onFile?.displayName || p.name, status };
-        });
-        const tally = (s: TdfPlayerStatus) => players.filter((p) => p.status === s).length;
-
-        return {
-          uploadId: upload.id,
-          filename,
-          tournament: parsed.tournament,
-          alreadyImported: upload.status === 'committed',
-          counts: {
-            new: tally('new'),
-            known: tally('known'),
-            regulars: tally('regular'),
-            listed: tally('listed'),
-            invalid: parsed.invalid.length,
-            duplicates: parsed.duplicates,
-          },
-          players,
-          invalid: parsed.invalid,
-        };
+        return classify(leagueId, draft.id, { id: upload.id, filename, status: upload.status }, parsed);
       });
+    },
+
+    view(leagueId, date, uploadId) {
+      const draft = drafts.find(leagueId, date);
+      const upload =
+        draft &&
+        db
+          .select()
+          .from(tdfUpload)
+          .where(and(eq(tdfUpload.id, uploadId), eq(tdfUpload.draftId, draft.id)))
+          .get();
+      if (!draft || !upload || upload.tdfFileId === null) return null;
+      return classify(leagueId, draft.id, upload, parseTdf(archive.read(leagueId, upload.tdfFileId).content));
     },
 
     commit(leagueId, date, uploadId) {

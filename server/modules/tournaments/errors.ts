@@ -79,7 +79,28 @@ export type TournamentsErrorCode =
   /** A cover's period start isn't the first day of one of the requirement's periods. */
   | 'invalid_period'
   /** The league already has the most requirements it may. */
-  | 'too_many_requirements';
+  | 'too_many_requirements'
+  // TDF results upload (#96, ADR-0011)
+  /** play-tools won't take an organizer's upload now (`details.reason`: not_sanctioned, window_closed, organizer_not_connected, needs_reconnect). */
+  | 'results_not_accepted'
+  /** play-tools holds results for it already, or is processing some, or it has player records. */
+  | 'results_already_uploaded'
+  /** The upload waits for the organizer's full name (ADR-0011 decision 8). */
+  | 'organizer_full_name_required'
+  /** The upload isn't waiting for a full name. */
+  | 'organizer_name_not_needed'
+  /** The upload's archived file was deleted: drop the file again. */
+  | 'tdf_file_deleted'
+  /** **Remove from staff** named someone who can't be removed (`details.failures`). */
+  | 'not_removable'
+  /** The confirm's fingerprint isn't the preview's (`details.warnings`, `details.fingerprint`; #101). */
+  | 'warnings_not_acknowledged'
+  /** Only an open (`previewed`) upload can be confirmed (`details.state`). */
+  | 'upload_not_open'
+  /** A `tdf_upload` job is never resumed or retried: **Upload again…** goes through the send dialog. */
+  | 'use_upload_again'
+  /** A retry of a Remove-from-staff job whose players are all removed. */
+  | 'nothing_to_retry';
 
 export class TournamentsError extends Error {
   override name = 'TournamentsError';

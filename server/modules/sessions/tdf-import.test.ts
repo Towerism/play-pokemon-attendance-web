@@ -454,3 +454,27 @@ describe('the attendance referrer: archived files and the imports that use them'
     expect(uploadRows()).toEqual([expect.objectContaining({ id: a, fileId: archive.list(L)[0]!.id, status: 'committed' })]);
   });
 });
+
+describe('view: an import as it stands, without previewing again', () => {
+  it('classifies the archived file against the league now, by upload id', () => {
+    const content = tdf([
+      { userid: '1', name: 'Ash Ketchum' },
+      { userid: '2', name: 'Misty W' },
+    ]);
+    const p = previewFile(L, WED, { filename: 'cup.tdf', content });
+    roster.ensurePlayers(L, [{ playerId: id('1'), name: 'Ash K' }]);
+
+    const view = imports.view(L, WED, p.uploadId);
+
+    expect(view).toMatchObject({ uploadId: p.uploadId, filename: 'cup.tdf', alreadyImported: false, counts: expect.objectContaining({ known: 1, new: 1 }) });
+    expect(uploadRows()).toHaveLength(1);
+  });
+
+  it('is null for another date, an unknown import, or a deleted file', () => {
+    const p = previewFile(L, WED, { filename: 'cup.tdf', content: tdf([{ userid: '1' }]) });
+    expect(imports.view(L, NEXT_WED, p.uploadId)).toBeNull();
+    expect(imports.view(L, WED, p.uploadId + 99)).toBeNull();
+    archive.delete(L, uploadRows()[0]!.fileId!);
+    expect(imports.view(L, WED, p.uploadId)).toBeNull();
+  });
+});
