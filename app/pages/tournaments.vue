@@ -94,6 +94,7 @@ function templateSaved(t: Template) {
       v-if="planning"
       :key="`${planning.templateId}-${planning.date}`"
       :today="today"
+      :time-zone="timeZone"
       :template-id="planning.templateId"
       :date="planning.date"
       :missing-for="planning.missingFor"

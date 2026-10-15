@@ -5,6 +5,8 @@ import type { SupportDetails, TournamentItemOutcome } from '../../server/modules
 import type { LeftOutReason } from '../../server/modules/tournaments/create';
 import type { CarriedField, EditValues } from '../../server/modules/tournaments/edit';
 import type { CreateThroughPreview, Template, TournamentOptions, Upcoming, UpcomingEntry } from '../../server/modules/tournaments/service';
+import type { RegistrationSettings } from '../../server/modules/tournaments/settings';
+import type { PlannedOverrides } from '../../shared/schemas/tournaments';
 import { addDays, dayLabel, periodLabel } from './dates';
 import { unreadWarning } from './staff';
 
@@ -564,4 +566,120 @@ export function bannerLines(c: Pick<RequiredEventsCoverage, 'requirements' | 'un
 /** Upcoming's query: one date range (This week's cards, #99), and/or a fresh listing instead of the 5-minute cache. */
 export function upcomingQuery(opts: { upstream?: boolean; range?: { from: LocalDate; to: LocalDate } }): Record<string, string> {
   return { ...(opts.range ?? {}), ...(opts.upstream ? { refresh: '1' } : {}) };
+}
+
+// New tournament with details changed from its template (#162): the dialog pre-fills the template's details, and
+// sends only the ones that differ, so a later template edit still reaches the rest (ADR-0010 decision 4).
+
+/** The type left as the template's: no series pick is sent. Can't be a series id (those are `[A-Za-z0-9-]`). */
+export const AS_TEMPLATE = '@template';
+
+/** The New tournament dialog's details, as its fields hold them: text fields are strings, blank for none. */
+export interface NewTournamentDetails {
+  name: string;
+  /** {@link AS_TEMPLATE}, `custom`, or a play-tools series id. */
+  typeKey: string;
+  category: string;
+  venue: Template['venue'];
+  registration: RegistrationSettings;
+  contactEmail: string;
+  contactPhone: string;
+  details: string;
+  eventWebsite: string;
+}
+
+export function detailsFromTemplate(t: Template): NewTournamentDetails {
+  return {
+    name: t.name,
+    typeKey: AS_TEMPLATE,
+    category: t.category,
+    venue: { ...t.venue },
+    registration: structuredClone(t.registration),
+    contactEmail: t.contactEmail ?? '',
+    contactPhone: t.contactPhone ?? '',
+    details: t.details ?? '',
+    eventWebsite: t.eventWebsite ?? '',
+  };
+}
+
+/** A registration by what it means: a blank admission is none, and the field order doesn't matter. */
+function registrationKey(r: RegistrationSettings): string {
+  return r.kind === 'on_site'
+    ? JSON.stringify([r.kind, r.opensBeforeMin, r.closesAfterMin, blankToNull(r.admission)])
+    : JSON.stringify([r.kind, r.url.trim()]);
+}
+
+const NEW_TOURNAMENT_TEXT = ['contactEmail', 'contactPhone', 'details', 'eventWebsite'] as const;
+
+/**
+ * What **Plan tournament** sends beyond the template, the date and the time: only the details whose meaning differs
+ * from the template's (a venue by its id, a registration by its fields, a blank text as none), and the type unless
+ * it is left as the template's. `count` is what "N details differ from the template" says.
+ */
+export function newTournamentChanges(base: NewTournamentDetails, form: NewTournamentDetails): { overrides: PlannedOverrides; seriesId?: string; count: number } {
+  const overrides: PlannedOverrides = {};
+  if (form.name.trim() !== base.name.trim()) overrides.name = form.name.trim();
+  if (form.category !== base.category) overrides.category = form.category;
+  if (form.venue.id !== base.venue.id) overrides.venue = form.venue;
+  if (registrationKey(form.registration) !== registrationKey(base.registration)) overrides.registration = form.registration;
+  for (const field of NEW_TOURNAMENT_TEXT) {
+    if (blankToNull(form[field]) !== blankToNull(base[field])) overrides[field] = blankToNull(form[field]);
+  }
+  const seriesId = form.typeKey === AS_TEMPLATE ? undefined : form.typeKey;
+  return { overrides, ...(seriesId && { seriesId }), count: Object.keys(overrides).length + (seriesId ? 1 : 0) };
+}
+
+type OptionSeries = Extract<TournamentOptions['types'][number], { kind: 'premier' }>;
+
+/** The game's series play-tools offers on the date (its window holds it). */
+function seriesOn(t: Template, o: TournamentOptions, date: LocalDate): OptionSeries[] {
+  return o.types.filter((x): x is OptionSeries => x.kind === 'premier' && x.product === t.product && x.window.from <= date && date <= x.window.to);
+}
+
+/**
+ * The type dropdown for the date (ADR-0010 decision 6): the template's own type first, then Custom (only for a
+ * premier template: a custom one's own type already is Custom), then the game's series offered that day.
+ */
+export function newTournamentTypeChoices(t: Template, o: TournamentOptions | null, date: LocalDate): { value: string; label: string }[] {
+  const own =
+    t.type.kind === 'premier' ? { value: AS_TEMPLATE, label: `${t.type.seriesMatch} (resolved for the date)` } : { value: AS_TEMPLATE, label: 'Custom' };
+  if (!o) return [own];
+  return [own, ...(t.type.kind === 'premier' ? [{ value: 'custom', label: 'Custom' }] : []), ...seriesOn(t, o, date).map((s) => ({ value: s.seriesId, label: s.name }))];
+}
+
+/** Whether a picked type still holds on the date: a series only while its window does. */
+export function typeStillOffered(typeKey: string, o: TournamentOptions | null, date: LocalDate): boolean {
+  if (typeKey === AS_TEMPLATE || typeKey === 'custom') return true;
+  const s = o?.types.find((x): x is OptionSeries => x.kind === 'premier' && x.seriesId === typeKey);
+  return !!s && s.window.from <= date && date <= s.window.to;
+}
+
+/**
+ * The format dropdown, following the type (ADR-0010 decision 6): a picked series' formats; the game's for Custom;
+ * for a premier template left as it is, those of the one series it resolves to that day (as `resolveSeries` finds
+ * it), else the game's with a note. Only the template's format when play-tools' choices couldn't be read.
+ */
+export function newTournamentFormats(t: Template, typeKey: string, o: TournamentOptions | null, date: LocalDate): { formats: string[]; note: string | null } {
+  if (!o) return { formats: [t.category], note: null };
+  const game = o.formats.find((f) => f.product === t.product)?.categories ?? [];
+  if (typeKey === 'custom' || (typeKey === AS_TEMPLATE && t.type.kind === 'custom')) return { formats: [...game], note: null };
+  if (typeKey !== AS_TEMPLATE) {
+    const picked = o.types.find((x): x is OptionSeries => x.kind === 'premier' && x.seriesId === typeKey);
+    return { formats: [...(picked?.categories ?? game)], note: null };
+  }
+  const match = (t.type as { seriesMatch: string }).seriesMatch.toLowerCase();
+  const found = seriesOn(t, o, date).filter((s) => s.name.toLowerCase().includes(match));
+  if (found.length === 1) return { formats: [...found[0]!.categories], note: null };
+  return { formats: [...game], note: `No single ${(t.type as { seriesMatch: string }).seriesMatch} series for ${date}; check the format when you create it.` };
+}
+
+const PLANNED_ERROR: Record<string, string> = {
+  already_planned: 'That tournament is already planned for this date and time. Change it with Edit… instead.',
+  template_archived: 'That template is archived. Choose another template.',
+  contact_required: 'Give this tournament a contact email or phone.',
+};
+
+/** What the New tournament dialog says for a refusal it knows; null for play-tools' or the server's own message. */
+export function plannedErrorText(code: string | undefined): string | null {
+  return (code && PLANNED_ERROR[code]) ?? null;
 }
