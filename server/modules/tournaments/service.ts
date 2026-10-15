@@ -1386,6 +1386,10 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       if (!template) throw new TournamentsError('unknown_template', `No template ${body.templateId}.`, { templateId: body.templateId });
       if (template.archivedAt) throw new TournamentsError('template_archived', `“${template.name}” is archived.`, { templateId: body.templateId });
       requireCreatable(body.localDate);
+      const overrides = body.overrides ?? {};
+      const contactEmail = overrides.contactEmail !== undefined ? overrides.contactEmail : template.contactEmail;
+      const contactPhone = overrides.contactPhone !== undefined ? overrides.contactPhone : template.contactPhone;
+      if (contactEmail === null && contactPhone === null) throw new TournamentsError('contact_required', 'Give this tournament a contact email or phone.');
       const startTime = body.startTime ?? template.startTime;
       const row = db.transaction(() => {
         const clash = rowAt(leagueId, template.id, body.localDate, startTime);
@@ -1394,7 +1398,11 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
             plannedTournamentId: clash.id,
           });
         }
-        return db.insert(plannedTournament).values({ leagueId, templateId: template.id, localDate: body.localDate, startTime, createdAt: now() }).returning().get();
+        return db
+          .insert(plannedTournament)
+          .values({ leagueId, templateId: template.id, localDate: body.localDate, startTime, overrides, seriesOverride: body.seriesId ?? null, createdAt: now() })
+          .returning()
+          .get();
       });
       return entryOf(row, contextFor([row]));
     },

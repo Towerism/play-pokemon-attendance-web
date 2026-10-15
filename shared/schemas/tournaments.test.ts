@@ -158,6 +158,54 @@ describe('planned tournaments', () => {
     expect(ok(PlannedBody, { localDate: '2026-10-20' })).toBe(false);
   });
 
+  describe('a one-off with details changed from its template (#162)', () => {
+    const base = { templateId: 1, localDate: '2026-10-20' };
+    const withOverrides = (overrides: unknown) => PlannedBody.safeParse({ ...base, overrides });
+
+    it('keeps only the overrides given, and a series pick or Custom', () => {
+      const parsed = PlannedBody.parse({ ...base, overrides: { name: 'Halloween Cup', details: null }, seriesId: 'custom' });
+      expect(parsed.overrides).toEqual({ name: 'Halloween Cup', details: null });
+      expect(parsed.seriesId).toBe('custom');
+      expect(PlannedBody.parse(base)).toEqual(base);
+    });
+
+    it('takes every overridable detail at once', () => {
+      const { name, category, venue, registration, contactEmail, contactPhone, details, eventWebsite } = VALID_TEMPLATE;
+      const all = { name, category, venue, registration, contactEmail, contactPhone, details, eventWebsite };
+      expect(withOverrides(all).success).toBe(true);
+    });
+
+    it.each([
+      ['an empty override set', {}],
+      ['a name of exactly 80 characters', { name: 'x'.repeat(80) }],
+      ['details of exactly 4,000 characters', { details: 'x'.repeat(4000) }],
+    ])('takes %s', (_, overrides) => {
+      expect(withOverrides(overrides).success).toBe(true);
+    });
+
+    it.each([
+      ['the organizer', { organizerPlayerId: '9999992' }],
+      ['the game', { product: 'vg' }],
+      ['the type (seriesId carries it)', { type: { kind: 'custom' } }],
+      ['the start time (its own field)', { startTime: '19:00' }],
+      ['the date (its own field)', { localDate: '2026-10-21' }],
+      ['an unknown key', { colour: 'red' }],
+      ['a name of 81 characters', { name: 'x'.repeat(81) }],
+      ['an empty name', { name: '  ' }],
+      ['a category that is not a format', { category: 'TCG!' }],
+      ['a venue without its time zone', { venue: { id: 'v-1', label: 'Shop', country: 'US' } }],
+      ['an http:// website', { eventWebsite: 'http://example.com' }],
+      ['details of 4,001 characters', { details: 'x'.repeat(4001) }],
+    ])('refuses overriding %s', (_, overrides) => {
+      expect(withOverrides(overrides).success).toBe(false);
+    });
+
+    it('refuses null overrides and a series id that is not one', () => {
+      expect(withOverrides(null).success).toBe(false);
+      expect(ok(PlannedBody, { ...base, seriesId: 'a/b' })).toBe(false);
+    });
+  });
+
   it.each([
     [{ skipped: true }, true],
     [{ seriesId: 'custom' }, true],
