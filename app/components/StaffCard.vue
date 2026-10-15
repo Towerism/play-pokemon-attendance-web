@@ -7,9 +7,7 @@ const props = defineProps<{ date: string; tournament: TournamentStaffView; roles
 const emit = defineEmits<{ changed: [] }>();
 const toast = useToast();
 
-const headingId = useId();
 const editable = computed(() => props.tournament.editable && !props.tournament.missing && !props.tournament.unavailable);
-const note = computed(() => readOnlyNote(props.tournament));
 
 const STATE: Record<StaffAssignmentView['state'], { label: string; color: 'neutral' | 'success' | 'error' | 'warning' }> = {
   pending: { label: 'Not sent yet', color: 'neutral' },
@@ -60,15 +58,8 @@ async function remove(a: StaffAssignmentView) {
 </script>
 
 <template>
-  <section :aria-labelledby="headingId" class="space-y-3 rounded-md border border-default p-3">
-    <div>
-      <h3 :id="headingId" class="font-medium break-words">{{ tournament.label }}</h3>
-      <p v-if="organizerText(tournament.organizer)" class="text-sm text-muted break-words">{{ organizerText(tournament.organizer) }}</p>
-    </div>
-    <p v-if="note" class="text-sm" :class="note.warning ? 'text-warning' : 'text-muted'">
-      {{ note.text }}
-      <NuxtLink v-if="note.settings" to="/settings" class="underline">Open Settings</NuxtLink>
-    </p>
+  <div class="space-y-3">
+    <h4 class="font-medium">Staff</h4>
 
     <ul v-if="rows.length" aria-label="Wanted staff" class="divide-y divide-default">
       <li v-for="a in rows" :key="a.id" class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
@@ -94,7 +85,7 @@ async function remove(a: StaffAssignmentView) {
     <p v-else class="text-sm text-muted">No staff wanted yet.</p>
 
     <div v-if="tournament.upstreamOnly.length" class="space-y-1">
-      <h4 class="text-sm font-medium">Also in play-tools</h4>
+      <h5 class="text-sm font-medium">Also in play-tools</h5>
       <ul aria-label="Also in play-tools" class="text-sm space-y-0.5">
         <li v-for="u in tournament.upstreamOnly" :key="u.playerId" class="flex flex-wrap gap-x-2">
           <span class="break-words" :class="{ 'text-muted italic': !u.name }">{{ u.name || 'No name' }}</span>
@@ -116,5 +107,5 @@ async function remove(a: StaffAssignmentView) {
         @finished="emit('changed')"
       />
     </template>
-  </section>
+  </div>
 </template>

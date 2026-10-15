@@ -7,7 +7,8 @@ import type { UpcomingEntry } from '../../server/modules/tournaments/service';
  * **Create anyway**), then follows the job. In `retry` mode, for a create that may have landed, it first reads
  * play-tools fresh and shows the organizer's tournaments that day, so a duplicate is a deliberate choice.
  */
-const props = defineProps<{ plannedIds: number[]; today: string; retry?: boolean }>();
+/** `range`: read Upcoming for just these dates (This week's card, #99), whose date may be past Upcoming's default range. */
+const props = defineProps<{ plannedIds: number[]; today: string; retry?: boolean; range?: { from: string; to: string } }>();
 const emit = defineEmits<{ close: [] }>();
 const toast = useToast();
 
@@ -38,7 +39,7 @@ watch(open, (o) => {
 onMounted(async () => {
   try {
     // A retry reads play-tools fresh (not the 5-minute cache): its list decides whether a duplicate is risked.
-    const upcoming = await refreshUpcoming({ upstream: !!props.retry });
+    const upcoming = await refreshUpcoming({ upstream: !!props.retry, range: props.range });
     entries.value = props.plannedIds.map((id) => upcoming.tournaments.find((e) => e.plannedId === id)).filter((e): e is UpcomingEntry => !!e);
     // Only what is listed here is sent: a tournament the read no longer shows is left for another look.
     if (entries.value.length < props.plannedIds.length) blocked.value = 'Some of these tournaments changed meanwhile. Close this and look at Upcoming again.';
@@ -78,7 +79,8 @@ async function done(view: SubmissionView) {
   finished.value = true;
   const { label, color } = submissionStatus(view.status, view.kind);
   toast.add({ color: color === 'info' ? 'neutral' : color, title: `${view.playSessionLabel}: ${label}` });
-  await Promise.all([refreshUpcoming(), refreshRequiredEvents()]);
+  // From This week the card refreshes its own date on close; Upcoming's key is the Tournaments page's.
+  await Promise.all([props.range ? Promise.resolve() : refreshUpcoming(), refreshRequiredEvents()]);
 }
 </script>
 

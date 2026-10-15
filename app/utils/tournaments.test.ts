@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PeriodCoverage } from '../../shared/requirements/coverage';
 import type { Requirement } from '../../server/modules/tournaments/requirements';
+import type { RequiredEventsCoverage } from '../../server/modules/tournaments/required-events';
 import type { SupportDetails } from '../../server/modules/submission/service';
 import type { EditValues } from '../../server/modules/tournaments/edit';
 import type { CreateThroughPreview, Template, TournamentOptions, UpcomingEntry } from '../../server/modules/tournaments/service';
@@ -10,6 +11,7 @@ import {
   blankToNull,
   valueText,
   badgeCount,
+  bannerLines,
   cancelConfirmed,
   cellView,
   changedValues,
@@ -35,6 +37,7 @@ import {
   sanctionTag,
   tabFromQuery,
   upcomingNotice,
+  upcomingQuery,
 } from './tournaments';
 import { periodLabel, todayIn } from './dates';
 
@@ -659,5 +662,110 @@ describe('tabFromQuery', () => {
     [['schedules'], 'upcoming'],
   ] as const)('%j → %s', (q, tab) => {
     expect(tabFromQuery(q)).toBe(tab);
+  });
+});
+
+describe('bannerLines', () => {
+  const ash = { playerId: '1111111', name: 'Professor Ash' };
+  const lc = (product: Requirement['product'], id: number) => requirement({ id, product, seriesMatch: 'League Challenge', cadence: 'month' });
+  const coverage = (rows: { requirement: Requirement; periods: PeriodCoverage[] }[], unread: RequiredEventsCoverage['unread'] = []): RequiredEventsCoverage => ({
+    timeZone: 'America/Chicago',
+    today: '2026-11-02',
+    country: 'US',
+    upstream: 'read',
+    unread,
+    seriesUnavailable: false,
+    requirements: rows,
+  });
+  const unreadAsh = { professor: ash, code: 'needs_reconnect' as const, message: 'Reconnect Professor Ash in Settings.' };
+  const covered = coverage(
+    [
+      {
+        requirement: lc('tcg', 1),
+        periods: [
+          period({ periodStart: '2026-09-01', periodEnd: '2026-09-30', latestDate: '2026-09-30', sanctionBy: '2026-09-23', urgency: 'missed' }),
+          period({ periodStart: '2026-10-01', periodEnd: '2026-10-31', latestDate: '2026-10-31', sanctionBy: '2026-10-24', urgency: 'last_chance' }),
+          period({ periodStart: '2026-11-01', periodEnd: '2026-11-30', latestDate: '2026-11-30', sanctionBy: '2026-11-23', urgency: 'open' }),
+        ],
+      },
+      {
+        requirement: lc('pgo', 2),
+        periods: [
+          period({ periodStart: '2026-10-01', periodEnd: '2026-10-31', latestDate: '2026-10-31', status: 'sanctioned', urgency: null }),
+          period({ periodStart: '2026-11-01', periodEnd: '2026-11-30', latestDate: '2026-11-30', sanctionBy: '2026-11-23', status: 'planned', urgency: 'at_risk' }),
+        ],
+      },
+      {
+        requirement: lc('vg', 3),
+        periods: [
+          period({ periodStart: '2026-11-01', periodEnd: '2026-11-30', latestDate: '2026-11-07', sanctionBy: '2026-10-31', urgency: 'short_notice' }),
+          period({
+            periodStart: '2026-12-01',
+            periodEnd: '2026-12-31',
+            latestDate: '2026-12-31',
+            sanctionBy: '2026-12-24',
+            status: 'problem',
+            urgency: 'open',
+            tournaments: [{ tournamentId: 'g9', plannedId: null, displayId: '26-12-000001', localDate: '2026-12-12', class: 'problem', upstreamStatus: 'sanctioning-error', organizer: null }],
+          }),
+        ],
+      },
+      {
+        requirement: requirement({ id: 4, seriesMatch: 'League Cup', product: 'tcg', cadence: 'quarter' }),
+        periods: [
+          period({
+            periodStart: '2026-10-01',
+            periodEnd: '2026-12-31',
+            latestDate: '2026-12-31',
+            sanctionBy: '2026-12-24',
+            status: 'unknown',
+            bestKnown: 'missing',
+            urgency: 'at_risk',
+            unreadProfessors: [ash],
+          }),
+        ],
+      },
+    ],
+    [unreadAsh],
+  );
+
+  it('gives one line per cell at risk or louder, or with a sanctioning error, most urgent first, then each unread professor', () => {
+    expect(bannerLines(covered, '2026-11-02')).toEqual([
+      { text: 'Missed: no League Challenge for TCG in Sep 2026. The last date was Wed 30 Sep.', tone: 'error', action: null },
+      { text: 'Last chance for a League Challenge for TCG in Oct 2026: a tournament held Sat 31 Oct to Sat 31 Oct can still be sanctioned.', tone: 'error', action: null },
+      {
+        text: 'A League Challenge for VGC in Nov 2026 is short notice (Missing): the sanction-by date, Sat 31 Oct, has passed. A tournament up to Sat 7 Nov can still be sanctioned.',
+        tone: 'warning',
+        action: null,
+      },
+      { text: 'A League Challenge for GO in Nov 2026 is at risk (Planned, not in play-tools). Sanction by Mon 23 Nov; the last date is Mon 30 Nov.', tone: 'warning', action: null },
+      { text: 'Can’t confirm a League Cup for TCG in Q4 2026: Professor Ash’s tournaments (needs reconnect) couldn’t be read. The last date is Thu 31 Dec.', tone: 'warning', action: null },
+      { text: '26-12-000001 has a sanctioning error in play-tools: it doesn’t cover a League Challenge for VGC in Dec 2026.', tone: 'error', action: null },
+      { text: 'Couldn’t read Professor Ash’s tournaments: Reconnect Professor Ash in Settings.', tone: 'warning', action: 'reconnect' },
+    ]);
+  });
+
+  it('names an unreadable tournament when no professor is to blame, and offers Retry for a failed read', () => {
+    const c = coverage(
+      [{ requirement: lc('tcg', 1), periods: [period({ status: 'unknown', urgency: 'missed', latestDate: '2026-09-30', unreadTournaments: [{ tournamentId: 'g1', displayId: null }] })] }],
+      [{ professor: { playerId: '2222222', name: null }, code: 'upstream_unavailable', message: 'play-tools is unavailable.' }],
+    );
+    expect(bannerLines(c, '2026-11-02')).toEqual([
+      { text: 'Can’t confirm a League Challenge for TCG in Oct 2026: a tournament’s details couldn’t be read. The last date is Wed 30 Sep.', tone: 'error', action: null },
+      { text: 'Couldn’t read Professor 2222222’s tournaments: play-tools is unavailable.', tone: 'warning', action: 'retry' },
+    ]);
+  });
+
+  it('is empty while nothing needs attention', () => {
+    expect(bannerLines(coverage([{ requirement: lc('tcg', 1), periods: [period({ urgency: 'open' }), period({ status: 'sanctioned', urgency: null })] }]), '2026-11-02')).toEqual([]);
+  });
+});
+
+describe('upcomingQuery', () => {
+  it('reads one date range, and lists play-tools again for a fresh read, both together for a retry from This week', () => {
+    expect(upcomingQuery({})).toEqual({});
+    expect(upcomingQuery({ upstream: true })).toEqual({ refresh: '1' });
+    expect(upcomingQuery({ range: { from: '2026-10-30', to: '2026-10-30' } })).toEqual({ from: '2026-10-30', to: '2026-10-30' });
+    expect(upcomingQuery({ upstream: true, range: { from: '2026-10-30', to: '2026-10-30' } })).toEqual({ from: '2026-10-30', to: '2026-10-30', refresh: '1' });
   });
 });

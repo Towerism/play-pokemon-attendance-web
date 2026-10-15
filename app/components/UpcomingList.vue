@@ -57,19 +57,11 @@ async function patchPlanned(e: UpcomingEntry, body: Record<string, unknown>, don
   }
 }
 
+const downloadTdf = useTdfDownload();
 async function download(e: UpcomingEntry) {
   busy.value = keyOf(e);
   try {
-    const res = await $fetch.raw<Blob>(`/api/tournaments/${e.tournamentId}/tdf`, { responseType: 'blob' });
-    const url = URL.createObjectURL(res._data!);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = downloadName(res.headers.get('content-disposition'), e.displayId);
-    a.click();
-    // Revoked once the browser has started the download, not before.
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (err) {
-    toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not download the TDF.') });
+    await downloadTdf(e.tournamentId!, e.displayId);
   } finally {
     busy.value = null;
   }
