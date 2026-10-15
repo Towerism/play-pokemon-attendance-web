@@ -314,6 +314,8 @@ describe('auth rate limits', () => {
     ['NUXT_AUTH_RATE_LIMIT_LOGIN_MAX', '0', /NUXT_AUTH_RATE_LIMIT_LOGIN_MAX/],
     ['NUXT_AUTH_RATE_LIMIT_LOGIN_MAX', 'abc', /NUXT_AUTH_RATE_LIMIT_LOGIN_MAX/],
     ['NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS', '-5', /NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS/],
+    // 2^53 + 1: whole digits, but not a safe integer, so the limiter couldn't use it.
+    ['NUXT_AUTH_RATE_LIMIT_LOGIN_MAX', '9007199254740993', /NUXT_AUTH_RATE_LIMIT_LOGIN_MAX must be a whole number from 1 to 9007199254740991/],
     ['NUXT_TRUSTED_PROXIES', '10.0.0.0/33', /NUXT_TRUSTED_PROXIES.*"10\.0\.0\.0\/33"/],
     ['NUXT_TRUSTED_PROXIES', 'not-an-ip', /NUXT_TRUSTED_PROXIES.*"not-an-ip"/],
   ])('fails startup for %s=%j and says why', async (name, value, message) => {

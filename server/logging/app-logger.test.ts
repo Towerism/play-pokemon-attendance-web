@@ -1,4 +1,4 @@
-import { type CreateLoggerOptions, createRedactor } from '@towerism/selfhost-kit';
+import { type CreateLoggerOptions, type LogFormat, createRedactor } from '@towerism/selfhost-kit';
 import { describeRedactionContract } from '@towerism/selfhost-kit/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ATTENDANCE_LOG_KEYS, createAppLogger, redactor } from './app-logger';
@@ -92,7 +92,7 @@ describe('createAppLogger', () => {
   const FIELDS = { dob: '2012-01-01', content: '<tournament>tdf-body</tournament>', tdfVaultKey: 'tdf-key-1', token: 'tok-1' };
   const VALUES = Object.values(FIELDS);
 
-  it.each(['json', 'pretty'])("hides attendance's keys and the kit's in %s output", (format) => {
+  it.each<LogFormat>(['json', 'pretty'])("hides attendance's keys and the kit's in %s output", (format) => {
     const out = memory();
     createAppLogger({ scope: 'test', level: 'info', format, destination: out.destination }).info('upload', FIELDS);
     for (const value of VALUES) expect(out.text()).not.toContain(value);
