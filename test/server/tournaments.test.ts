@@ -104,7 +104,7 @@ describe('templates', () => {
   });
 
   it('keeps 4,000 characters of details whole, and refuses 4,001 without saving', async () => {
-    const details = `Doors at 5.\n${'x'.repeat(3988)}`;
+    const details = 'Doors at 5.\n'.padEnd(4000, 'x');
     const created = await post('/tournament-templates', { ...TEMPLATE, name: 'Long details', details });
     expect(created.status).toBe(201);
     const { template } = await body<{ template: { id: number } }>(created);
