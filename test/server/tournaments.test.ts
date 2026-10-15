@@ -103,6 +103,20 @@ describe('templates', () => {
     expect(archived.templates.find((t) => t.id === template.id)?.archived).toBe(true);
   });
 
+  it('keeps 4,000 characters of details whole, and refuses 4,001 without saving', async () => {
+    const details = 'Doors at 5.\n'.padEnd(4000, 'x');
+    const created = await post('/tournament-templates', { ...TEMPLATE, name: 'Long details', details });
+    expect(created.status).toBe(201);
+    const { template } = await body<{ template: { id: number } }>(created);
+    const listed = await body<{ templates: { id: number; details: string | null }[] }>(await api('/tournament-templates'));
+    expect(listed.templates.find((t) => t.id === template.id)?.details).toBe(details);
+
+    const refused = await post('/tournament-templates', { ...TEMPLATE, name: 'Too long', details: 'x'.repeat(4001) });
+    expect(refused.status).toBe(400);
+    const after = await body<{ templates: { name: string }[] }>(await api('/tournament-templates'));
+    expect(after.templates.some((t) => t.name === 'Too long')).toBe(false);
+  });
+
   it.each([
     ['an 81-character name', { name: 'x'.repeat(81) }],
     ['no contact', { contactEmail: null }],
