@@ -74,6 +74,16 @@ export async function plannedTournament(api: Api, templateId: number, localDate:
   return ((await res.json()) as { planned: { plannedId: number } }).planned.plannedId;
 }
 
+/**
+ * Answers the nav badge's required-events read in the browser with no requirements (#98). That read lists play-tools'
+ * tournaments too, so a journey that injects one listing failure for another read uses this to keep it from racing.
+ */
+export async function quietRequiredEvents(page: Page): Promise<void> {
+  await page.route('**/api/tournaments/requirements*', (route) =>
+    route.fulfill({ json: { timeZone: LEAGUE_TZ, today: leagueDay(0), country: 'US', upstream: 'read', unread: [], seriesUnavailable: false, requirements: [] } }),
+  );
+}
+
 /** No horizontal page scroll at the current viewport (mobile-first, architecture §8). */
 export async function expectNoHorizontalScroll(page: Page): Promise<void> {
   const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
