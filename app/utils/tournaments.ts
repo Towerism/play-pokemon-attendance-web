@@ -612,7 +612,8 @@ export function detailsFromTemplate(t: Template): NewTournamentDetails {
     typeKey: AS_TEMPLATE,
     category: t.category,
     venue: { ...t.venue },
-    registration: structuredClone(t.registration),
+    // A flat object; spread rather than structuredClone, which can't copy the reactive proxy a component passes.
+    registration: { ...t.registration },
     contactEmail: t.contactEmail ?? '',
     contactPhone: t.contactPhone ?? '',
     details: t.details ?? '',

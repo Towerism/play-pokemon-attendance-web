@@ -28,6 +28,9 @@ const base = computed(() => (template.value ? detailsFromTemplate(template.value
 const form = ref<NewTournamentDetails | null>(null);
 const changes = computed(() => (base.value && form.value ? newTournamentChanges(base.value, form.value) : { overrides: {}, count: 0 }));
 
+/** An editable copy: the venue and registration are flat, so one level deep is a full copy. */
+const detailsCopy = (d: NewTournamentDetails): NewTournamentDetails => ({ ...d, venue: { ...d.venue }, registration: { ...d.registration } });
+
 const showDetails = ref(false);
 const options = ref<TournamentOptions | null>(null);
 const optionsError = ref<string | null>(null);
@@ -57,7 +60,7 @@ onMounted(async () => {
 
 // A new template replaces every detail with its own.
 watch(base, (b) => {
-  form.value = b ? structuredClone(toRaw(b)) : null;
+  form.value = b ? detailsCopy(b) : null;
   typeNote.value = null;
 });
 
@@ -122,7 +125,7 @@ const venueId = computed({
 });
 
 function resetToTemplate() {
-  if (base.value) form.value = structuredClone(toRaw(base.value));
+  if (base.value) form.value = detailsCopy(base.value);
   typeNote.value = null;
 }
 

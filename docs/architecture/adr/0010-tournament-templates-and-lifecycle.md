@@ -23,6 +23,10 @@
   events): coverage reads the `US` windows, shows the previous period, takes status from the listing's application
   state, is `unknown` with no connection, and keeps play-tools traffic paced and shared. See
   [Update (#95)](#update-95-required-events-as-built).
+- Updated: 2026-10-15 ([#162](https://github.com/Towerism/play-pokemon-attendance-web/issues/162), the organizer): a
+  one-off **New tournament** may change any of its template's details but the organizer and the game (decision 4), and
+  Required events moves from the top of Tournaments to its own tab, with the banner on the other tabs (decisions 10
+  and 12). See [Update (#162)](#update-162-one-offs-change-any-detail-required-events-gets-a-tab).
 - Amends: architecture §2 (tournament creation was a non-goal), [ADR-0007](0007-staff-assignment.md) decision 1
 - Builds on: [ADR-0004](0004-idempotent-diff-based-submission.md) (plan → execute → reconcile),
   [ADR-0009](0009-tournaments-as-their-organizer.md) (act on a tournament only as its organizer)
@@ -775,6 +779,45 @@ Building coverage (decision 12) settled what it left open:
     out. Only legacy tournaments lack it; a manual cover covers one if it ever matters.
 11. **Requirements are never deleted**, only turned off, so the six are seeded once, when a league has no rows. A
     cadence change is refused while manual covers hold the old cadence's periods (`requirement_has_covers`).
+
+## Update (#162): one-offs change any detail; Required events gets a tab
+
+**Context.** The organizer (2026-10-15): "I should be able to create a custom tournament using a template … all of the
+tournament's details should be overridable if desired", and "the tournaments page is way too cluttered. The required
+events should be a separate module within the tournaments page." A one-off took only a template, a date and a time;
+anything else took a second step through **Edit…** or a throwaway template. The grid of up to six requirements × their
+periods pushed the tabs below the fold.
+
+**Decision.**
+
+1. **A one-off may change any template detail but the organizer and the game** (extends decision 4). `POST
+   /planned-tournaments` takes `overrides` (name, format, venue, registration, contacts, details, website, each checked
+   as the template checks it) and `seriesId` (`custom` or a play-tools series), stored as the row's overrides and series
+   pick, the layer decision 11 already resolves. The organizer and the game stay the template's (organizer,
+   2026-10-15): the address book, formats, series and coverage follow them, so another template is the way. The dialog
+   sends only what differs from the template (a venue by its id, a blank text as none), so "templates are read at
+   creation time" still holds for every detail left alone. A one-off with no contact is refused (`contact_required`).
+2. **A series pick holds only for its game, date and country.** `resolveSeries` takes a picked series only among
+   those play-tools offers for the template's game, the date and the resolved venue's country; anything else is
+   `series_not_found`. Upcoming and coverage judge by the resolved venue's country, as creation does, so a one-off's
+   own venue can't make them disagree.
+3. **Creation re-checks what a browser or a later edit could get wrong.** An item with no contact fails
+   `contact_required`, and one whose venue play-tools now gives another time zone or country fails `venue_not_found`
+   (a `null` from play-tools is not a disagreement), both before any `POST`.
+4. **Required events is a tab** (amends decisions 10 and 12). Tournaments has tabs **Upcoming** (default), **Required
+   events** (`?tab=required`), **Templates** and **Schedules**. The grid shows only on its tab, which carries the nav
+   badge's count. The other tabs show the compact banner above the tabs, as This week does; it can't be dismissed, is
+   named "Required events alerts" (so the grid alone is the "Required events" region), and links to the tab, from This
+   week too. All of them read the layout's one coverage fetch.
+
+**Consequences.**
+
+- (+) A one-off differing from its template is one dialog, and nothing reaches play-tools that the organizer didn't see.
+- (+) Tournaments opens on Upcoming; anything at risk still shows above the tabs, so moving the grid hides nothing.
+- (−) A Custom one-off planned on a premier template's slot (same template, date and time) takes that occurrence's
+  place (Update #91), and covers no requirement; coverage then shows the period missing.
+- (−) Edit…'s **Also clear these overrides** (opt-in, previewed) can clear a one-off's overrides of the fields it
+  carries, as for any planned row. The name isn't carried unless ticked.
 
 ## Consequences
 

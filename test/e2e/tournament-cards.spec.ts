@@ -45,9 +45,9 @@ test('a file naming another organizer is fixed with the saved full name, and upl
   await page.goto(`/?date=${DATE}`);
 
   // The required-events banner: the seeded League Challenges of last month are missed or in their last chance.
-  const banner = page.getByRole('region', { name: 'Required events' }).or(page.getByRole('alert').filter({ hasText: 'Required events' }));
+  const banner = page.getByRole('region', { name: 'Required events alerts' }).or(page.getByRole('alert', { name: 'Required events alerts' }));
   await expect(banner.getByText(/League Challenge for TCG/).first()).toBeVisible();
-  await expect(banner.getByRole('link', { name: 'Open Tournaments' })).toHaveAttribute('href', '/tournaments');
+  await expect(banner.getByRole('link', { name: 'Open Required events' })).toHaveAttribute('href', '/tournaments?tab=required');
   await expect(banner.getByRole('button', { name: /close|dismiss/i })).toHaveCount(0);
 
   // The card: its status and display id from the date's Upcoming read, and Edit… in its menu.
