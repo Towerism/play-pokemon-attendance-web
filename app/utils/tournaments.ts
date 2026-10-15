@@ -689,16 +689,16 @@ export function newTournamentFormats(t: Template, typeKey: string, o: Tournament
   const match = (t.type as { seriesMatch: string }).seriesMatch.toLowerCase();
   const found = seriesOn(t, o, date).filter((s) => s.name.toLowerCase().includes(match));
   if (found.length === 1) return { formats: [...found[0]!.categories], note: null };
-  return { formats: [...game], note: `No single ${(t.type as { seriesMatch: string }).seriesMatch} series for ${date}; check the format when you create it.` };
+  return { formats: [...game], note: `No single ${(t.type as { seriesMatch: string }).seriesMatch} series for ${dayLabel(date)}; check the format when you create it.` };
 }
 
-const PLANNED_ERROR: Record<string, string> = {
-  already_planned: 'That tournament is already planned for this date and time. Change it with Edit… instead.',
-  template_archived: 'That template is archived. Choose another template.',
-  contact_required: 'Give this tournament a contact email or phone.',
+const PLANNED_ERROR: Record<string, (template: string) => string> = {
+  already_planned: () => 'That tournament is already planned for this date and time. Change it with Edit… instead.',
+  template_archived: (template) => `“${template}” is archived. Choose another template.`,
+  contact_required: () => 'Give this tournament a contact email or phone.',
 };
 
 /** What the New tournament dialog says for a refusal it knows; null for play-tools' or the server's own message. */
-export function plannedErrorText(code: string | undefined): string | null {
-  return (code && PLANNED_ERROR[code]) ?? null;
+export function plannedErrorText(code: string | undefined, templateName = 'That template'): string | null {
+  return (code && PLANNED_ERROR[code]?.(templateName)) ?? null;
 }

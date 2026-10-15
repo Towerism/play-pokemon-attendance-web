@@ -301,15 +301,38 @@ describe('what each row is created as (planItem)', () => {
     it('fails venue_not_found when the address book now gives the venue another time zone or country', async () => {
       const id = plan(customTemplate().id, '2026-11-06');
       upstream.state.venues = [{ ...upstream.state.venues[0]!, timeZone: 'America/New_York' }];
-      expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'fail', code: 'venue_not_found', message: expect.stringContaining('has changed') });
+      // The template's venue: fixed on the template, where every later date takes it from.
+      expect(await service.creation.planItem(L, id)).toMatchObject({
+        kind: 'fail',
+        code: 'venue_not_found',
+        message: "Card Shop has changed in the organizer's address book. Pick the venue again on the template.",
+      });
       upstream.state.venues = [{ ...upstream.state.venues[0]!, timeZone: 'America/Chicago', country: 'CA' }];
       expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'fail', code: 'venue_not_found' });
     });
 
-    it('takes a venue whose time zone and country the address book leaves out', async () => {
+    it('says to pick the venue again on the tournament when the venue is its own', async () => {
+      upstream.state.venues.push({ id: HALL.id, name: HALL.label, formattedAddress: '2 Main St', country: 'US', timeZone: 'America/Denver' });
+      const id = planWith(customTemplate().id, { venue: HALL });
+      expect(await service.creation.planItem(L, id)).toMatchObject({
+        kind: 'fail',
+        code: 'venue_not_found',
+        message: "Town Hall has changed in the organizer's address book. Pick the venue again on this tournament.",
+      });
+    });
+
+    it('takes a venue whose time zone and country the address book leaves out, as the dialog stores it', async () => {
       const id = plan(customTemplate().id, '2026-11-06');
       upstream.state.venues = [{ ...upstream.state.venues[0]!, timeZone: null, country: null }];
       expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'send' });
+    });
+
+    it('refuses a zone or country the address book leaves out when it isn’t what the dialog would store', async () => {
+      upstream.state.venues.push({ id: HALL.id, name: HALL.label, formattedAddress: '2 Main St', country: null, timeZone: null });
+      const zoned = planWith(customTemplate().id, { venue: { ...HALL, timeZone: 'Pacific/Kiritimati' } });
+      expect(await service.creation.planItem(L, zoned)).toMatchObject({ kind: 'fail', code: 'venue_not_found' });
+      const abroad = planWith(customTemplate({ name: 'Other {month}' }).id, { venue: { ...HALL, country: 'CA' } });
+      expect(await service.creation.planItem(L, abroad)).toMatchObject({ kind: 'fail', code: 'venue_not_found' });
     });
   });
 

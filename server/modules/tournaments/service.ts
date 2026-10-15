@@ -350,6 +350,9 @@ const UPCOMING_DAYS = 26 * 7;
 /** Upcoming's longest range, so a year of planned tournaments fits. */
 const MAX_UPCOMING_DAYS = 366;
 
+/** The country a venue takes when play-tools leaves it out, as the form stores it (`venueValue`, Update #91). */
+const VENUE_COUNTRY_FALLBACK = 'US';
+
 /** How far ahead a preview looks: the recurrence engine's longest range. */
 const PREVIEW_DAYS = 400;
 
@@ -1052,12 +1055,14 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         return { kind: 'fail', code: 'venue_not_found', message: `${settings.venue.label} is no longer in the organizer's address book. Pick another venue on the template.` };
       }
       // The start instant and the series window come from the stored zone and country, which the browser sent
-      // (#162): play-tools' own entry must agree. Play-tools may leave either out; that isn't a disagreement.
-      if ((listed.timeZone !== null && listed.timeZone !== settings.venue.timeZone) || (listed.country !== null && listed.country !== settings.venue.country)) {
+      // (#162): play-tools' own entry must agree. Where play-tools leaves either out, the form stores the league's
+      // zone and `US` (`venueValue`), so that is what it must be.
+      if ((listed.timeZone ?? deps.timeZone) !== settings.venue.timeZone || (listed.country ?? VENUE_COUNTRY_FALLBACK) !== settings.venue.country) {
+        const own = settings.venue.id !== template.venueId || settings.venue.timeZone !== template.venueTimeZone || settings.venue.country !== template.venueCountry;
         return {
           kind: 'fail',
           code: 'venue_not_found',
-          message: `${settings.venue.label} has changed in the organizer's address book. Pick the venue again on this tournament.`,
+          message: `${settings.venue.label} has changed in the organizer's address book. Pick the venue again on ${own ? 'this tournament' : 'the template'}.`,
         };
       }
       return {

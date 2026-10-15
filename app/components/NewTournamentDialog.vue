@@ -77,9 +77,23 @@ function discardChanges() {
 }
 
 let optionsSeq = 0;
-async function loadOptions() {
+/** The template and date the current options (or their error) were read for: other choices never judge by them. */
+let optionsKey = '';
+async function loadOptions(again = false) {
   const t = template.value;
+  const key = t ? `${t.id}|${date.value}` : '';
+  if (key !== optionsKey) {
+    // Another template or date: drop what was read for the last one, even while collapsed.
+    ++optionsSeq;
+    optionsKey = '';
+    options.value = null;
+    optionsError.value = null;
+    loadingOptions.value = false;
+  }
   if (!t || !showDetails.value) return;
+  // Re-opening the details reads nothing new; only Try again does.
+  if (key === optionsKey && !again) return;
+  optionsKey = key;
   const seq = ++optionsSeq;
   loadingOptions.value = true;
   optionsError.value = null;
@@ -157,7 +171,7 @@ async function save() {
     toast.add({ color: 'success', title: `Planned for ${dayLabel(date.value)}` });
     open.value = false;
   } catch (err) {
-    error.value = plannedErrorText(apiErrorCode(err)) ?? apiErrorMessage(err, 'Could not plan the tournament.');
+    error.value = plannedErrorText(apiErrorCode(err), template.value?.name) ?? apiErrorMessage(err, 'Could not plan the tournament.');
   } finally {
     saving.value = false;
   }
@@ -252,7 +266,7 @@ async function save() {
             <p v-if="formatChoices.note" class="text-sm text-muted">{{ formatChoices.note }}</p>
             <p v-if="loadingOptions" class="text-sm text-muted">Reading play-tools’ choices…</p>
             <UAlert v-if="optionsError" color="warning" variant="subtle" icon="i-lucide-circle-alert" :title="optionsError">
-              <template #actions><UButton size="xs" variant="outline" @click="loadOptions">Try again</UButton></template>
+              <template #actions><UButton size="xs" variant="outline" @click="loadOptions(true)">Try again</UButton></template>
             </UAlert>
           </div>
           <p v-if="problem" class="text-sm text-muted">{{ problem }}</p>

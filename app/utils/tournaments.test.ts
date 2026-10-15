@@ -48,7 +48,7 @@ import {
   plannedErrorText,
   typeStillOffered,
 } from './tournaments';
-import { periodLabel, todayIn } from './dates';
+import { dayLabel, periodLabel, todayIn } from './dates';
 
 // The Tournaments page's decisions (#98): what each cell, entry and dialog shows and what it may send. Every
 // "today" is passed in; nothing here reads the clock.
@@ -925,7 +925,7 @@ describe('New tournament with details changed from the template (#162)', () => {
     ])('falls back to the game’s formats, with a note, when %s', (_, date, o) => {
       expect(newTournamentFormats(premierTemplate, AS_TEMPLATE, o, date)).toEqual({
         formats: ['tcg_std', 'tcg_exp'],
-        note: `No single League Challenge series for ${date}; check the format when you create it.`,
+        note: `No single League Challenge series for ${dayLabel(date)}; check the format when you create it.`,
       });
     });
 
@@ -936,10 +936,10 @@ describe('New tournament with details changed from the template (#162)', () => {
 
   it.each([
     ['already_planned', 'That tournament is already planned for this date and time. Change it with Edit… instead.'],
-    ['template_archived', 'That template is archived. Choose another template.'],
+    ['template_archived', '“Friday Cup” is archived. Choose another template.'],
     ['contact_required', 'Give this tournament a contact email or phone.'],
     ['something_else', null],
   ])('explains %s', (code, text) => {
-    expect(plannedErrorText(code)).toBe(text);
+    expect(plannedErrorText(code, 'Friday Cup')).toBe(text);
   });
 });
