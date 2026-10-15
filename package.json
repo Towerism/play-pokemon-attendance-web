@@ -61,7 +61,7 @@
     "msw": "^2.15.0",
     "semantic-release": "^25.0.9",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.0",
     "vitest": "^3.2.7",
     "vue-tsc": "^3.3.13"
   },
