@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.28
 #
 # One image definition for the project, one stage per role:
 #   app     (default) the Nuxt server behind the entrypoint (ADR-0006), with an
