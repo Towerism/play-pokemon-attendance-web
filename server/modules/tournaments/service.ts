@@ -38,6 +38,7 @@ import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
 import { type ListedTournament, type RequiredEvents, createRequiredEvents } from './required-events';
 import { type TournamentRequirements, createRequirements } from './requirements';
+import { tdfAvailableIn } from './results';
 import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, planSchedule, type PlannedRowState } from './plan';
 import { type RegistrationSettings, type SettingsOverrides, type TemplateVenue, resolveSettings } from './settings';
 import { type TemplateType, type TypeResolution, offeredOn, resolveSeries } from './series';
@@ -147,6 +148,8 @@ export interface UpcomingEntry {
   errorCode: string | null;
   /** When a create was last sent (ISO); the Retry create dialog says it may still land. */
   lastAttemptAt: string | null;
+  /** **Download TDF** would serve a file (ADR-0012 decision 7); set on Upcoming reads, from local rows only. */
+  tdfAvailable: boolean;
   actions: UpcomingAction[];
 }
 
@@ -652,6 +655,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       upstreamStatus: row.upstreamStatus,
       errorCode: row.errorCode,
       lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null,
+      tdfAvailable: false,
       actions: [
         ...(creatable ? (['create'] as const) : []),
         ...(replannable ? (['skip'] as const) : []),
@@ -745,6 +749,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       upstreamStatus: t.status,
       errorCode: null,
       lastAttemptAt: null,
+      tdfAvailable: false,
       actions: [],
     };
   }
@@ -803,9 +808,16 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       .filter((l) => !linked.has(l.tournament.id))
       .map((l) => upstreamEntry(l.tournament, organizerOf(l.organizer.professorPlayerId!, conns)))
       .filter((e) => e.localDate >= from && e.localDate <= to);
-    const tournaments = [...planned, ...others].sort(
-      (a, b) => a.localDate.localeCompare(b.localDate) || (a.startsAt ?? a.startTime).localeCompare(b.startsAt ?? b.startTime) || (a.plannedId ?? 0) - (b.plannedId ?? 0),
+    const withTdf = tdfAvailableIn(
+      db,
+      leagueId,
+      [...planned, ...others].flatMap((e) => (e.tournamentId === null ? [] : [e.tournamentId])),
     );
+    const tournaments = [...planned, ...others]
+      .map((e) => (e.tournamentId !== null && withTdf.has(e.tournamentId) ? { ...e, tdfAvailable: true } : e))
+      .sort(
+        (a, b) => a.localDate.localeCompare(b.localDate) || (a.startsAt ?? a.startTime).localeCompare(b.startsAt ?? b.startTime) || (a.plannedId ?? 0) - (b.plannedId ?? 0),
+      );
     return { timeZone: deps.timeZone, from, to, tournaments, upstream: status, unread: listed.unread };
   }
 
