@@ -123,6 +123,8 @@ export interface TournamentResults {
   /** @throws PokemonUpstreamError `not_connected`, `needs_reconnect`, or the read's own: the job stops with it */
   jobCheck(leagueId: string, uploadId: number): Promise<JobCheck>;
   record(uploadId: number, patch: UploadPatch): void;
+  /** The upload's state and play-tools' upload id, for a job's recovery; null when it is gone. */
+  peek(uploadId: number): { state: UploadState; upstreamUploadId: string | null; errorCode: string | null } | null;
   /** The archived file is kept for results (ADR-0012 decision 5): it was sent. */
   markKept(uploadId: number): void;
   /** The attendance import of the same drop (M3 commit). @throws the import's errors */
@@ -625,7 +627,12 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
     },
 
     record(uploadId, patch) {
-      update(uploadId, patch);
+      if (Object.keys(patch).length > 0) update(uploadId, patch);
+    },
+
+    peek(uploadId) {
+      const row = byId(uploadId);
+      return row ? { state: row.state, upstreamUploadId: row.upstreamUploadId, errorCode: row.errorCode } : null;
     },
 
     markKept(uploadId) {

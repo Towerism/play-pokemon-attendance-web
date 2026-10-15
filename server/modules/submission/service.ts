@@ -15,6 +15,8 @@ import type { ApplyBody, CancelBody, EditTarget } from '../../../shared/schemas/
 import type { CancelItem, CancelRead, TournamentCancelling } from '../tournaments/cancelling';
 import type { EditItem, ItemRead, TournamentEditing } from '../tournaments/editing';
 import type { CreatePlan, TournamentCreation, TournamentsService } from '../tournaments/service';
+import type { ConfirmPlan, RemovalPlan, TournamentResults } from '../tournaments/results';
+import type { ResultsConfirmBody } from '../../../shared/schemas/results';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
 import { dateIn } from '../../../shared/time/local-time';
@@ -111,7 +113,7 @@ export interface TournamentItemView {
  * data.
  */
 export interface SupportDetails {
-  action: 'create' | 'edit' | 'reschedule' | 'cancel';
+  action: 'create' | 'edit' | 'reschedule' | 'cancel' | 'upload';
   sentAt: string | null;
   league: { displayId: string | null };
   tournament: { displayId: string | null; name: string; date: string };
@@ -120,6 +122,10 @@ export interface SupportDetails {
   code: string | null;
   message: string | null;
   correlationId: string | null;
+  /** A results upload's play-tools upload id (`upload_guid`), once validate answered (#96). */
+  uploadGuid?: string | null;
+  /** A results upload's validation error codes (#96); never player data. */
+  errors?: string[];
 }
 
 /** What a staff import read and found (ADR-0007 decision 5). */
@@ -275,6 +281,26 @@ export interface SubmissionService {
     leagueId: string,
     input: { target: EditTarget; body: CancelBody; startedBy: string },
   ): Promise<{ submissionId: number } | { submissionId: null; outcome: 'already_cancelled' }>;
+  /**
+   * **Upload results** (ADR-0011 decision 4): the confirm's checks, then a `tdf_upload` job that validates (the send)
+   * and confirms only if play-tools accepts the file.
+   * @throws TournamentsError (the confirm's refusals), SubmissionError `submission_running`, `shutting_down`
+   */
+  uploadResults(
+    leagueId: string,
+    input: { date: SessionDate; tournamentId: string; uploadId: number; body: ResultsConfirmBody; startedBy: string },
+  ): Promise<{ submissionId: number }>;
+  /**
+   * **Remove from staff** (ADR-0007 update, #101): the server's checks, then a staff job that only removes those
+   * players' staff records, as the tournament's organizer.
+   * @throws TournamentsError `not_removable` and the checks' others, SubmissionError `submission_running`, `shutting_down`
+   */
+  removeResultsStaff(
+    leagueId: string,
+    input: { date: SessionDate; tournamentId: string; uploadId: number; playerIds: readonly PlayerId[]; startedBy: string },
+  ): Promise<{ submissionId: number }>;
+  /** A `tdf_upload` job's processing, followed on this read (Update #96 D10); a no-op for other jobs. */
+  followResults(leagueId: string, submissionId: number): Promise<void>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
   /** Persisted events after `afterId`, oldest first. @throws SubmissionError `not_found` */
@@ -311,8 +337,10 @@ export interface SubmissionDeps {
     | 'unassignStaff'
   >;
   /** The calls a tournament job makes besides the tournaments module's reads, as one professor's connection (#92). */
-  tournamentGateway?: (connectionId: number) => Pick<PlayToolsGateway, 'createTournament' | 'editTournament' | 'cancelTournament' | 'getTournament'>;
-  staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff'>;
+  tournamentGateway?: (
+    connectionId: number,
+  ) => Pick<PlayToolsGateway, 'createTournament' | 'editTournament' | 'cancelTournament' | 'getTournament' | 'validateResults' | 'confirmResults'>;
+  staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff' | 'forgetPlayed'>;
   resolver: PlaySessionResolver;
   /** Planned tournaments, for `tournament_create` jobs (#92); only those jobs need it. */
   tournaments?: {
@@ -322,6 +350,8 @@ export interface SubmissionDeps {
     cancelling?: TournamentCancelling;
     /** Required-events coverage: its cached listings are dropped when a tournament job ends (#95). */
     requiredEvents?: Pick<TournamentsService['requiredEvents'], 'listingsChanged'>;
+    /** TDF results uploads (#96): `tdf_upload` jobs and Remove-from-staff jobs reach uploads only through it. */
+    results?: TournamentResults;
   };
   /** At least this long between tournament creates (NUXT_TOURNAMENT_DELAY_MS): default 5 s, never under 2 s (ADR-0010 decision 5). */
   tournamentDelayMs?: number;
@@ -415,11 +445,14 @@ class Interrupted extends Error {
 }
 
 /** Jobs whose items are `submission_tournament_item` rows (ADR-0010 decision 7). */
-const isTournamentJob = (row: { kind: SubmissionKind }) => row.kind === 'tournament_create' || row.kind === 'tournament_edit' || row.kind === 'tournament_cancel';
+const isTournamentJob = (row: { kind: SubmissionKind }) =>
+  row.kind === 'tournament_create' || row.kind === 'tournament_edit' || row.kind === 'tournament_cancel' || row.kind === 'tdf_upload';
+/** A staff job started by Remove from staff (#96): it only removes the players it names. */
+const isRemoval = (row: { kind: SubmissionKind; resultsUploadId: number | null }) => row.kind === 'staff' && row.resultsUploadId !== null;
 
 /** How logs name a job. */
 const what = (row: { kind: SubmissionKind }) =>
-  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', tournament_create: 'Tournament create', tournament_edit: 'Tournament edit', tournament_cancel: 'Tournament cancel', ...IMPORT_LABEL })[row.kind];
+  ({ submit: 'Submission', undo: 'Undo', clear: 'Clear', staff: 'Staff job', tournament_create: 'Tournament create', tournament_edit: 'Tournament edit', tournament_cancel: 'Tournament cancel', tdf_upload: 'Results upload', ...IMPORT_LABEL })[row.kind];
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -541,9 +574,19 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       const outcomes = tournamentItems(row.id).map((i) => i.outcome);
       const count = (...o: TournamentItemOutcome[]) => outcomes.filter((x) => o.includes(x)).length;
       return {
-        added: count('created', 'edited', 'cancelled'),
+        added: count('created', 'edited', 'cancelled', 'processing', 'uploaded'),
         alreadyPresent: count('already_exists', 'already_applied', 'already_cancelled'),
-        failed: count('refused', 'failed', 'unknown', 'date_too_far_past', 'date_too_far_ahead'),
+        failed: count(
+          'refused',
+          'failed',
+          'unknown',
+          'date_too_far_past',
+          'date_too_far_ahead',
+          'not_accepted',
+          'warnings_changed',
+          'validate_unknown',
+          'processing_failed',
+        ),
         skipped: count('skipped'),
         unrequested: 0,
       };
@@ -1802,6 +1845,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   /** A tournament job that stopped: a create sent with no answer may have landed (`unknown`); the rest are released. */
   function stopTournamentItems(row: Row): void {
+    if (row.kind === 'tdf_upload') {
+      stopTdfUpload(row);
+      return;
+    }
     if (row.kind === 'tournament_edit' || row.kind === 'tournament_cancel') {
       // An edit or a cancel is idempotent: one in flight is `unknown`, and a retry re-reads before sending it again.
       // Only the item changes: the planned row and staff wait for what the retry finds.
@@ -2363,6 +2410,369 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'finished', `Tournament cancel ${status}.`, total, total);
   }
 
+  // --- TDF results upload (#96, ADR-0011) ---------------------------------------
+
+  function results(): TournamentResults {
+    if (!deps.tournaments?.results) throw new Error('This app was built without the tournaments module.');
+    return deps.tournaments.results;
+  }
+
+  /**
+   * The confirm (ADR-0011 decision 4): its fingerprint checked against the preview's, then the `tdf_upload` job, its
+   * item, the upload marked `sending` and the lease, in one transaction.
+   */
+  async function beginTdfUpload(
+    leagueId: string,
+    input: { date: SessionDate; tournamentId: string; uploadId: number; body: ResultsConfirmBody; startedBy: string },
+  ): Promise<{ submissionId: number }> {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    const r = results();
+    const plan: ConfirmPlan = r.prepareConfirm(leagueId, input.date, input.tournamentId, input.uploadId, input.body);
+    const organizer = deps.connections.listActingConnections().find((c) => c.professorPlayerId === plan.professorPlayerId);
+    const row = db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: plan.date,
+          playSessionId: '',
+          playSessionLabel: `Upload results ${plan.label}`,
+          startedBy: input.startedBy,
+          professorPlayerId: plan.professorPlayerId,
+          professorName: organizer?.professorName ?? null,
+          startedAt: now(),
+          status: 'planned',
+          retryOf: null,
+          kind: 'tdf_upload',
+          resultsUploadId: plan.uploadId,
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      if (!r.markSending(plan.uploadId, { by: input.startedBy, fingerprint: input.body.acknowledgedWarnings, submissionId: created.id })) {
+        throw new TournamentsError('upload_not_open', 'This upload was already sent or closed. Use Upload again….', { state: r.peek(plan.uploadId)?.state ?? null });
+      }
+      db.insert(submissionTournamentItem)
+        .values({
+          submissionId: created.id,
+          position: 0,
+          plannedTournamentId: null,
+          tournamentId: plan.tournamentId,
+          label: plan.label,
+          outcome: 'pending',
+          changes: { importAttendance: plan.importAttendance },
+          professorPlayerId: plan.professorPlayerId,
+        })
+        .run();
+      return created;
+    });
+    launch(row);
+    return { submissionId: row.id };
+  }
+
+  /**
+   * `tdf_upload` (ADR-0011 decisions 4 and 7): paced, then a fresh check as the organizer just before the send; validate
+   * (the send: Pokémon support gets a copy), confirm only if play-tools accepted the file, commit attendance, then end.
+   * Nothing is ever sent twice: a 5xx on validate is `validate_unknown`, and one on confirm is settled by a read.
+   */
+  async function runTdfUpload(row: Row): Promise<void> {
+    const { leagueId } = row;
+    const uploadId = row.resultsUploadId!;
+    const r = results();
+    setStatus(row, 'running');
+    const item = tournamentItems(row.id)[0]!;
+    const importAttendance = (item.changes as { importAttendance?: boolean } | null)?.importAttendance === true;
+    const name = item.label.replace(/ · \d{4}-\d{2}-\d{2}$/, '');
+    const date = row.sessionDate;
+    emit(row, 'planned', 'One file to upload.', 0, 1);
+
+    const end = (outcome: TournamentItemOutcome, set: Partial<typeof submissionTournamentItem.$inferInsert> = {}, upload: Parameters<TournamentResults['record']>[1] = {}) => {
+      r.record(uploadId, upload);
+      setTournamentItem(row.id, item.position, { outcome, ...set });
+      emit(row, 'tournament_sent', `${item.label}: ${outcome}.`, 1, 1);
+    };
+
+    // Wait its turn first, so the check that decides the send is the last thing before it.
+    if (stop.signal.aborted) throw stop.signal.reason;
+    const last = lastTournamentPost.get(leagueId);
+    const wait = last === undefined ? 0 : last + tournamentDelayMs - now().getTime();
+    renewLock(row, Math.max(0, wait));
+    if (wait > 0) await sleep(wait, stop.signal);
+
+    let check: Awaited<ReturnType<TournamentResults['jobCheck']>>;
+    try {
+      check = await r.jobCheck(leagueId, uploadId);
+    } catch (err) {
+      if (!(err instanceof PokemonUpstreamError)) throw err;
+      end('failed', { errorCode: err.code, error: err.message }, { state: 'failed', errorCode: err.code });
+      return finishTdfUpload(row, false);
+    }
+    if (stop.signal.aborted) throw stop.signal.reason;
+    if (check.kind === 'blocked') {
+      const refused = check.code === 'results_already_uploaded' || check.code === 'results_not_accepted';
+      end(refused ? 'refused' : 'failed', { errorCode: check.code, error: check.message }, { state: 'failed', errorCode: check.code });
+      return finishTdfUpload(row, false);
+    }
+    if (check.kind === 'warnings_changed') {
+      end('warnings_changed', { error: 'The warnings changed since they were shown. Nothing was sent. Use Upload again… to check them.' }, { state: 'warnings_changed' });
+      return finishTdfUpload(row, false);
+    }
+
+    const { connectionId } = check;
+    const g = tournamentGateway(connectionId);
+    const sentAt = now();
+    setTournamentItem(row.id, item.position, { sentAt });
+    r.markKept(uploadId);
+    const at = { name, date, connectionId, sentAt, action: 'upload' as const, displayId: check.displayId };
+    renewLock(row);
+    lastTournamentPost.set(leagueId, now().getTime());
+    let validated: { uploadId: string; errors: readonly { code: string; message: string; detail: string | null }[] };
+    try {
+      validated = await g.validateResults(check.displayId, check.content);
+    } catch (err) {
+      if (err instanceof TypeError) {
+        end('failed', { errorCode: 'invalid_input', error: err.message }, { state: 'failed', errorCode: 'invalid_input' });
+        return finishTdfUpload(row, false);
+      }
+      if (!(err instanceof PokemonUpstreamError)) throw err;
+      if (err.code === 'unavailable' || err.code === 'unexpected_shape' || err.code === 'rate_limited') {
+        end(
+          'validate_unknown',
+          {
+            errorCode: err.code,
+            error: "We couldn't tell whether play-tools received this file. Pokémon support may have a copy. Check the tournament in play-tools before you upload again.",
+            support: support(leagueId, at, err),
+          },
+          { state: 'validate_unknown', errorCode: err.code },
+        );
+      } else {
+        end('refused', { errorCode: err.code, error: err.message, support: support(leagueId, at, err) }, { state: 'failed', errorCode: err.code });
+      }
+      return finishTdfUpload(row, importAttendance);
+    }
+    const errors = [...validated.errors];
+    r.record(uploadId, { upstreamUploadId: validated.uploadId, upstreamErrors: errors });
+    const details = { ...support(leagueId, at), uploadGuid: validated.uploadId, errors: errors.map((e) => e.code) };
+    if (errors.length > 0) {
+      end(
+        'not_accepted',
+        { error: 'play-tools did not accept this file. Pokémon support can access the file from this failed attempt.', support: details },
+        { state: 'not_accepted' },
+      );
+      return finishTdfUpload(row, importAttendance);
+    }
+
+    // Recorded before the confirm goes out: a crash after it is settled on read, never confirmed twice (D8).
+    r.record(uploadId, { state: 'processing' });
+    try {
+      await g.confirmResults(validated.uploadId, check.tournamentId);
+      end('processing', { errorCode: null, error: null });
+    } catch (err) {
+      if (!(err instanceof PokemonUpstreamError)) throw err;
+      if (err.code === 'unavailable' || err.code === 'unexpected_shape') {
+        emit(row, 'retrying', `${err.message} Reading the tournament to see whether the confirm landed; it is never sent twice.`, 0, 1);
+        const state = await r.follow(leagueId, uploadId);
+        if (state === 'failed') {
+          end('failed', { errorCode: 'confirm_not_landed', error: "play-tools doesn't show this upload confirmed. Use Upload again….", support: { ...support(leagueId, at, err), uploadGuid: validated.uploadId } });
+        } else {
+          end(state === 'complete' ? 'uploaded' : 'processing', { errorCode: null, error: null });
+        }
+      } else {
+        end('failed', { errorCode: err.code, error: err.message, support: { ...support(leagueId, at, err), uploadGuid: validated.uploadId } }, { state: 'failed', errorCode: err.code });
+      }
+    }
+    return finishTdfUpload(row, importAttendance);
+  }
+
+  /** After the send was attempted: the attendance import (if ticked), then the job's status. The lease is freed after. */
+  function finishTdfUpload(row: Row, commitAttendance: boolean): void {
+    const item = tournamentItems(row.id)[0]!;
+    let attendanceFailed = false;
+    if (commitAttendance) {
+      try {
+        results().commitAttendance(row.leagueId, row.resultsUploadId!);
+      } catch (err) {
+        attendanceFailed = true;
+        const note = `attendance not imported: ${(err as Error).message}`;
+        setTournamentItem(row.id, item.position, { error: item.error ? `${item.error} (${note})` : note });
+        log.warn(`Results upload #${row.id} could not import attendance: ${(err as Error).message}`, { submissionId: row.id });
+      }
+    }
+    const sent = item.outcome === 'processing' || item.outcome === 'uploaded';
+    const status = sent ? (attendanceFailed ? 'partial' : 'succeeded') : 'failed';
+    emit(row, 'reconciled', sent ? 'play-tools is processing the results.' : "play-tools didn't take the results.", 1, 1);
+    setStatus(row, status);
+    emit(row, 'finished', `Results upload ${status}.`, 1, 1);
+  }
+
+  /**
+   * A `tdf_upload` stopped by a crash or shutdown (FR-32): a validate with no answer is `validate_unknown`, a confirm
+   * that went out is `processing` (settled on read), anything earlier is skipped. Nothing is sent.
+   */
+  function stopTdfUpload(row: Row): void {
+    const item = tournamentItems(row.id)[0];
+    if (!item || item.outcome !== 'pending' || row.resultsUploadId === null) return;
+    const r = results();
+    const upload = r.peek(row.resultsUploadId);
+    if (upload?.state === 'processing') {
+      setTournamentItem(row.id, item.position, { outcome: 'processing' });
+    } else if (item.sentAt && !upload?.upstreamUploadId) {
+      setTournamentItem(row.id, item.position, {
+        outcome: 'validate_unknown',
+        error: 'The app stopped while play-tools was validating this file. Pokémon support may have a copy. Check the tournament in play-tools before you upload again.',
+      });
+      r.record(row.resultsUploadId, { state: 'validate_unknown' });
+    } else {
+      setTournamentItem(row.id, item.position, { outcome: 'skipped' });
+      r.record(row.resultsUploadId, { state: 'failed', errorCode: 'interrupted' });
+    }
+  }
+
+  // --- Remove from staff (#96, ADR-0007 update) ------------------------------
+
+  /** Inserts a removal-only staff job and its items, and takes the lease, in one transaction. */
+  function insertRemovalJob(leagueId: string, input: { plan: RemovalPlan; startedBy: string; retryOf: number | null }): Row {
+    const { plan } = input;
+    const organizer = deps.connections.listActingConnections().find((c) => c.professorPlayerId === plan.professorPlayerId);
+    return db.transaction(() => {
+      const created = db
+        .insert(submission)
+        .values({
+          leagueId,
+          sessionDate: plan.date,
+          playSessionId: plan.tournamentId,
+          playSessionLabel: `${STAFF_PREFIX}${plan.label}`,
+          startedBy: input.startedBy,
+          professorPlayerId: plan.professorPlayerId,
+          professorName: organizer?.professorName ?? null,
+          startedAt: now(),
+          status: 'planned',
+          retryOf: input.retryOf,
+          kind: 'staff',
+          resultsUploadId: plan.uploadId,
+        })
+        .returning()
+        .get();
+      acquireLock(leagueId, created.id);
+      deps.roster.ensurePlayers(
+        leagueId,
+        plan.playerIds.map((playerId) => ({ playerId })),
+      );
+      setItems(plan.playerIds.map((playerId) => ({ submissionId: created.id, playerId, origin: 'upstream' as const, outcome: 'pending' as const })));
+      return created;
+    });
+  }
+
+  /** A History retry of a removal job: the checks again for its players not removed yet, then a new removal job. */
+  async function retryStaffRemoval(row: Row, startedBy: string): Promise<{ submissionId: number }> {
+    if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+    const left = db
+      .select({ playerId: submissionItem.playerId, outcome: submissionItem.outcome })
+      .from(submissionItem)
+      .where(eq(submissionItem.submissionId, row.id))
+      .all()
+      .filter((i) => !GONE.includes(i.outcome))
+      .map((i) => i.playerId as PlayerId);
+    if (left.length === 0) throw new TournamentsError('nothing_to_retry', 'Everyone this job named is off the staff already.');
+    assertUnlocked(row.leagueId);
+    const plan = await results().checkRemovable(row.leagueId, row.sessionDate as SessionDate, row.playSessionId, row.resultsUploadId!, left);
+    const created = insertRemovalJob(row.leagueId, { plan, startedBy, retryOf: row.id });
+    launch(created);
+    return { submissionId: created.id };
+  }
+
+  /**
+   * Remove from staff (ADR-0007 update): for each named player, a fresh read; a `DELETE` of their staff record only if
+   * play-tools still lists them as staff (never the organizer's), paced like any staff write. A 5xx is settled by
+   * reading again before another try. Then the player is forgotten as this tournament's staff locally.
+   */
+  async function runStaffRemoval(row: Row): Promise<void> {
+    const { leagueId } = row;
+    const tournamentId = row.playSessionId;
+    const gateway = deps.staffGateway(stampedConnection(row));
+    setStatus(row, 'running');
+    const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
+    const total = items.length;
+    let done = 0;
+    emit(row, 'planned', `${total} to remove.`, 0, total);
+
+    const staffRecord = (people: readonly TournamentParticipant[], playerId: string) =>
+      people.find((p) => p.playerId === playerId && p.isStaff && p.role !== 'organizer');
+    async function read(): Promise<TournamentParticipant[]> {
+      try {
+        return await gateway.listTournamentParticipants(tournamentId);
+      } catch (err) {
+        if (err instanceof PokemonUpstreamError && err.code === 'not_found') throw new StaffStop('unknown_tournament');
+        if (err instanceof PokemonUpstreamError && STAFF_STOPS.has(err.code)) throw new StaffStop(err.code as 'tournament_locked' | 'forbidden');
+        throw err;
+      }
+    }
+    async function pace(): Promise<void> {
+      if (stop.signal.aborted) throw stop.signal.reason;
+      const lastWriteAt = lastStaffWrite.get(leagueId);
+      const w = lastWriteAt === undefined ? 0 : lastWriteAt + staffDelayMs - now().getTime();
+      renewLock(row, Math.max(0, w));
+      if (w > 0) await sleep(w, stop.signal);
+    }
+
+    for (const item of items) {
+      const playerId = item.playerId as PlayerId;
+      let outcome: StaffOutcome | undefined;
+      for (let tries = 0; !outcome; tries += 1) {
+        await pace();
+        const record = staffRecord(await read(), playerId);
+        if (!record) {
+          outcome = { outcome: 'already_removed' };
+          break;
+        }
+        try {
+          lastStaffWrite.set(leagueId, now().getTime());
+          const result = await gateway.unassignStaff(tournamentId, record.recordId, playerId);
+          outcome = { outcome: result === 'removed' ? 'removed' : 'already_removed', recordId: record.recordId };
+        } catch (err) {
+          if (err instanceof TypeError) outcome = { outcome: 'failed', error: err.message, errorCode: 'invalid_input' };
+          else if (!(err instanceof PokemonUpstreamError)) throw err;
+          else if (STAFF_STOPS.has(err.code) || CONNECTION_LOST.has(err.code)) throw err;
+          else if (!err.retryable || tries >= MAX_RETRIES) outcome = { outcome: 'failed', error: err.message, errorCode: err.code };
+          else emit(row, 'retrying', `${err.message} Checking whether the removal landed.`, done, total);
+        }
+      }
+      setOutcome(row.id, [playerId], {
+        outcome: outcome.outcome,
+        error: outcome.error ?? null,
+        errorCode: outcome.errorCode ?? null,
+        ...(outcome.recordId !== undefined ? { recordId: outcome.recordId } : {}),
+      });
+      done += 1;
+      emit(row, 'staff_sent', outcome.outcome === 'removed' ? `Removed ${playerId}.` : `${playerId}: ${outcome.outcome}.`, done, total);
+    }
+
+    finishRemovalOfStaff(row);
+    const final = db.select({ outcome: submissionItem.outcome }).from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
+    const missed = final.filter((i) => !GONE.includes(i.outcome)).length;
+    emit(row, 'reconciled', `${total - missed} of the ${total} are off the staff.`, total, total);
+    const status = missed === 0 ? 'succeeded' : missed < total ? 'partial' : 'failed';
+    setStatus(row, status);
+    emit(row, 'finished', `Staff job ${status}.`, total, total);
+  }
+
+  /** Each player play-tools no longer lists as staff is forgotten as this tournament's staff here (FR-19). */
+  function finishRemovalOfStaff(row: Row): void {
+    const gone = db
+      .select()
+      .from(submissionItem)
+      .where(and(eq(submissionItem.submissionId, row.id), inArray(submissionItem.outcome, GONE)))
+      .all();
+    for (const i of gone) {
+      try {
+        deps.staffing.forgetPlayed(row.leagueId, row.playSessionId, i.playerId as PlayerId);
+      } catch (err) {
+        log.warn(`${what(row)} #${row.id} could not forget staffer ${i.playerId} locally: ${(err as Error).message}`, { submissionId: row.id });
+        setOutcome(row.id, [i.playerId as PlayerId], { outcome: 'failed', error: `play-tools: ${i.outcome}; saving it here failed.`, errorCode: 'local_write_failed' });
+      }
+    }
+  }
+
   function tournamentItemView(i: typeof submissionTournamentItem.$inferSelect): TournamentItemView {
     return {
       position: i.position,
@@ -2385,7 +2795,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .where(and(eq(submissionItem.submissionId, row.id), eq(submissionItem.outcome, 'pending')))
       .run();
     if (row.kind === 'undo' || row.kind === 'clear') finishRemoval(row);
-    if (row.kind === 'staff') finishStaff(row);
+    if (row.kind === 'staff' && !isRemoval(row)) finishStaff(row);
+    if (isRemoval(row)) finishRemovalOfStaff(row);
     if (isTournamentJob(row)) stopTournamentItems(row);
     setStatus(row, status, error);
     if (isImport(row)) {
@@ -2408,13 +2819,17 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         : row.kind === 'clear'
           ? runClear(row)
           : row.kind === 'staff'
-            ? runStaff(row)
+            ? isRemoval(row)
+              ? runStaffRemoval(row)
+              : runStaff(row)
             : row.kind === 'tournament_create'
               ? runTournamentCreate(row)
               : row.kind === 'tournament_edit'
               ? runTournamentEdit(row)
               : row.kind === 'tournament_cancel'
               ? runTournamentCancel(row)
+              : row.kind === 'tdf_upload'
+              ? runTdfUpload(row)
               : isImport(row)
               ? runImport(row)
               : run(row)
@@ -2432,7 +2847,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       })
       .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
       // However it ended, play-tools may have changed: coverage lists again (ADR-0010 decision 12).
-      .finally(() => {
+      .finally(async () => {
+        // Remove from staff: the preview's checks again now the job ended (Update #96 D6), best effort.
+        if (isRemoval(row)) await deps.tournaments?.results?.recheckAfterStaff(row.leagueId, row.resultsUploadId!);
         if (!isTournamentJob(row)) return;
         try {
           deps.tournaments?.requiredEvents?.listingsChanged();
@@ -2826,6 +3243,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
       if (row.kind === 'undo') return beginUndo(leagueId, mustFind(leagueId, row.undoOf!), startedBy, row.id);
       if (row.kind === 'clear') return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
+      if (row.kind === 'tdf_upload') {
+        throw new TournamentsError('use_upload_again', 'A results upload is never sent again on its own. Use Upload again… to check the file and send it.');
+      }
+      if (isRemoval(row)) return retryStaffRemoval(row, startedBy);
       if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
       if (isImport(row)) return beginImport(row.kind, leagueId, startedBy, row.id);
       if (row.kind === 'tournament_edit') return retryTournamentEdit(row, startedBy);
@@ -2915,6 +3336,28 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     editTournaments: async (leagueId, input) => beginTournamentEdit(leagueId, input),
 
     cancelTournament: async (leagueId, input) => beginTournamentCancel(leagueId, input),
+
+    uploadResults: async (leagueId, input) => beginTdfUpload(leagueId, input),
+
+    async removeResultsStaff(leagueId, input) {
+      if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+      assertUnlocked(leagueId);
+      const plan = await results().checkRemovable(leagueId, input.date, input.tournamentId, input.uploadId, input.playerIds);
+      if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
+      const row = insertRemovalJob(leagueId, { plan, startedBy: input.startedBy, retryOf: null });
+      launch(row);
+      return { submissionId: row.id };
+    },
+
+    async followResults(leagueId, submissionId) {
+      const row = mustFind(leagueId, submissionId);
+      if (row.kind !== 'tdf_upload' || row.resultsUploadId === null) return;
+      const item = tournamentItems(row.id)[0];
+      if (item?.outcome !== 'processing') return;
+      const state = await results().follow(leagueId, row.resultsUploadId);
+      if (state === 'complete') setTournamentItem(row.id, item.position, { outcome: 'uploaded', errorCode: null });
+      if (state === 'failed') setTournamentItem(row.id, item.position, { outcome: 'processing_failed', errorCode: results().peek(row.resultsUploadId)?.errorCode ?? null });
+    },
 
     staffBatch(leagueId, batchId) {
       assertLeagueChosen(leagueId);

@@ -57,6 +57,16 @@ const STATUS: Record<TournamentsErrorCode, number> = {
   requirement_has_covers: 409,
   invalid_period: 400,
   too_many_requirements: 422,
+  results_not_accepted: 422,
+  results_already_uploaded: 422,
+  organizer_full_name_required: 422,
+  organizer_name_not_needed: 409,
+  tdf_file_deleted: 409,
+  not_removable: 422,
+  warnings_not_acknowledged: 422,
+  upload_not_open: 409,
+  use_upload_again: 422,
+  nothing_to_retry: 422,
 };
 
 /**

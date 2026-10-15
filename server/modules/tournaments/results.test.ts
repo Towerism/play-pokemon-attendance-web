@@ -137,7 +137,7 @@ describe('preview', () => {
     });
     expect(count('tdf_file')).toBe(1);
     const row = uploadRow(p.uploadId);
-    expect(row).toMatchObject({ state: 'previewed', sha256: sha(file()), attendance_upload_id: p.attendance.uploadId });
+    expect(row).toMatchObject({ state: 'previewed', sha256: sha(file()), attendance_upload_id: p.attendance!.uploadId });
     expect(archived(row.tdf_file_id!)).toBe(file());
     expect(reads()).toEqual([]);
   });
@@ -500,7 +500,7 @@ describe('expiry and the archive', () => {
     expect(archive.delete(L, uploadRow(p.uploadId).tdf_file_id!).referencedBy).toEqual(
       expect.arrayContaining([
         { kind: 'results', id: p.uploadId },
-        { kind: 'attendance', id: p.attendance.uploadId },
+        { kind: 'attendance', id: p.attendance!.uploadId },
       ]),
     );
     expect(uploadRow(p.uploadId).tdf_file_id).toBeNull();
