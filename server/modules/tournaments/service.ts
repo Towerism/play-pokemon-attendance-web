@@ -36,6 +36,7 @@ import { type TournamentCancelling, createCancelling } from './cancelling';
 import { type EditForm, type EditPreview, type TournamentEditing, createEditing } from './editing';
 import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
+import { createListingCache } from './listing-cache';
 import { type ListedTournament, type RequiredEvents, createRequiredEvents } from './required-events';
 import { type TournamentRequirements, createRequirements } from './requirements';
 import { tdfAvailableIn } from './results';
@@ -469,6 +470,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
 
   const today = () => dateIn(now(), deps.timeZone);
   const live = createLiveReads({ gateway: deps.gateway, now });
+  /** Each professor's listing, shared by coverage and Upcoming (ADR-0010 Update #95 item 8, #98). */
+  const listings = createListingCache({ gateway: deps.gateway, now });
 
   function scheduleActive(schedule: ScheduleRow): boolean {
     if (schedule.paused || schedule.archivedAt) return false;
@@ -1167,6 +1170,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   const requiredEvents = createRequiredEvents({
     connections: deps.connections,
     gateway: deps.gateway,
+    listings,
     live,
     requirements,
     planned: plannedForCoverage,
