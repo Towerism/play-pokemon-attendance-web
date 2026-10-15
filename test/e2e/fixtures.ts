@@ -18,7 +18,51 @@ const APP_ENV = {
   NUXT_UNDO_DELAY_MS: '500',
   // The smallest staff pacing the app accepts (`runtimeConfig.staff.delayMs`).
   NUXT_STAFF_DELAY_MS: '500',
+  // Tournament jobs clamp this up to their own minimum; the journeys create one tournament per job.
+  NUXT_TOURNAMENT_DELAY_MS: '0',
 };
+
+/** The league's time zone, as `APP_ENV.TZ` and the browser context both use. */
+export const LEAGUE_TZ = 'America/Chicago';
+
+/** The league's date `days` from today, on the real clock, as the server sees it. */
+export function leagueDay(days: number): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: LEAGUE_TZ }).format(new Date(Date.now() + days * 86_400_000));
+}
+
+/** A Custom tournament template run by the connected organizer at the fake's venue, over the API. */
+export async function tournamentTemplate(api: Api, overrides: Record<string, unknown> = {}): Promise<{ id: number; name: string }> {
+  const res = await api.request('/api/tournament-templates', {
+    method: 'POST',
+    json: {
+      name: 'Friday Cup',
+      organizerPlayerId: STAFF_ID,
+      product: 'tcg',
+      category: 'tcg_std',
+      type: { kind: 'custom' },
+      venue: { id: '00000000-0000-4000-8000-000000000051', label: 'Card Shop', timeZone: LEAGUE_TZ, country: 'US' },
+      startTime: '18:00',
+      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+      contactEmail: 'league@example.com',
+      ...overrides,
+    },
+  });
+  expect(res.status, 'create template').toBe(201);
+  return ((await res.json()) as { template: { id: number; name: string } }).template;
+}
+
+/** A one-off planned tournament from `templateId` on `localDate`, over the API. */
+export async function plannedTournament(api: Api, templateId: number, localDate: string): Promise<number> {
+  const res = await api.request('/api/planned-tournaments', { method: 'POST', json: { templateId, localDate } });
+  expect(res.status, 'plan tournament').toBe(201);
+  return ((await res.json()) as { planned: { plannedId: number } }).planned.plannedId;
+}
+
+/** No horizontal page scroll at the current viewport (mobile-first, architecture §8). */
+export async function expectNoHorizontalScroll(page: Page): Promise<void> {
+  const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+  expect(scrollWidth, 'horizontal page scroll').toBeLessThanOrEqual(innerWidth);
+}
 
 export type Api = ReturnType<typeof client>;
 
