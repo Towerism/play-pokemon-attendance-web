@@ -767,6 +767,7 @@ erDiagram
     text state "planned|skipped|creating (held by a job)|created|failed|cancelled|unknown (a create may have landed; #100)"
     text tournament_id "upstream guid once created or adopted; unique per league when set (#100)"
     datetime last_attempt_at "when a create was last sent (#100)"
+    bool skipped_while_unknown "skipped while unknown: held, and linked on read (#125)"
     text display_id
     text upstream_status "approval-pending|sanctioned|sanctioning-error|cancelled|complete…"
     text error_code

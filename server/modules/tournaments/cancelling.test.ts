@@ -193,6 +193,16 @@ describe('the confirm preview', () => {
     expect(upstream.state.calls).toEqual([]);
   });
 
+  it('refuses a row skipped while its create may have landed until it is linked, then cancels it like any other (#125)', async () => {
+    const id = created();
+    setRow(id, "state = 'skipped', skipped_while_unknown = 1, tournament_id = null");
+    expect(await refusal(service.cancelling.preview(L, byPlanned(id)))).toMatchObject({ code: 'not_editable', details: { state: 'skipped', skippedWhileUnknown: true } });
+    expect(upstream.state.calls).toEqual([]);
+
+    setRow(id, `tournament_id = '${GUID}'`);
+    expect(await service.cancelling.preview(L, byPlanned(id))).toMatchObject({ target: { plannedId: id, tournamentId: GUID }, cancellable: true });
+  });
+
   it.each(['cancelled', 'skipped'])('reads a %s row that holds a guid like a created one', async (state) => {
     const id = created();
     setRow(id, `state = '${state}'`);

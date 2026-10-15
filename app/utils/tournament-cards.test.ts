@@ -51,6 +51,7 @@ function entry(overrides: Partial<UpcomingEntry> = {}): UpcomingEntry {
     upstreamStatus: null,
     errorCode: null,
     lastAttemptAt: null,
+    skippedWhileUnknown: false,
     tdfAvailable: false,
     actions: ['create', 'skip'],
     ...overrides,

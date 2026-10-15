@@ -1,7 +1,7 @@
 import { LocalTimeError, dateIn, localInstant } from '../../../shared/time/local-time';
 import type { Registration, TournamentChanges, TournamentDetails } from '../pokemon/ports/play-tools-gateway';
 import { type LocalDate, addDays, timeIn } from './dates';
-import type { PlannedRowState } from './plan';
+import { type PlannedRowState, heldSkipped } from './plan';
 import type { RegistrationSettings, TemplateVenue } from './settings';
 
 /** What the organizer may change on a tournament (ADR-0010 decision 11), in the app's terms. */
@@ -129,10 +129,12 @@ export interface ScopeRow {
   occurrenceDate: LocalDate;
   localDate: LocalDate;
   state: PlannedRowState;
+  /** Skipped while its create may have landed (#125): left out like an `unknown` row. */
+  skippedWhileUnknown?: boolean;
 }
 
 export type EditScope = 'this' | 'later' | 'all';
-export type ScopeLeftOut = 'cancelled' | 'creating' | 'unknown' | 'before_window';
+export type ScopeLeftOut = 'cancelled' | 'creating' | 'unknown' | 'skipped_while_unknown' | 'before_window';
 
 const LEFT_OUT_STATES: Partial<Record<PlannedRowState, ScopeLeftOut>> = { cancelled: 'cancelled', creating: 'creating', unknown: 'unknown' };
 
@@ -160,7 +162,8 @@ export function selectScope(
   const leftOut: { row: ScopeRow; sibling: boolean; reason: ScopeLeftOut }[] = [];
   for (const row of picked) {
     const sibling = row.slotPosition !== target.slotPosition;
-    const reason = LEFT_OUT_STATES[row.state] ?? (row.localDate < opts.windowStart ? 'before_window' : undefined);
+    const reason =
+      LEFT_OUT_STATES[row.state] ?? (heldSkipped(row) ? 'skipped_while_unknown' : row.localDate < opts.windowStart ? 'before_window' : undefined);
     if (reason) leftOut.push({ row, sibling, reason });
     else inScope.push({ row, sibling });
   }

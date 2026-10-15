@@ -28,7 +28,7 @@ import {
 } from '../../db/schema';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { NewTournament, PlayToolsGateway, Series, Tournament, Venue } from '../pokemon/ports/play-tools-gateway';
+import type { NewTournament, PlayToolsGateway, Series, Tournament, TournamentDetails, Venue } from '../pokemon/ports/play-tools-gateway';
 import type { StaffingService } from '../staffing/service';
 import { type AdoptionTarget, type LeftOutReason, adoptionCandidates, isShortNotice, newTournament, selectCreateThrough } from './create';
 import { addDays, addMonths, type LocalDate, timeIn } from './dates';
@@ -40,7 +40,7 @@ import { createListingCache } from './listing-cache';
 import { type ListedTournament, type RequiredEvents, createRequiredEvents } from './required-events';
 import { type TournamentRequirements, createRequirements } from './requirements';
 import { tdfAvailableIn } from './results';
-import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, planSchedule, type PlannedRowState } from './plan';
+import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, heldSkipped, planSchedule, type PlannedRowState } from './plan';
 import { type RegistrationSettings, type SettingsOverrides, type TemplateVenue, resolveSettings } from './settings';
 import { type TemplateType, type TypeResolution, offeredOn, resolveSeries } from './series';
 import { type WindowProblem, checkCreatable, creatableWindow, sanctionBy } from './window';
@@ -149,6 +149,8 @@ export interface UpcomingEntry {
   errorCode: string | null;
   /** When a create was last sent (ISO); the Retry create dialog says it may still land. */
   lastAttemptAt: string | null;
+  /** Skipped while its create may have landed (#125): held until unskipped, and linked if it shows up. */
+  skippedWhileUnknown: boolean;
   /** **Download TDF** would serve a file (ADR-0012 decision 7); set on Upcoming reads, from local rows only. */
   tdfAvailable: boolean;
   actions: UpcomingAction[];
@@ -509,6 +511,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         startTime: r.startTime,
         state: r.state,
         overrides: r.overrides as RowOverrides,
+        skippedWhileUnknown: r.skippedWhileUnknown,
       })),
       today: today(),
       windowStart: creatableWindow(now(), deps.timeZone).from,
@@ -641,9 +644,9 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     }
     const organizer = organizerOf(template.organizerPlayerId, ctx.conns);
     const type = typeFor(row, template, ctx);
-    const replannable = row.state === 'planned' || row.state === 'failed';
+    const toCreate = row.state === 'planned' || row.state === 'failed';
     const actable = organizer.connected && startsAt !== null && checkCreatable(row.localDate, now(), deps.timeZone) === null;
-    const creatable = replannable && actable && type !== null && (type.kind === 'custom' || type.status === 'resolved');
+    const creatable = toCreate && actable && type !== null && (type.kind === 'custom' || type.status === 'resolved');
     return {
       plannedId: row.id,
       tournamentId: row.tournamentId,
@@ -667,10 +670,11 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       upstreamStatus: row.upstreamStatus,
       errorCode: row.errorCode,
       lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null,
+      skippedWhileUnknown: heldSkipped(row),
       tdfAvailable: false,
       actions: [
         ...(creatable ? (['create'] as const) : []),
-        ...(replannable ? (['skip'] as const) : []),
+        ...(toCreate || row.state === 'unknown' ? (['skip'] as const) : []),
         ...(row.state === 'skipped' ? (['unskip'] as const) : []),
         ...(row.state === 'unknown' && actable ? (['retry_create'] as const) : []),
       ],
@@ -762,6 +766,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       upstreamStatus: t.status,
       errorCode: null,
       lastAttemptAt: null,
+      skippedWhileUnknown: false,
       tdfAvailable: false,
       actions: [],
     };
@@ -873,7 +878,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     rows: readonly PlannedRow[],
     listed: readonly { tournament: Tournament; organizer: ActingConnection }[],
   ): Promise<boolean> {
-    const unknown = rows.filter((r) => r.state === 'unknown');
+    const unknown = rows.filter((r) => r.tournamentId === null && (r.state === 'unknown' || heldSkipped(r)));
     if (unknown.length === 0 || listed.length === 0) return false;
     const ctx = contextFor(unknown);
     let any = false;
@@ -894,13 +899,32 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       try {
         const found = await pickByFormat(theirs[0]!.organizer.id, candidates, settings.category);
         if (!found) continue;
-        setPlanned(leagueId, row.id, { state: 'created', tournamentId: found.id, displayId: found.displayId, upstreamStatus: found.applicationState ?? found.status, errorCode: null });
-        any = true;
+        if (linkLanded(leagueId, row.id, found)) any = true;
       } catch (err) {
         if (!(err instanceof PokemonUpstreamError)) throw err;
       }
     }
     return any;
+  }
+
+  /**
+   * Links a row to the tournament its create made, as the row is now, not as it was before the details read (#125):
+   * `unknown` becomes `created`, a held skipped row stays skipped, and anything else (a job took it, it was linked)
+   * is left alone. A tournament another row took meanwhile isn't linked twice. No await, so nothing changes between
+   * the check and the write.
+   */
+  function linkLanded(leagueId: string, id: number, found: TournamentDetails): boolean {
+    if (linkedGuids(leagueId).has(found.id)) return false;
+    const row = plannedRow(leagueId, id);
+    if (row.tournamentId !== null || !(row.state === 'unknown' || heldSkipped(row))) return false;
+    setPlanned(leagueId, id, {
+      state: row.state === 'unknown' ? 'created' : row.state,
+      tournamentId: found.id,
+      displayId: found.displayId,
+      upstreamStatus: found.applicationState ?? found.status,
+      errorCode: null,
+    });
+    return true;
   }
 
   /** The organizer's connection, if they can act; a job stops otherwise. */
@@ -909,6 +933,28 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     if (!c) throw new PokemonUpstreamError('not_connected', `Professor ${playerId}'s Pokémon account is no longer connected.`);
     if (c.status === 'needs_reconnect') throw new PokemonUpstreamError('needs_reconnect', `Reconnect ${c.professorName ?? `Professor ${playerId}`} in Settings.`);
     return c;
+  }
+
+  /**
+   * Skip or unskip a row whose create may have landed (#125). Nothing else changes on it: the create may land under
+   * its current date, time and series. Unskipping gives `created` once it was linked, else `unknown` again.
+   */
+  function updateUnsettled(row: PlannedRow, patch: PlannedPatch) {
+    const moves = patch.localDate !== undefined || patch.startTime !== undefined || patch.seriesId !== undefined;
+    let set: Partial<typeof plannedTournament.$inferInsert> = {};
+    if (row.state === 'unknown') {
+      if (moves || patch.skipped !== true) {
+        throw new TournamentsError('not_editable', 'This tournament may have been created in play-tools. Skip it, or retry the create.', { state: 'unknown' });
+      }
+      set = { state: 'skipped', skippedWhileUnknown: true };
+    } else {
+      if (moves) {
+        throw new TournamentsError('not_editable', 'This tournament may be in play-tools. Unskip it first.', { state: 'skipped', skippedWhileUnknown: true });
+      }
+      if (patch.skipped === false) set = { state: row.tournamentId ? 'created' : 'unknown', skippedWhileUnknown: false };
+    }
+    const updated = Object.keys(set).length === 0 ? row : db.update(plannedTournament).set(set).where(eq(plannedTournament.id, row.id)).returning().get();
+    return { planned: entryOf(updated, contextFor([updated])), warnings: [] };
   }
 
   function setPlanned(leagueId: string, id: number, set: Partial<typeof plannedTournament.$inferInsert>) {
@@ -1430,6 +1476,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
 
     updatePlanned(leagueId, id, patch) {
       const row = plannedRow(leagueId, id);
+      if (row.state === 'unknown' || heldSkipped(row)) return updateUnsettled(row, patch);
       if (!REPLANNABLE.has(row.state)) {
         throw new TournamentsError('not_editable', 'This tournament has reached play-tools, or is being created. Change it there, or with Edit….', { state: row.state });
       }

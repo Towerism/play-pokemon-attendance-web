@@ -145,6 +145,20 @@ describe('replanning after an edit', () => {
     ]);
   });
 
+  it('keeps a row skipped while its create may have landed: never deleted, never moved, its occurrence not replanned', () => {
+    const held = row('2026-10-20', 'skipped', { skippedWhileUnknown: true });
+    const linked = row('2026-10-27', 'skipped', { skippedWhileUnknown: true });
+    const ordinary = row('2026-11-03', 'skipped');
+    const gone = planSchedule(input({ schedule: thursdays, rows: [held, linked, ordinary] }));
+    expect(gone.delete).toEqual([ordinary.id]);
+    expect(gone.notInSchedule.sort()).toEqual([held.id, linked.id].sort());
+
+    const slots = [{ position: 0, templateId: 3, dayOffset: 1, startTime: '13:00' }];
+    const moved = planSchedule(input({ slots, rows: [held] }));
+    expect(moved.update).toEqual([]);
+    expect(keys(moved.insert)).not.toContain('2026-10-20#0');
+  });
+
   it('reports no update for a row already in step', () => {
     expect(planSchedule(input({ rows: [row('2026-10-20', 'planned')] })).update).toEqual([]);
   });

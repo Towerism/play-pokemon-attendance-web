@@ -120,12 +120,15 @@ export function cellView(req: Requirement, p: PeriodCoverage, ctx: { today: Loca
 }
 
 /** An Upcoming entry's status (ADR-0010 decision 10): the row's state, or play-tools' status once it is there. */
-export function entryStatus(e: Pick<UpcomingEntry, 'state' | 'tournamentId' | 'upstreamStatus' | 'errorCode'>): { label: string; color: BadgeColor } {
+export function entryStatus(
+  e: Pick<UpcomingEntry, 'state' | 'tournamentId' | 'upstreamStatus' | 'errorCode'> & Partial<Pick<UpcomingEntry, 'skippedWhileUnknown'>>,
+): { label: string; color: BadgeColor } {
   switch (e.state) {
     case 'planned':
       return { label: 'Planned', color: 'neutral' };
     case 'skipped':
-      return e.tournamentId ? { label: 'In play-tools, skipped here', color: 'warning' } : { label: 'Skipped', color: 'neutral' };
+      if (e.tournamentId) return { label: 'In play-tools, skipped here', color: 'warning' };
+      return e.skippedWhileUnknown ? { label: 'Skipped, may be in play-tools', color: 'warning' } : { label: 'Skipped', color: 'neutral' };
     case 'creating':
       return { label: 'Creating…', color: 'info' };
     case 'failed':
@@ -155,7 +158,8 @@ const LOCAL_ACTIONS: ReadonlySet<RowAction> = new Set(['skip', 'unskip', 'downlo
 export function rowActions(e: UpcomingEntry): { actions: RowAction[]; organizerNote: string | null; settings: boolean } {
   const actions: RowAction[] = [...e.actions];
   const upstreamCancelled = e.upstreamStatus === 'cancelled';
-  if (!['creating', 'unknown', 'cancelled'].includes(e.state) && !upstreamCancelled) actions.push('edit');
+  // A row skipped while its create may have landed is edited only once unskipped (#125).
+  if (!['creating', 'unknown', 'cancelled'].includes(e.state) && !e.skippedWhileUnknown && !upstreamCancelled) actions.push('edit');
   if (e.tournamentId && !['cancelled', 'creating', 'unknown'].includes(e.state) && !upstreamCancelled && e.upstreamStatus !== 'complete') actions.push('cancel');
   if (e.tdfAvailable) actions.push('download');
 

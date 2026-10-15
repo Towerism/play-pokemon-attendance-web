@@ -158,6 +158,18 @@ describe('the edit form', () => {
     await expect(service.editForm(L, planned(rows[1]!.id))).rejects.toMatchObject({ code: 'not_editable', details: { state } });
   });
 
+  it.each([
+    ['not linked', 'null'],
+    ['linked', `'${guid(1)}'`],
+  ])('refuses a row skipped while its create may have landed (%s), until it is unskipped (#125)', async (_, tournamentId) => {
+    const { rows } = await weekly();
+    setRow(rows[1]!.id, `state = 'skipped', skipped_while_unknown = 1, tournament_id = ${tournamentId}`);
+    const refused = { code: 'not_editable', details: { state: 'skipped', skippedWhileUnknown: true } };
+    await expect(service.editForm(L, planned(rows[1]!.id))).rejects.toMatchObject(refused);
+    await expect(service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }))).rejects.toMatchObject(refused);
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'New' } }))).rejects.toMatchObject(refused);
+  });
+
   it('marks a cancelled or old tournament as locked', async () => {
     const { rows } = await weekly();
     inPlayTools(rows[1]!.id, 1, { applicationState: 'cancelled' });
@@ -362,6 +374,20 @@ describe('applying locally', () => {
     expect((await service.editForm(L, planned(rows[4]!.id))).values.venue).toEqual(LIBRARY);
   });
 
+  it('leaves a row skipped while its create may have landed out, as it was (#125)', async () => {
+    const { rows } = await weekly();
+    const held = rows[3]!.id;
+    setRow(held, "state = 'skipped', skipped_while_unknown = 1");
+
+    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ venue: LIBRARY }, { scope: 'later' }));
+    expect(preview.leftOut).toEqual([{ entry: expect.objectContaining({ plannedId: held }), reason: 'skipped_while_unknown' }]);
+    await apply(planned(rows[1]!.id), { changes: { venue: LIBRARY }, scope: 'later' });
+
+    setRow(held, "state = 'planned', skipped_while_unknown = 0");
+    expect((await service.editForm(L, planned(held))).values.venue).toEqual(VENUE);
+    expect((await service.editForm(L, planned(rows[4]!.id))).values.venue).toEqual(LIBRARY);
+  });
+
   it('moves a planned row and sets its date as an override', async () => {
     const { rows } = await weekly();
     await apply(planned(rows[2]!.id), { changes: { localDate: '2026-10-29', startTime: '17:00' } });
@@ -379,6 +405,13 @@ describe('applying locally', () => {
 
     await apply(planned(rows[1]!.id), { changes: { details: 'Newer' }, updateTemplate: true, clearShadowingOverrides: true });
     expect(JSON.parse(rowOf(rows[3]!.id).overrides)).toEqual({ startTime: '17:00' });
+  });
+
+  it('never clears the overrides of a row skipped while its create may have landed (#125)', async () => {
+    const { rows } = await weekly();
+    setRow(rows[3]!.id, `state = 'skipped', skipped_while_unknown = 1, overrides = '${JSON.stringify({ details: 'Keep this' })}'`);
+    await apply(planned(rows[1]!.id), { changes: { details: 'Newer' }, updateTemplate: true, clearShadowingOverrides: true });
+    expect(JSON.parse(rowOf(rows[3]!.id).overrides)).toEqual({ details: 'Keep this' });
   });
 
   it('lists a one-off’s own details among the overrides that would still win, and clears them only when asked (#162)', async () => {

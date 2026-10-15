@@ -225,6 +225,13 @@ describe('selectScope: which rows of the schedule an edit reaches (ADR-0010 deci
     expect(selectScope([...rows, odd], target, { scope: 'later', withSiblings: false, windowStart }).leftOut).toEqual([{ row: odd, sibling: false, reason }]);
   });
 
+  it('leaves out a row skipped while its create may have landed (#125)', () => {
+    const held = row('2026-11-10', 0, { state: 'skipped', skippedWhileUnknown: true });
+    expect(selectScope([...rows, held], target, { scope: 'later', withSiblings: false, windowStart }).leftOut).toEqual([
+      { row: held, sibling: false, reason: 'skipped_while_unknown' },
+    ]);
+  });
+
   it('keeps planned, failed and skipped rows in scope: they are updated locally', () => {
     const local = (['planned', 'failed', 'skipped'] as const).map((state, i) => row(`2026-11-1${i}`, 0, { state }));
     expect(ids(selectScope([...rows, ...local], target, { scope: 'later', withSiblings: false, windowStart }).inScope)).toEqual([

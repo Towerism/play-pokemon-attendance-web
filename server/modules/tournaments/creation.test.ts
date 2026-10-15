@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
@@ -387,7 +387,7 @@ describe('linking an unknown row on read (Upcoming)', () => {
     setRow(id, "state = 'unknown', last_attempt_at = 1791997500");
 
     const before = (await service.upcoming(L, {})).tournaments.find((e) => e.plannedId === id)!;
-    expect(before).toMatchObject({ state: 'unknown', lastAttemptAt: '2026-10-14T17:05:00.000Z', actions: ['retry_create'] });
+    expect(before).toMatchObject({ state: 'unknown', lastAttemptAt: '2026-10-14T17:05:00.000Z', actions: ['skip', 'retry_create'] });
 
     upstream.state.tournaments = [upstreamTournament('g-late', '2026-11-07T00:00:00Z', { name: 'Friday Cup November', applicationState: 'approval-pending' })];
     // Upcoming's listing is cached for 5 minutes (#98): Refresh sees the late create at once.
@@ -407,6 +407,127 @@ describe('linking an unknown row on read (Upcoming)', () => {
     upstream.state.failNext.set('getTournament', new PokemonUpstreamError('unavailable', 'Down.'));
     await service.upcoming(L, {});
     expect(rowOf(id).state).toBe('unknown');
+  });
+});
+
+describe('linking a row skipped while its create may have landed (#125)', () => {
+  const landed = () => upstreamTournament('g-late', '2026-11-07T00:00:00Z', { name: 'Friday Cup November' });
+  /** An unknown row for Friday 2026-11-06, skipped. */
+  function heldRow(templateId = customTemplate().id) {
+    const id = plan(templateId, '2026-11-06');
+    setRow(id, "state = 'unknown', last_attempt_at = 1791997500");
+    service.updatePlanned(L, id, { skipped: true });
+    return id;
+  }
+  /** Holds the getTournament calls numbered in `held` until the returned function opens the gate. */
+  function gateDetails(held: number[]) {
+    let n = 0;
+    let release!: () => void;
+    const shut = new Promise<void>((r) => (release = r));
+    upstream.state.gate = async (name) => {
+      if (name !== 'getTournament') return;
+      if (held.includes(++n)) await shut;
+    };
+    return () => release();
+  }
+  const writes = () => upstream.state.calls.filter((c) => !/^(listTournaments|getTournament|listSeries)@/.test(c));
+  const flagOf = (id: number) => (database.sqlite.prepare('select skipped_while_unknown as f from planned_tournament where id = ?').get(id) as { f: number }).f;
+
+  it('links it once the tournament shows up, keeping it skipped here, listed once, with nothing written upstream', async () => {
+    const id = heldRow();
+    expect((await service.upcoming(L, {})).tournaments.find((e) => e.plannedId === id)).toMatchObject({ state: 'skipped', skippedWhileUnknown: true, tournamentId: null });
+
+    upstream.state.tournaments = [landed()];
+    const after = (await service.upcoming(L, { refresh: true })).tournaments.filter((e) => e.localDate === '2026-11-06');
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ plannedId: id, state: 'skipped', skippedWhileUnknown: true, tournamentId: 'g-late', displayId: '26-10-g-late', actions: ['unskip'] });
+    expect(rowOf(id)).toMatchObject({ state: 'skipped', tournament_id: 'g-late', error_code: null });
+    expect(writes()).toEqual([]);
+  });
+
+  it('links it through the required-events read too', async () => {
+    const id = heldRow();
+    upstream.state.tournaments = [landed()];
+    await service.requiredEvents.read(L, { refresh: true });
+    expect(rowOf(id)).toMatchObject({ state: 'skipped', tournament_id: 'g-late' });
+  });
+
+  it.each([
+    ['another name', { name: 'Saturday Cup' }],
+    ['another start', { startsAt: new Date('2026-11-07T01:00:00Z') }],
+    ['another format', { category: 'tcg_exp' }],
+  ])('leaves it unlinked for a tournament with %s', async (_, differs) => {
+    const id = heldRow();
+    upstream.state.tournaments = [{ ...landed(), ...differs }];
+    await service.upcoming(L, {});
+    expect(rowOf(id)).toMatchObject({ state: 'skipped', tournament_id: null });
+  });
+
+  it('leaves it unlinked when the tournament is already another row’s', async () => {
+    const t = customTemplate();
+    const other = plan(t.id, '2026-11-13');
+    setRow(other, "tournament_id = 'g-late', state = 'created'");
+    const id = heldRow(t.id);
+    upstream.state.tournaments = [landed()];
+    await service.upcoming(L, {});
+    expect(rowOf(id).tournament_id).toBeNull();
+  });
+
+  it('gives a row unskipped during the details read what an unknown row gets: created', async () => {
+    const id = heldRow();
+    upstream.state.tournaments = [landed()];
+    const open = gateDetails([1]);
+    const reading = service.upcoming(L, {});
+    await vi.waitUntil(() => upstream.state.calls.includes('getTournament@1'));
+    service.updatePlanned(L, id, { skipped: false });
+    open();
+    await reading;
+    expect(rowOf(id)).toMatchObject({ state: 'created', tournament_id: 'g-late' });
+  });
+
+  it('keeps a row skipped during the details read skipped, and links it', async () => {
+    const id = plan(customTemplate().id, '2026-11-06');
+    setRow(id, "state = 'unknown', last_attempt_at = 1791997500");
+    upstream.state.tournaments = [landed()];
+    const open = gateDetails([1]);
+    const reading = service.upcoming(L, {});
+    await vi.waitUntil(() => upstream.state.calls.includes('getTournament@1'));
+    service.updatePlanned(L, id, { skipped: true });
+    open();
+    await reading;
+    expect(rowOf(id)).toMatchObject({ state: 'skipped', tournament_id: 'g-late' });
+    expect(flagOf(id)).toBe(1);
+  });
+
+  it('writes no link for a row a create job took during the details read', async () => {
+    const id = plan(customTemplate().id, '2026-11-06');
+    setRow(id, "state = 'unknown', last_attempt_at = 1791997500");
+    upstream.state.tournaments = [landed()];
+    const open = gateDetails([1]);
+    const reading = service.upcoming(L, {});
+    await vi.waitUntil(() => upstream.state.calls.includes('getTournament@1'));
+    service.creation.hold(L, [id]);
+    open();
+    await reading;
+    expect(rowOf(id)).toMatchObject({ state: 'creating', tournament_id: null });
+  });
+
+  it('links one tournament to one row when two reads race for it, and both reads answer', async () => {
+    const first = plan(customTemplate().id, '2026-11-06');
+    setRow(first, "state = 'unknown', last_attempt_at = 1791997500");
+    const second = heldRow(customTemplate({ name: 'Friday Cup {month}', startTime: '18:00' }).id);
+    upstream.state.tournaments = [landed()];
+    // Read A: the first row's details read fails and the second row's is held, while read B links the first row.
+    upstream.state.failNext.set('getTournament', new PokemonUpstreamError('unavailable', 'Down.'));
+    const open = gateDetails([2]);
+    const a = service.upcoming(L, {});
+    await vi.waitUntil(() => upstream.state.calls.filter((c) => c === 'getTournament@1').length === 2);
+    const b = await service.upcoming(L, {});
+    expect(rowOf(first).tournament_id).toBe('g-late');
+    open();
+    await expect(a).resolves.toBeDefined();
+    expect(b.tournaments.filter((e) => e.tournamentId === 'g-late')).toHaveLength(1);
+    expect(rowOf(second).tournament_id).toBeNull();
   });
 });
 

@@ -11,6 +11,7 @@ import { cancellability, confirmationFor, participantCounts } from './cancel';
 import { type LocalDate, addDays, timeIn } from './dates';
 import { TournamentsError } from './errors';
 import { type OrganizerRead, organizerReads } from './organizer';
+import { heldSkipped } from './plan';
 import type { TournamentsGateway } from './service';
 
 type PlannedRow = typeof plannedTournament.$inferSelect;
@@ -100,6 +101,12 @@ export function createCancelling(ctx: CancellingContext): TournamentCancelling {
     if (!row) return { ...(await reads.ofGuid(group, (target as Extract<EditTarget, { kind: 'tournament' }>).id)), row: null };
     if (UNSETTLED.has(row.state)) {
       throw new TournamentsError('not_editable', 'A create holds this tournament or may have made it. Wait for it to settle.', { state: row.state });
+    }
+    if (heldSkipped(row) && !row.tournamentId) {
+      throw new TournamentsError('not_editable', 'This tournament may have been created in play-tools. It can be cancelled once it shows up there.', {
+        state: 'skipped',
+        skippedWhileUnknown: true,
+      });
     }
     if (!row.tournamentId) {
       throw new TournamentsError('not_in_play_tools', "This tournament isn't in play-tools. Skip it instead.", { state: row.state });

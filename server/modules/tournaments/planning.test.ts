@@ -279,11 +279,109 @@ describe('changing a planned tournament', () => {
     expect(service.updatePlanned(L, plannedId!, { skipped: true }).planned.state).toBe('skipped');
   });
 
-  it.each(['creating', 'created', 'unknown', 'cancelled'])('refuses any change to a %s row', async (state) => {
+  it.each(['creating', 'created', 'cancelled'])('refuses any change to a %s row', async (state) => {
     const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
     setState(plannedId!, state);
     const err = await refusal(() => service.updatePlanned(L, plannedId!, { skipped: true }), 'not_editable');
     expect(err.details).toEqual({ state });
+  });
+
+  describe('a row whose create may have landed (#125)', () => {
+    const SENT = new Date('2026-10-13T15:00:00Z');
+    function unknownRow() {
+      const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
+      database.sqlite
+        .prepare("update planned_tournament set state = 'unknown', last_attempt_at = ?, error_code = 'gateway_timeout' where id = ?")
+        .run(Math.floor(SENT.getTime() / 1000), plannedId);
+      return plannedId!;
+    }
+    const raw = (id: number) =>
+      database.sqlite.prepare('select state, skipped_while_unknown, last_attempt_at, error_code, tournament_id from planned_tournament where id = ?').get(id) as {
+        state: string;
+        skipped_while_unknown: number;
+        last_attempt_at: number;
+        error_code: string | null;
+        tournament_id: string | null;
+      };
+    const link = (id: number) => database.sqlite.prepare("update planned_tournament set tournament_id = 'g-landed' where id = ?").run(id);
+
+    it('skips it, keeping when the create was sent, with nothing sent upstream', () => {
+      const id = unknownRow();
+      const { planned } = service.updatePlanned(L, id, { skipped: true });
+      expect(planned).toMatchObject({ state: 'skipped', skippedWhileUnknown: true, lastAttemptAt: SENT.toISOString(), actions: ['unskip'] });
+      expect(raw(id)).toMatchObject({ state: 'skipped', skipped_while_unknown: 1, error_code: 'gateway_timeout' });
+      expect(upstream.state.calls).toEqual([]);
+    });
+
+    it.each([
+      ['a new date', { localDate: '2026-10-25' }],
+      ['a new time', { startTime: '13:00' }],
+      ['a series', { seriesId: 'custom' }],
+      ['an unskip', { skipped: false }],
+      ['a skip with a move', { skipped: true, localDate: '2026-10-25' }],
+    ])('refuses %s while it is unknown', async (_, patch) => {
+      const id = unknownRow();
+      const before = raw(id);
+      const err = await refusal(() => service.updatePlanned(L, id, patch), 'not_editable');
+      expect(err.details).toEqual({ state: 'unknown' });
+      expect(raw(id)).toEqual(before);
+    });
+
+    it('unskips it back to unknown, keeping when the create was sent', () => {
+      const id = unknownRow();
+      service.updatePlanned(L, id, { skipped: true });
+      const { planned } = service.updatePlanned(L, id, { skipped: false });
+      expect(planned).toMatchObject({ state: 'unknown', skippedWhileUnknown: false, lastAttemptAt: SENT.toISOString() });
+      expect(raw(id).skipped_while_unknown).toBe(0);
+    });
+
+    it('unskips it to created once it has been linked to the tournament that landed', () => {
+      const id = unknownRow();
+      service.updatePlanned(L, id, { skipped: true });
+      link(id);
+      const { planned } = service.updatePlanned(L, id, { skipped: false });
+      expect(planned).toMatchObject({ state: 'created', tournamentId: 'g-landed', skippedWhileUnknown: false });
+    });
+
+    it('takes a repeated skip as a no-op, and refuses any move while skipped, linked or not', async () => {
+      const id = unknownRow();
+      service.updatePlanned(L, id, { skipped: true });
+      const before = raw(id);
+      expect(service.updatePlanned(L, id, { skipped: true }).planned.state).toBe('skipped');
+      expect(raw(id)).toEqual(before);
+      for (const patch of [{ localDate: '2026-10-25' }, { startTime: '13:00' }, { seriesId: 'custom' }]) {
+        const err = await refusal(() => service.updatePlanned(L, id, patch), 'not_editable');
+        expect(err.details).toEqual({ state: 'skipped', skippedWhileUnknown: true });
+      }
+      link(id);
+      await refusal(() => service.updatePlanned(L, id, { startTime: '13:00' }), 'not_editable');
+      expect(raw(id)).toMatchObject({ state: 'skipped', tournament_id: 'g-landed' });
+    });
+
+    it('leaves ordinary rows as they were: skipping sets no flag, unskipping gives planned', () => {
+      const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
+      expect(service.updatePlanned(L, plannedId!, { skipped: true }).planned).toMatchObject({ state: 'skipped', skippedWhileUnknown: false });
+      expect(service.updatePlanned(L, plannedId!, { skipped: false }).planned.state).toBe('planned');
+    });
+
+    it('is kept by a schedule edit it no longer fits, and its date isn’t planned again', async () => {
+      const { schedule } = weekly();
+      await read();
+      const [oct13, oct20] = rows();
+      database.sqlite.prepare("update planned_tournament set state = 'unknown', last_attempt_at = 1 where id in (?, ?)").run(oct13!.id, oct20!.id);
+      service.updatePlanned(L, oct13!.id, { skipped: true });
+      service.updatePlanned(L, oct20!.id, { skipped: true });
+      link(oct20!.id);
+
+      service.updateSchedule(L, schedule.id, { rule: { kind: 'weekly', weekday: 4, every: 1 } });
+      expect(rows().filter((r) => r.id === oct13!.id || r.id === oct20!.id).map((r) => r.state)).toEqual(['skipped', 'skipped']);
+
+      service.updateSchedule(L, schedule.id, { rule: TUESDAYS });
+      await read();
+      expect(rows().filter((r) => r.occurrence_date === '2026-10-13')).toHaveLength(1);
+      const entry = (await read()).tournaments.find((t) => t.plannedId === oct13!.id)!;
+      expect(entry).toMatchObject({ state: 'skipped', skippedWhileUnknown: true, inSchedule: true });
+    });
   });
 
   it('moves the date and time, warning when another row of the template is already there', () => {

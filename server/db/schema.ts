@@ -702,6 +702,8 @@ export const plannedTournament = sqliteTable(
     tournamentId: text('tournament_id'),
     /** When a create was last sent (#100). */
     lastAttemptAt: integer('last_attempt_at', { mode: 'timestamp' }),
+    /** Skipped while `unknown` (#125): its create may have landed, so it is held, and linked on read. Read only while `skipped`. */
+    skippedWhileUnknown: integer('skipped_while_unknown', { mode: 'boolean' }).notNull().default(false),
     displayId: text('display_id'),
     upstreamStatus: text('upstream_status'),
     errorCode: text('error_code'),
