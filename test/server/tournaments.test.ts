@@ -260,6 +260,34 @@ describe('scaffolds, schedules, planned tournaments and Upcoming', () => {
     expect(await body(moved)).toMatchObject({ planned: { localDate: day(21) }, warnings: [] });
   });
 
+  it('plans a one-off with details changed from its template, refusing what a one-off may not change (#162)', async () => {
+    const templateId = await newTemplate('Override Cup');
+    const date = day(22);
+    const refusals: [unknown, number, string | null][] = [
+      [{ organizerPlayerId: '9999992' }, 400, null],
+      [{ product: 'vg' }, 400, null],
+      [{ name: 'x'.repeat(81) }, 400, null],
+      [{ contactEmail: null }, 400, 'contact_required'],
+    ];
+    for (const [overrides, status, errorCode] of refusals) {
+      const res = await post('/planned-tournaments', { templateId, localDate: date, overrides });
+      expect(res.status, JSON.stringify(overrides)).toBe(status);
+      if (errorCode) expect(await code(res)).toBe(errorCode);
+    }
+    expect((await post('/planned-tournaments', { templateId, localDate: date, overrides: null })).status).toBe(400);
+
+    // Nothing was planned by the refusals, so the same event is still free.
+    const res = await post('/planned-tournaments', {
+      templateId,
+      localDate: date,
+      overrides: { name: 'x'.repeat(80), details: 'y'.repeat(4000) },
+      seriesId: 'custom',
+    });
+    expect(res.status).toBe(201);
+    expect(await body(res)).toMatchObject({ planned: { name: 'x'.repeat(80), type: { kind: 'custom' } } });
+    expect((await post('/planned-tournaments', { templateId, localDate: day(23), overrides: {} })).status).toBe(201);
+  });
+
   it('refuses a scaffold of an unknown template, a schedule ending before it starts, and a bad range', async () => {
     const res = await post('/tournament-scaffolds', { name: 'Bad', slots: [{ templateId: 999999, dayOffset: 0, startTime: null }] });
     expect(res.status).toBe(422);

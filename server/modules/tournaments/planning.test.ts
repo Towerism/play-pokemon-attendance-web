@@ -203,6 +203,61 @@ describe('one-off planned tournaments', () => {
     expect(service.createPlanned(L, { templateId: template.id, localDate: '2027-10-14' }).state).toBe('planned');
   });
 
+  describe('with details changed from the template (#162)', () => {
+    const stored = (id: number) =>
+      database.sqlite.prepare('select overrides, series_override as seriesOverride from planned_tournament where id = ?').get(id) as {
+        overrides: string;
+        seriesOverride: string | null;
+      };
+
+    it('stores nothing over the template when nothing is changed', () => {
+      const planned = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
+      expect(stored(planned.plannedId!)).toEqual({ overrides: '{}', seriesOverride: null });
+    });
+
+    it('stores exactly the details given and the type, and shows them on the entry', () => {
+      const premier = service.createTemplate(L, templateBody({ name: 'League Challenge {month}', type: { kind: 'premier', seriesMatch: 'League Challenge' } }));
+      const planned = service.createPlanned(L, {
+        templateId: premier.id,
+        localDate: '2026-10-24',
+        overrides: { name: 'Halloween Cup', category: 'tcg_exp' },
+        seriesId: 'custom',
+      });
+      expect(planned).toMatchObject({ name: 'Halloween Cup', category: 'tcg_exp', type: { kind: 'custom' } });
+      expect(stored(planned.plannedId!)).toEqual({ overrides: JSON.stringify({ name: 'Halloween Cup', category: 'tcg_exp' }), seriesOverride: 'custom' });
+    });
+
+    it('is still one row per event, whatever the details', async () => {
+      const first = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
+      const err = await refusal(
+        () => service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24', overrides: { name: 'Halloween Cup' } }),
+        'already_planned',
+      );
+      expect(err.details).toEqual({ plannedTournamentId: first.plannedId });
+      expect(service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24', startTime: '19:00', overrides: { name: 'Halloween Cup' } }).state).toBe('planned');
+    });
+
+    it('keeps what it changed when the template is edited later, and follows the template for the rest', async () => {
+      const planned = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24', overrides: { name: 'Halloween Cup' } });
+      service.updateTemplate(L, template.id, { name: 'Friday Night Cup', category: 'tcg_exp' });
+      const entry = (await read()).tournaments.find((e) => e.plannedId === planned.plannedId)!;
+      expect(entry).toMatchObject({ name: 'Halloween Cup', category: 'tcg_exp' });
+    });
+
+    it.each([
+      ['clears the only contact', { contactEmail: null }],
+      ['clears both contacts', { contactEmail: null, contactPhone: null }],
+    ])('refuses a one-off that %s', async (_, overrides) => {
+      await refusal(() => service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24', overrides }), 'contact_required');
+      expect(rows()).toEqual([]);
+    });
+
+    it('takes a cleared contact when the other one stays', () => {
+      const phoned = service.createTemplate(L, templateBody({ name: 'Phoned', contactPhone: '555-0100' }));
+      expect(service.createPlanned(L, { templateId: phoned.id, localDate: '2026-10-24', overrides: { contactEmail: null } }).state).toBe('planned');
+    });
+  });
+
   it('refuses an unknown or archived template', async () => {
     await refusal(() => service.createPlanned(L, { templateId: 9999, localDate: '2026-10-24' }), 'unknown_template');
     service.archiveTemplate(L, template.id);

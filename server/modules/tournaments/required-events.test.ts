@@ -375,6 +375,24 @@ describe('planned tournaments', () => {
     database.sqlite.prepare("update planned_tournament set state = 'created', tournament_id = 'elsewhere' where id = ?").run(created.plannedId);
     expect((await nov()).status).toBe('missing');
   });
+
+  it('follows a one-off’s own type: a premier template changed to Custom covers nothing (#162)', async () => {
+    upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
+    const template = service.createTemplate(L, templateBody());
+    const custom = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14', seriesId: 'custom' });
+    expect((await nov()).status).toBe('missing');
+    database.sqlite.prepare('update planned_tournament set series_override = null where id = ?').run(custom.plannedId);
+    expect((await nov(true)).status).toBe('planned');
+  });
+
+  it('judges a one-off’s series by its own venue’s country, as creation does (#162)', async () => {
+    upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
+    const template = service.createTemplate(L, templateBody());
+    const abroad = { id: '00000000-0000-4000-8000-000000000053', label: 'Toronto Shop', timeZone: 'America/Toronto', country: 'CA' };
+    service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14', overrides: { venue: abroad } });
+    // The series has a US window only, so nothing resolves for a Canadian venue.
+    expect((await nov()).status).toBe('missing');
+  });
 });
 
 describe('failures that never show missing, and never keep play-tools busy (PR review)', () => {

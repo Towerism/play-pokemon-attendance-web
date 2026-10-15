@@ -3,9 +3,9 @@ import type { RequiredEventsCoverage } from '../../server/modules/tournaments/re
 import { REQUIRED_EVENTS_KEY } from '~/composables/useRequiredEvents';
 
 /**
- * This week's required-events banner (ADR-0010 decision 12): a line per League Cup or League Challenge at risk or
+ * The required-events banner on This week and on Tournaments' other tabs (ADR-0010 decision 12, #162): a line per League Cup or League Challenge at risk or
  * worse, most urgent first, and one per professor whose tournaments couldn't be read. It can't be dismissed; a line
- * goes only when its cause does. It reads the layout's coverage fetch (the nav badge's key), never a second one.
+ * goes only when its cause does. It is named "Required events alerts" so the grid alone is the "Required events" region. It reads the layout's coverage fetch (the nav badge's key), never a second one.
  */
 const { data: coverage } = useNuxtData<RequiredEventsCoverage>(REQUIRED_EVENTS_KEY);
 const lines = computed(() => (coverage.value ? bannerLines(coverage.value, coverage.value.today) : []));
@@ -25,14 +25,14 @@ async function retry() {
 <template>
   <section
     v-if="lines.length"
-    aria-label="Required events"
+    aria-label="Required events alerts"
     :role="loud ? 'alert' : undefined"
     class="space-y-2 rounded-md border p-3 text-sm"
     :class="loud ? 'border-error/50 bg-error/5' : 'border-warning/50 bg-warning/5'"
   >
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 class="font-medium">Required events</h2>
-      <NuxtLink to="/tournaments" class="underline">Open Tournaments</NuxtLink>
+      <NuxtLink :to="{ path: '/tournaments', query: { tab: 'required' } }" class="underline">Open Required events</NuxtLink>
     </div>
     <ul class="space-y-1">
       <li v-for="line in lines" :key="line.text" class="flex flex-wrap items-start gap-2">

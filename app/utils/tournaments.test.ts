@@ -36,10 +36,19 @@ import {
   rowActions,
   sanctionTag,
   tabFromQuery,
+  tabQuery,
+  tournamentsTabs,
   upcomingNotice,
   upcomingQuery,
+  AS_TEMPLATE,
+  detailsFromTemplate,
+  newTournamentChanges,
+  newTournamentFormats,
+  newTournamentTypeChoices,
+  plannedErrorText,
+  typeStillOffered,
 } from './tournaments';
-import { periodLabel, todayIn } from './dates';
+import { dayLabel, periodLabel, todayIn } from './dates';
 
 // The Tournaments page's decisions (#98): what each cell, entry and dialog shows and what it may send. Every
 // "today" is passed in; nothing here reads the clock.
@@ -654,6 +663,7 @@ describe('requirementPatch', () => {
 
 describe('tabFromQuery', () => {
   it.each([
+    ['required', 'required'],
     ['templates', 'templates'],
     ['schedules', 'schedules'],
     ['upcoming', 'upcoming'],
@@ -662,6 +672,28 @@ describe('tabFromQuery', () => {
     [['schedules'], 'upcoming'],
   ] as const)('%j → %s', (q, tab) => {
     expect(tabFromQuery(q)).toBe(tab);
+  });
+});
+
+describe('the Tournaments tabs (#162)', () => {
+  it('lists Upcoming, Required events, Templates and Schedules, in that order', () => {
+    expect(tournamentsTabs(0).map((t) => [t.value, t.label])).toEqual([
+      ['upcoming', 'Upcoming'],
+      ['required', 'Required events'],
+      ['templates', 'Templates'],
+      ['schedules', 'Schedules'],
+    ]);
+  });
+
+  it('puts the count of required events needing attention on their tab, in its accessible name too', () => {
+    expect(tournamentsTabs(3)[1]).toEqual({ value: 'required', label: 'Required events', badge: '3', ariaLabel: 'Required events, 3 need attention' });
+    expect(tournamentsTabs(1)[1]!.ariaLabel).toBe('Required events, 1 needs attention');
+    expect(tournamentsTabs(0)[1]).toEqual({ value: 'required', label: 'Required events' });
+  });
+
+  it('keeps Upcoming out of the URL', () => {
+    expect(tabQuery({ tab: 'templates', from: 'x' }, 'upcoming')).toEqual({ from: 'x' });
+    expect(tabQuery({}, 'required')).toEqual({ tab: 'required' });
   });
 });
 
@@ -767,5 +799,147 @@ describe('upcomingQuery', () => {
     expect(upcomingQuery({ upstream: true })).toEqual({ refresh: '1' });
     expect(upcomingQuery({ range: { from: '2026-10-30', to: '2026-10-30' } })).toEqual({ from: '2026-10-30', to: '2026-10-30' });
     expect(upcomingQuery({ upstream: true, range: { from: '2026-10-30', to: '2026-10-30' } })).toEqual({ from: '2026-10-30', to: '2026-10-30', refresh: '1' });
+  });
+});
+
+describe('New tournament with details changed from the template (#162)', () => {
+  const premierTemplate = template({ name: 'League Challenge {month}', type: { kind: 'premier', seriesMatch: 'League Challenge' } });
+  const NOV = { kind: 'premier' as const, seriesId: 'lc-nov', name: 'League Challenge November', product: 'tcg', categories: ['tcg_std'], window: { from: '2026-11-01', to: '2026-11-30' } };
+  const options: TournamentOptions = {
+    types: [
+      { kind: 'custom' },
+      NOV,
+      { kind: 'premier', seriesId: 'cup-q4', name: 'League Cup Q4', product: 'tcg', categories: ['tcg_std', 'tcg_exp'], window: { from: '2026-10-01', to: '2026-12-31' } },
+      { kind: 'premier', seriesId: 'go-nov', name: 'League Challenge November', product: 'pgo', categories: ['go_std'], window: { from: '2026-11-01', to: '2026-11-30' } },
+    ],
+    formats: [
+      { product: 'tcg', categories: ['tcg_std', 'tcg_exp'] },
+      { product: 'pgo', categories: ['go_std'] },
+    ],
+    venues: [{ id: 'v1', label: 'Card Shop', country: 'US', timeZone: 'America/Chicago' }],
+  };
+
+  it('pre-fills every detail from the template, the name with its tokens, the type as the template’s', () => {
+    const t = premierTemplate;
+    expect(detailsFromTemplate({ ...t, details: 'Bring a deck', contactPhone: null })).toEqual({
+      name: 'League Challenge {month}',
+      typeKey: AS_TEMPLATE,
+      category: 'tcg_std',
+      venue: t.venue,
+      registration: t.registration,
+      contactEmail: 'league@example.com',
+      contactPhone: '',
+      details: 'Bring a deck',
+      eventWebsite: '',
+    });
+  });
+
+  describe('what Plan tournament sends', () => {
+    const base = detailsFromTemplate(premierTemplate);
+
+    it('sends nothing over the template when nothing changed', () => {
+      expect(newTournamentChanges(base, structuredClone(base))).toEqual({ overrides: {}, count: 0 });
+    });
+
+    it('sends only what changed, a cleared field as null', () => {
+      const form = { ...structuredClone(base), name: 'Halloween Cup', contactEmail: '  ', details: 'Costumes welcome' };
+      expect(newTournamentChanges(base, form)).toEqual({ overrides: { name: 'Halloween Cup', contactEmail: null, details: 'Costumes welcome' }, count: 3 });
+    });
+
+    it('judges a change on meaning: a venue by id, registration by fields, blank as empty', () => {
+      const form = {
+        ...structuredClone(base),
+        venue: { ...base.venue, label: 'Card Shop (renamed)', timeZone: 'America/New_York' },
+        registration: { kind: 'on_site' as const, closesAfterMin: 15, opensBeforeMin: 60, admission: '' },
+        name: ' League Challenge {month} ',
+        eventWebsite: '   ',
+      };
+      expect(newTournamentChanges(base, form)).toEqual({ overrides: {}, count: 0 });
+    });
+
+    it('sends a new venue and a new registration whole', () => {
+      const hall = { id: 'v2', label: 'Hall', timeZone: 'America/Chicago', country: 'US' };
+      const online = { kind: 'third_party' as const, url: 'https://tickets.example.com' };
+      expect(newTournamentChanges(base, { ...structuredClone(base), venue: hall, registration: online })).toEqual({ overrides: { venue: hall, registration: online }, count: 2 });
+    });
+
+    it.each([
+      [AS_TEMPLATE, undefined, 0],
+      ['custom', 'custom', 1],
+      ['lc-nov', 'lc-nov', 1],
+    ])('a type of %s sends seriesId %s', (typeKey, seriesId, count) => {
+      expect(newTournamentChanges(base, { ...structuredClone(base), typeKey })).toEqual({ overrides: {}, ...(seriesId && { seriesId }), count });
+    });
+  });
+
+  describe('the type choices for the date', () => {
+    it('on a premier template: as the template, Custom, then the game’s series offered that day', () => {
+      expect(newTournamentTypeChoices(premierTemplate, options, '2026-11-20')).toEqual([
+        { value: AS_TEMPLATE, label: 'League Challenge (resolved for the date)' },
+        { value: 'custom', label: 'Custom' },
+        { value: 'lc-nov', label: 'League Challenge November' },
+        { value: 'cup-q4', label: 'League Cup Q4' },
+      ]);
+      expect(newTournamentTypeChoices(premierTemplate, options, '2026-10-20').map((c) => c.value)).toEqual([AS_TEMPLATE, 'custom', 'cup-q4']);
+    });
+
+    it('on a custom template: one Custom, which is the template’s, then the series', () => {
+      const choices = newTournamentTypeChoices(template(), options, '2026-11-20');
+      expect(choices).toEqual([
+        { value: AS_TEMPLATE, label: 'Custom' },
+        { value: 'lc-nov', label: 'League Challenge November' },
+        { value: 'cup-q4', label: 'League Cup Q4' },
+      ]);
+      expect(choices.filter((c) => c.label === 'Custom')).toHaveLength(1);
+    });
+
+    it('offers only the template’s own type when play-tools’ choices couldn’t be read', () => {
+      expect(newTournamentTypeChoices(premierTemplate, null, '2026-11-20')).toEqual([{ value: AS_TEMPLATE, label: 'League Challenge (resolved for the date)' }]);
+      expect(newTournamentTypeChoices(template(), null, '2026-11-20')).toEqual([{ value: AS_TEMPLATE, label: 'Custom' }]);
+    });
+
+    it('keeps a picked series only while its window holds the date', () => {
+      expect(typeStillOffered('lc-nov', options, '2026-11-30')).toBe(true);
+      expect(typeStillOffered('lc-nov', options, '2026-12-01')).toBe(false);
+      expect(typeStillOffered('go-nov', options, '2026-11-20')).toBe(true);
+      expect(typeStillOffered('withdrawn', options, '2026-11-20')).toBe(false);
+      expect(typeStillOffered(AS_TEMPLATE, options, '2026-12-01')).toBe(true);
+      expect(typeStillOffered('custom', null, '2026-12-01')).toBe(true);
+    });
+  });
+
+  describe('the format choices', () => {
+    it('follows a picked series, or the game’s formats for Custom', () => {
+      expect(newTournamentFormats(premierTemplate, 'lc-nov', options, '2026-11-20')).toEqual({ formats: ['tcg_std'], note: null });
+      expect(newTournamentFormats(premierTemplate, 'custom', options, '2026-11-20')).toEqual({ formats: ['tcg_std', 'tcg_exp'], note: null });
+      expect(newTournamentFormats(template(), AS_TEMPLATE, options, '2026-11-20')).toEqual({ formats: ['tcg_std', 'tcg_exp'], note: null });
+    });
+
+    it('for a premier template left as it is, the formats of the series it resolves to that day', () => {
+      expect(newTournamentFormats(premierTemplate, AS_TEMPLATE, options, '2026-11-20')).toEqual({ formats: ['tcg_std'], note: null });
+    });
+
+    it.each([
+      ['none resolves', '2026-12-04', options],
+      ['two resolve', '2026-11-20', { ...options, types: [...options.types, { ...NOV, seriesId: 'lc-nov-2', name: 'League Challenge November B' }] }],
+    ])('falls back to the game’s formats, with a note, when %s', (_, date, o) => {
+      expect(newTournamentFormats(premierTemplate, AS_TEMPLATE, o, date)).toEqual({
+        formats: ['tcg_std', 'tcg_exp'],
+        note: `No single League Challenge series for ${dayLabel(date)}; check the format when you create it.`,
+      });
+    });
+
+    it('offers only the template’s format when play-tools’ choices couldn’t be read', () => {
+      expect(newTournamentFormats(premierTemplate, AS_TEMPLATE, null, '2026-11-20')).toEqual({ formats: ['tcg_std'], note: null });
+    });
+  });
+
+  it.each([
+    ['already_planned', 'That tournament is already planned for this date and time. Change it with Edit… instead.'],
+    ['template_archived', '“Friday Cup” is archived. Choose another template.'],
+    ['contact_required', 'Give this tournament a contact email or phone.'],
+    ['something_else', null],
+  ])('explains %s', (code, text) => {
+    expect(plannedErrorText(code, 'Friday Cup')).toBe(text);
   });
 });

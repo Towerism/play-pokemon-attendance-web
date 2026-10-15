@@ -145,12 +145,37 @@ export const SchedulePreviewBody = z
   .refine(datesInOrder, ORDER);
 export type SchedulePreviewBody = z.infer<typeof SchedulePreviewBody>;
 
-/** A one-off planned tournament from a template (`POST /planned-tournaments`). */
-export const PlannedBody = z.strictObject({ templateId: id, localDate, startTime: localTime.optional() });
-export type PlannedBody = z.infer<typeof PlannedBody>;
-
 /** A play-tools series id, or `custom`. */
 const seriesId = z.string().regex(/^[A-Za-z0-9-]{1,64}$/, 'Not a series id');
+
+/**
+ * The template details a one-off may change for itself (#162), each checked as the template checks it. Never the
+ * organizer or the game: the venues, formats, series and coverage all follow them, so another template is the way.
+ */
+const plannedOverrides = z
+  .strictObject({
+    name: templateFields.name,
+    category: templateFields.category,
+    venue,
+    registration,
+    contactEmail: templateFields.contactEmail,
+    contactPhone: templateFields.contactPhone,
+    details: templateFields.details,
+    eventWebsite: templateFields.eventWebsite,
+  })
+  .partial();
+export type PlannedOverrides = z.infer<typeof plannedOverrides>;
+
+/** A one-off planned tournament from a template (`POST /planned-tournaments`), with any details changed (#162). */
+export const PlannedBody = z.strictObject({
+  templateId: id,
+  localDate,
+  startTime: localTime.optional(),
+  overrides: plannedOverrides.optional(),
+  /** `custom`, or a play-tools series: the type, when it isn't the template's. */
+  seriesId: seriesId.optional(),
+});
+export type PlannedBody = z.infer<typeof PlannedBody>;
 export const PlannedPatch = z
   .strictObject({ localDate: localDate.optional(), startTime: localTime.optional(), seriesId: seriesId.nullable().optional(), skipped: z.boolean().optional() })
   .refine((p) => Object.keys(p).length > 0, 'Change at least one field');

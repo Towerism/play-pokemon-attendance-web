@@ -256,6 +256,86 @@ describe('what each row is created as (planItem)', () => {
     expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'fail', code: 'venue_not_found' });
   });
 
+  describe('a one-off with details changed from its template (#162)', () => {
+    const HALL = { id: '00000000-0000-4000-8000-000000000052', label: 'Town Hall', timeZone: 'America/Chicago', country: 'US' };
+    const planWith = (templateId: number, overrides: object, seriesId?: string) =>
+      service.createPlanned(L, { templateId, localDate: '2026-11-06', overrides, ...(seriesId && { seriesId }) }).plannedId!;
+
+    it('is created with its own details and type, and the template’s organizer and game', async () => {
+      upstream.state.venues.push({ id: HALL.id, name: HALL.label, formattedAddress: '2 Main St', country: 'US', timeZone: 'America/Chicago' });
+      upstream.state.series = [series('lc-nov', 'League Challenge November', '2026-11-01', '2026-11-30')];
+      const t = service.createTemplate(L, templateBody({ details: 'Template details' }));
+      const id = planWith(t.id, { name: 'Halloween Cup', category: 'tcg_exp', venue: HALL, details: 'Costumes welcome' }, 'custom');
+
+      const item = await service.creation.planItem(L, id);
+
+      expect(item).toMatchObject({
+        kind: 'send',
+        connectionId: OLIVE.id,
+        match: { name: 'Halloween Cup', category: 'tcg_exp', product: 'tcg' },
+        tournament: { name: 'Halloween Cup', product: 'tcg', category: 'tcg_exp', seriesId: null, venueId: HALL.id, details: 'Costumes welcome' },
+      });
+      // Custom needs no series read.
+      expect(upstream.state.calls).not.toContain('listSeries@1');
+    });
+
+    it('without the type change, the same template is created in its series', async () => {
+      upstream.state.series = [series('lc-nov', 'League Challenge November', '2026-11-01', '2026-11-30')];
+      const id = planWith(service.createTemplate(L, templateBody()).id, { name: 'Halloween Cup' });
+      expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'send', tournament: { name: 'Halloween Cup', seriesId: 'lc-nov' } });
+    });
+
+    it('fails a pick of another game’s series as series_not_found', async () => {
+      upstream.state.series = [series('go-nov', 'League Challenge November', '2026-11-01', '2026-11-30', 'pgo')];
+      const id = planWith(service.createTemplate(L, templateBody()).id, {}, 'go-nov');
+      expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'fail', code: 'series_not_found' });
+    });
+
+    it('fails contact_required, sending nothing, when a later template edit left it no contact', async () => {
+      const t = customTemplate({ contactPhone: '555-0100' });
+      const id = planWith(t.id, { contactEmail: null });
+      service.updateTemplate(L, t.id, { contactPhone: null });
+      expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'fail', code: 'contact_required', message: 'Give this tournament a contact email or phone.' });
+    });
+
+    it('fails venue_not_found when the address book now gives the venue another time zone or country', async () => {
+      const id = plan(customTemplate().id, '2026-11-06');
+      upstream.state.venues = [{ ...upstream.state.venues[0]!, timeZone: 'America/New_York' }];
+      // The template's venue: fixed on the template, where every later date takes it from.
+      expect(await service.creation.planItem(L, id)).toMatchObject({
+        kind: 'fail',
+        code: 'venue_not_found',
+        message: "Card Shop has changed in the organizer's address book. Pick the venue again on the template.",
+      });
+      upstream.state.venues = [{ ...upstream.state.venues[0]!, timeZone: 'America/Chicago', country: 'CA' }];
+      expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'fail', code: 'venue_not_found' });
+    });
+
+    it('says to pick the venue again on the tournament when the venue is its own', async () => {
+      upstream.state.venues.push({ id: HALL.id, name: HALL.label, formattedAddress: '2 Main St', country: 'US', timeZone: 'America/Denver' });
+      const id = planWith(customTemplate().id, { venue: HALL });
+      expect(await service.creation.planItem(L, id)).toMatchObject({
+        kind: 'fail',
+        code: 'venue_not_found',
+        message: "Town Hall has changed in the organizer's address book. Pick the venue again on this tournament.",
+      });
+    });
+
+    it('takes a venue whose time zone and country the address book leaves out, as the dialog stores it', async () => {
+      const id = plan(customTemplate().id, '2026-11-06');
+      upstream.state.venues = [{ ...upstream.state.venues[0]!, timeZone: null, country: null }];
+      expect(await service.creation.planItem(L, id)).toMatchObject({ kind: 'send' });
+    });
+
+    it('refuses a zone or country the address book leaves out when it isn’t what the dialog would store', async () => {
+      upstream.state.venues.push({ id: HALL.id, name: HALL.label, formattedAddress: '2 Main St', country: null, timeZone: null });
+      const zoned = planWith(customTemplate().id, { venue: { ...HALL, timeZone: 'Pacific/Kiritimati' } });
+      expect(await service.creation.planItem(L, zoned)).toMatchObject({ kind: 'fail', code: 'venue_not_found' });
+      const abroad = planWith(customTemplate({ name: 'Other {month}' }).id, { venue: { ...HALL, country: 'CA' } });
+      expect(await service.creation.planItem(L, abroad)).toMatchObject({ kind: 'fail', code: 'venue_not_found' });
+    });
+  });
+
   it('fails start_time_invalid for a start the DST change skips or repeats', async () => {
     const t = customTemplate({ startTime: '01:30' });
     const id = plan(t.id, '2026-11-01');
