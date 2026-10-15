@@ -2,7 +2,9 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { type BrowserContext, type Page, test as base, expect } from '@playwright/test';
 import { type FakePlaySession, type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
+import { dayLabel, periodLabel } from '../../app/utils/dates';
 import { type TestServer, client, setupCodeFrom, startServer } from '../server/harness';
+import { leagueDay as serverLeagueDay } from '../server/league-day';
 
 export { expect };
 
@@ -25,26 +27,14 @@ const APP_ENV = {
 /** The league's time zone, as `APP_ENV.TZ` and the browser context both use. */
 export const LEAGUE_TZ = 'America/Chicago';
 
-/** The league's date `days` from today, on the real clock, as the server sees it: calendar days, so a DST change can't shift it. */
-export function leagueDay(days: number): string {
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: LEAGUE_TZ }).format(new Date());
-  return new Date(Date.parse(`${today}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
-}
+/** The league's date `days` from today, on the real clock, as the server sees it (the server tests' helper, #155). */
+export const leagueDay = (days: number): string => serverLeagueDay(days, LEAGUE_TZ);
 
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** "Fri 16 Oct", as the Tournaments page heads a date and names its entries: the page's own label. */
+export const dayHeading = dayLabel;
 
-/** "Fri 16 Oct", as the Tournaments page heads a date and names its entries. */
-export function dayHeading(date: string): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
-}
-
-/** "Oct 2026", as the Required events grid names a month. */
-export function monthHeading(periodStart: string): string {
-  const [year, month] = periodStart.split('-').map(Number) as [number, number];
-  return `${MONTHS[month - 1]} ${year}`;
-}
+/** "Oct 2026", as the Required events grid names a month: the page's own label. */
+export const monthHeading = (periodStart: string): string => periodLabel({ periodStart }, 'month');
 
 /** A Custom tournament template run by the connected organizer at the fake's venue, over the API. */
 export async function tournamentTemplate(api: Api, overrides: Record<string, unknown> = {}): Promise<{ id: number; name: string }> {

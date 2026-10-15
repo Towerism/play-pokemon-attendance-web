@@ -1,11 +1,11 @@
 import type { CoverageStatus, PeriodCoverage, UnreadProfessor, Urgency } from '../../shared/requirements/coverage';
-import type { Cadence } from '../../shared/requirements/periods';
 import type { RequiredEventsCoverage } from '../../server/modules/tournaments/required-events';
 import type { Requirement } from '../../server/modules/tournaments/requirements';
 import type { SupportDetails, TournamentItemOutcome } from '../../server/modules/submission/service';
 import type { LeftOutReason } from '../../server/modules/tournaments/create';
 import type { CarriedField, EditValues } from '../../server/modules/tournaments/edit';
 import type { CreateThroughPreview, Template, TournamentOptions, Upcoming, UpcomingEntry } from '../../server/modules/tournaments/service';
+import { addDays, dayLabel } from './dates';
 import { unreadWarning } from './staff';
 
 // The Tournaments page's decisions (#98, ADR-0010 decisions 6, 10–12): what each required-events cell, Upcoming
@@ -14,18 +14,6 @@ import { unreadWarning } from './staff';
 
 export type LocalDate = string;
 export type BadgeColor = 'neutral' | 'info' | 'success' | 'warning' | 'error';
-
-const DAY = 86_400_000;
-
-/** `date` + `days`, as YYYY-MM-DD. */
-export function addDays(date: LocalDate, days: number): LocalDate {
-  return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY).toISOString().slice(0, 10);
-}
-
-/** Today in the league's time zone: short notice and sanction-by count from it, never the browser's date. */
-export function todayIn(timeZone: string, now: Date): LocalDate {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-}
 
 /** Today through 6 days ahead: less than 7 days before it is held (ADR-0010 decision 6). */
 export function isShortNotice(date: LocalDate, today: LocalDate): boolean {
@@ -41,28 +29,12 @@ export function badgeCount(coverage: Pick<RequiredEventsCoverage, 'requirements'
   return coverage.requirements.reduce((n, r) => n + r.periods.filter((p) => p.urgency !== null && LOUD.has(p.urgency)).length, 0);
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/** "Oct 2026", or "Q4 2026" for a calendar quarter. */
-export function periodLabel(p: Pick<PeriodCoverage, 'periodStart'>, cadence: Cadence): string {
-  const [year, month] = p.periodStart.split('-').map(Number) as [number, number];
-  return cadence === 'quarter' ? `Q${Math.floor((month - 1) / 3) + 1} ${year}` : `${MONTHS[month - 1]} ${year}`;
-}
-
 /** The game's usual name: play-tools' product codes aren't what organizers call them. */
 export const GAME: Record<'tcg' | 'pgo' | 'vg', string> = { tcg: 'TCG', pgo: 'GO', vg: 'VGC' };
 
 /** "League Cup · TCG · each quarter". */
 export function requirementLabel(r: Pick<Requirement, 'seriesMatch' | 'product' | 'cadence'>): string {
   return `${r.seriesMatch} · ${GAME[r.product]} · each ${r.cadence}`;
-}
-
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-/** "Thu 31 Dec": a league date, read as a calendar date (no time zone shift). */
-export function dayLabel(date: LocalDate): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 }
 
 const STATUS: Record<CoverageStatus, { label: string; color: BadgeColor }> = {

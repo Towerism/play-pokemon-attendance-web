@@ -28,8 +28,6 @@ import {
   entryStatus,
   groupByDate,
   isShortNotice,
-  todayIn,
-  periodLabel,
   planOneDefaults,
   requirementLabel,
   retryContext,
@@ -38,6 +36,7 @@ import {
   tabFromQuery,
   upcomingNotice,
 } from './tournaments';
+import { periodLabel, todayIn } from './dates';
 
 // The Tournaments page's decisions (#98): what each cell, entry and dialog shows and what it may send. Every
 // "today" is passed in; nothing here reads the clock.
