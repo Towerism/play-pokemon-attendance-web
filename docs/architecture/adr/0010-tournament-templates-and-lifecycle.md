@@ -763,8 +763,10 @@ Building coverage (decision 12) settled what it left open:
    their pages (#98, #99). Coverage names a failed listing `needs_reconnect`, `upstream_unavailable` (a 429 or 5xx) or
    `refused` (any other play-tools error). *As built (#98):* the cache is the tournaments module's own
    (`listing-cache.ts`), shared by coverage and Upcoming; Upcoming's `?refresh=1` lists again, and a tournament job's end
-   still drops it all. The create-through preview, which decides what a job creates, keeps a live listing. This week
-   moves onto it with #99.
+   still drops it all. The create-through preview, which decides what a job creates, keeps a live listing. *As built
+   (#99):* This week reads its cards' status and planned rows through Upcoming for the date, so through the cache; its
+   Staff read stays live, since it reads each tournament's participants anyway and staff decisions depend on that fresh
+   read. Its required-events banner shares the nav badge's coverage read.
 9. **Human-scale traffic.** Details reads run one at a time and stop at the first 429 or 5xx; the rest, and the
    linking of `unknown` rows, wait for the next request, their periods `unknown` meanwhile. A details failure a retry
    won't fix (refused, not found, an unexpected shape) isn't asked again until the listings are next read. Concurrent reads (the grid, the banner and the badge) share one

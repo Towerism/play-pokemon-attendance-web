@@ -88,6 +88,7 @@ async function removePlayer(player: SessionPlayer) {
 
 <template>
   <div class="space-y-6">
+    <RequiredEventsBanner />
     <div class="flex flex-wrap items-end justify-between gap-4">
       <h1 class="text-2xl font-semibold">This week</h1>
       <UFormField label="Session date">
@@ -169,7 +170,7 @@ async function removePlayer(player: SessionPlayer) {
       </UCollapsible>
     </section>
 
-    <StaffSection :date="date" />
+    <StaffSection :date="date" @uploaded="refresh" />
 
     <!-- Only once a submission has resolved the date's play session (§4.4); nothing upstream is read to decide. -->
     <section v-if="session?.playSessionId" class="space-y-2 rounded-md border border-error/40 p-4" aria-labelledby="danger-zone">

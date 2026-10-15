@@ -9,10 +9,14 @@ export function useUpcoming(opts: { immediate?: boolean } = {}) {
   return useFetch<Upcoming>('/api/tournaments/upcoming', { key: UPCOMING_KEY, immediate: opts.immediate ?? true });
 }
 
-/** Reads Upcoming again; `upstream` lists play-tools again (**Refresh**) instead of the server's cache. */
-export async function refreshUpcoming(opts: { upstream?: boolean } = {}): Promise<Upcoming> {
+/**
+ * Reads Upcoming again; `upstream` lists play-tools again (**Refresh**) instead of the server's cache. With `range` (one
+ * date on This week, #99) it reads just that range and leaves the Tournaments page's `upcoming` key alone.
+ */
+export async function refreshUpcoming(opts: { upstream?: boolean; range?: { from: string; to: string } } = {}): Promise<Upcoming> {
+  if (opts.range) return $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
   if (opts.upstream) {
-    const fresh = await $fetch<Upcoming>('/api/tournaments/upcoming', { query: { refresh: '1' } });
+    const fresh = await $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
     useNuxtData<Upcoming>(UPCOMING_KEY).data.value = fresh;
     return fresh;
   }

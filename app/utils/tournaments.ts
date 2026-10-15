@@ -5,7 +5,7 @@ import type { SupportDetails, TournamentItemOutcome } from '../../server/modules
 import type { LeftOutReason } from '../../server/modules/tournaments/create';
 import type { CarriedField, EditValues } from '../../server/modules/tournaments/edit';
 import type { CreateThroughPreview, Template, TournamentOptions, Upcoming, UpcomingEntry } from '../../server/modules/tournaments/service';
-import { addDays, dayLabel } from './dates';
+import { addDays, dayLabel, periodLabel } from './dates';
 import { unreadWarning } from './staff';
 
 // The Tournaments page's decisions (#98, ADR-0010 decisions 6, 10–12): what each required-events cell, Upcoming
@@ -482,4 +482,86 @@ export function planOneDefaults(
       .sort((a, b) => a.id - b.id)
       .find((t) => !t.archived && t.product === req.product && t.type.kind === 'premier' && t.type.seriesMatch.toLowerCase().includes(match)) ?? null;
   return { template, date };
+}
+
+/** One line of This week's required-events banner (ADR-0010 decision 12, #99). */
+export interface BannerLine {
+  text: string;
+  tone: 'warning' | 'error';
+  /** **Reconnect** (to Settings) or **Retry** (list play-tools again), for a professor whose read failed. */
+  action: 'reconnect' | 'retry' | null;
+}
+
+/** Louder first (ADR-0010 decision 12's scale); a sanctioning error at any other urgency after them. */
+const BANNER_RANK: Partial<Record<Urgency, number>> = { missed: 0, last_chance: 1, short_notice: 2, at_risk: 3 };
+const PROBLEM_RANK = 4;
+
+const UNREAD_REASON: Record<UnreadProfessor['code'], string> = {
+  needs_reconnect: 'needs reconnect',
+  upstream_unavailable: 'play-tools unavailable',
+  refused: 'refused',
+};
+
+const capitalised = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Whose tournaments a `unknown` cell couldn't read, with why. */
+function unreadWho(p: PeriodCoverage, unread: readonly UnreadProfessor[]): string {
+  const professors = p.unreadProfessors.map((prof) => {
+    const code = unread.find((u) => u.professor.playerId === prof.playerId)?.code;
+    return `${professorName(prof)}’s tournaments${code ? ` (${UNREAD_REASON[code]})` : ''}`;
+  });
+  if (professors.length) return professors.join(' and ');
+  return p.unreadTournaments.map((t) => `${t.displayId ?? 'a tournament'}’s details`).join(' and ') || 'some tournaments';
+}
+
+function cellLine(req: Requirement, p: PeriodCoverage, c: Pick<RequiredEventsCoverage, 'unread'>, today: LocalDate): string {
+  const what = `a ${req.seriesMatch} for ${GAME[req.product]}`;
+  const period = periodLabel(p, req.cadence);
+  const latest = dayLabel(p.latestDate);
+  if (p.status === 'unknown') return `Can’t confirm ${what} in ${period}: ${unreadWho(p, c.unread)} couldn’t be read. The last date is ${latest}.`;
+  if (p.status === 'problem') {
+    const errored = p.tournaments.find((t) => t.class === 'problem')?.displayId ?? 'A tournament';
+    return `${errored} has a sanctioning error in play-tools: it doesn’t cover ${what} in ${period}.`;
+  }
+  const status = STATUS[p.status].label;
+  switch (p.urgency) {
+    case 'missed':
+      return `Missed: no ${req.seriesMatch} for ${GAME[req.product]} in ${period}. The last date was ${latest}.`;
+    case 'last_chance':
+      return `Last chance for ${what} in ${period}: a tournament held ${dayLabel(firstCreatable(p, today) ?? p.latestDate)} to ${latest} can still be sanctioned.`;
+    case 'short_notice':
+      return `${capitalised(what)} in ${period} is short notice (${status}): the sanction-by date, ${dayLabel(p.sanctionBy)}, has passed. A tournament up to ${latest} can still be sanctioned.`;
+    default:
+      return `${capitalised(what)} in ${period} is at risk (${status}). Sanction by ${dayLabel(p.sanctionBy)}; the last date is ${latest}.`;
+  }
+}
+
+/**
+ * This week's required-events banner (ADR-0010 decision 12): a line per cell at risk or louder, or with a sanctioning
+ * error, most urgent first (then by latest date, then requirement order), then one per professor whose read failed.
+ * It can't be dismissed: a line goes only when its cause does.
+ */
+export function bannerLines(c: Pick<RequiredEventsCoverage, 'requirements' | 'unread'>, today: LocalDate): BannerLine[] {
+  const cells: { rank: number; latestDate: LocalDate; order: number; line: BannerLine }[] = [];
+  c.requirements.forEach(({ requirement, periods }, order) => {
+    for (const p of periods) {
+      const loud = p.urgency !== null ? BANNER_RANK[p.urgency] : undefined;
+      if (loud === undefined && p.status !== 'problem') continue;
+      const rank = loud ?? PROBLEM_RANK;
+      const tone = rank <= 1 || p.status === 'problem' ? 'error' : 'warning';
+      cells.push({ rank, latestDate: p.latestDate, order, line: { text: cellLine(requirement, p, c, today), tone, action: null } });
+    }
+  });
+  cells.sort((a, b) => a.rank - b.rank || a.latestDate.localeCompare(b.latestDate) || a.order - b.order);
+  const professors: BannerLine[] = c.unread.map((u) => ({
+    text: `Couldn’t read ${professorName(u.professor)}’s tournaments: ${u.message}`,
+    tone: 'warning',
+    action: u.code === 'needs_reconnect' ? 'reconnect' : 'retry',
+  }));
+  return [...cells.map((x) => x.line), ...professors];
+}
+
+/** Upcoming's query: one date range (This week's cards, #99), and/or a fresh listing instead of the 5-minute cache. */
+export function upcomingQuery(opts: { upstream?: boolean; range?: { from: LocalDate; to: LocalDate } }): Record<string, string> {
+  return { ...(opts.range ?? {}), ...(opts.upstream ? { refresh: '1' } : {}) };
 }
