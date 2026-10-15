@@ -218,6 +218,12 @@ export interface StaffingService {
    * deleted, the rest tombstoned as `removeAssignment` does. Nothing is sent. Returns how many of each.
    */
   cancelTournament(leagueId: string, tournamentId: string): { dropped: number; removed: number };
+  /**
+   * A staffer the TDF lists as playing, removed from the tournament's staff in play-tools on request (ADR-0007
+   * update, #96): they played rather than staffed, so their assignments (live or tombstoned) and the tournament's
+   * staff-list row for them go. One transaction.
+   */
+  forgetPlayed(leagueId: string, tournamentId: string, playerId: PlayerId): { assignments: number; history: number };
 }
 
 /** The play-tools calls staffing makes. */
@@ -827,6 +833,19 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
         .set({ sessionDate: to })
         .where(and(eq(staffAssignment.leagueId, leagueId), eq(staffAssignment.tournamentId, tournamentId)))
         .run().changes;
+    },
+
+    forgetPlayed(leagueId, tournamentId, playerId) {
+      return db.transaction(() => ({
+        assignments: db
+          .delete(staffAssignment)
+          .where(and(eq(staffAssignment.leagueId, leagueId), eq(staffAssignment.tournamentId, tournamentId), eq(staffAssignment.playerId, playerId)))
+          .run().changes,
+        history: db
+          .delete(staffHistory)
+          .where(and(eq(staffHistory.leagueId, leagueId), eq(staffHistory.tournamentId, tournamentId), eq(staffHistory.playerId, playerId)))
+          .run().changes,
+      }));
     },
 
     cancelTournament(leagueId, tournamentId) {

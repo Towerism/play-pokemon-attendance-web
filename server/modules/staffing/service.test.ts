@@ -1191,3 +1191,50 @@ describe('cancelTournament: a cancelled tournament keeps no wanted staff (ADR-00
     expect(rows()).toEqual(after);
   });
 });
+
+describe('forgetPlayed: a staffer who played, removed from staff on request (ADR-0007 update, #96)', () => {
+  const assign = (tournamentId: string, playerId: string, set: { recordId?: string | null; removedAt?: number | null } = {}) =>
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, state, record_id, created_by, created_at, removed_at)
+         values (?, '2026-10-20', ?, 'Cup', ?, 'judge', 'assigned', ?, 'organizer', 0, ?)`,
+      )
+      .run(L, tournamentId, playerId, set.recordId ?? null, set.removedAt ?? null);
+  const history = (tournamentId: string, playerId: string) =>
+    database.sqlite
+      .prepare(`insert into staff_history (league_id, tournament_id, player_id, role, source, recorded_at) values (?, ?, ?, 'judge', 'upstream', 0)`)
+      .run(L, tournamentId, playerId);
+  const left = (table: string) => database.sqlite.prepare(`select tournament_id, player_id from ${table} order by tournament_id, player_id`).all();
+
+  beforeEach(() => {
+    for (const id of ['00123', '00456']) database.sqlite.prepare("insert or ignore into player (player_id, display_name, first_seen_at) values (?, 'P', 0)").run(id);
+  });
+
+  it("drops the player's assignments (live and tombstoned) and staff-list row for that tournament only", () => {
+    assign('t-1', '00123', { recordId: 'rec-1' });
+    assign('t-1', '00123', { recordId: 'rec-0', removedAt: 5 });
+    assign('t-1', '00456', { recordId: 'rec-2' });
+    assign('t-2', '00123', { recordId: 'rec-3' });
+    history('t-1', '00123');
+    history('t-1', '00456');
+    history('t-2', '00123');
+
+    expect(staffing.forgetPlayed(L, 't-1', '00123' as PlayerId)).toEqual({ assignments: 2, history: 1 });
+
+    expect(left('staff_assignment')).toEqual([
+      { tournament_id: 't-1', player_id: '00456' },
+      { tournament_id: 't-2', player_id: '00123' },
+    ]);
+    expect(left('staff_history')).toEqual([
+      { tournament_id: 't-1', player_id: '00456' },
+      { tournament_id: 't-2', player_id: '00123' },
+    ]);
+  });
+
+  it('is a no-op for nobody, and for another league', () => {
+    assign('t-1', '00123', { recordId: 'rec-1' });
+    expect(staffing.forgetPlayed(L, 't-1', '00456' as PlayerId)).toEqual({ assignments: 0, history: 0 });
+    expect(staffing.forgetPlayed('other-league', 't-1', '00123' as PlayerId)).toEqual({ assignments: 0, history: 0 });
+    expect(left('staff_assignment')).toHaveLength(1);
+  });
+});

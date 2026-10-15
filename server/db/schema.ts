@@ -214,9 +214,12 @@ export const submission = sqliteTable(
      * the same tournaments into the league's players (#35): `play_session_label` "Player import". `tournament_create`
      * creates planned tournaments in play-tools (#92, ADR-0010 decision 5): `play_session_id` is '' and its items are
      * `submission_tournament_item` rows. `tournament_edit` edits (and reschedules) tournaments in play-tools (#93,
-     * ADR-0010 decisions 8 and 11), with the same items.
+     * ADR-0010 decisions 8 and 11), with the same items. `tdf_upload` sends a tournament's TDF to play-tools (#96,
+     * ADR-0011): validate, then confirm only if play-tools accepts it; one item.
      */
-    kind: text('kind', { enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create', 'tournament_edit', 'tournament_cancel'] })
+    kind: text('kind', {
+      enum: ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create', 'tournament_edit', 'tournament_cancel', 'tdf_upload'],
+    })
       .notNull()
       .default('submit'),
     /** For an undo: the submission whose added records it removes. */
@@ -224,6 +227,11 @@ export const submission = sqliteTable(
     /** A **Create through date…** job (#92): the schedule, and the date it creates through. */
     throughScheduleId: integer('through_schedule_id'),
     throughDate: text('through_date'),
+    /**
+     * The results upload (`tournament_result_upload`) a `tdf_upload` job sends, or whose Remove-from-staff a `staff`
+     * job runs (#96). No FK across modules.
+     */
+    resultsUploadId: integer('results_upload_id'),
   },
   (t) => [index('submission_league_date_idx').on(t.leagueId, t.sessionDate)],
 );
@@ -295,7 +303,10 @@ export const submissionTournamentItem = sqliteTable(
     tournamentId: text('tournament_id'),
     /** The resolved name and local date. */
     label: text('label').notNull(),
-    /** `edited` and `already_applied` are an edit job's (#93); `cancelled` and `already_cancelled` a cancel job's (#94). */
+    /**
+     * `edited` and `already_applied` are an edit job's (#93); `cancelled` and `already_cancelled` a cancel job's (#94);
+     * `processing` through `processing_failed` a `tdf_upload` job's (#96).
+     */
     outcome: text('outcome', {
       enum: [
         'pending',
@@ -311,6 +322,12 @@ export const submissionTournamentItem = sqliteTable(
         'already_applied',
         'cancelled',
         'already_cancelled',
+        'processing',
+        'uploaded',
+        'not_accepted',
+        'warnings_changed',
+        'validate_unknown',
+        'processing_failed',
       ],
     }).notNull(),
     /** Written just before the create or edit is sent (#100): boot recovery reads it. */
@@ -762,4 +779,61 @@ export const requirementManualCover = sqliteTable(
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   },
   (t) => [uniqueIndex('requirement_manual_cover_period_unique').on(t.requirementId, t.periodStart)],
+);
+
+/**
+ * A tournament's TDF results upload (ADR-0011, #96): one per preview, kept as the attempt's record. The file lives in
+ * the encrypted archive; this row holds what the app checked, what the organizer acknowledged and what play-tools
+ * answered. Owned by the `tournaments` module.
+ */
+export const tournamentResultUpload = sqliteTable(
+  'tournament_result_upload',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** The play-tools tournament guid. */
+    tournamentId: text('tournament_id').notNull(),
+    displayId: text('display_id'),
+    /** The tournament's name in play-tools at the preview, for labels. */
+    tournamentName: text('tournament_name'),
+    /** The This week date the file was dropped on. */
+    sessionDate: text('session_date').notNull(),
+    filename: text('filename').notNull(),
+    /** The archived file: as dropped, or the corrected copy (ADR-0011 decision 8); null once the organizer deletes it. */
+    tdfFileId: integer('tdf_file_id').references(() => tdfFile.id, { onDelete: 'set null' }),
+    /** Of the file as dropped; kept after the file is replaced or deleted. */
+    sha256: text('sha256').notNull(),
+    playerCount: integer('player_count').notNull(),
+    /** The attendance import (`tdf_upload`) previewed from the same drop. No FK across modules. */
+    attendanceUploadId: integer('attendance_upload_id'),
+    /** `{fromPlayerId, fromName, toPlayerId, toName}` when the app replaced the file's organizer. */
+    organizerReplaced: text('organizer_replaced', { mode: 'json' }),
+    tournamentIdFilled: integer('tournament_id_filled', { mode: 'boolean' }).notNull().default(false),
+    /** `{playerId, playToolsName}` while the organizer's full name is asked for; then null. */
+    pendingOrganizer: text('pending_organizer', { mode: 'json' }),
+    /** The local checks' warnings (codes, messages, subjects). */
+    warnings: text('warnings', { mode: 'json' }).notNull().default([]),
+    /** SHA-256 of the warnings' codes and subjects (#101); null only while the full name is asked for. */
+    warningsFingerprint: text('warnings_fingerprint'),
+    acknowledgedFingerprint: text('acknowledged_fingerprint'),
+    acknowledgedBy: text('acknowledged_by'),
+    acknowledgedAt: integer('acknowledged_at', { mode: 'timestamp' }),
+    /** The tournament's organizer, whom the job acts as (ADR-0009). */
+    professorPlayerId: text('professor_player_id'),
+    /** play-tools' `upload_guid`. */
+    upstreamUploadId: text('upstream_upload_id'),
+    /** play-tools' validation errors: `{code, message, detail}`. */
+    upstreamErrors: text('upstream_errors', { mode: 'json' }).notNull().default([]),
+    /** Why a `failed` upload failed (`interrupted`, `confirm_not_landed`, `processing_failed`, a block or upstream code). */
+    errorCode: text('error_code'),
+    state: text('state', {
+      enum: ['previewed', 'sending', 'not_accepted', 'warnings_changed', 'validate_unknown', 'processing', 'complete', 'failed'],
+    }).notNull(),
+    /** Its `tdf_upload` job. No FK across modules. */
+    submissionId: integer('submission_id'),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  },
+  (t) => [index('tournament_result_upload_tournament_idx').on(t.leagueId, t.tournamentId)],
 );

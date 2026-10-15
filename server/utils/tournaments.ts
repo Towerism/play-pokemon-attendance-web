@@ -1,7 +1,42 @@
+import { TdfError } from '../../shared/tdf/parse';
 import { TournamentsError, type TournamentsErrorCode } from '../modules/tournaments/errors';
+import { type TournamentResults, createTournamentResults } from '../modules/tournaments/results';
 import { type TournamentsService, createTournamentsService } from '../modules/tournaments/service';
 
 let tournaments: TournamentsService | undefined;
+let results: TournamentResults | undefined;
+
+/**
+ * TDF results uploads (ADR-0011, #96): reads only; the `tdf_upload` job sends. The organizer's full name lives on
+ * their Pokémon connection (ADR-0011 decision 8).
+ */
+export function useTournamentResults(): TournamentResults {
+  results ??= createTournamentResults({
+    db: useDb(),
+    connections: usePokemon(),
+    gateway: connectionGateway,
+    names: {
+      fullNameOf: (leagueId, playerId) => usePokemon().listConnections(leagueId).find((c) => c.professorPlayerId === playerId)?.professorFullName ?? null,
+      saveFullName: (leagueId, playerId, fullName) => void usePokemon().renameProfessor(leagueId, playerId, { fullName }),
+    },
+    archive: useTdfArchive(),
+    attendance: useTdfImports(),
+    roster: useRoster(),
+    timeZone: leagueTimeZone(),
+  });
+  return results;
+}
+
+/**
+ * Maps a results route's errors: the parser's refusals (422 with their code), the archive's, then submission,
+ * tournaments and Pokémon errors.
+ */
+export function resultsHttpError(err: unknown): never {
+  if (err instanceof TdfError) throw createError({ statusCode: 422, message: err.message, data: { code: err.code } });
+  const archived = tdfArchiveHttpError(err);
+  if (archived !== err) throw archived;
+  return submissionHttpError(err);
+}
 
 /** Templates, scaffolds, schedules and planned tournaments (ADR-0010). */
 export function useTournaments(): TournamentsService {
@@ -57,6 +92,16 @@ const STATUS: Record<TournamentsErrorCode, number> = {
   requirement_has_covers: 409,
   invalid_period: 400,
   too_many_requirements: 422,
+  results_not_accepted: 422,
+  results_already_uploaded: 422,
+  organizer_full_name_required: 422,
+  organizer_name_not_needed: 409,
+  tdf_file_deleted: 409,
+  not_removable: 422,
+  warnings_not_acknowledged: 422,
+  upload_not_open: 409,
+  use_upload_again: 422,
+  nothing_to_retry: 422,
 };
 
 /**

@@ -79,6 +79,10 @@ export interface FakePokemon {
   land(): void;
   /** Holds every create (after it is logged) until `release()`; `arrived` resolves when the first is held. */
   holdCreates(): { arrived: Promise<void>; release(): void };
+  /** Holds every TDF validation (after it is logged) until `release()`, to stop the app mid-send (#96). */
+  holdValidates(): { arrived: Promise<void>; release(): void };
+  /** Every TDF a validation received, decoded from its base64 payload, in order (test oracle only). */
+  validatedFiles: string[];
   /** Ends a confirmed upload's processing: `completed` makes the tournament `complete`; `upload_failed` leaves it sanctioned. */
   finishUpload(tournamentId: string, outcome: 'completed' | 'upload_failed'): void;
   /** Refuse the account's next refresh with `invalid_grant` (default account when no player id is given). */
@@ -278,6 +282,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
   /** Creates `createLandsLate` stored but no read shows yet. */
   const hidden: FakeTournament[] = [];
   let createGate: { released: Promise<void>; arrive: () => void } | undefined;
+  let validateGate: { released: Promise<void>; arrive: () => void } | undefined;
   const issued: string[] = [];
   const accounts: AccountState[] = [];
   const uploads: FakeUpload[] = [];
@@ -337,6 +342,21 @@ export async function startFakePokemon(): Promise<FakePokemon> {
         },
       };
     },
+    holdValidates: () => {
+      let release!: () => void;
+      const released = new Promise<void>((r) => (release = r));
+      let arrive!: () => void;
+      const arrived = new Promise<void>((r) => (arrive = r));
+      validateGate = { released, arrive };
+      return {
+        arrived,
+        release: () => {
+          validateGate = undefined;
+          release();
+        },
+      };
+    },
+    validatedFiles: [],
     finishUpload: (tournamentId, outcome) => {
       const t = fake.tournaments.find((x) => x.guid === tournamentId);
       if (!t) throw new Error(`fake: no tournament ${tournamentId}`);
@@ -662,6 +682,11 @@ export async function startFakePokemon(): Promise<FakePokemon> {
     if (req.method === 'POST' && caller && url.pathname === '/services/triumph/tdf/') {
       const sent = JSON.parse(await body(req)) as { kind: string; tournament_id: string; payload: string };
       entry.body = { ...sent, payload: '<tdf>' };
+      fake.validatedFiles.push(Buffer.from(sent.payload, 'base64').toString('utf8'));
+      if (validateGate) {
+        validateGate.arrive();
+        await validateGate.released;
+      }
       const t = fake.tournaments.find((x) => x.display_id === sent.tournament_id);
       if (!t) return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.' });
       const errors = fake.tdfErrors.get(sent.tournament_id) ?? [];

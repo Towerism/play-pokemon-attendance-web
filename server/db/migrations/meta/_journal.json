@@ -127,6 +127,13 @@
       "when": 1792008587164,
       "tag": "0017_tournament_requirements",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1792025098570,
+      "tag": "0018_tdf_results_upload",
+      "breakpoints": true
     }
   ]
 }
