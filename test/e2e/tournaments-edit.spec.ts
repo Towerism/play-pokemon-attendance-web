@@ -1,5 +1,4 @@
-import { dayLabel } from '../../app/utils/tournaments';
-import { type Api, expect, expectNoHorizontalScroll, leagueDay, test, tournamentTemplate } from './fixtures';
+import { type Api, dayHeading, expect, expectNoHorizontalScroll, leagueDay, test, tournamentTemplate } from './fixtures';
 
 // Edit… across a schedule (ADR-0010 decision 11, #98), on tournaments not created yet: everything stays local. The
 // name's carry-over tick starts off, the details' on; an entry unticked in the preview keeps its old details. Skip is
@@ -34,11 +33,11 @@ test('a details change goes to this and later planned tournaments, except the on
   fake.requests.length = 0;
 
   await page.goto('/tournaments');
-  const entry = (date: string) => `Friday Cup · ${dayLabel(date)}`;
+  const entry = (date: string) => `Friday Cup · ${dayHeading(date)}`;
   await page.getByRole('button', { name: `Edit… ${entry(rows[0]!.localDate)}` }).click();
   const dialog = page.getByRole('dialog', { name: 'Edit tournament' });
-  await dialog.getByLabel('Name').fill('Friday Cup special');
-  await dialog.getByLabel('Details').fill('Bring a deck box');
+  await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('Friday Cup special');
+  await dialog.getByRole('textbox', { name: 'Details', exact: true }).fill('Bring a deck box');
   await dialog.getByRole('radio', { name: 'This and later tournaments in the schedule' }).check();
   await expect(dialog.getByRole('checkbox', { name: 'Carry over Name' })).not.toBeChecked();
   await expect(dialog.getByRole('checkbox', { name: 'Carry over Details' })).toBeChecked();
@@ -52,7 +51,8 @@ test('a details change goes to this and later planned tournaments, except the on
   const saved = page.waitForResponse((r) => r.url().endsWith(`/api/tournaments/${rows[0]!.plannedId}/edit`) && r.request().method() === 'POST');
   await dialog.getByRole('button', { name: 'Save' }).click();
   const { updatedLocally } = (await (await saved).json()) as { updatedLocally: number };
-  await expect(page.getByText(`Updated ${updatedLocally} planned tournament`)).toBeVisible();
+  // The toast's title (Nuxt UI repeats it in a hidden live region).
+  await expect(page.locator('[data-slot="title"]', { hasText: `Updated ${updatedLocally} planned tournament` })).toBeVisible();
 
   expect(await details(connected, rows[0]!.plannedId)).toBe('Bring a deck box');
   expect(await details(connected, rows[1]!.plannedId)).toBe('Bring a deck box');

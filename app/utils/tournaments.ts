@@ -23,7 +23,7 @@ export function addDays(date: LocalDate, days: number): LocalDate {
 }
 
 /** Today in the league's time zone: short notice and sanction-by count from it, never the browser's date. */
-export function leagueToday(timeZone: string, now: Date): LocalDate {
+export function todayIn(timeZone: string, now: Date): LocalDate {
   return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 }
 
@@ -337,8 +337,11 @@ export function downloadName(contentDisposition: string | null, displayId: strin
   return plain?.[1]?.trim() || fallback;
 }
 
-/** Optional text: blank is empty (null), as the server's schemas read it. */
-const text = (v: string | null) => (v === null || v.trim() === '' ? null : v.trim());
+/** Optional text: blank is empty (null), as the server's schemas read it; an email or URL that is there is checked. */
+export function blankToNull(v: string | null): string | null {
+  return v === null || v.trim() === '' ? null : v.trim();
+}
+const text = blankToNull;
 
 const EDIT_FIELDS: readonly (keyof EditValues)[] = [
   'name',
@@ -380,6 +383,32 @@ const CARRIABLE: readonly CarriedField[] = ['name', 'category', 'venue', 'startT
  */
 export function defaultTicks(changed: readonly (keyof EditValues)[]): CarriedField[] {
   return CARRIABLE.filter((f) => f !== 'name' && changed.includes(f));
+}
+
+/** The edit form's field names, as the form and the preview show them. */
+export const FIELD_LABEL: Record<keyof EditValues, string> = {
+  name: 'Name',
+  category: 'Format',
+  venue: 'Venue',
+  localDate: 'Date',
+  startTime: 'Start time',
+  registration: 'Registration',
+  contactEmail: 'Contact email',
+  contactPhone: 'Contact phone',
+  details: 'Details',
+  eventWebsite: 'Event website',
+};
+
+/** A field's value in words, for the preview's before → after. */
+export function valueText(field: keyof EditValues, value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (field === 'venue') return (value as EditValues['venue']).label ?? (value as EditValues['venue']).id ?? '—';
+  if (field === 'registration') {
+    const r = value as NonNullable<EditValues['registration']>;
+    if (r.kind === 'third_party') return `Third party: ${r.url}`;
+    return `On site: opens ${r.opensBeforeMin} min before, closes ${r.closesAfterMin} min after${r.admission ? `, admission ${r.admission}` : ''}`;
+  }
+  return String(value);
 }
 
 /** The preview entries the organizer unticked, as the apply's `excluded`. */

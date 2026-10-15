@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { ScheduleRule } from '../../shared/schedule/rule';
-import { ruleText } from './schedule-rule';
+import { type RuleParts, partsFromRule, ruleFromParts, ruleText } from './schedule-rule';
+
+describe('the schedule form’s recurrence', () => {
+  const base: RuleParts = { kind: 'weekly', weekday: 2, every: 1, nth: 1, day: 1, month: 1 };
+
+  it.each([
+    [{ ...base }, { kind: 'weekly', weekday: 2, every: 1 }],
+    [{ ...base, kind: 'monthly_nth', nth: 'last', weekday: 7 }, { kind: 'monthly', nth: 'last', weekday: 7 }],
+    [{ ...base, kind: 'monthly_day', day: 15 }, { kind: 'monthly', day: 15 }],
+    [{ ...base, kind: 'quarterly', month: 2, nth: 1, weekday: 6 }, { kind: 'quarterly', month: 2, nth: 1, weekday: 6 }],
+  ] as [RuleParts, ScheduleRule][])('builds %j', (parts, rule) => {
+    expect(ruleFromParts(parts)).toEqual(rule);
+    expect(ruleFromParts(partsFromRule(rule))).toEqual(rule);
+  });
+});
 
 describe('ruleText', () => {
   it.each([

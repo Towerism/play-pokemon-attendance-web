@@ -5,19 +5,26 @@ const links = [
   { to: '/', label: 'This week' },
   { to: '/regulars', label: 'Regulars' },
   { to: '/players', label: 'Players' },
+  { to: '/tournaments', label: 'Tournaments' },
   { to: '/history', label: 'History' },
   { to: '/settings', label: 'Settings' },
 ];
 
 // Global reconnect banner (architecture §8): shown on every page once Pokémon refuses the submitting professor's login.
 const { data: connection, execute: loadConnection } = await usePokemonConnection({ immediate: false });
+// The required-events badge on Tournaments (ADR-0010 decision 12): read only with a session; a failed read hides it.
+const { data: coverage, execute: loadCoverage } = await useRequiredEvents({ immediate: false });
 watch(
   user,
   (u) => {
-    if (u) void loadConnection();
+    if (!u) return;
+    void loadConnection();
+    void loadCoverage();
   },
   { immediate: true },
 );
+const attention = computed(() => (user.value ? badgeCount(coverage.value) : 0));
+const attentionLabel = computed(() => `${attention.value} required events need attention`);
 const reconnectTitle = computed(() => (user.value ? reconnectBanner(connection.value) : null));
 
 // Phones get the links in a drawer (below `sm`); any navigation closes it as soon as the URL changes.
@@ -59,9 +66,14 @@ async function logout() {
         <div class="flex items-center gap-4 min-w-0">
           <NuxtLink to="/" class="font-semibold truncate">League attendance</NuxtLink>
           <nav v-if="user" class="hidden sm:flex items-center gap-1 text-sm">
-            <UButton v-for="link in links" :key="link.to" :to="link.to" :exact="link.to === '/'" size="sm" variant="ghost" color="neutral" active-color="primary" active-variant="soft">
-              {{ link.label }}
-            </UButton>
+            <span v-for="link in links" :key="link.to" class="inline-flex items-center">
+              <UButton :to="link.to" :exact="link.to === '/'" size="sm" variant="ghost" color="neutral" active-color="primary" active-variant="soft">
+                {{ link.label }}
+              </UButton>
+              <UBadge v-if="link.to === '/tournaments' && attention > 0" role="status" :aria-label="attentionLabel" color="error" size="sm" class="-ml-1">
+                {{ attention }}
+              </UBadge>
+            </span>
           </nav>
         </div>
         <div v-if="user" class="hidden sm:flex items-center gap-3 text-sm">
@@ -84,22 +96,26 @@ async function logout() {
 
           <template #body>
             <nav class="flex flex-col gap-1">
-              <UButton
-                v-for="link in links"
-                :key="link.to"
-                :to="link.to"
-                :exact="link.to === '/'"
-                :aria-current="isCurrent(link.to) ? 'page' : undefined"
-                size="lg"
-                variant="ghost"
-                color="neutral"
-                active-color="primary"
-                active-variant="soft"
-                block
-                class="min-h-11 justify-start"
-              >
-                {{ link.label }}
-              </UButton>
+              <div v-for="link in links" :key="link.to" class="flex items-center gap-2">
+                <UButton
+                  :to="link.to"
+                  :exact="link.to === '/'"
+                  :aria-current="isCurrent(link.to) ? 'page' : undefined"
+                  size="lg"
+                  variant="ghost"
+                  color="neutral"
+                  active-color="primary"
+                  active-variant="soft"
+                  block
+                  class="min-h-11 justify-start"
+                >
+                  {{ link.label }}
+                </UButton>
+                <!-- Beside the link, not in it, so the link's name stays the page's name. -->
+                <UBadge v-if="link.to === '/tournaments' && attention > 0" role="status" :aria-label="attentionLabel" color="error" class="shrink-0">
+                  {{ attention }}
+                </UBadge>
+              </div>
             </nav>
             <div class="mt-6 pt-4 border-t border-default flex flex-col gap-2">
               <span class="text-sm text-muted truncate">{{ user.username }}</span>

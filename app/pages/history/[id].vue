@@ -169,7 +169,10 @@ async function retry() {
       />
       <p v-if="submission.kind === 'submit'" class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
 
-      <div v-if="!liveId" class="flex flex-wrap items-center gap-2">
+      <!-- A tournament job lists tournaments, each with its support details; it has no players and no undo. -->
+      <TournamentItems v-if="isTournamentJob(submission.kind)" :items="submission.tournamentItems" />
+
+      <div v-if="!liveId && !isTournamentJob(submission.kind)" class="flex flex-wrap items-center gap-2">
         <UButton v-if="submission.undoable" color="error" variant="soft" icon="i-lucide-undo-2" @click="undoOpen = true">
           Remove players added by this submission
         </UButton>
@@ -193,7 +196,7 @@ async function retry() {
         </template>
       </UModal>
 
-      <UTable :data="items" :columns="columns">
+      <UTable v-if="!isTournamentJob(submission.kind)" :data="items" :columns="columns">
         <template #displayName-cell="{ row }">
           <div>
             <span :class="{ 'text-muted italic': !row.original.displayName }">{{ row.original.displayName || 'No name' }}</span>

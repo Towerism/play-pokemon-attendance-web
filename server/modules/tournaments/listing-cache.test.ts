@@ -24,7 +24,7 @@ beforeEach(() => {
     gateway: (id) => ({
       listTournaments: () => {
         calls.push(id);
-        return answers.get(id)?.() ?? Promise.resolve([tournament(`t${id}`)]);
+        return (answers.get(id)?.() ?? Promise.resolve([tournament(`t${id}`)])) as Promise<Tournament[]>;
       },
     }),
   });

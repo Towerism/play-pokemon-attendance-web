@@ -41,6 +41,11 @@ const RUNNING_TOURNAMENT = {
   tdf_upload: 'Uploading…',
 } as const satisfies Partial<Record<SubmissionKind, string>>;
 
+/** A job whose items are tournaments (`tournamentItems`), not players: History lists them with support details (#98). */
+export function isTournamentJob(kind: SubmissionKind): boolean {
+  return kind in RUNNING_TOURNAMENT;
+}
+
 export function submissionStatus(status: SubmissionStatus, kind: SubmissionKind = 'submit'): { label: string; color: BadgeColor } {
   if ((kind === 'staff_import' || kind === 'player_import') && status === 'running') return { label: 'Reading…', color: 'info' };
   if (kind === 'staff' && status === 'running') return { label: 'Assigning…', color: 'info' };

@@ -6,6 +6,9 @@ import type { EditValues } from '../../server/modules/tournaments/edit';
 import type { CreateThroughPreview, Template, TournamentOptions, UpcomingEntry } from '../../server/modules/tournaments/service';
 import {
   type TemplateFormState,
+  FIELD_LABEL,
+  blankToNull,
+  valueText,
   badgeCount,
   cancelConfirmed,
   cellView,
@@ -25,7 +28,7 @@ import {
   entryStatus,
   groupByDate,
   isShortNotice,
-  leagueToday,
+  todayIn,
   periodLabel,
   planOneDefaults,
   requirementLabel,
@@ -84,10 +87,10 @@ function template(overrides: Partial<Template> = {}): Template {
   };
 }
 
-describe('leagueToday', () => {
+describe('todayIn', () => {
   it('is the date in the league’s time zone, not UTC’s or the browser’s', () => {
-    expect(leagueToday('America/Chicago', new Date('2026-10-15T03:00:00Z'))).toBe('2026-10-14');
-    expect(leagueToday('America/Chicago', new Date('2026-10-15T05:00:00Z'))).toBe('2026-10-15');
+    expect(todayIn('America/Chicago', new Date('2026-10-15T03:00:00Z'))).toBe('2026-10-14');
+    expect(todayIn('America/Chicago', new Date('2026-10-15T05:00:00Z'))).toBe('2026-10-15');
   });
 });
 
@@ -546,6 +549,18 @@ describe('the edit form', () => {
     expect(defaultTicks(['name', 'details', 'venue', 'localDate'])).toEqual(['venue', 'details']);
   });
 
+  it('shows a field’s before and after in words', () => {
+    expect(valueText('venue', values.venue)).toBe('Card Shop');
+    expect(valueText('registration', values.registration)).toBe('On site: opens 60 min before, closes 15 min after');
+    expect(valueText('registration', { kind: 'on_site', opensBeforeMin: 30, closesAfterMin: 0, admission: '$5' })).toBe(
+      'On site: opens 30 min before, closes 0 min after, admission $5',
+    );
+    expect(valueText('registration', { kind: 'third_party', url: 'https://example.com/r' })).toBe('Third party: https://example.com/r');
+    expect(valueText('details', null)).toBe('—');
+    expect(valueText('startTime', '18:00')).toBe('18:00');
+    expect(FIELD_LABEL.contactEmail).toBe('Contact email');
+  });
+
   it('excludes the preview entries the organizer unticked', () => {
     expect(excludedKeys([{ key: 'p:1' }, { key: 'p:2' }, { key: 't:g3' }], new Set(['p:1', 't:g3']))).toEqual(['p:2']);
   });
@@ -582,6 +597,13 @@ describe('the template form', () => {
     expect(venueChoices(options, { ...saved, id: 'v1' }).map((v) => v.id)).toEqual(['v1', 'v2']);
     expect(venueChoices(null, saved).map((v) => v.id)).toEqual(['gone']);
     expect(venueChoices(null, null)).toEqual([]);
+  });
+
+  it('sends blank optional text as empty, since the server checks an email or URL that is there', () => {
+    expect(blankToNull('  ')).toBeNull();
+    expect(blankToNull('')).toBeNull();
+    expect(blankToNull(null)).toBeNull();
+    expect(blankToNull(' a@b.c ')).toBe('a@b.c');
   });
 
   it('says what stops it saving', () => {

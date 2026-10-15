@@ -25,9 +25,25 @@ const APP_ENV = {
 /** The league's time zone, as `APP_ENV.TZ` and the browser context both use. */
 export const LEAGUE_TZ = 'America/Chicago';
 
-/** The league's date `days` from today, on the real clock, as the server sees it. */
+/** The league's date `days` from today, on the real clock, as the server sees it: calendar days, so a DST change can't shift it. */
 export function leagueDay(days: number): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: LEAGUE_TZ }).format(new Date(Date.now() + days * 86_400_000));
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: LEAGUE_TZ }).format(new Date());
+  return new Date(Date.parse(`${today}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "Fri 16 Oct", as the Tournaments page heads a date and names its entries. */
+export function dayHeading(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+}
+
+/** "Oct 2026", as the Required events grid names a month. */
+export function monthHeading(periodStart: string): string {
+  const [year, month] = periodStart.split('-').map(Number) as [number, number];
+  return `${MONTHS[month - 1]} ${year}`;
 }
 
 /** A Custom tournament template run by the connected organizer at the fake's venue, over the API. */

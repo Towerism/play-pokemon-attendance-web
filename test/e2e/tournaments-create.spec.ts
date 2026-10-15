@@ -1,5 +1,4 @@
-import { dayLabel } from '../../app/utils/tournaments';
-import { expect, expectNoHorizontalScroll, leagueDay, plannedTournament, test, tournamentTemplate } from './fixtures';
+import { dayHeading, expect, expectNoHorizontalScroll, leagueDay, plannedTournament, test, tournamentTemplate } from './fixtures';
 
 // Creating tournaments in play-tools from Upcoming (ADR-0010 decisions 5–7, #98). Nothing reaches play-tools before
 // the confirm in a dialog that lists what it creates; short notice is acknowledged only by **Create anyway**; a
@@ -10,7 +9,7 @@ const creates = (fake: { requests: { method: string; path: string }[] }) => fake
 test('a new tournament 3 days ahead is created only after Create anyway, and the job is followed to the end', async ({ page, connected, fake }) => {
   await tournamentTemplate(connected);
   const date = leagueDay(3);
-  const entryName = `Friday Cup · ${dayLabel(date)}`;
+  const entryName = `Friday Cup · ${dayHeading(date)}`;
 
   await page.goto('/tournaments');
   await page.getByRole('button', { name: 'New tournament' }).click();
@@ -38,7 +37,8 @@ test('a new tournament 3 days ahead is created only after Create anyway, and the
   await expect(dialog.getByText('Done', { exact: true })).toBeVisible();
   await expect(dialog.getByRole('list', { name: 'Tournaments in this job' })).toContainText('Created');
   expect(creates(fake)).toHaveLength(1);
-  await dialog.getByRole('button', { name: 'Close' }).click();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
   await expect(entry).toContainText('In play-tools');
 });
 
@@ -50,7 +50,7 @@ test('a refused create shows play-tools’ answer and support details to copy', 
   fake.refuseOnce.set('/services/core/tournament', { status: 403, body: { code: 'op.generic.permission_denied', message: 'You do not have permission to perform this action.' } });
 
   await page.goto('/tournaments');
-  const entryName = `Friday Cup · ${dayLabel(date)}`;
+  const entryName = `Friday Cup · ${dayHeading(date)}`;
   await page.getByRole('button', { name: `Create in play-tools ${entryName}` }).click();
   const dialog = page.getByRole('dialog', { name: 'Create in play-tools' });
   await expect(dialog.getByText('less than 7 days before it is held')).toBeHidden();
@@ -58,7 +58,7 @@ test('a refused create shows play-tools’ answer and support details to copy', 
 
   const items = dialog.getByRole('list', { name: 'Tournaments in this job' });
   await expect(items).toContainText('Refused by play-tools');
-  await dialog.getByText('Support details').click();
+  await dialog.locator('summary', { hasText: 'Support details' }).click();
   const details = dialog.getByRole('region', { name: 'Support details' });
   await expect(details).toContainText('Action: create');
   await expect(details).toContainText('HTTP status: 403');
