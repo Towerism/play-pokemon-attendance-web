@@ -300,7 +300,7 @@ describe("every logger is attendance's configured one (server/logging/app-logger
 });
 
 describe("the launcher logs through attendance's configured logger", () => {
-  // runLauncher builds a logger that hides only the kit's base keys when it isn't given one.
+  // runLauncher requires a logger; any but attendance's hides only the kit's base keys. Lint catches both before startup.
   const launch = (options: string) => `export const run = () => runLauncher({ prepare, server${options} });`;
 
   it.each([

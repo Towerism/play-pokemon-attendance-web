@@ -221,3 +221,15 @@ only when every layer came from the cache. Tag names, the amd64-only build, fork
 - (−) `docker pull` and Unraid's update check work on either shape, but a digest pinned from an older tag (an OCI index)
   differs in form from a new one. Tags published before A7 keep their index.
 - Rollback: pin a previous `X.Y.Z` or `sha-…` on Unraid; reverting A7 restores the inline jobs.
+
+## Update (kit 1.0.0, 2026-10-15): every tag is the tested manifest
+
+Kit 1.0.0 (#166) tags with `buildx imagetools create --prefer-index=false`
+([selfhost-kit#30](https://github.com/Towerism/selfhost-kit/issues/30)). `edge`, `X.Y.Z`, `X.Y` and `latest` now name the
+same single-platform `linux/amd64` manifest as `sha-<short>`, the image job's digest, instead of a one-entry list around
+it. Before it pushes the git tag, the release checks that each of `X.Y.Z`, `X.Y` and `latest` names exactly that digest.
+If one doesn't, it stops with no git tag or GitHub Release, but the image tags have already moved.
+
+- (+) A digest pinned from any tag is the one the container tests ran.
+- (−) Tags published between A7 and this update keep their one-entry list.
+- Rollback: pin a previous `X.Y.Z` on Unraid; reverting #166 restores kit 0.4.2's tagging.

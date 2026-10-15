@@ -69,7 +69,7 @@ Two formatter differences from attendance's own code are accepted:
   and a non-string `message` as empty, where attendance printed `String(...)` of each. The kit prints less, never
   more.
 
-A kit API that builds its own logger when none is passed (`runLauncher`, A3) must be given `createAppLogger(...)`.
+A kit API that takes a logger (`runLauncher`, A3) must be given `createAppLogger(...)`.
 
 A3 (#131) moved the secret bootstrap, the runtime env and the launcher. `server/bootstrap/app-env.ts` holds only
 attendance's configuration: `SECRETS` (the kit's `sessionPassword()` and two `aes256Key` specs with today's env names,
@@ -163,6 +163,16 @@ favour of its "pure refactors release nothing"; a rollback is a revert PR. A7 is
 releases nothing either: its effect on published images first reaches installs with the next `fix`/`feat` release, so
 pinning the release before that one on Unraid undoes it for an install, and reverting A7 undoes it in CI.
 
+Kit 1.0.0 (#166, 2026-10-15) freezes the kit's API. Attendance needed no code change for it:
+- `createLogger` now requires a redactor and `runLauncher` a logger. Attendance already passed both, through
+  `createAppLogger`. The ESLint rules stay, because a logger from `createRedactor()` alone still hides only the base keys.
+- `vitest`, `semantic-release` and the release plugins are no longer kit peers, so `pnpm audit --prod` stops walking
+  `@towerism/selfhost-kit>vitest>tinypool`. Its two `ignoreGhsas` entries went.
+- The launcher refuses a `NUXT_` tuning value above 2^53 − 1 (selfhost-kit#22), so that value now fails at startup with
+  the launcher's message instead of the limiter's.
+- `edge`, `X.Y.Z`, `X.Y` and `latest` name the tested image manifest itself, not a one-entry list around it, and the
+  release checks each tag's digest before the git tag (selfhost-kit#30, ADR-0006, update kit 1.0.0).
+
 ## Consequences
 
 - (+) There is one copy of the security code. A fix lands once and reaches both apps by a version bump.
@@ -172,7 +182,8 @@ pinning the release before that one on Unraid undoes it for an install, and reve
   - `NITRO_`-prefixed names;
   - whole-object JSON overrides;
   - `pnpm dev`;
-  - a `NUXT_` value of 2^53 or more, until [selfhost-kit#22](https://github.com/Towerism/selfhost-kit/issues/22).
+  - a `NUXT_` value of 2^53 or more, until kit 1.0.0 ([selfhost-kit#22](https://github.com/Towerism/selfhost-kit/issues/22));
+    the launcher now refuses it.
 
   Before the kit, such a value disabled the limit, tightened it or simply worked, depending on the value. From A1 to
   A4 it made the rate-limited routes answer 500. Since A5 the limiters are built at boot, so it **fails startup** with

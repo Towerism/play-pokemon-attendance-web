@@ -1539,8 +1539,8 @@ flowchart LR
     `server/modules/*` take a `Logger` (a type from the kit) as a dependency. ESLint bans `console` in server code,
     and rejects the kit's `createLogger`/`createRedactor` outside `app-logger.ts` and any `pino` import in server
     and script code (`app/` and `shared/` don't log; a pino import there is a review check), because either would log
-    without attendance's keys. ESLint doesn't see `require` or a dynamic `import()` (a review check). A kit API that builds its own logger
-    when none is passed must be given `createAppLogger(...)`: for `runLauncher`, ESLint requires
+    without attendance's keys. ESLint doesn't see `require` or a dynamic `import()` (a review check). A kit API that takes a logger
+    must be given `createAppLogger(...)`: for `runLauncher`, which requires one, ESLint requires
     `logger: createAppLogger(...)` directly in its options (an aliased import, a namespace call, options built elsewhere or a later
     spread overriding `logger` are review checks).
   - `server/routes/healthz.get.ts` (used by the image `HEALTHCHECK`) and `server/routes/readyz.get.ts` endpoints.

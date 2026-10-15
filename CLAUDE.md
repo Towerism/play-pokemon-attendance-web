@@ -136,13 +136,8 @@ Never edit a generated migration that has shipped; add a new one.
 
 CI runs `pnpm audit --prod --audit-level high`. `pnpm.auditConfig.ignoreGhsas` in
 `package.json` lists advisories in **build/dev-only** tooling that never reaches `.output/`
-(check with `ls .output/server/node_modules`):
-- Nuxt's (`@nuxt/devtools` → simple-git, the `listhen` dev server → node-forge, braces);
-  drop these once Nuxt ships the fix;
-- `@towerism/selfhost-kit`'s optional dev-tool peers (vitest, semantic-release, …). pnpm links them to our dev
-  copies, so `audit --prod` walks them (`.>@towerism/selfhost-kit>vitest>tinypool`). Only `dist/core` of the kit is
-  traced into `.output/`. An advisory whose only path is one of those peers may be ignored after the same check;
-  drop these once the kit stops exposing the peers ([selfhost-kit#24](https://github.com/Towerism/selfhost-kit/issues/24)).
+(check with `ls .output/server/node_modules`): Nuxt's (`@nuxt/devtools` → simple-git, the `listhen`
+dev server → node-forge, braces). Drop these once Nuxt ships the fix.
 
 Ignore an advisory only after confirming that.
 
