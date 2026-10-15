@@ -3,6 +3,7 @@ import type { SubmissionView } from '../../server/modules/submission/service';
 import type { CarriedField, EditValues } from '../../server/modules/tournaments/edit';
 import type { EditForm, EditPreview, PreviewEntry } from '../../server/modules/tournaments/editing';
 import type { TournamentOptions } from '../../server/modules/tournaments/service';
+import { DETAILS_MAX_CHARS } from '#shared/schemas/tournaments';
 
 /**
  * **Edit…** (ADR-0010 decision 11): any field, rescheduling included, optionally across the schedule. Only the
@@ -253,7 +254,7 @@ async function done(view: SubmissionView) {
             <UInput :model-value="values.eventWebsite ?? ''" type="url" class="w-full" @update:model-value="values.eventWebsite = String($event)" />
           </UFormField>
           <UFormField label="Details" class="sm:col-span-2">
-            <UTextarea :model-value="values.details ?? ''" :rows="3" maxlength="2000" class="w-full" @update:model-value="values.details = String($event)" />
+            <UTextarea :model-value="values.details ?? ''" :rows="3" :maxlength="DETAILS_MAX_CHARS" class="w-full" @update:model-value="values.details = String($event)" />
           </UFormField>
         </div>
         <p v-if="rescheduleNote" class="text-sm text-warning">{{ rescheduleNote }}</p>

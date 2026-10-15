@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RegistrationSettings } from '../../server/modules/tournaments/settings';
 import type { Template, TournamentOptions } from '../../server/modules/tournaments/service';
+import { DETAILS_MAX_CHARS } from '#shared/schemas/tournaments';
 
 /**
  * A tournament template (ADR-0010 decisions 2 and 10). Its choices (types for the date, formats, venues) are read live
@@ -186,7 +187,7 @@ async function save() {
           <UFormField label="Contact email"><UInput v-model="contactEmail" type="email" class="w-full" /></UFormField>
           <UFormField label="Contact phone"><UInput v-model="contactPhone" type="tel" class="w-full" /></UFormField>
           <UFormField label="Event website" class="sm:col-span-2"><UInput v-model="eventWebsite" type="url" class="w-full" /></UFormField>
-          <UFormField label="Details" class="sm:col-span-2"><UTextarea v-model="details" :rows="3" maxlength="2000" class="w-full" /></UFormField>
+          <UFormField label="Details" class="sm:col-span-2"><UTextarea v-model="details" :rows="3" :maxlength="DETAILS_MAX_CHARS" class="w-full" /></UFormField>
         </div>
         <p v-if="loadingOptions" class="text-sm text-muted">Reading play-tools’ choices…</p>
         <UAlert v-if="optionsError" color="warning" variant="subtle" icon="i-lucide-circle-alert" :title="optionsError">
