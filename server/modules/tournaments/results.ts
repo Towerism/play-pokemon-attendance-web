@@ -162,7 +162,6 @@ export interface ResultsDeps {
   now?: () => Date;
 }
 
-/** The archive's view of the results uploads that point at its files: they keep their file (no re-point). */
 /** The uploads **Download TDF** may serve (ADR-0012 decision 7): confirmed, in the league, with their file still archived. */
 const servable = (leagueId: string, tournamentIds: readonly string[]) =>
   and(
@@ -179,6 +178,7 @@ export function tdfAvailableIn(db: Db, leagueId: string, tournamentIds: readonly
   return new Set(rows.map((r) => r.id));
 }
 
+/** The archive's view of the results uploads that point at its files: they keep their file (no re-point). */
 export function createResultUploadReferrer(db: Db): TdfFileReferrer {
   return {
     kind: 'results',
