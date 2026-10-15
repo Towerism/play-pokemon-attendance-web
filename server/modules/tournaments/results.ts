@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, lt } from 'drizzle-orm';
 import type { ResultsConfirmBody } from '../../../shared/schemas/results';
 import { correctTdf } from '../../../shared/tdf/correct';
 import { warningsFingerprint } from '../../../shared/tdf/fingerprint';
@@ -12,6 +12,7 @@ import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { PlayToolsGateway, TournamentDetails, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
 import type { TdfImportService, TdfPreview } from '../sessions/tdf-import';
+import { TdfFileNotFoundError } from '../tdf-archive/errors';
 import type { TdfArchiveService, TdfFileReferrer } from '../tdf-archive/service';
 import { TournamentsError } from './errors';
 import { type OrganizerRead, organizerReads } from './organizer';
@@ -61,6 +62,8 @@ export interface ResultsSection {
     | { error: string };
   latest: ResultsUploadView | null;
   earlier: { uploadId: number; state: UploadState; createdAt: string }[];
+  /** **Download TDF** would serve a file (ADR-0012 decision 7); from local rows only. */
+  tdfAvailable: boolean;
 }
 
 /** What a confirm starts a `tdf_upload` job for. */
@@ -136,6 +139,14 @@ export interface TournamentResults {
   recheckAfterStaff(leagueId: string, uploadId: number): Promise<void>;
   /** Deletes open previews older than a day; their files then expire with the archive's run. */
   expirePreviews(): number;
+  /**
+   * **Download TDF** (ADR-0012 decision 7): the archived file of the tournament's latest confirmed upload that still
+   * has one. Local rows and the archive only; play-tools is never asked.
+   * @throws TournamentsError `no_tdf`, TdfKeyMismatchError
+   */
+  download(leagueId: string, tournamentId: string): { fileId: number; filename: string; content: string };
+  /** The tournaments among these that **Download TDF** would serve a file for, from local rows only. */
+  tdfAvailable(leagueId: string, tournamentIds: readonly string[]): Set<string>;
 }
 
 export interface ResultsDeps {
@@ -152,6 +163,22 @@ export interface ResultsDeps {
 }
 
 /** The archive's view of the results uploads that point at its files: they keep their file (no re-point). */
+/** The uploads **Download TDF** may serve (ADR-0012 decision 7): confirmed, in the league, with their file still archived. */
+const servable = (leagueId: string, tournamentIds: readonly string[]) =>
+  and(
+    eq(tournamentResultUpload.leagueId, leagueId),
+    inArray(tournamentResultUpload.tournamentId, [...tournamentIds]),
+    inArray(tournamentResultUpload.state, CONFIRMED),
+    isNotNull(tournamentResultUpload.tdfFileId),
+  );
+
+/** Which of the tournaments **Download TDF** would serve a file for: one query, local rows only, nothing decrypted. */
+export function tdfAvailableIn(db: Db, leagueId: string, tournamentIds: readonly string[]): Set<string> {
+  if (tournamentIds.length === 0) return new Set();
+  const rows = db.selectDistinct({ id: tournamentResultUpload.tournamentId }).from(tournamentResultUpload).where(servable(leagueId, tournamentIds)).all();
+  return new Set(rows.map((r) => r.id));
+}
+
 export function createResultUploadReferrer(db: Db): TdfFileReferrer {
   return {
     kind: 'results',
@@ -168,6 +195,8 @@ export function createResultUploadReferrer(db: Db): TdfFileReferrer {
 const DISPLAY_ID = /^\d{2}-\d{2}-\d{6}$/;
 /** Open previews are dropped after this long. */
 const PREVIEW_TTL_MS = 24 * 60 * 60 * 1000;
+/** Uploads play-tools confirmed (ADR-0012 decision 7): only their files are ever served by **Download TDF**. */
+const CONFIRMED: UploadState[] = ['processing', 'complete'];
 const NO_CORRECTIONS: ResultsCorrections = { organizerReplaced: null, tournamentIdFilled: false };
 
 interface Located {
@@ -683,6 +712,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
         upstream,
         latest: latest ? uploadView(latest) : null,
         earlier: rows.slice(1).map((r) => ({ uploadId: r.id, state: r.state, createdAt: r.createdAt.toISOString() })),
+        tdfAvailable: tdfAvailableIn(db, leagueId, [tournamentId]).size > 0,
       };
     },
 
@@ -704,5 +734,25 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
         .where(and(inArray(tournamentResultUpload.state, ['previewed']), lt(tournamentResultUpload.createdAt, cutoff)))
         .run().changes;
     },
+
+    download(leagueId, tournamentId) {
+      const row = db
+        .select({ fileId: tournamentResultUpload.tdfFileId })
+        .from(tournamentResultUpload)
+        .where(servable(leagueId, [tournamentId]))
+        .orderBy(desc(tournamentResultUpload.id))
+        .get();
+      const noTdf = () => new TournamentsError('no_tdf', 'This app has no copy of this tournament’s TDF.');
+      if (row?.fileId == null) throw noTdf();
+      try {
+        return { fileId: row.fileId, ...archive.read(leagueId, row.fileId) };
+      } catch (err) {
+        // Deleted between the lookup and the read.
+        if (err instanceof TdfFileNotFoundError) throw noTdf();
+        throw err;
+      }
+    },
+
+    tdfAvailable: (leagueId, tournamentIds) => tdfAvailableIn(db, leagueId, tournamentIds),
   };
 }

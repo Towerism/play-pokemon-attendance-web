@@ -15,9 +15,11 @@ import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { ResultsUpload, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import { type RosterService, createRosterService } from '../roster/service';
 import { type TdfImportService, createTdfImportService, createTdfUploadReferrer } from '../sessions/tdf-import';
+import { TdfKeyMismatchError } from '../tdf-archive/errors';
 import { type TdfArchiveService, createTdfArchiveService } from '../tdf-archive/service';
+import { tournamentResultUpload } from '../../db/schema';
 import { TournamentsError } from './errors';
-import { type TournamentResults, createResultUploadReferrer, createTournamentResults } from './results';
+import { type ResultsDeps, type TournamentResults, createResultUploadReferrer, createTournamentResults } from './results';
 import { OLIVE, stubPlayTools, upstreamTournament } from './test-helpers';
 
 // The tournaments module's side of a TDF results upload (#96, ADR-0011): the preview and its fixes, the full-name
@@ -48,6 +50,7 @@ let roster: RosterService;
 let archive: TdfArchiveService;
 let attendance: TdfImportService;
 let results: TournamentResults;
+let resultsDeps: ResultsDeps;
 let now: Date;
 let fullNames: Map<string, string | null>;
 let uploadsList: ResultsUpload[];
@@ -82,7 +85,7 @@ beforeEach(() => {
   });
   attendance = createTdfImportService({ db: database.db, roster, sightings: createSightingsService({ db: database.db }), archive, now: () => now });
   fullNames = new Map([[ORGANIZER, 'Olive Organizer']]);
-  results = createTournamentResults({
+  resultsDeps = {
     db: database.db,
     connections: upstream.connections,
     gateway: (as) => {
@@ -102,9 +105,11 @@ beforeEach(() => {
     roster,
     timeZone: TZ,
     now: () => now,
-  });
+  };
+  results = createTournamentResults(resultsDeps);
 });
 afterEach(() => database.close());
+const deps = () => resultsDeps;
 
 const preview = (content: string, filename = 'cup.tdf') => results.preview(L, DATE, GUID, { filename, content, by: 'organizer' });
 const archived = (fileId: number) => archive.read(L, fileId).content;
@@ -504,5 +509,116 @@ describe('expiry and the archive', () => {
       ]),
     );
     expect(uploadRow(p.uploadId).tdf_file_id).toBeNull();
+  });
+});
+
+describe('Download TDF: the archived file of the latest confirmed upload', () => {
+  type State = (typeof tournamentResultUpload.$inferSelect)['state'];
+  let seq = 0;
+  /** One results attempt for the tournament, with its own distinct file stored in the archive. */
+  const attempt = (state: State, o: { tournamentId?: string; leagueId?: string } = {}) => {
+    const leagueId = o.leagueId ?? L;
+    const filename = `attempt-${++seq}.tdf`;
+    const content = file({ players: [{ userid: String(3000000 + seq), first: 'Player', last: `No${seq}` }] });
+    const { fileId } = archive.store(leagueId, { filename, content, by: 'organizer' });
+    const { id } = database.db
+      .insert(tournamentResultUpload)
+      .values({ leagueId, tournamentId: o.tournamentId ?? GUID, sessionDate: DATE, filename, tdfFileId: fileId, sha256: sha(content), playerCount: 1, state, createdAt: now })
+      .returning({ id: tournamentResultUpload.id })
+      .get();
+    return { uploadId: id, fileId, filename, content };
+  };
+  beforeEach(() => (seq = 0));
+
+  it('serves the confirmed upload’s file, and no_tdf when there is no upload', () => {
+    expect(() => results.download(L, GUID)).toThrow(expect.objectContaining({ code: 'no_tdf' }));
+
+    const done = attempt('complete');
+    expect(results.download(L, GUID)).toEqual({ fileId: done.fileId, filename: done.filename, content: done.content });
+  });
+
+  const UNCONFIRMED: State[] = ['previewed', 'sending', 'not_accepted', 'warnings_changed', 'validate_unknown', 'failed'];
+
+  it.each(UNCONFIRMED)('never serves a newer %s attempt over the confirmed one', (state) => {
+    const done = attempt('complete');
+    attempt(state);
+    expect(results.download(L, GUID).fileId).toBe(done.fileId);
+  });
+
+  it('serves an upload play-tools is still processing: it is the file the app sent', () => {
+    attempt('complete');
+    const latest = attempt('processing');
+    expect(results.download(L, GUID).fileId).toBe(latest.fileId);
+  });
+
+  it('is no_tdf when no attempt was confirmed, even though their files are archived', () => {
+    for (const state of UNCONFIRMED) attempt(state);
+    expect(() => results.download(L, GUID)).toThrow(expect.objectContaining({ code: 'no_tdf' }));
+  });
+
+  it('falls back to the next-latest confirmed upload whose file still exists, then no_tdf once none has one', () => {
+    const a = attempt('complete');
+    const b = attempt('complete');
+
+    archive.delete(L, b.fileId);
+    expect(results.download(L, GUID)).toEqual({ fileId: a.fileId, filename: a.filename, content: a.content });
+
+    archive.delete(L, a.fileId);
+    expect(() => results.download(L, GUID)).toThrow(expect.objectContaining({ code: 'no_tdf' }));
+  });
+
+  it('never serves another league’s upload of the same tournament', () => {
+    database.sqlite.prepare("insert into league (id, name) values ('other', 'Other league')").run();
+    attempt('complete', { leagueId: 'other' });
+    expect(() => results.download(L, GUID)).toThrow(expect.objectContaining({ code: 'no_tdf' }));
+  });
+
+  it('refuses a latest file this install’s key can’t open, never falling back to an older one', () => {
+    attempt('complete');
+    const latest = attempt('complete');
+    // The latest ciphertext sealed under another key, as after a restore without secrets/.
+    const foreign = createTdfArchiveService({ db: database.db, vault: tdfVault(randomBytes(32).toString('base64')), referrers: () => [], log: silentLogger });
+    const resealed = foreign.store(L, { filename: 'x.tdf', content: `${latest.content}\n`, by: 'organizer' });
+    database.sqlite.prepare('update tournament_result_upload set tdf_file_id = ? where id = ?').run(resealed.fileId, latest.uploadId);
+
+    expect(() => results.download(L, GUID)).toThrow(TdfKeyMismatchError);
+  });
+
+  it('is no_tdf, not a crash, when the file is deleted between the lookup and the read', () => {
+    attempt('complete');
+    const racing = createTournamentResults({
+      ...deps(),
+      archive: {
+        ...archive,
+        read: (leagueId, fileId) => {
+          archive.delete(leagueId, fileId);
+          return archive.read(leagueId, fileId);
+        },
+      },
+    });
+    expect(() => racing.download(L, GUID)).toThrow(expect.objectContaining({ code: 'no_tdf' }));
+  });
+
+  it('marks tdfAvailable exactly the tournaments a download would serve, from local rows only', () => {
+    const served = 'aaaaaaaa-0000-4000-8000-00000000000a';
+    const deleted = 'aaaaaaaa-0000-4000-8000-00000000000b';
+    const failedOnly = 'aaaaaaaa-0000-4000-8000-00000000000c';
+    const none = 'aaaaaaaa-0000-4000-8000-00000000000d';
+    attempt('complete', { tournamentId: served });
+    archive.delete(L, attempt('complete', { tournamentId: deleted }).fileId);
+    attempt('failed', { tournamentId: failedOnly });
+    const before = upstream.state.calls.length;
+
+    expect(results.tdfAvailable(L, [served, deleted, failedOnly, none])).toEqual(new Set([served]));
+    expect(results.tdfAvailable(L, [])).toEqual(new Set());
+    expect(upstream.state.calls.length).toBe(before);
+  });
+
+  it('tells the card’s Results section whether the app holds the TDF', async () => {
+    const done = attempt('complete');
+    expect((await results.section(L, DATE, GUID)).tdfAvailable).toBe(true);
+
+    archive.delete(L, done.fileId);
+    expect((await results.section(L, DATE, GUID)).tdfAvailable).toBe(false);
   });
 });

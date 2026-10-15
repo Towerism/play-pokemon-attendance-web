@@ -100,7 +100,9 @@ export type TournamentsErrorCode =
   /** A `tdf_upload` job is never resumed or retried: **Upload again…** goes through the send dialog. */
   | 'use_upload_again'
   /** A retry of a Remove-from-staff job whose players are all removed. */
-  | 'nothing_to_retry';
+  | 'nothing_to_retry'
+  /** **Download TDF**: the app holds no file of a confirmed results upload for the tournament (ADR-0012 decision 7). */
+  | 'no_tdf';
 
 export class TournamentsError extends Error {
   override name = 'TournamentsError';

@@ -102,6 +102,7 @@ const STATUS: Record<TournamentsErrorCode, number> = {
   upload_not_open: 409,
   use_upload_again: 422,
   nothing_to_retry: 422,
+  no_tdf: 404,
 };
 
 /**
