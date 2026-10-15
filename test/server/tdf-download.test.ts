@@ -6,6 +6,7 @@ import { BIRTHDATE, tomTdf } from '../../shared/tdf/__fixtures__/tom';
 import { localInstant } from '../../shared/time/local-time';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, logRecords, setupCodeFrom, startServer } from './harness';
+import { leagueDay } from './league-day';
 
 // **Download TDF** (ADR-0012 decision 7, #97) over HTTP, against the built app and the play-tools fake. The file comes
 // from the app's archive only: play-tools answers 403 for it (#107), so the fake's request log must stay empty for
@@ -14,10 +15,9 @@ import { type TestServer, client, logRecords, setupCodeFrom, startServer } from 
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const TZ = 'America/Chicago';
-const DAY = 86_400_000;
 const ENV = { TZ, NUXT_TOURNAMENT_DELAY_MS: '0', NUXT_LOG_FORMAT: 'json' };
 
-const day = (days: number) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + days * DAY));
+const day = (days: number) => leagueDay(days, TZ);
 const at18 = (date: string) => localInstant(date, '18:00', TZ).toISOString().replace('.000', '');
 const DATE = day(-1);
 const PLAYERS = [

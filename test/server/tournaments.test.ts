@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, FAKE_VENUE, type FakePokemon, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { leagueDay } from './league-day';
 
 // The tournaments module over HTTP (#91): templates, scaffolds, schedules, planned tournaments and Upcoming,
 // against the built app and the in-process play-tools fake. The server runs on the real clock, so every date
@@ -9,10 +10,9 @@ import { type TestServer, client, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const TZ = 'America/Chicago';
-const DAY = 86_400_000;
 
 /** The league's date `days` from today. */
-const day = (days: number) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + days * DAY));
+const day = (days: number) => leagueDay(days, TZ);
 
 let fake: FakePokemon;
 let server: TestServer;

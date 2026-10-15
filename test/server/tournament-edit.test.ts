@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { localInstant } from '../../shared/time/local-time';
 import { FAKE_PLAYER_ID, FAKE_VENUE, type FakePokemon, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { leagueDay } from './league-day';
 
 // Editing and rescheduling tournaments (#93) over HTTP, against the built app and the play-tools fake: the three
 // routes, the tournament_edit job, and what reaches play-tools: a PATCH with only the changed wire fields. The server
@@ -10,11 +11,10 @@ import { type TestServer, client, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const TZ = 'America/Chicago';
-const DAY = 86_400_000;
 const ENV = { TZ, NUXT_TOURNAMENT_DELAY_MS: '0', NUXT_LOG_FORMAT: 'json' };
 const GUID = '00000000-0000-4000-8000-0000000000e1';
 
-const day = (days: number) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + days * DAY));
+const day = (days: number) => leagueDay(days, TZ);
 const weekdayOf = (date: string) => new Date(`${date}T12:00:00Z`).getUTCDay() || 7;
 const at18 = (date: string) => localInstant(date, '18:00', TZ).toISOString().replace('.000', '');
 
