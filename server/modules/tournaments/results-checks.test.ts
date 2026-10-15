@@ -95,7 +95,7 @@ describe('resultsWarnings', () => {
     expect(codes(input({ xml: tdf({ organizerElement: '<organizer popid="07654321" name="Pat Organizer"/>' }) }))).toEqual(['tdf_wrong_organizer']);
   });
 
-  it('keeps a replaced organizer and adds a mismatch when the tournament organizer changed since (D11)', () => {
+  it('keeps a replaced organizer and adds a mismatch when the tournament organizer changed since (ADR-0011 Update #96)', () => {
     const replaced = { fromPlayerId: '1234500', fromName: 'Alex', toPlayerId: ORGANIZER, toName: 'Pat Organizer' };
     const w = codes(input({ tournament: { ...tournament, organizerPlayerId: '5555555' }, corrections: { organizerReplaced: replaced, tournamentIdFilled: false } }));
     expect(w).toEqual(['tdf_organizer_replaced', 'tdf_wrong_organizer']);

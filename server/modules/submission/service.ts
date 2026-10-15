@@ -299,7 +299,7 @@ export interface SubmissionService {
     leagueId: string,
     input: { date: SessionDate; tournamentId: string; uploadId: number; playerIds: readonly PlayerId[]; startedBy: string },
   ): Promise<{ submissionId: number }>;
-  /** A `tdf_upload` job's processing, followed on this read (Update #96 D10); a no-op for other jobs. */
+  /** A `tdf_upload` job's processing, followed on this read (ADR-0011 Update #96); a no-op for other jobs. */
   followResults(leagueId: string, submissionId: number): Promise<void>;
   /** Per player, the session dates they were added to or already present on upstream (audit only, §5). */
   timesSubmitted(leagueId: string): Map<PlayerId, number>;
@@ -2562,7 +2562,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       return finishTdfUpload(row, importAttendance);
     }
 
-    // Recorded before the confirm goes out: a crash after it is settled on read, never confirmed twice (D8).
+    // Recorded before the confirm goes out: a crash after it is settled on read, never confirmed twice (ADR-0011 Update #96).
     r.record(uploadId, { state: 'processing' });
     try {
       await g.confirmResults(validated.uploadId, check.tournamentId);
@@ -2606,7 +2606,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   /**
-   * A `tdf_upload` stopped by a crash or shutdown (FR-32): a validate with no answer is `validate_unknown`, a confirm
+   * A `tdf_upload` stopped by a crash or shutdown: a validate with no answer is `validate_unknown`, a confirm
    * that went out is `processing` (settled on read), anything earlier is skipped. Nothing is sent.
    */
   function stopTdfUpload(row: Row): void {
@@ -2756,7 +2756,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'finished', `Staff job ${status}.`, total, total);
   }
 
-  /** Each player play-tools no longer lists as staff is forgotten as this tournament's staff here (FR-19). */
+  /** Each player play-tools no longer lists as staff is forgotten as this tournament's staff here. */
   function finishRemovalOfStaff(row: Row): void {
     const gone = db
       .select()
@@ -2848,7 +2848,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .catch((err: unknown) => log.warn(`${what(row)} #${submissionId} could not record how it ended: ${(err as Error).message}`, { submissionId }))
       // However it ended, play-tools may have changed: coverage lists again (ADR-0010 decision 12).
       .finally(async () => {
-        // Remove from staff: the preview's checks again now the job ended (Update #96 D6), best effort.
+        // Remove from staff: the preview's checks again now the job ended (ADR-0011 Update #96), best effort.
         if (isRemoval(row)) await deps.tournaments?.results?.recheckAfterStaff(row.leagueId, row.resultsUploadId!);
         if (!isTournamentJob(row)) return;
         try {

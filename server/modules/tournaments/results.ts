@@ -54,7 +54,7 @@ export interface ResultsUploadView {
   createdAt: string;
 }
 
-/** A tournament card's Results section (ADR-0011 decision 1), processing followed on this read (Update #96 D10). */
+/** A tournament card's Results section (ADR-0011 decision 1), processing followed on this read (ADR-0011 Update #96). */
 export interface ResultsSection {
   upstream:
     | { status: 'awaiting_results' | 'processing' | 'complete' | 'upload_failed' | 'results_already_uploaded' | 'results_not_accepted'; reason: string | null }
@@ -83,7 +83,7 @@ export interface RemovalPlan {
   playerIds: PlayerId[];
 }
 
-/** The `tdf_upload` job's fresh check just before the send (FR-23, FR-24). */
+/** The `tdf_upload` job's fresh check just before the send. */
 export type JobCheck =
   | {
       kind: 'send';
@@ -112,7 +112,7 @@ export interface TournamentResults {
   preview(leagueId: string, date: SessionDate, tournamentId: string, file: { filename: string; content: string; by: string }): Promise<ResultsPreview>;
   /** Saves the organizer's full name on their connection, then corrects the file. @throws `organizer_name_not_needed` and the preview's */
   setOrganizerName(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, fullName: string, by: string): Promise<ResultsPreview>;
-  /** The checks again from the archived file (Update #96 D5): in place for an open preview, else a new attempt. */
+  /** The checks again from the archived file (ADR-0011 Update #96): in place for an open preview, else a new attempt. */
   recheck(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, by: string): Promise<ResultsPreview>;
   /** Remove from staff's checks (#101): each id in the file, on staff, not the organizer. @throws `not_removable` */
   checkRemovable(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, playerIds: readonly PlayerId[]): Promise<RemovalPlan>;
@@ -129,10 +129,10 @@ export interface TournamentResults {
   markKept(uploadId: number): void;
   /** The attendance import of the same drop (M3 commit). @throws the import's errors */
   commitAttendance(leagueId: string, uploadId: number): void;
-  /** Moves a `processing` upload on from a fresh read (Update #96 D8, D10); any other state is returned as it is. */
+  /** Moves a `processing` upload on from a fresh read (ADR-0011 Update #96); any other state is returned as it is. */
   follow(leagueId: string, uploadId: number): Promise<UploadState>;
   section(leagueId: string, date: SessionDate, tournamentId: string): Promise<ResultsSection>;
-  /** An open preview's checks again after Remove from staff (Update #96 D6). Best effort: never throws. */
+  /** An open preview's checks again after Remove from staff (ADR-0011 Update #96). Best effort: never throws. */
   recheckAfterStaff(leagueId: string, uploadId: number): Promise<void>;
   /** Deletes open previews older than a day; their files then expire with the archive's run. */
   expirePreviews(): number;
@@ -209,7 +209,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
 
   // --- play-tools --------------------------------------------------------------
 
-  /** The card's tournament, read fresh as its organizer (Update #96 D1), with everyone it lists. */
+  /** The card's tournament, read fresh as its organizer (ADR-0011 Update #96), with everyone it lists. */
   async function locate(leagueId: string, date: string, tournamentId: string): Promise<Located> {
     const group = deps.connections.getStatus(leagueId).league?.id;
     if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
@@ -313,7 +313,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
 
   /**
    * Brings an open preview up to date from a fresh read: corrects a file still waiting for the full name once it is
-   * known, then works the warnings out again, carrying the recorded corrections (Update #96 D11).
+   * known, then works the warnings out again, carrying the recorded corrections (ADR-0011 Update #96).
    */
   function refresh(leagueId: string, row: UploadRow, located: Located, by: string): ResultsPreview {
     if (row.tdfFileId === null) throw new TournamentsError('tdf_file_deleted', 'The file for this upload was deleted. Drop it again.');
@@ -437,7 +437,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       if (read.activityState === 'completed') return settle('complete', null);
       if (read.activityState === 'upload_failed') return settle('failed', 'processing_failed');
       if (read.activityState === 'upload_in_progress') return 'processing';
-      // Still pending: did the confirm land? play-tools' uploads list says (D8).
+      // Still pending: did the confirm land? play-tools' uploads list says (ADR-0011 Update #96).
       const listed = row.displayId ? (await g.listResultsUploads(row.displayId)).find((u) => u.uploadId === row.upstreamUploadId) : undefined;
       return listed?.accepted ? 'processing' : settle('failed', 'confirm_not_landed');
     } catch (err) {
@@ -693,7 +693,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
         const located = await locate(leagueId, row.sessionDate, row.tournamentId);
         refresh(leagueId, row, located, row.acknowledgedBy ?? 'staff job');
       } catch {
-        // Best effort (Update #96 D6): the confirm job's own check still guards the send.
+        // Best effort (ADR-0011 Update #96): the confirm job's own check still guards the send.
       }
     },
 

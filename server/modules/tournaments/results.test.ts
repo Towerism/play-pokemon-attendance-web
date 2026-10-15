@@ -295,7 +295,7 @@ describe('recheck (Upload again…)', () => {
     expect(uploadRow(p.uploadId).warnings_fingerprint).toBe(again.fingerprint);
   });
 
-  it('keeps a corrected file’s corrections, so the fingerprint holds (D11)', async () => {
+  it('keeps a corrected file’s corrections, so the fingerprint holds (ADR-0011 Update #96)', async () => {
     const p = await preview(file({ organizerElement: WRONG_ORGANIZER, idElement: '<id/>' }));
     const again = await results.recheck(L, DATE, GUID, p.uploadId, 'organizer');
     expect(again.fingerprint).toBe(p.fingerprint);
@@ -385,7 +385,7 @@ describe('the job’s fresh check (jobCheck)', () => {
     expect(await results.jobCheck(L, p.uploadId)).toMatchObject({ kind: 'send', displayId: DISPLAY_ID, tournamentId: GUID, content: file(), connectionId: OLIVE.id });
   });
 
-  it('keeps a corrected upload sendable (D11)', async () => {
+  it('keeps a corrected upload sendable (ADR-0011 Update #96)', async () => {
     const p = await sending(file({ organizerElement: WRONG_ORGANIZER, idElement: '<id/>' }));
     expect((await results.jobCheck(L, p.uploadId)).kind).toBe('send');
   });
@@ -420,7 +420,7 @@ describe('the job’s fresh check (jobCheck)', () => {
   });
 });
 
-describe('following processing (D8, D10)', () => {
+describe('following processing (ADR-0011 Update #96)', () => {
   async function processing() {
     const p = await preview(file());
     results.markSending(p.uploadId, { by: 'organizer', fingerprint: EMPTY, submissionId: 9 });

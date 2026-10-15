@@ -12,6 +12,10 @@
   checked on the server (decision 3)
 - Amended by: [#107](https://github.com/Towerism/play-pokemon-attendance-web/issues/107) (2026-10-13, from spike S8
   part 2): **Download TDF** serves only the archived copy, never play-tools' (decisions 1, 4; ADR-0012 decision 7)
+- Updated: 2026-10-14 ([#96](https://github.com/Towerism/play-pokemon-attendance-web/issues/96), the upload as
+  built): the card's tournament is a guid read as its organizer, the warning codes and fingerprint subjects, Upload
+  again… as a recheck, a removal-only staff job, confirms settled from play-tools, and corrections carried on every
+  re-check. See [Update (#96)](#update-96-results-upload-as-built).
 - Builds on: [ADR-0009](0009-tournaments-as-their-organizer.md), [ADR-0010](0010-tournament-templates-and-lifecycle.md)
   (the `tournaments` module and its job kinds)
 - Upstream contract: spike S8 ([spikes.md](../spikes.md#s8-tournament-lifecycle-and-tdf-upload-part-1-done-2026-10-12)), part 1 done, live capture pending
@@ -305,6 +309,51 @@ Option 3.
    `confirmResults(uploadId, tournament)`. `getTournament` gains `applicationState`, `activityState`, `organizerName` (first + last) and
    `displayId`. Which id confirm takes (the `guid` or the `display_id`; the bundle uses both) and the
    presigned-URL flag are S8 part 2's to settle, inside the adapter.
+
+## Update (#96): results upload as built
+
+Building the upload (server side; This week's cards are #99) settled what the decisions above left open:
+
+1. **The card's tournament is a play-tools guid** (`POST /sessions/{date}/tournaments/{guid}/results`), read fresh as
+   its organizer the way Cancel… reads one (ADR-0010 Update #94). It must be the league's and start on `{date}` in the
+   league `TZ`, else 404 `not_found`. An organizer who isn't connected, or must reconnect, is a block:
+   `results_not_accepted` with `reason` `organizer_not_connected` / `needs_reconnect`.
+2. **When play-tools takes an upload** (decision 3's blocks, from the fresh read): `application_state` (else `status`)
+   `sanctioned`, `status` not `complete`, `activity_state` `pending` or `upload_failed`, before start + 90 days, and no
+   player records. `complete`, `upload_in_progress`, `completed` or any player record is `results_already_uploaded`;
+   the rest is `results_not_accepted` (`not_sanctioned`, `window_closed`). A failed processing blocks nothing.
+3. **Warning codes and their subjects** (the fingerprint covers exactly these): `tdf_organizer_replaced` (old and new
+   popid), `tdf_wrong_organizer` (the file's popid, or `none`), `tdf_tournament_id_filled` (the display id),
+   `tdf_wrong_tournament` (the file's id, or `none` when it is empty and couldn't be filled), `tdf_wrong_game` (the
+   file's product), `tdf_staff_also_playing` (player id and role, one per player; the organizer's own record is listed,
+   not removable), `tdf_unknown_players` (each unknown player id). Names, hints and messages aren't subjects.
+4. **The fingerprint** is SHA-256 of the sorted lines `code|subject,…` (subjects sorted), by a small pure SHA-256 in
+   `shared/tdf/fingerprint.ts`, since `shared/` is bundled for the browser.
+5. **Upload again…** is `POST …/results/{uploadId}/recheck`: the checks again from the archived file against a fresh
+   read. An open preview is updated in place (also how the page refreshes after Remove from staff); a finished attempt
+   opens a new `previewed` upload for the same file, so each attempt keeps its row and History. A deleted file is 409
+   `tdf_file_deleted`.
+6. **Remove from staff runs a staff job that only removes** the players it names; it applies no other assignment. A
+   History retry of it checks those players again and removes only the ones not yet removed. When it ends, the open
+   preview's checks run again server-side, best effort; the confirm job's own check still guards the send.
+7. **A job finds its upload** through `submission.results_upload_id`, set on a `tdf_upload` job and on a Remove from
+   staff job.
+8. **A confirm that may not have landed is settled from play-tools, never resent.** The upload is `processing` from just
+   before the confirm goes out. After a 5xx on confirm, or a crash after it, a read settles it: `completed` →
+   `complete`, `upload_failed` → `failed` (`processing_failed`), still `pending` → play-tools' uploads list decides
+   (accepted stays `processing`; listed and not accepted, or not listed, is `failed`, `confirm_not_landed`).
+9. **`validate_unknown` is not settled from the uploads list** (decision 7's "may"): only **Upload again…** sends after it.
+10. **Processing is followed on two reads:** `GET …/results` (the Results section) and `GET /submissions/{id}`
+    (History, where the item becomes `uploaded` or `processing_failed`). Nothing polls.
+11. **A corrected file keeps its corrections' warnings on every re-check.** The archive holds the corrected copy, whose
+    organizer and id already match, so each re-check (recheck, the job's check before the send, the one after Remove
+    from staff) adds back the corrections recorded on the upload, with their original subjects, then checks the file
+    like any other. A tournament whose organizer or display id changed since then shows a new warning, so the
+    fingerprint differs and the job ends `warnings_changed`.
+
+The organizer's full name is asked for only when the file has a single `<organizer>` to replace; a file with none, or
+several, is `tdf_wrong_organizer` with **Upload anyway**. A failed attendance commit after the send leaves the
+upload's outcome alone, notes it on the item and ends the job `partial`.
 
 ## Consequences
 

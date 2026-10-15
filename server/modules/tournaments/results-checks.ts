@@ -3,7 +3,7 @@ import type { ParsedTdf } from '../../../shared/tdf/parse';
 import type { TournamentDetails, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 
 /**
- * The results upload's local checks (ADR-0011 decision 3, Update #96 D2, D3, D11): pure, so the preview, a recheck
+ * The results upload's local checks (ADR-0011 decision 3 and Update #96): pure, so the preview, a recheck
  * and the `tdf_upload` job's check just before the send all work them out the same way.
  */
 
@@ -16,7 +16,7 @@ export type Uploadability =
 const UPLOADED: ReadonlySet<string> = new Set(['upload_in_progress', 'completed']);
 
 /**
- * Whether play-tools takes an organizer's upload for the tournament now (S8, Update #96 D2): sanctioned, not complete,
+ * Whether play-tools takes an organizer's upload for the tournament now (S8, ADR-0011 Update #96): sanctioned, not complete,
  * no results being processed or held, within start + 90 days, and no player records yet. A failed processing blocks
  * nothing.
  */
@@ -69,8 +69,8 @@ const PRODUCT_LABEL: Record<string, string> = { tcg: 'TCG', vg: 'VGC', pgo: 'Pok
 const label = (product: string) => PRODUCT_LABEL[product] ?? product;
 
 /**
- * The warnings of Update #96 D3, in a fixed order: corrections first, then mismatches, staff who played, and players
- * new to the app. Recorded corrections are carried even though the corrected file no longer shows them (D11).
+ * The warnings of ADR-0011 Update #96, in a fixed order: corrections first, then mismatches, staff who played, and players
+ * new to the app. Recorded corrections are carried even though the corrected file no longer shows them (ADR-0011 Update #96).
  */
 export function resultsWarnings(input: ResultsCheckInput): ResultsWarning[] {
   const { parsed, tournament, corrections } = input;
@@ -144,7 +144,7 @@ export function resultsWarnings(input: ResultsCheckInput): ResultsWarning[] {
   return warnings;
 }
 
-/** What a warning is about, for the fingerprint (Update #96 D3): ids and roles, never names or messages. */
+/** What a warning is about, for the fingerprint (ADR-0011 Update #96): ids and roles, never names or messages. */
 export function warningSubjects(w: ResultsWarning): string[] {
   switch (w.code) {
     case 'tdf_organizer_replaced':
