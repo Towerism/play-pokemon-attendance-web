@@ -13,7 +13,7 @@
 
 ARG NODE_IMAGE=node:24.21.0-alpine3.23
 ARG NODE_SLIM_IMAGE=node:24.21.0-slim
-ARG PNPM_VERSION=10.18.2
+ARG PNPM_VERSION=10.34.7
 
 # ---------------------------------------------------------------- spikes ----
 
