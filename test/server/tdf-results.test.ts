@@ -3,6 +3,7 @@ import { BIRTHDATE, tomTdf } from '../../shared/tdf/__fixtures__/tom';
 import { localInstant } from '../../shared/time/local-time';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { leagueDay } from './league-day';
 
 // A tournament's TDF results upload (#96, ADR-0011) over HTTP, against the built app and the play-tools fake. The
 // fake's request log is the oracle: a file reaches `POST triumph/tdf/` only from a confirm that carried the preview's
@@ -11,11 +12,10 @@ import { type TestServer, client, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const TZ = 'America/Chicago';
-const DAY = 86_400_000;
 const ENV = { TZ, NUXT_TOURNAMENT_DELAY_MS: '0', NUXT_STAFF_DELAY_MS: '500', NUXT_LOG_FORMAT: 'json' };
 const GUID = '00000000-0000-4000-8000-0000000000d1';
 
-const day = (days: number) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + days * DAY));
+const day = (days: number) => leagueDay(days, TZ);
 const at18 = (date: string) => localInstant(date, '18:00', TZ).toISOString().replace('.000', '');
 const DATE = day(-1);
 

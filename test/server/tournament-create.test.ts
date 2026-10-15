@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, FAKE_VENUE, type FakePokemon, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { leagueDay } from './league-day';
 
 // Creating tournaments in play-tools (#92) over HTTP, against the built app and the play-tools fake: the routes, the
 // tournament_create job, and the #100 scenarios end to end. The server runs on the real clock, so every date is 10 or
@@ -10,11 +11,10 @@ import { type TestServer, client, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const TZ = 'America/Chicago';
-const DAY = 86_400_000;
 const ENV = { TZ, NUXT_SUBMISSION_SETTLE_MS: '400', NUXT_SUBMISSION_SETTLE_POLL_MS: '100', NUXT_TOURNAMENT_DELAY_MS: '0', NUXT_LOG_FORMAT: 'json' };
 
 /** The league's date `days` from today. */
-const day = (days: number) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + days * DAY));
+const day = (days: number) => leagueDay(days, TZ);
 /** ISO weekday (1 = Monday) of a date. */
 const weekdayOf = (date: string) => new Date(`${date}T12:00:00Z`).getUTCDay() || 7;
 

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type FakePokemon, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { leagueDay } from './league-day';
 
 // Required events over HTTP (#95, ADR-0010 decision 12): requirements, manual covers and coverage, against the built
 // app and the in-process play-tools fake. The server runs on the real clock: the one tournament here is 40 days
@@ -9,7 +10,6 @@ import { type TestServer, client, setupCodeFrom, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const TZ = 'America/Chicago';
-const DAY = 86_400_000;
 
 let fake: FakePokemon;
 let server: TestServer;
@@ -160,7 +160,7 @@ describe('manual covers', () => {
 
 describe('coverage', () => {
   /** The league's date 40 days from now, and the TCG League Challenge's period holding it. */
-  const ahead = () => new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(Date.now() + 40 * DAY));
+  const ahead = () => leagueDay(40, TZ);
   const tcgChallenge = (c: Coverage) => c.requirements.find((r) => r.requirement.product === 'tcg' && r.requirement.seriesMatch === 'League Challenge')!;
   const holding = (c: Coverage, date: string) => tcgChallenge(c).periods.find((p) => p.periodStart <= date && date <= p.periodEnd)!;
 
