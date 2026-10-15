@@ -67,8 +67,9 @@ async function planned(templateId: number, localDate: string): Promise<number> {
   return (await body<{ planned: { plannedId: number } }>(res)).planned.plannedId;
 }
 
-async function entry(plannedId: number): Promise<Entry> {
-  const { tournaments } = await body<{ tournaments: Entry[] }>(await api('/tournaments/upcoming'));
+/** The row on Upcoming; `refresh` lists play-tools again instead of the 5-minute cache (#98). */
+async function entry(plannedId: number, opts: { refresh?: boolean } = {}): Promise<Entry> {
+  const { tournaments } = await body<{ tournaments: Entry[] }>(await api(`/tournaments/upcoming${opts.refresh ? '?refresh=1' : ''}`));
   return tournaments.find((t) => t.plannedId === plannedId)!;
 }
 
@@ -174,6 +175,16 @@ describe('POST /tournaments/create', () => {
     expect(creates()).toEqual([]);
   });
 
+  it('drops Upcoming’s cached listings when the job ends, so the next read lists again (#98)', async () => {
+    const id = await planned(await template(), day(26));
+    await api('/tournaments/upcoming');
+    const job = await finished(await post('/tournaments/create', { plannedIds: [id] }));
+    fake.requests.length = 0;
+
+    expect(await entry(id)).toMatchObject({ state: 'created', tournamentId: job.tournamentItems[0]!.tournamentId });
+    expect(fake.requests.filter((r) => r.method === 'GET' && r.path === '/services/core/activities')).toHaveLength(1);
+  });
+
   it('creates short notice once acknowledged', async () => {
     const id = await planned(await template(), day(3));
     const job = await finished(await post('/tournaments/create', { plannedIds: [id], acknowledgeShortNotice: true }));
@@ -192,7 +203,7 @@ describe('a create that may have landed (#100)', () => {
     expect(await entry(id)).toMatchObject({ state: 'unknown', lastAttemptAt: expect.any(String), actions: ['retry_create'] });
 
     fake.land();
-    expect(await entry(id)).toMatchObject({ state: 'created', tournamentId: expect.stringMatching(/^t-/) });
+    expect(await entry(id, { refresh: true })).toMatchObject({ state: 'created', tournamentId: expect.stringMatching(/^t-/) });
     expect(creates()).toHaveLength(1);
   });
 

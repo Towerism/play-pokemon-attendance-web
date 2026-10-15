@@ -46,6 +46,18 @@ describe('submissionStatus', () => {
   ] as const)('labels %s', (status, label, color) => {
     expect(submissionStatus(status)).toEqual({ label, color });
   });
+
+  it.each([
+    ['tournament_create', 'Creating…'],
+    ['tournament_edit', 'Editing…'],
+    ['tournament_cancel', 'Cancelling…'],
+    ['tdf_upload', 'Uploading…'],
+    ['undo', 'Removing…'],
+    ['clear', 'Removing…'],
+  ] as const)('says what a running %s is doing', (kind, label) => {
+    expect(submissionStatus('running', kind)).toEqual({ label, color: 'info' });
+    expect(submissionStatus('succeeded', kind)).toEqual({ label: 'Done', color: 'success' });
+  });
 });
 
 describe('isSubmissionActive', () => {

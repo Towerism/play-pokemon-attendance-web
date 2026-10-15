@@ -310,7 +310,8 @@ describe('linking an unknown row on read (Upcoming)', () => {
     expect(before).toMatchObject({ state: 'unknown', lastAttemptAt: '2026-10-14T17:05:00.000Z', actions: ['retry_create'] });
 
     upstream.state.tournaments = [upstreamTournament('g-late', '2026-11-07T00:00:00Z', { name: 'Friday Cup November', applicationState: 'approval-pending' })];
-    const after = (await service.upcoming(L, {})).tournaments.filter((e) => e.localDate === '2026-11-06');
+    // Upcoming's listing is cached for 5 minutes (#98): Refresh sees the late create at once.
+    const after = (await service.upcoming(L, { refresh: true })).tournaments.filter((e) => e.localDate === '2026-11-06');
     expect(after).toHaveLength(1);
     expect(after[0]).toMatchObject({ plannedId: id, state: 'created', tournamentId: 'g-late', displayId: '26-10-g-late', actions: [] });
     expect(rowOf(id)).toMatchObject({ state: 'created', tournament_id: 'g-late' });

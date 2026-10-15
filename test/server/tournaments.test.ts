@@ -77,6 +77,7 @@ describe('auth', () => {
     ['POST', '/api/planned-tournaments'],
     ['PATCH', '/api/planned-tournaments/1'],
     ['GET', '/api/tournaments/upcoming'],
+    ['GET', '/api/tournaments/upcoming?refresh=1'],
   ])('%s %s is 401 without a session, before validation or any upstream call', async (method, path) => {
     const res = await client(server.url).request(path, { method, json: ['POST', 'PATCH'].includes(method) ? {} : undefined });
     expect(res.status).toBe(401);
@@ -145,6 +146,30 @@ describe('live form options', () => {
   });
 });
 
+describe('Upcoming’s listing cache (#98)', () => {
+  const listings = () => playToolsCalls().filter((r) => r.path === '/services/core/activities');
+
+  it('reuses the listing on a second read, and lists again on refresh=1', async () => {
+    expect((await api('/tournaments/upcoming?refresh=1')).status).toBe(200);
+    fake.requests.length = 0;
+    fake.tournaments = [fakeTournament('late-cup', { startsAt: `${day(15)}T23:00:00Z`, organizer: FAKE_PLAYER_ID, name: 'Late Cup' })];
+
+    const cached = await body<{ tournaments: { tournamentId: string | null }[] }>(await api('/tournaments/upcoming'));
+    expect(listings()).toEqual([]);
+    expect(cached.tournaments.map((t) => t.tournamentId)).not.toContain('late-cup');
+
+    const fresh = await body<{ tournaments: { tournamentId: string | null }[] }>(await api('/tournaments/upcoming?refresh=1'));
+    expect(listings()).toHaveLength(1);
+    expect(fresh.tournaments.map((t) => t.tournamentId)).toContain('late-cup');
+  });
+
+  it.each(['yes', '', 'true'])('refuses refresh=%j with 400, before any upstream call', async (value) => {
+    const res = await api(`/tournaments/upcoming?refresh=${value}`);
+    expect(res.status).toBe(400);
+    expect(playToolsCalls()).toEqual([]);
+  });
+});
+
 describe('scaffolds, schedules, planned tournaments and Upcoming', () => {
   async function newTemplate(name: string) {
     return (await body<{ template: { id: number } }>(await post('/tournament-templates', { ...TEMPLATE, name }))).template.id;
@@ -168,7 +193,8 @@ describe('scaffolds, schedules, planned tournaments and Upcoming', () => {
       fakeTournament('in-league', { startsAt: `${day(15)}T23:00:00Z`, organizer: FAKE_PLAYER_ID, name: 'Hand-made Cup' }),
       fakeTournament('elsewhere', { startsAt: `${day(15)}T23:00:00Z`, organizer: FAKE_PLAYER_ID, groupId: 'another-store' }),
     ];
-    const res = await api('/tournaments/upcoming');
+    // play-tools changed outside the app, so read it again rather than the 5-minute listing cache (#98).
+    const res = await api('/tournaments/upcoming?refresh=1');
     expect(res.status).toBe(200);
     const upcoming = await body<{ upstream: string; tournaments: { state: string; localDate: string; tournamentId: string | null; name: string; actions: string[] }[] }>(res);
     expect(upcoming.upstream).toBe('read');

@@ -33,9 +33,18 @@ const STATUS: Record<SubmissionStatus, { label: string; color: BadgeColor }> = {
   interrupted: { label: 'Interrupted', color: 'warning' },
 };
 
+/** What a running tournament job is doing (#98). */
+const RUNNING_TOURNAMENT = {
+  tournament_create: 'Creating…',
+  tournament_edit: 'Editing…',
+  tournament_cancel: 'Cancelling…',
+  tdf_upload: 'Uploading…',
+} as const satisfies Partial<Record<SubmissionKind, string>>;
+
 export function submissionStatus(status: SubmissionStatus, kind: SubmissionKind = 'submit'): { label: string; color: BadgeColor } {
   if ((kind === 'staff_import' || kind === 'player_import') && status === 'running') return { label: 'Reading…', color: 'info' };
   if (kind === 'staff' && status === 'running') return { label: 'Assigning…', color: 'info' };
+  if (status === 'running' && kind in RUNNING_TOURNAMENT) return { label: RUNNING_TOURNAMENT[kind as keyof typeof RUNNING_TOURNAMENT], color: 'info' };
   if (kind !== 'submit' && status === 'running') return { label: 'Removing…', color: 'info' };
   return STATUS[status];
 }

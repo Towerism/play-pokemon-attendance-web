@@ -177,8 +177,17 @@ describe('queries and params', () => {
     [{ from: '2026-10-01', to: '2027-10-02' }, false],
     [{ from: '2026-10-02', to: '2026-10-01' }, false],
     [{ from: 'today' }, false],
+    [{ refresh: '1' }, true],
+    [{ refresh: 'yes' }, false],
+    [{ refresh: '' }, false],
+    [{ refresh: ['1', '1'] }, false],
   ])('upcoming %j → %s', (query, valid) => {
     expect(ok(UpcomingQuery, query)).toBe(valid);
+  });
+
+  it('reads Upcoming’s refresh as a flag, off unless 1 (#98)', () => {
+    expect(UpcomingQuery.parse({})).toEqual({ refresh: false });
+    expect(UpcomingQuery.parse({ from: '2026-10-01', refresh: '1' })).toEqual({ from: '2026-10-01', refresh: true });
   });
 
   it.each([
