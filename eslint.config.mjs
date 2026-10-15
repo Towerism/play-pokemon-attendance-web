@@ -65,14 +65,14 @@ const NO_KIT_IN_BROWSER = {
   message: '@towerism/selfhost-kit is server-only; app/ and shared/ are bundled for the browser.',
 };
 
-// The kit's runLauncher builds a logger that hides only the kit's base keys when it isn't given one (architecture
-// §10), so it must be handed createAppLogger(...) directly in its options. Not seen (review checks): an aliased
+// The kit's runLauncher requires a logger, but any logger other than attendance's hides only the kit's base keys
+// (architecture §10), so it must be handed createAppLogger(...) directly in its options. Not seen (review checks): an aliased
 // import, a namespace call (`kit.runLauncher`), options built outside the call, a logger from a variable, a later
 // spread overriding `logger`.
 const LAUNCHER_WITH_APP_LOGGER = {
   selector:
     "CallExpression[callee.name='runLauncher']:not(:has(> ObjectExpression:has(> Property[key.name='logger'][value.type='CallExpression'][value.callee.name='createAppLogger'])))",
-  message: "Give runLauncher `logger: createAppLogger({ scope: 'startup' })` (server/logging/app-logger): its default logger redacts only the kit's base keys.",
+  message: "Give runLauncher `logger: createAppLogger({ scope: 'startup' })` (server/logging/app-logger): any other logger redacts only the kit's base keys.",
 };
 
 // server/modules/*'s import rules, in one place: two blocks use them (module code and module tests), and a later
