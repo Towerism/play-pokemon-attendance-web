@@ -237,6 +237,14 @@ export const EditTargetParam = z.object({
 });
 export type EditTarget = z.infer<typeof EditTargetParam>['id'];
 
+/** `/tournaments/{id}/tdf` (#97): a play-tools tournament guid only; a planned row holds no results. */
+export const TournamentGuidParam = z.object({
+  id: z
+    .string()
+    .regex(GUID, 'Not a tournament id')
+    .transform((s) => s.toLowerCase()),
+});
+
 /**
  * `POST /api/tournaments/{id}/cancel` (#94): what the organizer typed to confirm, when anyone is registered. Kept
  * exactly as typed; the server compares it with the display id (or date) from its own fresh read.

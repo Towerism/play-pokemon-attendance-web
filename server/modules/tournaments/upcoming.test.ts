@@ -75,6 +75,7 @@ describe('Upcoming with play-tools’ tournaments', () => {
       upstreamStatus: 'sanctioned',
       errorCode: null,
       lastAttemptAt: null,
+      tdfAvailable: false,
       actions: [],
     });
     expect(tournaments[1]).toMatchObject({ plannedId: planned.plannedId, displayId: '26-10-g1', upstreamStatus: 'sanctioned', actions: [] });
@@ -124,6 +125,46 @@ describe('Upcoming with play-tools’ tournaments', () => {
       expect(err).toBeInstanceOf(TournamentsError);
       expect((err as TournamentsError).code).toBe('invalid_range');
     }
+  });
+});
+
+describe('Download TDF on Upcoming', () => {
+  /** A results upload of the tournament, with an archived file unless `file` is false (deleted). */
+  const resultsUpload = (tournamentId: string, state: string, file = true) => {
+    let fileId: number | null = null;
+    if (file) {
+      fileId = Number(
+        database.sqlite
+          .prepare("insert into tdf_file (league_id, sha256, filename, byte_size, ciphertext, created_by, created_at) values (?, ?, 'r.tdf', 1, x'00', 'organizer', 0)")
+          .run(L, `sha-${tournamentId}-${state}`).lastInsertRowid,
+      );
+    }
+    database.sqlite
+      .prepare("insert into tournament_result_upload (league_id, tournament_id, session_date, filename, tdf_file_id, sha256, player_count, state, created_at) values (?, ?, '2026-10-14', 'r.tdf', ?, 'sha', 1, ?, 0)")
+      .run(L, tournamentId, fileId, state);
+  };
+
+  it('says which tournaments the app holds a results file for', async () => {
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '18:00' }));
+    const linked = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-20' });
+    link(linked.plannedId!, 'g1');
+    service.createPlanned(L, { templateId: template.id, localDate: '2026-10-21' });
+    upstream.state.tournaments = [
+      upstreamTournament('g1', '2026-10-20T23:00:00Z', { status: 'sanctioned' }),
+      upstreamTournament('g2', '2026-10-17T16:00:00Z'),
+      upstreamTournament('g3', '2026-10-18T16:00:00Z'),
+    ];
+    resultsUpload('g1', 'complete');
+    resultsUpload('g2', 'complete', false);
+    resultsUpload('g3', 'failed');
+    const { tournaments } = await service.upcoming(L, {});
+
+    expect(tournaments.map((t) => [t.tournamentId, t.tdfAvailable])).toEqual([
+      ['g2', false],
+      ['g3', false],
+      ['g1', true],
+      [null, false],
+    ]);
   });
 });
 
