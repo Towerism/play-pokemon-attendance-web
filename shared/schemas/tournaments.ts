@@ -59,6 +59,9 @@ const templateType = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('premier'), seriesMatch: z.string().trim().min(1, 'Name the series').max(80) }),
 ]);
 
+/** Our cap on a tournament's details, well under play-tools' own 30,000 (the gateway's `DETAILS_MAX`). */
+export const DETAILS_MAX_CHARS = 4000;
+
 const templateFields = {
   /** May hold `{month}`, `{year}` and `{date}`. */
   name: z.string().trim().min(1, 'Name the tournament').max(80, 'At most 80 characters'),
@@ -71,7 +74,7 @@ const templateFields = {
   registration,
   contactEmail: z.email().max(254).nullish().transform((s) => s ?? null),
   contactPhone: optionalText(40),
-  details: optionalText(2000),
+  details: optionalText(DETAILS_MAX_CHARS),
   eventWebsite: https.nullish().transform((s) => s ?? null),
 };
 

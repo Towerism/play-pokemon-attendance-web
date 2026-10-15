@@ -72,8 +72,9 @@ describe('TemplateBody', () => {
     ['a format with a slash', { category: 'tcg/std' }, false],
     ['custom', { type: { kind: 'custom' } }, true],
     ['premier with no match', { type: { kind: 'premier', seriesMatch: ' ' } }, false],
-    ['details of 2,000 characters', { details: 'x'.repeat(2000) }, true],
-    ['details of 2,001 characters', { details: 'x'.repeat(2001) }, false],
+    ['details of 4,000 characters', { details: 'x'.repeat(4000) }, true],
+    ['details of 4,001 characters', { details: 'x'.repeat(4001) }, false],
+    ['details of 4,000 characters inside spaces', { details: `  ${'x'.repeat(4000)}  ` }, true],
     ['a third-party registration', { registration: { kind: 'third_party', url: 'https://tickets.example.com' } }, true],
     ['a third-party http registration', { registration: { kind: 'third_party', url: 'http://tickets.example.com' } }, false],
     ['registration opening 1,441 minutes before', { registration: { ...VALID_TEMPLATE.registration, opensBeforeMin: 1441 } }, false],
@@ -86,6 +87,11 @@ describe('TemplateBody', () => {
 describe('TemplatePatch', () => {
   it('takes any one field', () => {
     expect(TemplatePatch.parse({ details: 'Doors at 5.' })).toEqual({ details: 'Doors at 5.' });
+  });
+
+  it('takes details up to the same 4,000 characters as a template', () => {
+    expect(ok(TemplatePatch, { details: 'x'.repeat(4000) })).toBe(true);
+    expect(TemplatePatch.safeParse({ details: 'x'.repeat(4001) }).error?.issues[0]?.message).toBe('At most 4000 characters');
   });
 
   it('refuses an empty patch and a cleared contact pair', () => {
@@ -244,6 +250,11 @@ describe('editing (#93)', () => {
       withSiblings: false,
       updateTemplate: false,
     });
+  });
+
+  it('takes details up to the same 4,000 characters as a template', () => {
+    expect(ok(EditBody, { changes: { details: 'x'.repeat(4000) } })).toBe(true);
+    expect(ok(EditBody, { changes: { details: 'x'.repeat(4001) } })).toBe(false);
   });
 
   it.each([
