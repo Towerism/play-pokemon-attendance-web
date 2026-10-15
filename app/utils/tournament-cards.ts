@@ -80,7 +80,10 @@ const UPLOAD_STATE: Record<UploadState, { label: string; color: BadgeColor }> = 
   failed: { label: 'Failed', color: 'error' },
 };
 
-/** Attempts that end without play-tools holding the results: sent again only through **Upload again…**. */
+/**
+ * Attempts that end without play-tools holding the results: sent again only through **Upload again…**, and only while
+ * play-tools takes an upload (the dropzone's condition), so never once it holds the tournament's results (#161).
+ */
 const AGAIN: ReadonlySet<UploadState> = new Set(['not_accepted', 'warnings_changed', 'validate_unknown', 'failed']);
 const IN_FLIGHT: ReadonlySet<UploadState> = new Set(['sending', 'processing']);
 const HOLDS_RESULTS: ReadonlySet<string> = new Set(['complete', 'processing', 'results_already_uploaded']);
@@ -122,7 +125,7 @@ export function resultsView(s: ResultsSection): ResultsView {
     download: s.tdfAvailable,
     noCopy: !s.tdfAvailable && upstream !== null && HOLDS_RESULTS.has(upstream),
     latest: latest ? { ...UPLOAD_STATE[latest.state], lines: latestLines(latest), details: latest.submissionId } : null,
-    again: !!latest && AGAIN.has(latest.state) && !latest.fileDeleted,
+    again: takes && !!latest && AGAIN.has(latest.state) && !latest.fileDeleted,
     review: latest?.state === 'previewed',
     fileDeleted: !!latest?.fileDeleted,
   };

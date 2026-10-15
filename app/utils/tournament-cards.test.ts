@@ -227,6 +227,27 @@ describe('resultsView', () => {
     expect(resultsView(section({ latest: upload({ state }) })).again).toBe(again);
   });
 
+  const AGAIN_STATES = ['not_accepted', 'warnings_changed', 'validate_unknown', 'failed'] as const;
+
+  it.each(AGAIN_STATES)('still offers Upload again… after %s once play-tools couldn’t process the last upload', (state) => {
+    expect(resultsView(section({ upstream: { status: 'upload_failed', reason: null }, latest: upload({ state }) })).again).toBe(true);
+  });
+
+  it.each(
+    (['complete', 'processing', 'results_already_uploaded'] as const).flatMap((status) => AGAIN_STATES.map((state) => [status, state] as const)),
+  )('offers no Upload again… once play-tools holds results (%s), even after %s', (status, state) => {
+    expect(resultsView(section({ upstream: { status, reason: null }, latest: upload({ state }) })).again).toBe(false);
+  });
+
+  it.each([
+    [{ status: 'results_not_accepted', reason: 'window_closed' }],
+    [{ status: 'results_not_accepted', reason: 'needs_reconnect' }],
+    [{ error: 'play-tools is unavailable.' }],
+  ] as const)('offers no Upload again… while play-tools won’t take an upload or can’t be read: %j', (upstream) => {
+    const view = resultsView(section({ upstream: upstream as ResultsSection['upstream'], latest: upload({ state: 'failed' }) }));
+    expect(view).toMatchObject({ again: false, drop: false });
+  });
+
   it('asks for the file again instead of Upload again… once it was deleted', () => {
     expect(resultsView(section({ latest: upload({ state: 'not_accepted', fileDeleted: true }) }))).toMatchObject({ again: false, fileDeleted: true, drop: true });
   });
