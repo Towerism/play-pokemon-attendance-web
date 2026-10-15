@@ -128,6 +128,51 @@ describe('Upcoming with play-tools’ tournaments', () => {
   });
 });
 
+describe('the listing cache on Upcoming (#98)', () => {
+  const listings = () => upstream.state.calls.filter((c) => c.startsWith('listTournaments@'));
+  const reset = () => (upstream.state.calls = []);
+
+  it('reuses each professor’s listing for 5 minutes, and reads it again on refresh', async () => {
+    upstream.state.tournaments = [upstreamTournament('g1', '2026-10-21T23:00:00Z')];
+    await service.upcoming(L, {});
+    reset();
+    now = new Date(NOON_WED.getTime() + 5 * MINUTE - 1000);
+    upstream.state.tournaments.push(upstreamTournament('g2', '2026-10-22T23:00:00Z'));
+    expect((await service.upcoming(L, {})).tournaments.map((t) => t.tournamentId)).toEqual(['g1']);
+    expect(listings()).toEqual([]);
+
+    const fresh = await service.upcoming(L, { refresh: true });
+    expect(fresh.tournaments.map((t) => t.tournamentId)).toEqual(['g1', 'g2']);
+    expect(listings().sort()).toEqual(['listTournaments@1', 'listTournaments@2']);
+  });
+
+  it('reads again once a tournament job ends', async () => {
+    await service.upcoming(L, {});
+    reset();
+    service.requiredEvents.listingsChanged();
+    await service.upcoming(L, {});
+    expect(listings()).toHaveLength(2);
+  });
+
+  it('never keeps a failed listing', async () => {
+    upstream.state.failNext.set('listTournaments@2', new PokemonUpstreamError('unavailable', 'down'));
+    expect((await service.upcoming(L, {})).unread).toHaveLength(1);
+    reset();
+    expect((await service.upcoming(L, {})).unread).toEqual([]);
+    expect(listings()).toEqual(['listTournaments@2']);
+  });
+
+  it('lists live for a create-through preview, whatever is cached', async () => {
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' } }));
+    const scaffold = service.createScaffold(L, { name: 'Fridays', slots: [{ templateId: template.id, dayOffset: 0, startTime: null }] });
+    const schedule = service.createSchedule(L, { scaffoldId: scaffold.id, rule: { kind: 'weekly', weekday: 5, every: 1 }, startsOn: '2026-10-16', endsOn: null });
+    await service.createThrough(L, schedule.id, '2026-11-30');
+    reset();
+    await service.createThrough(L, schedule.id, '2026-11-30');
+    expect(listings()).toHaveLength(2);
+  });
+});
+
 describe('Download TDF on Upcoming', () => {
   /** A results upload of the tournament, with an archived file unless `file` is false (deleted). */
   const resultsUpload = (tournamentId: string, state: string, file = true) => {

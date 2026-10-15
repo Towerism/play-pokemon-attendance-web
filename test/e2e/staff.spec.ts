@@ -1,6 +1,6 @@
 import type { Locator, Page, Request } from '@playwright/test';
 import { type FakePokemon, fakeRecord, fakeTournament } from '../server/fake-pokemon';
-import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, connectOverApi, expect, finishedStatus, loggedInUrl, test } from './fixtures';
+import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, connectOverApi, expect, finishedStatus, loggedInUrl, quietRequiredEvents, test } from './fixtures';
 
 // This week → Staff (ADR-0007): one card per tournament the league runs on the
 // date. The client must never offer someone the app may not assign (the
@@ -231,6 +231,8 @@ test('when play-tools fails, This week still works and Try again brings the staf
   cupTonight(fake);
   await addSessionPlayer(connected, TUESDAY, '6000099', 'Walk In');
   fake.failOnce.set('/services/core/activities', 502);
+  // The one failure is for the staff read, not the nav badge's.
+  await quietRequiredEvents(page);
   const reads = spyStaffReads(page);
   await page.goto(`/?date=${TUESDAY}`);
 
@@ -313,6 +315,8 @@ test("every professor's tournaments load on This week, each staffed as its organ
   fake.tournaments.push(fakeTournament(BROCK_CUP, { startsAt: '2026-10-13T23:00:00Z', organizer: BROCK }));
   fake.tournamentRecords.set(BROCK_CUP, [fakeRecord(BROCK, { role: 'organizer' })]);
   fake.failOnce.set(`/services/core/activities@${BROCK}`, 502);
+  // The one failure is for the staff read, not the nav badge's.
+  await quietRequiredEvents(page);
   await page.goto(`/?date=${TUESDAY}`);
 
   const staff = page.getByRole('region', { name: 'Staff', exact: true });

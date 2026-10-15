@@ -761,7 +761,10 @@ Building coverage (decision 12) settled what it left open:
    pick can't be judged then, and its period is `unknown`, never `missing`.
 8. **The listing cache is coverage's for now.** Upcoming keeps its live read; This week and Upcoming move onto it with
    their pages (#98, #99). Coverage names a failed listing `needs_reconnect`, `upstream_unavailable` (a 429 or 5xx) or
-   `refused` (any other play-tools error).
+   `refused` (any other play-tools error). *As built (#98):* the cache is the tournaments module's own
+   (`listing-cache.ts`), shared by coverage and Upcoming; Upcoming's `?refresh=1` lists again, and a tournament job's end
+   still drops it all. The create-through preview, which decides what a job creates, keeps a live listing. This week
+   moves onto it with #99.
 9. **Human-scale traffic.** Details reads run one at a time and stop at the first 429 or 5xx; the rest, and the
    linking of `unknown` rows, wait for the next request, their periods `unknown` meanwhile. A details failure a retry
    won't fix (refused, not found, an unexpected shape) isn't asked again until the listings are next read. Concurrent reads (the grid, the banner and the badge) share one

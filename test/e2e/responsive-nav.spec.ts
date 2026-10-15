@@ -4,7 +4,7 @@ import { OWNER, connectOverApi, createOrganizer, expect, shareSession, test } fr
 // On a phone the header holds the brand and one menu button; the links and
 // Log out live in a drawer. From `sm` (640 px) up it stays one inline row.
 
-const LINKS = ['This week', 'Regulars', 'Players', 'History', 'Settings'];
+const LINKS = ['This week', 'Regulars', 'Players', 'Tournaments', 'History', 'Settings'];
 const PHONE = { width: 360, height: 780 };
 /** Comfortable phone tap size, above the WCAG 2.2 minimum of 24 px. */
 const TAP = 44;

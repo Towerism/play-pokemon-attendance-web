@@ -2,7 +2,9 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { type BrowserContext, type Page, test as base, expect } from '@playwright/test';
 import { type FakePlaySession, type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
+import { dayLabel, periodLabel } from '../../app/utils/dates';
 import { type TestServer, client, setupCodeFrom, startServer } from '../server/harness';
+import { leagueDay as serverLeagueDay } from '../server/league-day';
 
 export { expect };
 
@@ -18,7 +20,65 @@ const APP_ENV = {
   NUXT_UNDO_DELAY_MS: '500',
   // The smallest staff pacing the app accepts (`runtimeConfig.staff.delayMs`).
   NUXT_STAFF_DELAY_MS: '500',
+  // Tournament jobs clamp this up to their own minimum; the journeys create one tournament per job.
+  NUXT_TOURNAMENT_DELAY_MS: '0',
 };
+
+/** The league's time zone, as `APP_ENV.TZ` and the browser context both use. */
+export const LEAGUE_TZ = 'America/Chicago';
+
+/** The league's date `days` from today, on the real clock, as the server sees it (the server tests' helper, #155). */
+export const leagueDay = (days: number): string => serverLeagueDay(days, LEAGUE_TZ);
+
+/** "Fri 16 Oct", as the Tournaments page heads a date and names its entries: the page's own label. */
+export const dayHeading = dayLabel;
+
+/** "Oct 2026", as the Required events grid names a month: the page's own label. */
+export const monthHeading = (periodStart: string): string => periodLabel({ periodStart }, 'month');
+
+/** A Custom tournament template run by the connected organizer at the fake's venue, over the API. */
+export async function tournamentTemplate(api: Api, overrides: Record<string, unknown> = {}): Promise<{ id: number; name: string }> {
+  const res = await api.request('/api/tournament-templates', {
+    method: 'POST',
+    json: {
+      name: 'Friday Cup',
+      organizerPlayerId: STAFF_ID,
+      product: 'tcg',
+      category: 'tcg_std',
+      type: { kind: 'custom' },
+      venue: { id: '00000000-0000-4000-8000-000000000051', label: 'Card Shop', timeZone: LEAGUE_TZ, country: 'US' },
+      startTime: '18:00',
+      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+      contactEmail: 'league@example.com',
+      ...overrides,
+    },
+  });
+  expect(res.status, 'create template').toBe(201);
+  return ((await res.json()) as { template: { id: number; name: string } }).template;
+}
+
+/** A one-off planned tournament from `templateId` on `localDate`, over the API. */
+export async function plannedTournament(api: Api, templateId: number, localDate: string): Promise<number> {
+  const res = await api.request('/api/planned-tournaments', { method: 'POST', json: { templateId, localDate } });
+  expect(res.status, 'plan tournament').toBe(201);
+  return ((await res.json()) as { planned: { plannedId: number } }).planned.plannedId;
+}
+
+/**
+ * Answers the nav badge's required-events read in the browser with no requirements (#98). That read lists play-tools'
+ * tournaments too, so a journey that injects one listing failure for another read uses this to keep it from racing.
+ */
+export async function quietRequiredEvents(page: Page): Promise<void> {
+  await page.route('**/api/tournaments/requirements*', (route) =>
+    route.fulfill({ json: { timeZone: LEAGUE_TZ, today: leagueDay(0), country: 'US', upstream: 'read', unread: [], seriesUnavailable: false, requirements: [] } }),
+  );
+}
+
+/** No horizontal page scroll at the current viewport (mobile-first, architecture §8). */
+export async function expectNoHorizontalScroll(page: Page): Promise<void> {
+  const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+  expect(scrollWidth, 'horizontal page scroll').toBeLessThanOrEqual(innerWidth);
+}
 
 export type Api = ReturnType<typeof client>;
 

@@ -11,6 +11,7 @@ import {
   staffImportBlocked,
   staffImportErrorText,
   staffImportSummary,
+  isTournamentJob,
   submissionStatus,
   submissionSummary,
   undoBlockedText,
@@ -45,6 +46,25 @@ describe('submissionStatus', () => {
     ['planned', 'Starting…', 'info'],
   ] as const)('labels %s', (status, label, color) => {
     expect(submissionStatus(status)).toEqual({ label, color });
+  });
+
+  it.each([
+    ['tournament_create', 'Creating…'],
+    ['tournament_edit', 'Editing…'],
+    ['tournament_cancel', 'Cancelling…'],
+    ['tdf_upload', 'Uploading…'],
+    ['undo', 'Removing…'],
+    ['clear', 'Removing…'],
+  ] as const)('says what a running %s is doing', (kind, label) => {
+    expect(submissionStatus('running', kind)).toEqual({ label, color: 'info' });
+    expect(submissionStatus('succeeded', kind)).toEqual({ label: 'Done', color: 'success' });
+  });
+});
+
+describe('isTournamentJob', () => {
+  it('is true for the jobs that list tournaments, not players', () => {
+    const kinds = ['submit', 'undo', 'clear', 'staff', 'staff_import', 'player_import', 'tournament_create', 'tournament_edit', 'tournament_cancel', 'tdf_upload'] as const;
+    expect(kinds.filter((k) => isTournamentJob(k))).toEqual(['tournament_create', 'tournament_edit', 'tournament_cancel', 'tdf_upload']);
   });
 });
 

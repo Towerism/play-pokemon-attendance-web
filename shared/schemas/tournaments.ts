@@ -255,12 +255,14 @@ export type CancelBody = z.infer<typeof CancelBody>;
 /** At most 366 days, so a year of planned tournaments fits. */
 export const MAX_UPCOMING_DAYS = 366;
 export const UpcomingQuery = z
-  .object({ from: localDate.optional(), to: localDate.optional() })
+  .object({ from: localDate.optional(), to: localDate.optional(), refresh: z.literal('1').optional() })
   .refine((q) => !q.from || !q.to || q.to >= q.from, { message: '`to` is before `from`', path: ['to'] })
   .refine((q) => !q.from || !q.to || (Date.parse(q.to) - Date.parse(q.from)) / 86_400_000 <= MAX_UPCOMING_DAYS - 1, {
     message: `At most ${MAX_UPCOMING_DAYS} days`,
     path: ['to'],
-  });
+  })
+  // `?refresh=1` reads play-tools again instead of the 5-minute listing cache (#98).
+  .transform(({ refresh, ...range }) => ({ ...range, refresh: refresh === '1' }));
 
 // Required events (#95, ADR-0010 decision 12)
 

@@ -36,6 +36,7 @@ import { type TournamentCancelling, createCancelling } from './cancelling';
 import { type EditForm, type EditPreview, type TournamentEditing, createEditing } from './editing';
 import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
+import { createListingCache } from './listing-cache';
 import { type ListedTournament, type RequiredEvents, createRequiredEvents } from './required-events';
 import { type TournamentRequirements, createRequirements } from './requirements';
 import { tdfAvailableIn } from './results';
@@ -210,10 +211,11 @@ export interface TournamentsService {
   updatePlanned(leagueId: string, id: number, patch: PlannedPatch): { planned: UpcomingEntry; warnings: 'another_planned_at_time'[] };
   /**
    * Plans every schedule up to its horizon, then lists the planned tournaments and the league's play-tools ones
-   * whose local date is in the range, by start. Reads play-tools as each connected professor.
+   * whose local date is in the range, by start. Reads play-tools as each connected professor, through the 5-minute
+   * listing cache unless `refresh` (#98).
    * @throws TournamentsError `invalid_range`
    */
-  upcoming(leagueId: string, range: { from?: LocalDate; to?: LocalDate }): Promise<Upcoming>;
+  upcoming(leagueId: string, range: { from?: LocalDate; to?: LocalDate; refresh?: boolean }): Promise<Upcoming>;
   /**
    * A form's live choices as one professor: Custom and the premier series play-tools offers for the date (or
    * the coming 12 months), formats and venues. Each read is kept for 10 minutes.
@@ -318,6 +320,9 @@ export interface TournamentOptions {
   formats: { product: string; categories: string[] }[];
   venues: { id: string; label: string; country: string | null; timeZone: string | null }[];
 }
+
+/** Where Upcoming's listings come from: the shared cache, a fresh read kept in it, or play-tools without the cache. */
+type ListingMode = 'cached' | 'refresh' | 'live';
 
 /** The play-tools reads this module makes, as one professor. */
 export type TournamentsGateway = Pick<PlayToolsGateway, 'listTournaments' | 'getTournament' | 'listTournamentParticipants' | 'listSeries' | 'listFormats' | 'listVenues'>;
@@ -469,6 +474,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
 
   const today = () => dateIn(now(), deps.timeZone);
   const live = createLiveReads({ gateway: deps.gateway, now });
+  /** Each professor's listing, shared by coverage and Upcoming (ADR-0010 Update #95 item 8, #98). */
+  const listings = createListingCache({ gateway: deps.gateway, now });
 
   function scheduleActive(schedule: ScheduleRow): boolean {
     if (schedule.paused || schedule.archivedAt) return false;
@@ -669,7 +676,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
    * The league's tournaments starting in the range, as each connected professor (they list only their own,
    * ADR-0009), one call each. A professor who can't be read is named; the rest still count.
    */
-  async function listLeagueTournaments(conns: readonly ActingConnection[], group: string, from: LocalDate, to: LocalDate) {
+  async function listLeagueTournaments(conns: readonly ActingConnection[], group: string, from: LocalDate, to: LocalDate, mode: ListingMode) {
     const range = { from: localDay(from as SessionDate, deps.timeZone).from, to: localDay(to as SessionDate, deps.timeZone).to };
     const tournaments: { tournament: Tournament; organizer: ActingConnection }[] = [];
     const unread: UnreadProfessor[] = [];
@@ -681,7 +688,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         continue;
       }
       try {
-        for (const t of await deps.gateway(c.id).listTournaments(range)) {
+        const listing = mode === 'live' ? deps.gateway(c.id).listTournaments(range) : listings.read(c.id, range, { refresh: mode === 'refresh' });
+        for (const t of await listing) {
           if (t.groupId !== group || t.startsAt === null || seen.has(t.id)) continue;
           seen.add(t.id);
           tournaments.push({ tournament: t, organizer: c });
@@ -772,7 +780,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   }
 
   /** Planned rows in the range (already materialised) merged with the league's play-tools tournaments, by start. */
-  async function read(leagueId: string, from: LocalDate, to: LocalDate): Promise<Upcoming> {
+  async function read(leagueId: string, from: LocalDate, to: LocalDate, mode: ListingMode): Promise<Upcoming> {
     const rowsIn = () =>
       db
         .select()
@@ -783,7 +791,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     const conns = deps.connections.listActingConnections();
     const group = conns.length === 0 ? null : (deps.connections.getStatus(leagueId).league?.id ?? null);
     const status = conns.length === 0 ? 'not_connected' : group === null ? 'league_not_selected' : 'read';
-    const listed = group === null ? { tournaments: [], unread: [] } : await listLeagueTournaments(conns, group, from, to);
+    const listed = group === null ? { tournaments: [], unread: [] } : await listLeagueTournaments(conns, group, from, to, mode);
     if (group !== null && (await linkUnknown(leagueId, group, rows, listed.tournaments))) rows = rowsIn();
     const ctx = contextFor(rows);
     ctx.series = await seriesByOrganizer(rows, ctx.templates, conns, group);
@@ -1167,6 +1175,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   const requiredEvents = createRequiredEvents({
     connections: deps.connections,
     gateway: deps.gateway,
+    listings,
     live,
     requirements,
     planned: plannedForCoverage,
@@ -1424,7 +1433,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         throw new TournamentsError('invalid_range', `Choose a range of at most ${MAX_UPCOMING_DAYS} days, ending after it starts.`);
       }
       materialise(leagueId);
-      return read(leagueId, from, to);
+      return read(leagueId, from, to, range.refresh ? 'refresh' : 'cached');
     },
 
     async createThrough(leagueId, scheduleId, through) {
@@ -1437,7 +1446,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       if (through > window.to) throw new TournamentsError('date_too_far_ahead', `${through} is more than 12 months ahead.`);
       db.transaction(() => syncSchedule(leagueId, schedule, through));
       materialise(leagueId);
-      const listed = await read(leagueId, window.from, through);
+      // What a job will create is decided from a live listing, never the cache (#98).
+      const listed = await read(leagueId, window.from, through, 'live');
       const rows = listed.tournaments
         .filter((e) => e.scheduleId === scheduleId && e.plannedId !== null)
         .map((entry) => ({ id: entry.plannedId!, localDate: entry.localDate, state: entry.state as PlannedRowState, startsAt: entry.startsAt ?? entry.startTime, entry }));

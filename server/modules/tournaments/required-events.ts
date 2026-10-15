@@ -13,6 +13,7 @@ import type { SessionDate } from '../../../shared/types/ids';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { Series, Tournament } from '../pokemon/ports/play-tools-gateway';
+import { LISTING_TTL_MS, type ListingCache } from './listing-cache';
 import type { LiveReads } from './live-reads';
 import type { Requirement, TournamentRequirements } from './requirements';
 import type { TournamentsGateway } from './service';
@@ -20,8 +21,6 @@ import type { TournamentsGateway } from './service';
 /** Series windows are per country, and the app keeps no league country: the forms' default (ADR-0010 update #91). */
 export const COVERAGE_COUNTRY = 'US';
 
-/** How long a professor's listing is reused (ADR-0010 decision 12, #102). */
-export const LISTING_TTL_MS = 5 * 60_000;
 
 export interface RequiredEventsCoverage {
   timeZone: string;
@@ -50,7 +49,9 @@ export interface ListedTournament {
 
 export interface RequiredEventsDeps {
   connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
-  gateway: (connectionId: number) => Pick<TournamentsGateway, 'listTournaments' | 'getTournament'>;
+  gateway: (connectionId: number) => Pick<TournamentsGateway, 'getTournament'>;
+  /** The listing cache Upcoming shares (#98). */
+  listings: ListingCache;
   live: Pick<LiveReads, 'series'>;
   requirements: TournamentRequirements;
   /**
@@ -76,12 +77,6 @@ const STOPS_DETAILS: ReadonlySet<string> = new Set(['unavailable', 'rate_limited
 type DetailsSeries = { id: string; name: string | null } | null;
 
 export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
-  /** connection|from|to → a listing read within the TTL. */
-  const listingCache = new Map<string, { at: number; tournaments: readonly Tournament[] }>();
-  /** The same key → the read in flight, shared by concurrent requests. */
-  const listingInFlight = new Map<string, Promise<readonly Tournament[]>>();
-  /** Bumped when listings are dropped, so a read already in flight doesn't put a stale one back. */
-  let generation = 0;
   /** guid → its series, kept for good: a professor can't change a tournament's series. */
   const seriesCache = new Map<string, DetailsSeries>();
   /** guid → the details read in flight, shared by concurrent requests. */
@@ -91,30 +86,6 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
    * asked again until the listings are next read, so the grid, banner and badge don't keep play-tools busy.
    */
   const detailsFailedAt = new Map<string, number>();
-
-  function readListing(c: ActingConnection, range: { from: Date; to: Date }, refresh: boolean): Promise<readonly Tournament[]> {
-    const key = `${c.id}|${range.from.toISOString()}|${range.to.toISOString()}`;
-    const at = deps.now().getTime();
-    // Drop what has expired, so ranges past months no longer ask for don't pile up.
-    for (const [k, v] of listingCache) if (at - v.at >= LISTING_TTL_MS) listingCache.delete(k);
-    const hit = listingCache.get(key);
-    if (!refresh && hit) return Promise.resolve(hit.tournaments);
-    const pending = listingInFlight.get(key);
-    if (pending) return pending;
-    const startedIn = generation;
-    const read = deps
-      .gateway(c.id)
-      .listTournaments(range)
-      .then((tournaments) => {
-        if (startedIn === generation) listingCache.set(key, { at, tournaments });
-        return tournaments;
-      })
-      .finally(() => {
-        if (listingInFlight.get(key) === read) listingInFlight.delete(key);
-      });
-    listingInFlight.set(key, read);
-    return read;
-  }
 
   function readSeries(c: ActingConnection, guid: string): Promise<DetailsSeries> {
     const pending = detailsInFlight.get(guid);
@@ -145,9 +116,7 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
 
   return {
     listingsChanged() {
-      generation++;
-      listingCache.clear();
-      listingInFlight.clear();
+      deps.listings.clear();
       detailsFailedAt.clear();
     },
 
@@ -179,7 +148,7 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
             continue;
           }
           try {
-            for (const t of await readListing(c, range, opts.refresh)) {
+            for (const t of await deps.listings.read(c.id, range, { refresh: opts.refresh })) {
               if (t.groupId !== group || t.startsAt === null || seen.has(t.id)) continue;
               seen.add(t.id);
               listed.push({ tournament: t, organizer: c });

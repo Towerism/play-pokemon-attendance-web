@@ -14,5 +14,13 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["playwright.config.ts", "test/e2e", "test/server/fake-pokemon.ts", "test/server/harness.ts", "test/server/global-setup.ts"]
+  "include": [
+    "playwright.config.ts",
+    "test/e2e",
+    "test/server/fake-pokemon.ts",
+    "test/server/harness.ts",
+    "test/server/global-setup.ts",
+    "test/server/league-day.ts",
+    "app/utils/dates.ts"
+  ]
 }
