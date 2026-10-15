@@ -29,7 +29,7 @@ import {
 import { TournamentsError } from './errors';
 import { organizerReads } from './organizer';
 import type { LiveReads } from './live-reads';
-import { REPLANNABLE, heldSkipped } from './plan';
+import { heldSkipped, replannable } from './plan';
 import type { TemplateSettings } from './settings';
 import { type WindowProblem, checkCreatable, creatableWindow } from './window';
 
@@ -531,7 +531,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
       .from(plannedTournament)
       .where(and(eq(plannedTournament.leagueId, leagueId), eq(plannedTournament.templateId, template.id), gte(plannedTournament.localDate, creatableWindow(ctx.now(), ctx.timeZone).from)))
       .all()
-      .filter((r) => REPLANNABLE.has(r.state) && !editedHere.has(r.id));
+      .filter((r) => replannable(r) && !editedHere.has(r.id));
     return {
       templateId: template.id,
       schedules: scheduleIds.map((id) => ({ scheduleId: id, scaffoldName: users.find((u) => u.scheduleId === id)!.scaffoldName })),

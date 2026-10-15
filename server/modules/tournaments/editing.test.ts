@@ -407,6 +407,13 @@ describe('applying locally', () => {
     expect(JSON.parse(rowOf(rows[3]!.id).overrides)).toEqual({ startTime: '17:00' });
   });
 
+  it('never clears the overrides of a row skipped while its create may have landed (#125)', async () => {
+    const { rows } = await weekly();
+    setRow(rows[3]!.id, `state = 'skipped', skipped_while_unknown = 1, overrides = '${JSON.stringify({ details: 'Keep this' })}'`);
+    await apply(planned(rows[1]!.id), { changes: { details: 'Newer' }, updateTemplate: true, clearShadowingOverrides: true });
+    expect(JSON.parse(rowOf(rows[3]!.id).overrides)).toEqual({ details: 'Keep this' });
+  });
+
   it('lists a one-off’s own details among the overrides that would still win, and clears them only when asked (#162)', async () => {
     const { rows, template } = await weekly();
     const oneOff = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-30', overrides: { details: 'Costumes welcome' } }).plannedId!;

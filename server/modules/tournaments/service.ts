@@ -644,9 +644,9 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     }
     const organizer = organizerOf(template.organizerPlayerId, ctx.conns);
     const type = typeFor(row, template, ctx);
-    const replannable = row.state === 'planned' || row.state === 'failed';
+    const toCreate = row.state === 'planned' || row.state === 'failed';
     const actable = organizer.connected && startsAt !== null && checkCreatable(row.localDate, now(), deps.timeZone) === null;
-    const creatable = replannable && actable && type !== null && (type.kind === 'custom' || type.status === 'resolved');
+    const creatable = toCreate && actable && type !== null && (type.kind === 'custom' || type.status === 'resolved');
     return {
       plannedId: row.id,
       tournamentId: row.tournamentId,
@@ -674,7 +674,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       tdfAvailable: false,
       actions: [
         ...(creatable ? (['create'] as const) : []),
-        ...(replannable || row.state === 'unknown' ? (['skip'] as const) : []),
+        ...(toCreate || row.state === 'unknown' ? (['skip'] as const) : []),
         ...(row.state === 'skipped' ? (['unskip'] as const) : []),
         ...(row.state === 'unknown' && actable ? (['retry_create'] as const) : []),
       ],
