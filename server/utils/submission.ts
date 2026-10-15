@@ -41,7 +41,7 @@ export function useSubmissions(): SubmissionService {
       settlePollMs: Number(config.settlePollMs),
       undoDelayMs: Math.max(500, Number(useRuntimeConfig().undo.delayMs) || 0),
       staffDelayMs: Number(useRuntimeConfig().staff.delayMs) || 0,
-      tournaments: useTournaments(),
+      tournaments: { ...useTournaments(), results: useTournamentResults() },
       tournamentGateway: connectionGateway,
       tournamentDelayMs: Number(useRuntimeConfig().tournament.delayMs) || 0,
       log: useLogger('submission'),

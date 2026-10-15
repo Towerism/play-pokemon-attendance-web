@@ -1,5 +1,6 @@
 import { tdfVault } from '../bootstrap/vaults';
 import { createTdfUploadReferrer } from '../modules/sessions/tdf-import';
+import { createResultUploadReferrer } from '../modules/tournaments/results';
 import { TdfFileNotFoundError, TdfKeyMismatchError } from '../modules/tdf-archive/errors';
 import { type TdfArchiveService, createTdfArchiveService } from '../modules/tdf-archive/service';
 
@@ -10,7 +11,7 @@ export function useTdfArchive(): TdfArchiveService {
   archive ??= createTdfArchiveService({
     db: useDb(),
     vault: tdfVault(useRuntimeConfig().tdfVaultKey),
-    referrers: () => [createTdfUploadReferrer(useDb())],
+    referrers: () => [createTdfUploadReferrer(useDb()), createResultUploadReferrer(useDb())],
     log: useLogger('tdf-archive'),
   });
   return archive;
