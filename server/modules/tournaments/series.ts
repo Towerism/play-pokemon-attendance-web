@@ -36,9 +36,12 @@ export interface SeriesQuery {
 export function resolveSeries(query: SeriesQuery, list: readonly Series[]): TypeResolution {
   if (query.pick === 'custom' || (query.pick === null && query.type.kind === 'custom')) return { kind: 'custom' };
   if (query.pick !== null) {
-    const picked = list.find((s) => s.id === query.pick);
+    // Only among what play-tools offers for the game, date and country (#162): a stale pick, or one of another
+    // game, never creates a tournament under the wrong series or counts toward the wrong requirement.
+    const offered = offeredOn(list, query);
+    const picked = offered.find((s) => s.id === query.pick);
     if (picked) return resolved(picked, query.country);
-    return { kind: 'premier', status: 'series_not_found', candidates: refs(offeredOn(list, query)) };
+    return { kind: 'premier', status: 'series_not_found', candidates: refs(offered) };
   }
   const match = (query.type as Extract<TemplateType, { kind: 'premier' }>).seriesMatch.toLowerCase();
   const offered = offeredOn(list, query);

@@ -70,6 +70,27 @@ describe('resolving a premier template to a series for a date', () => {
     expect(resolveSeries({ ...base, pick: 'withdrawn', date: '2026-11-20' }, LIST)).toMatchObject({ status: 'series_not_found' });
   });
 
+  // #162: a stale or hand-made pick never creates a tournament under, or counts it toward, the wrong series.
+  it.each([
+    ['of another game', 'vg-nov', '2026-11-20'],
+    ['whose window ended before the date', 'lc-nov', '2026-12-04'],
+    ['whose window starts after the date', 'lc-dec', '2026-11-20'],
+    ['with no window for the venue’s country', 'ca-nov', '2026-11-20'],
+  ])('a pick %s is series_not_found, offering the date’s series of the game', (_, pick, date) => {
+    const offered = date === '2026-12-04' ? ['lc-dec', 'cup-q4'] : ['lc-nov', 'cup-q4'];
+    expect(resolveSeries({ ...base, pick, date }, LIST)).toEqual({
+      kind: 'premier',
+      status: 'series_not_found',
+      candidates: offered.map((id) => ({ id, name: LIST.find((s) => s.id === id)!.name })),
+    });
+    expect(resolveSeries({ ...base, type: { kind: 'custom' }, pick, date }, LIST)).toMatchObject({ status: 'series_not_found' });
+  });
+
+  it('takes a pick on both ends of its window', () => {
+    expect(resolveSeries({ ...base, pick: 'lc-nov', date: '2026-11-01' }, LIST)).toMatchObject({ status: 'resolved', series: { id: 'lc-nov' } });
+    expect(resolveSeries({ ...base, pick: 'lc-nov', date: '2026-11-30' }, LIST)).toMatchObject({ status: 'resolved', series: { id: 'lc-nov' } });
+  });
+
   it('a pick of custom, or a custom template, is Custom', () => {
     expect(resolveSeries({ ...base, pick: 'custom', date: '2026-11-20' }, LIST)).toEqual({ kind: 'custom' });
     expect(resolveSeries({ ...base, type: { kind: 'custom' }, date: '2026-11-20' }, LIST)).toEqual({ kind: 'custom' });

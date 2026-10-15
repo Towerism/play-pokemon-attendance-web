@@ -608,7 +608,9 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     const list = ctx.series.get(template.organizerPlayerId);
     if (!list) return { kind: 'premier', status: 'unavailable', candidates: [] };
     const type: TemplateType = template.eventType === 'premier' ? { kind: 'premier', seriesMatch: template.seriesMatch ?? '' } : { kind: 'custom' };
-    return resolveSeries({ type, product: template.product, country: template.venueCountry, date: row.localDate, pick }, list);
+    // The resolved venue's country, as creation takes it: a one-off may have its own venue (#162).
+    const country = settingsOf(row, ctx).venue.country;
+    return resolveSeries({ type, product: template.product, country, date: row.localDate, pick }, list);
   }
 
   /** A row's settings as it would be created now: template, schedule overrides in effect, its own (decision 11). */
@@ -1011,6 +1013,10 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         return { kind: 'fail', code: 'listing_unavailable', message: `Couldn't check play-tools for this tournament first: ${err.message}`, error: err, connectionId: c.id };
       }
       if (adopted) return { kind: 'adopt', connectionId: c.id, tournamentId: adopted };
+      // A one-off's override, then a template edit, can leave it with no contact (#162); play-tools needs one.
+      if (settings.contactEmail === null && settings.contactPhone === null) {
+        return { kind: 'fail', code: 'contact_required', message: 'Give this tournament a contact email or phone.' };
+      }
 
       let seriesId: string | null = null;
       const premier = row.seriesOverride !== 'custom' && (row.seriesOverride !== null || template.eventType === 'premier');
@@ -1041,8 +1047,18 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         if (!(err instanceof PokemonUpstreamError) || STOPS.has(err.code)) throw err;
         return { kind: 'fail', code: 'venue_unavailable', message: `Couldn't read the organizer's venues: ${err.message}`, error: err, connectionId: c.id };
       }
-      if (!venues.some((v) => v.id === settings.venue.id)) {
+      const listed = venues.find((v) => v.id === settings.venue.id);
+      if (!listed) {
         return { kind: 'fail', code: 'venue_not_found', message: `${settings.venue.label} is no longer in the organizer's address book. Pick another venue on the template.` };
+      }
+      // The start instant and the series window come from the stored zone and country, which the browser sent
+      // (#162): play-tools' own entry must agree. Play-tools may leave either out; that isn't a disagreement.
+      if ((listed.timeZone !== null && listed.timeZone !== settings.venue.timeZone) || (listed.country !== null && listed.country !== settings.venue.country)) {
+        return {
+          kind: 'fail',
+          code: 'venue_not_found',
+          message: `${settings.venue.label} has changed in the organizer's address book. Pick the venue again on this tournament.`,
+        };
       }
       return {
         kind: 'send',
