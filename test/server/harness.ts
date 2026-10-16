@@ -7,7 +7,7 @@ import { canBind, nextPort, portBlock } from './ports';
 
 const LAUNCHER = resolve('.output/launcher.mjs');
 const PORTS = portBlock(process.env);
-const freePort = () => nextPort(PORTS, canBind);
+const takePort = () => nextPort(PORTS, canBind);
 
 export interface TestServer {
   url: string;
@@ -42,7 +42,7 @@ export async function startServer(
   } = {},
 ): Promise<TestServer> {
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), 'ppa-server-'));
-  const port = opts.port ?? (await freePort());
+  const port = opts.port ?? (await takePort());
   const output = new LogBuffer();
 
   const child = spawn(process.execPath, [LAUNCHER], {
@@ -87,6 +87,7 @@ export async function startServer(
     await waitForHealthy(server.url, child, server.logs);
   } catch (err) {
     await stopProcess(child);
+    // Only a data dir made here: a caller's (a restart's) holds the state it is testing.
     if (!opts.dataDir) rmSync(dataDir, { recursive: true, force: true });
     throw new Error(`server on port ${port} did not start: ${(err as Error).message}`, { cause: err });
   }
@@ -97,7 +98,7 @@ export async function startServer(
 export async function runToExit(env: Record<string, string>): Promise<{ code: number | null; output: string }> {
   const dataDir = mkdtempSync(join(tmpdir(), 'ppa-server-'));
   const child = spawn(process.execPath, [LAUNCHER], {
-    env: { PATH: process.env.PATH, PORT: String(await freePort()), NUXT_DATABASE_PATH: join(dataDir, 'app.db'), ...env },
+    env: { PATH: process.env.PATH, PORT: String(await takePort()), NUXT_DATABASE_PATH: join(dataDir, 'app.db'), ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -137,7 +138,6 @@ function stopProcess(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): P
     child.kill(signal);
   });
 }
-
 
 /** Minimal cookie-carrying client for one browser "session". */
 export function client(baseUrl: string) {
