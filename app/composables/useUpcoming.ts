@@ -5,8 +5,9 @@ export const UPCOMING_KEY = 'upcoming';
 
 /** Planned and play-tools tournaments by date (ADR-0010 decision 10), from the server's 5-minute listing cache. */
 export function useUpcoming(opts: { immediate?: boolean } = {}) {
-  // Explicit type: inferring this route's response trips vue-tsc's recursion limit.
-  return useFetch<Upcoming>('/api/tournaments/upcoming', { key: UPCOMING_KEY, immediate: opts.immediate ?? true });
+  // Explicit type: inferring this route's response trips vue-tsc's recursion limit. `defer`: the Tournaments page
+  // starts this read and Upcoming joins it (#191).
+  return useFetch<Upcoming>('/api/tournaments/upcoming', { key: UPCOMING_KEY, immediate: opts.immediate ?? true, dedupe: 'defer' });
 }
 
 /**
@@ -15,12 +16,8 @@ export function useUpcoming(opts: { immediate?: boolean } = {}) {
  */
 export async function refreshUpcoming(opts: { upstream?: boolean; range?: { from: string; to: string } } = {}): Promise<Upcoming> {
   if (opts.range) return $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
-  if (opts.upstream) {
-    const fresh = await $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
-    useNuxtData<Upcoming>(UPCOMING_KEY).data.value = fresh;
-    return fresh;
-  }
-  await refreshNuxtData(UPCOMING_KEY);
-  // With the Upcoming tab never shown (Create from the grid on another tab), nothing holds the key: read it directly.
-  return useNuxtData<Upcoming>(UPCOMING_KEY).data.value ?? (await $fetch<Upcoming>('/api/tournaments/upcoming'));
+  // Always a new read: the key defers to a read in flight, which may have started before the change being refreshed for.
+  const fresh = await $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
+  useNuxtData<Upcoming>(UPCOMING_KEY).data.value = fresh;
+  return fresh;
 }
