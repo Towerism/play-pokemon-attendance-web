@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { LogBuffer, type WaitOptions } from './log-buffer';
 
 const LAUNCHER = resolve('.output/launcher.mjs');
 
@@ -11,6 +12,13 @@ export interface TestServer {
   dataDir: string;
   /** Everything the process wrote to stdout and stderr so far. */
   logs(): string;
+  /**
+   * Waits for a complete log line matching `pattern` (from offset `from`, an earlier `logs().length`).
+   * Log lines come through a pipe, not the HTTP response, so read a line only after waiting for it.
+   */
+  waitForLog(pattern: RegExp, opts?: WaitOptions): Promise<RegExpMatchArray>;
+  /** Waits for the first-run setup code the server prints at boot. */
+  setupCode(): Promise<string>;
   /** SIGTERM and wait for exit; keeps the data dir. */
   stop(): Promise<void>;
   /** SIGKILL (a crash): no graceful shutdown; keeps the data dir. */
@@ -26,7 +34,7 @@ export interface TestServer {
 export async function startServer(opts: { env?: Record<string, string>; dataDir?: string } = {}): Promise<TestServer> {
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), 'ppa-server-'));
   const port = await freePort();
-  let output = '';
+  const output = new LogBuffer();
 
   const child = spawn(process.execPath, [LAUNCHER], {
     env: {
@@ -39,13 +47,19 @@ export async function startServer(opts: { env?: Record<string, string>; dataDir?
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout!.on('data', (d) => (output += d));
-  child.stderr!.on('data', (d) => (output += d));
+  // Decode as a stream, so a character split across two chunks stays whole.
+  for (const stream of [child.stdout!, child.stderr!]) {
+    stream.setEncoding('utf8');
+    stream.on('data', (d: string) => output.append(d));
+  }
+  child.once('close', (code, signal) => output.close({ code, signal }));
 
   const server: TestServer = {
     url: `http://127.0.0.1:${port}`,
     dataDir,
-    logs: () => output,
+    logs: () => output.text(),
+    waitForLog: (pattern, opts) => output.waitFor(pattern, opts),
+    setupCode: () => waitForSetupCode(output),
     stop: () => stopProcess(child),
     kill: () => stopProcess(child, 'SIGKILL'),
     async dispose() {
@@ -55,7 +69,7 @@ export async function startServer(opts: { env?: Record<string, string>; dataDir?
   };
 
   try {
-    await waitForHealthy(server.url, child, () => output);
+    await waitForHealthy(server.url, child, server.logs);
   } catch (err) {
     await server.dispose();
     throw err;
@@ -141,16 +155,27 @@ export function client(baseUrl: string) {
   };
 }
 
+const SETUP_CODE = /setup code:?\s*([A-Z2-9]{4}-[A-Z2-9]{4})/i;
+
+/** Waits for the setup code to appear in `logs` and returns it. */
+export async function waitForSetupCode(logs: Pick<LogBuffer, 'waitFor'>): Promise<string> {
+  return (await logs.waitFor(SETUP_CODE))[1]!;
+}
+
 export function setupCodeFrom(logs: string): string {
-  const match = logs.match(/setup code:?\s*([A-Z2-9]{4}-[A-Z2-9]{4})/i);
+  const match = logs.match(SETUP_CODE);
   if (!match) throw new Error(`no setup code in logs:\n${logs}`);
   return match[1]!;
 }
 
-/** The JSON log records (`NUXT_LOG_FORMAT=json`) in `logs`, skipping Nitro's plain banner. */
+/**
+ * The JSON log records (`NUXT_LOG_FORMAT=json`) in `logs`, skipping Nitro's plain banner
+ * and a last line that hasn't finished arriving.
+ */
 export function logRecords(logs: string): Record<string, unknown>[] {
   return logs
     .split('\n')
+    .slice(0, -1)
     .filter((line) => line.startsWith('{'))
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
