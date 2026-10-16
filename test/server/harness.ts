@@ -1,11 +1,13 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { LogBuffer, type WaitOptions } from './log-buffer';
+import { canBind, nextPort, portBlock } from './ports';
 
 const LAUNCHER = resolve('.output/launcher.mjs');
+const PORTS = portBlock(process.env);
+const freePort = () => nextPort(PORTS, canBind);
 
 export interface TestServer {
   url: string;
@@ -29,11 +31,18 @@ export interface TestServer {
 
 /**
  * Starts the built app the way the container does (`node .output/launcher.mjs`)
- * with its own data dir, on a free port.
+ * with its own data dir, on a free port from this test worker's block (`./ports`).
  */
-export async function startServer(opts: { env?: Record<string, string>; dataDir?: string } = {}): Promise<TestServer> {
+export async function startServer(
+  opts: {
+    env?: Record<string, string>;
+    dataDir?: string;
+    /** Only for the harness's own test: a pinned port brings back the collisions the port blocks prevent. */
+    port?: number;
+  } = {},
+): Promise<TestServer> {
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), 'ppa-server-'));
-  const port = await freePort();
+  const port = opts.port ?? (await freePort());
   const output = new LogBuffer();
 
   const child = spawn(process.execPath, [LAUNCHER], {
@@ -69,10 +78,17 @@ export async function startServer(opts: { env?: Record<string, string>; dataDir?
   };
 
   try {
+    // Only this child's own banner proves it holds the port: /healthz could be answered by
+    // whatever else is listening there (#142).
+    const [banner] = await output.waitFor(new RegExp(`Listening on http://127\\.0\\.0\\.1:${port}(?!\\d)|EADDRINUSE`), {
+      timeoutMs: STARTUP_TIMEOUT_MS,
+    });
+    if (banner === 'EADDRINUSE') throw new Error(`EADDRINUSE, the port is taken; logs:\n${output.text()}`);
     await waitForHealthy(server.url, child, server.logs);
   } catch (err) {
-    await server.dispose();
-    throw err;
+    await stopProcess(child);
+    if (!opts.dataDir) rmSync(dataDir, { recursive: true, force: true });
+    throw new Error(`server on port ${port} did not start: ${(err as Error).message}`, { cause: err });
   }
   return server;
 }
@@ -94,8 +110,10 @@ export async function runToExit(env: Record<string, string>): Promise<{ code: nu
   return { code, output };
 }
 
+const STARTUP_TIMEOUT_MS = 20_000;
+
 async function waitForHealthy(url: string, child: ChildProcess, logs: () => string) {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`server exited (${child.exitCode}) during startup:\n${logs()}`);
     try {
@@ -120,17 +138,6 @@ function stopProcess(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): P
   });
 }
 
-function freePort(): Promise<number> {
-  return new Promise((res, rej) => {
-    const srv = createServer();
-    srv.unref();
-    srv.on('error', rej);
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address() as { port: number };
-      srv.close(() => res(port));
-    });
-  });
-}
 
 /** Minimal cookie-carrying client for one browser "session". */
 export function client(baseUrl: string) {
