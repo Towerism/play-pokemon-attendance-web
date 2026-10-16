@@ -26,6 +26,7 @@ useTournamentScaffolds();
 useTournamentSchedules();
 const timeZone = computed(() => clock.value?.league.timeZone ?? null);
 const today = computed(() => clock.value?.league.today ?? null);
+const clockFailed = computed(() => !!clockError.value && !clock.value);
 
 const tabs = computed(() => tournamentsTabs(badgeCount(coverage.value)));
 const tab = computed({
@@ -79,7 +80,7 @@ function templateSaved(t: Template) {
       <UpcomingList
         v-else-if="tab === 'upcoming'"
         :today="today"
-        :clock-failed="!!clockError && !clock"
+        :clock-failed="clockFailed"
         @retry-clock="refreshClock()"
         @new="planning = { templateId: null, missingFor: null }"
         @create="(ids) => (creating = { plannedIds: ids, retry: false })"
@@ -87,8 +88,8 @@ function templateSaved(t: Template) {
         @edit="(id) => (editing = id)"
         @cancel="(id) => (cancelling = id)"
       />
-      <TemplatesTab v-else-if="tab === 'templates'" :time-zone="timeZone" :today="today" :clock-failed="!!clockError && !clock" />
-      <SchedulesTab v-else :today="today" :clock-failed="!!clockError && !clock" />
+      <TemplatesTab v-else-if="tab === 'templates'" :time-zone="timeZone" :today="today" :clock-failed="clockFailed" />
+      <SchedulesTab v-else :today="today" :clock-failed="clockFailed" />
     </div>
 
     <template v-if="today && timeZone">
