@@ -4,12 +4,15 @@ import type { Requirement } from '../../server/modules/tournaments/requirements'
 
 /**
  * Required events on top of Tournaments (ADR-0010 decision 12): each active requirement × its periods, with status,
- * urgency, what covers it and what fixes it. It shares its read with the nav badge.
+ * urgency, what covers it and what fixes it. It shares its read with the nav badge. Plan one… waits for the league's
+ * clock (`planReady`, #191).
  */
+const props = withDefaults(defineProps<{ planReady?: boolean }>(), { planReady: true });
 const emit = defineEmits<{ plan: [requirement: Requirement, period: PeriodCoverage]; create: [plannedId: number] }>();
 const toast = useToast();
 
-const { data: coverage, error, status } = await useRequiredEvents();
+const { data: coverage, error } = useRequiredEvents();
+const loading = computed(() => !coverage.value && !error.value);
 const refreshing = ref(false);
 const covering = ref<{ requirement: Requirement; period: PeriodCoverage } | null>(null);
 const requirementsOpen = ref(false);
@@ -47,7 +50,7 @@ async function uncover(r: Requirement, p: PeriodCoverage) {
 </script>
 
 <template>
-  <section aria-labelledby="required-events" class="space-y-3">
+  <section aria-labelledby="required-events" :aria-busy="loading" class="space-y-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 id="required-events" class="text-lg font-semibold">Required events</h2>
       <div class="flex gap-2">
@@ -59,7 +62,13 @@ async function uncover(r: Requirement, p: PeriodCoverage) {
     <UAlert v-if="error && !coverage" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="apiErrorMessage(error, 'Could not read required events.')">
       <template #actions><UButton size="xs" variant="outline" @click="refresh">Try again</UButton></template>
     </UAlert>
-    <p v-else-if="status === 'pending' && !coverage" class="text-sm text-muted">Reading required events…</p>
+    <div v-else-if="loading" class="space-y-2">
+      <span class="sr-only">Loading Required events…</span>
+      <USkeleton class="h-4 w-48" aria-hidden="true" />
+      <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4" aria-hidden="true">
+        <USkeleton v-for="n in 4" :key="n" class="h-20 w-full" />
+      </div>
+    </div>
 
     <template v-if="coverage">
       <UAlert v-if="notice" color="warning" variant="subtle" icon="i-lucide-plug-zap" :title="notice">
@@ -86,6 +95,7 @@ async function uncover(r: Requirement, p: PeriodCoverage) {
             :period="p"
             :today="coverage.today"
             :unread="unread"
+            :plan-ready="props.planReady"
             @plan="emit('plan', requirement, p)"
             @create="(id) => emit('create', id)"
             @cover="covering = { requirement, period: p }"

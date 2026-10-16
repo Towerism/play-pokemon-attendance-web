@@ -81,6 +81,22 @@ describe('auth', () => {
   });
 });
 
+describe('league clock', () => {
+  // The Tournaments page reads the league's zone and date from settings so it never waits on play-tools (#191).
+  it("GET /settings gives the server's zone and today's date there, without asking play-tools", async () => {
+    const before = leagueDay(0, TZ);
+    const res = await api('/settings');
+    const after = leagueDay(0, TZ);
+
+    expect(res.status).toBe(200);
+    const settings = await body<{ league: { timeZone: string; today: string } }>(res);
+    expect(Object.keys(settings).sort()).toEqual(['league', 'thresholds']);
+    expect(settings.league.timeZone).toBe(TZ);
+    expect([before, after]).toContain(settings.league.today);
+    expect(fake.requests).toEqual([]);
+  });
+});
+
 describe('requirements', () => {
   it("lists the organizer's six, seeded", async () => {
     const listed = await requirements();

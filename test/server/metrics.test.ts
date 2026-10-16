@@ -138,7 +138,7 @@ describe('metrics and curation API (M6)', () => {
 
   describe('thresholds in Settings', () => {
     it('GET /settings has the defaults until the organizer changes them', async () => {
-      expect(await json('/settings')).toEqual({ thresholds: { promoteMinSightings: 4, staleAfterSessions: 6 } });
+      expect((await json('/settings')).thresholds).toEqual({ promoteMinSightings: 4, staleAfterSessions: 6 });
     });
 
     it('PUT /settings stores new thresholds, and the curation views follow them', async () => {
@@ -146,7 +146,7 @@ describe('metrics and curation API (M6)', () => {
 
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ thresholds: { promoteMinSightings: 1, staleAfterSessions: 6 } });
-      expect(await json('/settings')).toEqual({ thresholds: { promoteMinSightings: 1, staleAfterSessions: 6 } });
+      expect((await json('/settings')).thresholds).toEqual({ promoteMinSightings: 1, staleAfterSessions: 6 });
       expect(ids((await json('/players?filter=promote')).players)).toEqual(['900', '0011', '12']);
     });
 

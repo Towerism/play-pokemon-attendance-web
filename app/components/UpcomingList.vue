@@ -3,13 +3,16 @@ import type { UpcomingEntry } from '../../server/modules/tournaments/service';
 
 /**
  * Upcoming (ADR-0010 decision 10): planned and play-tools tournaments by date, from 2 days ago. Skip, Unskip, a series
- * pick and Download TDF happen here; the dialogs that reach play-tools are the page's.
+ * pick and Download TDF happen here; the dialogs that reach play-tools are the page's. Its buttons show before its
+ * read or the league's clock (`today`) answers; rows wait for both (#191).
  */
-const props = defineProps<{ today: string }>();
-const emit = defineEmits<{ create: [plannedIds: number[]]; retry: [plannedId: number]; edit: [id: string]; cancel: [id: string]; new: [] }>();
+const props = defineProps<{ today: string | null; clockFailed?: boolean }>();
+const emit = defineEmits<{ create: [plannedIds: number[]]; retry: [plannedId: number]; edit: [id: string]; cancel: [id: string]; new: []; retryClock: [] }>();
 const toast = useToast();
 
-const { data: upcoming, error, status } = await useUpcoming();
+const { data: upcoming, error } = useUpcoming();
+const clockPending = computed(() => !props.today && !props.clockFailed);
+const loading = computed(() => (!upcoming.value && !error.value) || clockPending.value);
 const selected = ref<Set<number>>(new Set());
 const refreshing = ref(false);
 const busy = ref<string | null>(null);
@@ -69,7 +72,7 @@ async function download(e: UpcomingEntry) {
 </script>
 
 <template>
-  <section aria-label="Upcoming" class="space-y-3">
+  <section aria-label="Upcoming" :aria-busy="loading" class="space-y-3">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <p class="text-sm text-muted">From 2 days ago. play-tools is read at most every 5 minutes; Refresh reads it now.</p>
       <div class="flex flex-wrap gap-2">
@@ -83,15 +86,22 @@ async function download(e: UpcomingEntry) {
         >
           Create {{ selected.size }} in play-tools
         </UButton>
-        <UButton size="sm" variant="outline" icon="i-lucide-plus" @click="emit('new')">New tournament</UButton>
+        <UButton size="sm" variant="outline" icon="i-lucide-plus" :loading="clockPending" :disabled="!props.today" @click="emit('new')">New tournament</UButton>
         <UButton size="sm" variant="outline" icon="i-lucide-refresh-cw" :loading="refreshing" aria-label="Refresh upcoming" @click="refresh">Refresh</UButton>
       </div>
     </div>
     <p v-if="selected.size > MAX_CREATE" class="text-sm text-error">At most {{ MAX_CREATE }} at a time.</p>
 
     <UAlert v-if="error && !upcoming" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="apiErrorMessage(error, 'Could not read Upcoming.')" />
-    <p v-else-if="status === 'pending' && !upcoming" class="text-sm text-muted">Reading Upcoming…</p>
-    <template v-if="upcoming">
+    <UAlert v-if="props.clockFailed" color="error" variant="subtle" icon="i-lucide-circle-alert" title="Could not read the league's time zone.">
+      <template #actions><UButton size="xs" variant="outline" @click="emit('retryClock')">Try again</UButton></template>
+    </UAlert>
+    <div v-if="loading" class="space-y-2">
+      <span class="sr-only">Loading Upcoming…</span>
+      <USkeleton class="h-4 w-32" aria-hidden="true" />
+      <USkeleton v-for="n in 3" :key="n" class="h-16 w-full" aria-hidden="true" />
+    </div>
+    <template v-if="upcoming && props.today">
       <UAlert v-if="notice.settingsNote" color="warning" variant="subtle" icon="i-lucide-plug-zap" :title="notice.settingsNote">
         <template #actions><UButton size="xs" variant="outline" to="/settings">Open Settings</UButton></template>
       </UAlert>
