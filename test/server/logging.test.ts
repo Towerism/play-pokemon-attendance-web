@@ -272,7 +272,7 @@ describe('request ids follow the work they start', () => {
     fake.bulkDelayMs = 0;
     const ids = Array.from({ length: 10 }, (_, i) => `req-concurrent-${i}`);
     await Promise.all(ids.map((id) => browser.request(`/api/leagues/upstream?professor=${FAKE_PLAYER_ID}`, { headers: { 'x-request-id': id } })));
-    await new Promise((r) => setTimeout(r, 200));
+    for (const id of ids) await server.waitForLog(new RegExp(`"scope":"http".*"reqId":"${id}"|"reqId":"${id}".*"scope":"http"`));
     for (const id of ids) {
       const mine = logRecords(server.logs()).filter((r) => r.reqId === id);
       expect(mine.filter((r) => r.scope === 'http')).toHaveLength(1);
