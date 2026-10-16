@@ -17,7 +17,12 @@ export function useUpcoming(opts: { immediate?: boolean } = {}) {
 export async function refreshUpcoming(opts: { upstream?: boolean; range?: { from: string; to: string } } = {}): Promise<Upcoming> {
   if (opts.range) return $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
   // Always a new read: the key defers to a read in flight, which may have started before the change being refreshed for.
-  const fresh = await $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
-  useNuxtData<Upcoming>(UPCOMING_KEY).data.value = fresh;
-  return fresh;
+  // Only **Refresh** (`upstream`) reports a failed read; after a change, the list already shown stays.
+  const shown = useNuxtData<Upcoming>(UPCOMING_KEY).data;
+  try {
+    shown.value = await $fetch<Upcoming>('/api/tournaments/upcoming', { query: upcomingQuery(opts) });
+  } catch (err) {
+    if (opts.upstream || !shown.value) throw err;
+  }
+  return shown.value!;
 }

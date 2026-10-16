@@ -186,3 +186,21 @@ test('opening Required events directly shows its grid loading, with its buttons 
     coverage.release();
   }
 });
+
+test('a change still says it worked when the read after it fails', async ({ page, connected }) => {
+  const template = await tournamentTemplate(connected);
+  const date = leagueDay(10);
+  await plannedTournament(connected, template.id, date);
+  const name = `${template.name} · ${dayHeading(date)}`;
+
+  await page.goto('/tournaments');
+  const row = page.getByRole('listitem', { name });
+  await expect(row).toBeVisible();
+  const coverage = await gate(page, '**/api/tournaments/requirements*');
+  coverage.fail(500);
+
+  await row.getByRole('button', { name: `Skip ${name}` }).click();
+  await expect(page.getByText(`Skipped ${name}`, { exact: true })).toBeVisible();
+  await expect(page.getByText('Could not change the tournament.')).toHaveCount(0);
+  await expect(row.getByRole('button', { name: `Unskip ${name}` })).toBeVisible();
+});
