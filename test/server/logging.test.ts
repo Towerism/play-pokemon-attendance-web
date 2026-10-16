@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, FAKE_SUB, type FakePlaySession, type FakePokemon, fakeRecord, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, logRecords, runToExit, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, logRecords, runToExit, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse battery' };
 const AUTH_CODE = 'authcode-7Qx9';
@@ -29,7 +29,7 @@ afterAll(() => fake.close());
 
 async function signUp(server: TestServer): Promise<Browser> {
   const browser = client(server.url);
-  const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+  const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
   expect(res.status).toBe(200);
   return browser;
 }
@@ -299,6 +299,7 @@ describe('work no request started', () => {
 
     const second = await startServer({ env, dataDir: first.dataDir });
     try {
+      await second.waitForLog(/interrupted by a restart/);
       const recovery = logRecords(second.logs()).find((r) => /interrupted by a restart/.test(String(r.msg)));
       expect(recovery).toMatchObject({ scope: 'submission', level: 40 });
       expect(recovery).not.toHaveProperty('reqId');
@@ -312,8 +313,9 @@ describe('readable by default', () => {
   let server: TestServer;
   beforeAll(async () => {
     server = await startServer();
+    await server.setupCode();
     await fetch(`${server.url}/api/players`, { headers: { 'x-request-id': 'req-pretty-1' } });
-    await new Promise((r) => setTimeout(r, 200));
+    await server.waitForLog(/INFO: \[http\] .*req-pretty-1/);
   });
   afterAll(() => server.dispose());
 
@@ -342,6 +344,7 @@ describe('readable by default', () => {
   it('prints the setup code as a JSON record in json format', async () => {
     const json = await startServer({ env: { NUXT_LOG_FORMAT: 'json' } });
     try {
+      await json.setupCode();
       const record = logRecords(json.logs()).find((r) => r.scope === 'setup');
       expect(record).toMatchObject({ level: 30 });
       expect(record!.msg).toMatch(/^No organizer account yet\. Open the app and enter this setup code: [A-Z2-9]{4}-[A-Z2-9]{4}$/);

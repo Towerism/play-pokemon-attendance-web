@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type FakePokemon, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 import { leagueDay } from './league-day';
 
 // Required events over HTTP (#95, ADR-0010 decision 12): requirements, manual covers and coverage, against the built
@@ -49,7 +49,7 @@ beforeAll(async () => {
   fake = await startFakePokemon();
   server = await startServer({ env: { ...fake.env, TZ } });
   browser = client(server.url);
-  const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+  const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
   expect(setup.status).toBe(200);
   const start = await api('/pokemon/connect/start', { method: 'POST', json: {} });
   const state = new URL((await body<{ authorizeUrl: string }>(start)).authorizeUrl).searchParams.get('state');

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const WED = '2026-10-14';
@@ -28,7 +28,7 @@ describe('TDF import API', () => {
     browser = client(server.url);
     const res = await browser.request('/api/auth/setup', {
       method: 'POST',
-      json: { setupCode: setupCodeFrom(server.logs()), ...OWNER },
+      json: { setupCode: await server.setupCode(), ...OWNER },
     });
     expect(res.status).toBe(200);
   });

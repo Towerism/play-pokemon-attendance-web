@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type FakePokemon, type FakeRecord, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const ENV = { TZ: 'America/Chicago' };
@@ -16,7 +16,7 @@ type Browser = ReturnType<typeof client>;
 
 async function login(server: TestServer): Promise<Browser> {
   const browser = client(server.url);
-  const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+  const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
   expect(res.status).toBe(200);
   return browser;
 }

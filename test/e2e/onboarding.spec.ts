@@ -1,4 +1,3 @@
-import { setupCodeFrom } from '../server/harness';
 import { OWNER, TUESDAY, expect, loggedInUrl, test } from './fixtures';
 
 // A fresh install, done once per league: the setup form with the code from
@@ -26,7 +25,7 @@ test('first run: create the organizer, connect Pokémon, pick the second of two 
   await page.goto('/');
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByRole('heading', { name: 'Set up the organizer account' })).toBeVisible();
-  await page.getByLabel('Setup code').fill(setupCodeFrom(app.logs()));
+  await page.getByLabel('Setup code').fill(await app.setupCode());
   await page.getByLabel('Username').fill(OWNER.username);
   await page.getByLabel('Password').fill(OWNER.password);
   await page.getByRole('button', { name: 'Create account' }).click();

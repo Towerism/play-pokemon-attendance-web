@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 // #75: This week reads every connected professor's tournaments, and each
 // tournament is read and staffed only as its organizer. The fake follows S6:
@@ -85,7 +85,7 @@ describe('staff across connected professors (#75)', () => {
     bodies.length = 0;
     server = await startServer({ env: { ...fake.env, ...ENV } });
     browser = client(server.url);
-    const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+    const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
     expect(setup.status).toBe(200);
   });
 

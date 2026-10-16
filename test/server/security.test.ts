@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type TestServer, client, logRecords, runToExit, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, logRecords, runToExit, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 
@@ -139,8 +139,8 @@ describe('security headers', () => {
       expect(res.headers.get('access-control-allow-credentials')).toBeNull();
     });
 
-    it('still prints the setup code to the log', () => {
-      expect(() => setupCodeFrom(server.logs())).not.toThrow();
+    it('still prints the setup code to the log', async () => {
+      await expect(server.setupCode()).resolves.toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     });
   });
 
@@ -197,7 +197,7 @@ describe('auth rate limits', () => {
     try {
       const setup = await client(server.url).request('/api/auth/setup', {
         method: 'POST',
-        json: { setupCode: setupCodeFrom(server.logs()), ...OWNER },
+        json: { setupCode: await server.setupCode(), ...OWNER },
       });
       expect(setup.status).toBe(200);
 
@@ -295,7 +295,7 @@ describe('auth rate limits', () => {
     const server = await startServer({ env: { NUXT_AUTH_RATE_LIMIT_LOGIN_MAX: '1', NUXT_AUTH_RATE_LIMIT_SETUP_MAX: '1' } });
     try {
       const browser = client(server.url);
-      expect((await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } })).status).toBe(200);
+      expect((await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } })).status).toBe(200);
       expect((await login(server)).status).toBe(401);
       expect((await login(server)).status).toBe(429);
       expect((await client(server.url).request('/api/auth/setup', { method: 'POST', json: { setupCode: 'WXYZ-2345', ...OWNER } })).status).toBe(429);
@@ -335,7 +335,7 @@ describe('refusals keep request-scoped headers and add no logging of their own',
     const server = await startServer({ env: { NUXT_LOG_FORMAT: 'json', NUXT_LOG_LEVEL: 'debug', NUXT_AUTH_RATE_LIMIT_LOGIN_MAX: '1' } });
     try {
       const browser = client(server.url);
-      await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+      await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
 
       const loginWith = (id: string) =>
         client(server.url).request('/api/auth/login', { method: 'POST', json: OWNER, headers: { 'x-request-id': id } });
@@ -372,7 +372,7 @@ describe('request size limit', () => {
   beforeAll(async () => {
     server = await startServer();
     browser = client(server.url);
-    await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+    await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
   });
   afterAll(() => server.dispose());
 

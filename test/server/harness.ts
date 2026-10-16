@@ -162,12 +162,6 @@ export async function waitForSetupCode(logs: Pick<LogBuffer, 'waitFor'>): Promis
   return (await logs.waitFor(SETUP_CODE))[1]!;
 }
 
-export function setupCodeFrom(logs: string): string {
-  const match = logs.match(SETUP_CODE);
-  if (!match) throw new Error(`no setup code in logs:\n${logs}`);
-  return match[1]!;
-}
-
 /**
  * The JSON log records (`NUXT_LOG_FORMAT=json`) in `logs`, skipping Nitro's plain banner
  * and a last line that hasn't finished arriving.

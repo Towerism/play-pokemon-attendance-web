@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 // #76: assign staff for every tournament on a date at once. The fake follows S6:
 // each professor lists only their own tournaments, and only the organizer writes
@@ -90,7 +90,7 @@ describe('staff batch API (#76)', () => {
     bodies.length = 0;
     server = await startServer({ env: { ...fake.env, ...ENV } });
     browser = client(server.url);
-    const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+    const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
     expect(setup.status).toBe(200);
   });
 
