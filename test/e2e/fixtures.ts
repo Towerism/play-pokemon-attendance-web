@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { type BrowserContext, type Page, test as base, expect } from '@playwright/test';
 import { type FakePlaySession, type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
 import { dayLabel, periodLabel } from '../../app/utils/dates';
-import { type TestServer, client, setupCodeFrom, startServer } from '../server/harness';
+import { type TestServer, client, startServer } from '../server/harness';
 import { leagueDay as serverLeagueDay } from '../server/league-day';
 
 export { expect };
@@ -181,7 +181,7 @@ export const test = base.extend<Fixtures>({
 /** First-run setup over the API, with the code the server printed. Returns a logged-in API client. */
 export async function createOrganizer(app: TestServer, who: { username: string; password: string } = OWNER): Promise<Api> {
   const api = client(app.url);
-  const res = await api.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(app.logs()), ...who } });
+  const res = await api.request('/api/auth/setup', { method: 'POST', json: { setupCode: await app.setupCode(), ...who } });
   expect(res.status, 'first-run setup').toBe(200);
   return api;
 }

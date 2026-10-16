@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, type FakePokemon, type FakePlaySession, fakeRecord, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 // A Tuesday; its evening session starts on Wednesday in UTC (S3), so the date must be read in the league TZ.
@@ -28,7 +28,7 @@ const ENV = { TZ: 'America/Chicago', NUXT_SUBMISSION_BATCH_DELAY_MS: '0', NUXT_U
 async function login(server: TestServer, setup: boolean): Promise<Browser> {
   const browser = client(server.url);
   const res = setup
-    ? await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } })
+    ? await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } })
     : await browser.request('/api/auth/login', { method: 'POST', json: OWNER });
   expect(res.status).toBe(200);
   return browser;

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AttendanceDayV1 } from '../../shared/schemas/integrations';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, logRecords, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, logRecords, startServer } from './harness';
 
 // #115: Tournament Genie reads a day's tournaments and staff with a bearer token (ADR-0013). The response is the
 // v1 contract Genie builds against (the recorded fixture), and `professors` must never call a professor read
@@ -36,7 +36,7 @@ describe('integrations API (#115)', () => {
   async function start(env: Record<string, string> = {}) {
     server = await startServer({ env: { ...fake.env, ...ENV, ...env } });
     browser = client(server.url);
-    const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+    const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
     expect(setup.status).toBe(200);
   }
 
@@ -154,6 +154,7 @@ describe('integrations API (#115)', () => {
         cardBefore.tournaments.map((t: { assignments: unknown }) => t.assignments),
       );
 
+      await server.waitForLog(/"msg":"integration day read"/);
       const audit = logRecords(server.logs()).filter((r) => r.msg === 'integration day read');
       expect(audit).toEqual([expect.objectContaining({ tokenLabel: 'Tournament Genie', date: WED, tournaments: 2, unread: [] })]);
     });

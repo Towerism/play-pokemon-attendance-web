@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { BIRTHDATE, tomTdf } from '../../shared/tdf/__fixtures__/tom';
 import { localInstant } from '../../shared/time/local-time';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, logRecords, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, logRecords, startServer } from './harness';
 import { leagueDay } from './league-day';
 
 // **Download TDF** (ADR-0012 decision 7, #97) over HTTP, against the built app and the play-tools fake. The file comes
@@ -51,7 +51,7 @@ function newTournament(): { guid: string; displayId: string } {
 async function signIn(server: TestServer, first: boolean): Promise<Browser> {
   const browser = client(server.url);
   const res = first
-    ? await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } })
+    ? await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } })
     : await browser.request('/api/auth/login', { method: 'POST', json: OWNER });
   expect(res.status).toBe(200);
   return browser;
@@ -156,6 +156,7 @@ describe('GET /tournaments/{id}/tdf', () => {
     expect(requests).toEqual([]);
 
     const [file] = (await archivedFiles(browser)).filter((f) => f.filename === 'cup.tdf');
+    await server.waitForLog(new RegExp(`"msg":"Tournament ${guid} TDF downloaded"`));
     const audit = logRecords(server.logs()).filter((r) => r.tournamentId === guid && /downloaded/i.test(String(r.msg)));
     expect(audit).toEqual([expect.objectContaining({ fileId: file!.id, by: OWNER.username })]);
     expect(JSON.stringify(audit)).not.toMatch(/<tournament|Ketchum/);

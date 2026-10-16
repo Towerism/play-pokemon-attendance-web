@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 
@@ -8,7 +8,7 @@ describe('auth API', () => {
   let code: string;
   beforeAll(async () => {
     server = await startServer();
-    code = setupCodeFrom(server.logs());
+    code = await server.setupCode();
   });
   afterAll(() => server.dispose());
 
@@ -118,7 +118,7 @@ describe('behind an HTTPS reverse proxy (NUXT_PUBLIC_SITE_URL=https://…)', () 
     try {
       const res = await client(server.url).request('/api/auth/setup', {
         method: 'POST',
-        json: { setupCode: setupCodeFrom(server.logs()), ...OWNER },
+        json: { setupCode: await server.setupCode(), ...OWNER },
       });
       expect(res.status).toBe(200);
       expect(res.headers.getSetCookie().join('\n')).toMatch(/;\s*Secure/i);

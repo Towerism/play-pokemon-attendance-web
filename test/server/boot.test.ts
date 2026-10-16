@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type TestServer, client, runToExit, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, runToExit, startServer } from './harness';
 
 describe('a fresh install (empty /data, no env)', () => {
   let server: TestServer;
@@ -27,8 +27,8 @@ describe('a fresh install (empty /data, no env)', () => {
     }
   });
 
-  it('prints a setup code to the log, and never a secret', () => {
-    expect(setupCodeFrom(server.logs())).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  it('prints a setup code to the log, and never a secret', async () => {
+    expect(await server.setupCode()).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     for (const file of ['session-password', 'token-vault.key', 'tdf-vault.key']) {
       const secret = readFileSync(join(server.dataDir, 'secrets', file), 'utf8').trim();
       expect(server.logs()).not.toContain(secret);
@@ -42,13 +42,14 @@ describe('a fresh install (empty /data, no env)', () => {
   });
 
   it('prints the same setup code again when the setup page opens, so it is at the bottom of the log', async () => {
-    const code = setupCodeFrom(server.logs());
+    // The boot-time line first, so it can't land after `before` and pass for the repeat.
+    const code = await server.setupCode();
     const before = server.logs().length;
 
     await fetch(`${server.url}/api/auth/setup`);
-    await new Promise((r) => setTimeout(r, 200));
 
-    expect(setupCodeFrom(server.logs().slice(before))).toBe(code);
+    const [, again] = await server.waitForLog(/setup code: ([A-Z2-9]{4}-[A-Z2-9]{4})/, { from: before });
+    expect(again).toBe(code);
   });
 });
 
@@ -58,7 +59,7 @@ describe('restarting the container', () => {
     const browser = client(first.url);
     await browser.request('/api/auth/setup', {
       method: 'POST',
-      json: { setupCode: setupCodeFrom(first.logs()), username: 'organizer', password: 'correct horse' },
+      json: { setupCode: await first.setupCode(), username: 'organizer', password: 'correct horse' },
     });
     await first.stop();
 
@@ -92,7 +93,7 @@ describe('SIGTERM (docker stop, Appdata Backup)', () => {
       // Write something so the WAL has content.
       await client(server.url).request('/api/auth/setup', {
         method: 'POST',
-        json: { setupCode: setupCodeFrom(server.logs()), username: 'organizer', password: 'correct horse' },
+        json: { setupCode: await server.setupCode(), username: 'organizer', password: 'correct horse' },
       });
       const started = Date.now();
       await server.stop();

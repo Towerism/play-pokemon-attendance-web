@@ -1,16 +1,26 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { LogBuffer, type WaitOptions } from './log-buffer';
+import { canBind, nextPort, portBlock } from './ports';
 
 const LAUNCHER = resolve('.output/launcher.mjs');
+const PORTS = portBlock(process.env);
+const takePort = () => nextPort(PORTS, canBind);
 
 export interface TestServer {
   url: string;
   dataDir: string;
   /** Everything the process wrote to stdout and stderr so far. */
   logs(): string;
+  /**
+   * Waits for a complete log line matching `pattern` (from offset `from`, an earlier `logs().length`).
+   * Log lines come through a pipe, not the HTTP response, so read a line only after waiting for it.
+   */
+  waitForLog(pattern: RegExp, opts?: WaitOptions): Promise<RegExpMatchArray>;
+  /** Waits for the first-run setup code the server prints at boot. */
+  setupCode(): Promise<string>;
   /** SIGTERM and wait for exit; keeps the data dir. */
   stop(): Promise<void>;
   /** SIGKILL (a crash): no graceful shutdown; keeps the data dir. */
@@ -21,12 +31,19 @@ export interface TestServer {
 
 /**
  * Starts the built app the way the container does (`node .output/launcher.mjs`)
- * with its own data dir, on a free port.
+ * with its own data dir, on a free port from this test worker's block (`./ports`).
  */
-export async function startServer(opts: { env?: Record<string, string>; dataDir?: string } = {}): Promise<TestServer> {
+export async function startServer(
+  opts: {
+    env?: Record<string, string>;
+    dataDir?: string;
+    /** Only for the harness's own test: a pinned port brings back the collisions the port blocks prevent. */
+    port?: number;
+  } = {},
+): Promise<TestServer> {
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), 'ppa-server-'));
-  const port = await freePort();
-  let output = '';
+  const port = opts.port ?? (await takePort());
+  const output = new LogBuffer();
 
   const child = spawn(process.execPath, [LAUNCHER], {
     env: {
@@ -39,13 +56,19 @@ export async function startServer(opts: { env?: Record<string, string>; dataDir?
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout!.on('data', (d) => (output += d));
-  child.stderr!.on('data', (d) => (output += d));
+  // Decode as a stream, so a character split across two chunks stays whole.
+  for (const stream of [child.stdout!, child.stderr!]) {
+    stream.setEncoding('utf8');
+    stream.on('data', (d: string) => output.append(d));
+  }
+  child.once('close', (code, signal) => output.close({ code, signal }));
 
   const server: TestServer = {
     url: `http://127.0.0.1:${port}`,
     dataDir,
-    logs: () => output,
+    logs: () => output.text(),
+    waitForLog: (pattern, opts) => output.waitFor(pattern, opts),
+    setupCode: () => waitForSetupCode(output),
     stop: () => stopProcess(child),
     kill: () => stopProcess(child, 'SIGKILL'),
     async dispose() {
@@ -55,10 +78,18 @@ export async function startServer(opts: { env?: Record<string, string>; dataDir?
   };
 
   try {
-    await waitForHealthy(server.url, child, () => output);
+    // Only this child's own banner proves it holds the port: /healthz could be answered by
+    // whatever else is listening there (#142).
+    const [banner] = await output.waitFor(new RegExp(`Listening on http://127\\.0\\.0\\.1:${port}(?!\\d)|EADDRINUSE`), {
+      timeoutMs: STARTUP_TIMEOUT_MS,
+    });
+    if (banner === 'EADDRINUSE') throw new Error(`EADDRINUSE, the port is taken; logs:\n${output.text()}`);
+    await waitForHealthy(server.url, child, server.logs);
   } catch (err) {
-    await server.dispose();
-    throw err;
+    await stopProcess(child);
+    // Only a data dir made here: a caller's (a restart's) holds the state it is testing.
+    if (!opts.dataDir) rmSync(dataDir, { recursive: true, force: true });
+    throw new Error(`server on port ${port} did not start: ${(err as Error).message}`, { cause: err });
   }
   return server;
 }
@@ -67,7 +98,7 @@ export async function startServer(opts: { env?: Record<string, string>; dataDir?
 export async function runToExit(env: Record<string, string>): Promise<{ code: number | null; output: string }> {
   const dataDir = mkdtempSync(join(tmpdir(), 'ppa-server-'));
   const child = spawn(process.execPath, [LAUNCHER], {
-    env: { PATH: process.env.PATH, PORT: String(await freePort()), NUXT_DATABASE_PATH: join(dataDir, 'app.db'), ...env },
+    env: { PATH: process.env.PATH, PORT: String(await takePort()), NUXT_DATABASE_PATH: join(dataDir, 'app.db'), ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -80,8 +111,10 @@ export async function runToExit(env: Record<string, string>): Promise<{ code: nu
   return { code, output };
 }
 
+const STARTUP_TIMEOUT_MS = 20_000;
+
 async function waitForHealthy(url: string, child: ChildProcess, logs: () => string) {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`server exited (${child.exitCode}) during startup:\n${logs()}`);
     try {
@@ -103,18 +136,6 @@ function stopProcess(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): P
       res();
     });
     child.kill(signal);
-  });
-}
-
-function freePort(): Promise<number> {
-  return new Promise((res, rej) => {
-    const srv = createServer();
-    srv.unref();
-    srv.on('error', rej);
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address() as { port: number };
-      srv.close(() => res(port));
-    });
   });
 }
 
@@ -141,16 +162,21 @@ export function client(baseUrl: string) {
   };
 }
 
-export function setupCodeFrom(logs: string): string {
-  const match = logs.match(/setup code:?\s*([A-Z2-9]{4}-[A-Z2-9]{4})/i);
-  if (!match) throw new Error(`no setup code in logs:\n${logs}`);
-  return match[1]!;
+const SETUP_CODE = /setup code:?\s*([A-Z2-9]{4}-[A-Z2-9]{4})/i;
+
+/** Waits for the setup code to appear in `logs` and returns it. */
+export async function waitForSetupCode(logs: Pick<LogBuffer, 'waitFor'>): Promise<string> {
+  return (await logs.waitFor(SETUP_CODE))[1]!;
 }
 
-/** The JSON log records (`NUXT_LOG_FORMAT=json`) in `logs`, skipping Nitro's plain banner. */
+/**
+ * The JSON log records (`NUXT_LOG_FORMAT=json`) in `logs`, skipping Nitro's plain banner
+ * and a last line that hasn't finished arriving.
+ */
 export function logRecords(logs: string): Record<string, unknown>[] {
   return logs
     .split('\n')
+    .slice(0, -1)
     .filter((line) => line.startsWith('{'))
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }

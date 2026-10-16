@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { BIRTHDATE, tomTdf } from '../../shared/tdf/__fixtures__/tom';
 import { localInstant } from '../../shared/time/local-time';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 import { leagueDay } from './league-day';
 
 // A tournament's TDF results upload (#96, ADR-0011) over HTTP, against the built app and the play-tools fake. The
@@ -76,7 +76,7 @@ beforeAll(async () => {
   fake = await startFakePokemon();
   server = await startServer({ env: { ...fake.env, ...ENV } });
   browser = client(server.url);
-  const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+  const setup = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
   expect(setup.status).toBe(200);
   const start = await post('/pokemon/connect/start', {});
   const state = new URL((await body<{ authorizeUrl: string }>(start)).authorizeUrl).searchParams.get('state');

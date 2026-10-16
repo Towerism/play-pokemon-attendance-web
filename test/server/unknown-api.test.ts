@@ -1,6 +1,6 @@
 import { request } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse battery' };
 
@@ -31,7 +31,7 @@ describe('unknown /api paths', () => {
   beforeAll(async () => {
     server = await startServer();
     browser = client(server.url);
-    const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+    const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
     expect(res.status).toBe(200);
   });
   afterAll(() => server.dispose());

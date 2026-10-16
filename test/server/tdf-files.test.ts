@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BIRTHDATE, tomTdf } from '../../shared/tdf/__fixtures__/tom';
-import { type TestServer, client, logRecords, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, logRecords, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const WED = '2026-10-14';
@@ -16,7 +16,7 @@ type Browser = ReturnType<typeof client>;
 
 async function setUp(server: TestServer): Promise<Browser> {
   const browser = client(server.url);
-  const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+  const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
   expect(res.status).toBe(200);
   return browser;
 }
@@ -103,6 +103,7 @@ describe('TDF archive API', () => {
       expect(res.headers.get('cache-control')).toBe('no-store');
       expect(Buffer.from(await res.arrayBuffer()).equals(Buffer.from(content, 'utf8'))).toBe(true);
 
+      await server.waitForLog(new RegExp(`"msg":"TDF file ${file!.id} downloaded"`));
       const records = logRecords(server.logs());
       expect(records.filter((r) => r.fileId === file!.id && /download/i.test(String(r.msg)))).toEqual([
         expect.objectContaining({ fileId: file!.id, by: 'organizer' }),

@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { z } from 'zod';
 import { createTokenVault } from '../fixtures/vault-v1/legacy/pokemon/vault/vault';
 import { FAKE_PLAYER_ID, type FakePokemon, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const VAULT_KEY = randomBytes(32).toString('base64');
@@ -56,7 +56,7 @@ async function bootApp(dataDir?: string): Promise<{ server: TestServer; browser:
   const server = await startServer({ env: env(), dataDir });
   const browser = client(server.url);
   if (!dataDir) {
-    const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } });
+    const res = await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } });
     expect(res.status).toBe(200);
   } else {
     expect((await browser.request('/api/auth/login', { method: 'POST', json: OWNER })).status).toBe(200);

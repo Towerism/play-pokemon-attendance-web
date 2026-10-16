@@ -19,6 +19,8 @@
     "test/e2e",
     "test/server/fake-pokemon.ts",
     "test/server/harness.ts",
+    "test/server/log-buffer.ts",
+    "test/server/ports.ts",
     "test/server/global-setup.ts",
     "test/server/league-day.ts",
     "app/utils/dates.ts",

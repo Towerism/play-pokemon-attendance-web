@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, type FakePokemon, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
-import { type TestServer, client, setupCodeFrom, startServer } from './harness';
+import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const ENV = { TZ: 'America/Chicago' };
@@ -21,7 +21,7 @@ type Browser = ReturnType<typeof client>;
 async function login(server: TestServer, setup: boolean): Promise<Browser> {
   const browser = client(server.url);
   const res = setup
-    ? await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: setupCodeFrom(server.logs()), ...OWNER } })
+    ? await browser.request('/api/auth/setup', { method: 'POST', json: { setupCode: await server.setupCode(), ...OWNER } })
     : await browser.request('/api/auth/login', { method: 'POST', json: OWNER });
   expect(res.status).toBe(200);
   return browser;
