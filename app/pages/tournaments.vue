@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { PeriodCoverage } from '../../shared/requirements/coverage';
 import type { Requirement } from '../../server/modules/tournaments/requirements';
-import type { Template, Upcoming } from '../../server/modules/tournaments/service';
+import type { Template } from '../../server/modules/tournaments/service';
 
 /**
  * Tournaments (ADR-0010 decisions 10 and 12, architecture §8, #98, #162): tabs Upcoming, Required events, Templates
@@ -15,21 +15,18 @@ const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 
-const { data: coverage, error: coverageError } = await useRequiredEvents();
-// The league's time zone and date: coverage's, else Upcoming's, never the browser's own (a venue saved with a
-// missing zone takes the league's, and short notice counts from the league's date).
-const upcoming = useNuxtData<Upcoming>(UPCOMING_KEY).data;
-const zoneFromUpcoming = ref<string | null>(null);
-watch(
-  coverageError,
-  async (err) => {
-    if (!err || upcoming.value) return;
-    zoneFromUpcoming.value = (await $fetch<Upcoming>('/api/tournaments/upcoming').catch(() => null))?.timeZone ?? null;
-  },
-  { immediate: true },
-);
-const timeZone = computed(() => coverage.value?.timeZone ?? upcoming.value?.timeZone ?? zoneFromUpcoming.value);
-const today = computed(() => coverage.value?.today ?? (timeZone.value ? todayIn(timeZone.value, new Date()) : null));
+// Every read starts now, together, and none blocks the page: each part shows what it is waiting for (#191). The
+// league's zone and date come from settings, which never waits on play-tools, never from the browser.
+const { data: coverage, error: coverageError } = useRequiredEvents();
+const { data: clock, error: clockError, refresh: refreshClock } = useLeagueClock();
+useUpcoming();
+useTournamentTemplates();
+useAllTournamentTemplates();
+useTournamentScaffolds();
+useTournamentSchedules();
+const timeZone = computed(() => clock.value?.league.timeZone ?? null);
+const today = computed(() => clock.value?.league.today ?? null);
+const clockFailed = computed(() => !!clockError.value && !clock.value);
 
 const tabs = computed(() => tournamentsTabs(badgeCount(coverage.value)));
 const tab = computed({
@@ -69,7 +66,7 @@ function templateSaved(t: Template) {
       <p class="text-sm text-muted">Plan the league's tournaments, create them in play-tools, and never miss a League Cup or League Challenge.</p>
     </div>
 
-    <RequiredEventsBanner v-if="tab !== 'required'" />
+    <RequiredEventsBanner v-if="tab !== 'required'" progress :failed="!!coverageError" />
     <div class="space-y-4">
       <UTabs v-model="tab" :items="tabs" :content="false" class="w-full">
         <template #default="{ item }">
@@ -79,21 +76,20 @@ function templateSaved(t: Template) {
           <UBadge v-if="item.badge" :label="item.badge" color="warning" variant="subtle" size="sm" aria-hidden="true" />
         </template>
       </UTabs>
-      <RequiredEventsGrid v-if="tab === 'required'" @plan="planOne" @create="(id) => (creating = { plannedIds: [id], retry: false })" />
-      <p v-else-if="!today || !timeZone" class="text-sm text-muted">Reading the league's time zone…</p>
-      <template v-else>
-        <UpcomingList
-          v-if="tab === 'upcoming'"
-          :today="today"
-          @new="planning = { templateId: null, missingFor: null }"
-          @create="(ids) => (creating = { plannedIds: ids, retry: false })"
-          @retry="(id) => (creating = { plannedIds: [id], retry: true })"
-          @edit="(id) => (editing = id)"
-          @cancel="(id) => (cancelling = id)"
-        />
-        <TemplatesTab v-else-if="tab === 'templates'" :time-zone="timeZone" :today="today" />
-        <SchedulesTab v-else :today="today" />
-      </template>
+      <RequiredEventsGrid v-if="tab === 'required'" :plan-ready="!!today" @plan="planOne" @create="(id) => (creating = { plannedIds: [id], retry: false })" />
+      <UpcomingList
+        v-else-if="tab === 'upcoming'"
+        :today="today"
+        :clock-failed="clockFailed"
+        @retry-clock="refreshClock()"
+        @new="planning = { templateId: null, missingFor: null }"
+        @create="(ids) => (creating = { plannedIds: ids, retry: false })"
+        @retry="(id) => (creating = { plannedIds: [id], retry: true })"
+        @edit="(id) => (editing = id)"
+        @cancel="(id) => (cancelling = id)"
+      />
+      <TemplatesTab v-else-if="tab === 'templates'" :time-zone="timeZone" :today="today" :clock-failed="clockFailed" />
+      <SchedulesTab v-else :today="today" :clock-failed="clockFailed" />
     </div>
 
     <template v-if="today && timeZone">
