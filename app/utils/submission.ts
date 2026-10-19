@@ -139,17 +139,32 @@ export function staffImportSummary(r: StaffImportResult): string {
 
 /** e.g. "Read 115 of 117 tournaments · 2 could not be read · 640 players found · 37 new players". */
 export function playerImportSummary(r: PlayerImportResult): string {
-  if (r.tournamentsTotal === 0) return 'No tournaments to read';
+  const notRead = r.sessionsError && `Play sessions not read: ${SESSIONS_ERRORS[r.sessionsError] ?? r.sessionsError}`;
+  if (r.tournamentsTotal === 0 && r.sessionsTotal === 0) return ['No tournaments or play sessions to read', notRead].filter(Boolean).join(' · ');
+  const tournaments = r.tournamentsTotal > 0 && `${r.tournamentsRead} of ${r.tournamentsTotal} tournaments`;
+  const sessions = r.sessionsTotal > 0 && `${r.sessionsRead} of ${r.sessionsTotal} play sessions`;
+  const failed = r.tournamentsFailed + r.sessionsFailed;
   const added = r.newPlayers.length;
   return [
-    `Read ${r.tournamentsRead} of ${r.tournamentsTotal} tournaments`,
-    r.tournamentsFailed && `${r.tournamentsFailed} could not be read`,
+    `Read ${[tournaments, sessions].filter(Boolean).join(' and ')}`,
+    failed && `${failed} could not be read`,
     `${r.playersFound} ${r.playersFound === 1 ? 'player' : 'players'} found`,
     added && `${added} new ${added === 1 ? 'player' : 'players'}`,
+    notRead,
   ]
     .filter(Boolean)
     .join(' · ');
 }
+
+/** Why a player import read none of the league's play sessions (#195), by the code on its `sessions_failed` event. */
+const SESSIONS_ERRORS: Record<string, string> = {
+  login_rejected: "play-tools rejected the login of the Pokémon account reading them. Reconnect it in Settings",
+  forbidden: "play-tools refused to show this league's play sessions",
+  needs_reconnect: 'the Pokémon account reading them needs reconnecting',
+  not_connected: "no Pokémon account in the league is connected",
+  unavailable: 'play-tools could not be reached',
+  rate_limited: 'play-tools could not be reached',
+};
 
 const STAFF_IMPORT_ERRORS: Record<string, string> = {
   forbidden: 'play-tools refused to show these tournaments. Check which Pokémon account is connected.',
@@ -163,4 +178,17 @@ const STAFF_IMPORT_ERRORS: Record<string, string> = {
 /** Why a staff import stopped: its upstream code in words; any other message as it is. */
 export function staffImportErrorText(error: string): string {
   return STAFF_IMPORT_ERRORS[error] ?? error;
+}
+
+/** Why a player import read nothing: it reads play sessions too (#195), so the words never blame tournaments alone. */
+const PLAYER_IMPORT_ERRORS: Record<string, string> = {
+  not_found: 'Nothing could be read.',
+  unexpected_shape: 'Nothing could be read.',
+  forbidden: 'play-tools refused the request. Check which Pokémon account is connected.',
+  login_rejected: "play-tools rejected the Pokémon account's login. Reconnect it in Settings, then retry.",
+};
+
+/** Why a player import stopped: its own words where the staff import's would mislead, else the staff import's. */
+export function playerImportErrorText(error: string): string {
+  return PLAYER_IMPORT_ERRORS[error] ?? staffImportErrorText(error);
 }

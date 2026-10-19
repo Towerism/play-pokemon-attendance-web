@@ -13,6 +13,10 @@ const LISTENED: Record<SubmissionEventType, true> = {
   tournament_read: true,
   tournament_failed: true,
   professor_failed: true,
+  sessions_planned: true,
+  session_read: true,
+  session_failed: true,
+  sessions_failed: true,
   tournament_sent: true,
 };
 const TYPES = Object.keys(LISTENED) as SubmissionEventType[];

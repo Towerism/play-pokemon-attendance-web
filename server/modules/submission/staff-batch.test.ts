@@ -35,6 +35,7 @@ const noResolver: PlaySessionResolver = {
   find: () => Promise.reject(new Error('a staff batch never resolves play sessions')),
 };
 const noAttendance = {
+  listPlaySessions: () => Promise.reject(new Error('this job never lists play sessions')),
   listAttendance: () => Promise.reject(new Error('a staff batch never reads attendance')),
   addAttendanceBulk: () => Promise.reject(new Error('a staff batch never adds attendance')),
   removeAttendance: () => Promise.reject(new Error('a staff batch never removes attendance')),

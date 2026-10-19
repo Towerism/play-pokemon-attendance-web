@@ -1,13 +1,15 @@
 import { fakeRecord, fakeTournament } from '../server/fake-pokemon';
-import { STAFF_ID, expect, test } from './fixtures';
+import { STAFF_ID, expect, playSession, test } from './fixtures';
 
 // Settings → Player list → Import players from play-tools (#35): the same
-// read-only tournament import as the staff import, keeping the players. The
-// card follows the job live, then shows what it found, the new players behind
-// a disclosure, and the way to History.
+// read-only tournament import as the staff import, keeping the players, plus
+// the league's past play sessions (#195). The card follows the job live, then
+// shows what it found, the new players behind a disclosure, and the way to
+// History.
 
 const PAT = '6000031';
 const QUINN = '6000032';
+const RILEY = '6000033';
 
 test('Import players is unavailable until a Pokémon account is connected, and says why', async ({ page, api }) => {
   expect(api).toBeTruthy();
@@ -30,6 +32,9 @@ test('importing players shows progress, then what it found, the new players, and
     fakeRecord(PAT, { first: 'Pat', last: 'Player' }),
   ]);
   fake.tournamentRecords.set('last-month', [fakeRecord(STAFF_ID, { role: 'organizer' }), fakeRecord(QUINN, { first: 'Quinn', last: 'Quick' })]);
+  // A past play session: its creator's hidden organizer record is staff, so only Riley is added.
+  fake.playSessions = [playSession('last-week', '2026-10-07T23:00:00Z')];
+  fake.records.set('last-week', [fakeRecord(STAFF_ID, { role: 'organizer' }), fakeRecord(RILEY, { first: 'Riley', last: 'Regular' })]);
   // Slow enough to see the job running.
   fake.tournamentReadDelayMs = 400;
 
@@ -40,21 +45,21 @@ test('importing players shows progress, then what it found, the new players, and
   await button.click();
 
   await expect(button).toBeDisabled();
-  await expect(card.getByText(/Read [01] of 2 tournaments|Starting…/)).toBeVisible();
+  await expect(card.getByText(/Read [0-2] of 3 tournaments and play sessions|Starting…/)).toBeVisible();
 
-  await expect(card).toContainText('Read 2 of 2 tournaments · 2 players found · 2 new players', { timeout: 15_000 });
+  await expect(card).toContainText('Read 2 of 2 tournaments and 1 of 1 play sessions · 3 players found · 3 new players', { timeout: 15_000 });
   await expect(card.getByText('Done')).toBeVisible();
   // The new players wait behind a disclosure.
   const players = card.getByRole('listitem');
   await expect(players.first()).toBeHidden();
-  await card.getByText('Show the 2 new players').click();
-  await expect(players).toHaveText([`Pat Player · ${PAT}`, `Quinn Quick · ${QUINN}`]);
+  await card.getByText('Show the 3 new players').click();
+  await expect(players).toHaveText([`Pat Player · ${PAT}`, `Quinn Quick · ${QUINN}`, `Riley Regular · ${RILEY}`]);
   await expect(card).not.toContainText('Jo Judge');
   await expect(button).toBeEnabled();
 
   await card.getByRole('link', { name: 'See it in History' }).click();
   await expect(page).toHaveURL(/\/history\/\d+$/);
-  await expect(page.getByText('Read 2 of 2 tournaments · 2 players found · 2 new players')).toBeVisible();
+  await expect(page.getByText('Read 2 of 2 tournaments and 1 of 1 play sessions · 3 players found · 3 new players')).toBeVisible();
   await expect(page.getByText("A player import can't be undone.")).toBeVisible();
 
   await page.goto('/history');
@@ -83,7 +88,7 @@ test.describe('on a phone (360 px)', () => {
     await expect(live).toHaveCount(1);
 
     await card.getByRole('button', { name: 'Import players from play-tools' }).click();
-    await expect(live).toContainText(/Read 0 of 1 tournaments|Starting…/);
+    await expect(live).toContainText(/Read 0 of 1 tournaments and play sessions|Starting…/);
     await expect(live).toContainText('Read 1 of 1 tournaments · 1 player found · 1 new player', { timeout: 15_000 });
     await card.getByText('Show the 1 new player').click();
 

@@ -169,7 +169,13 @@ async function retry() {
         color="error"
         variant="subtle"
         icon="i-lucide-circle-alert"
-        :title="submission.kind === 'staff_import' || submission.kind === 'player_import' ? staffImportErrorText(submission.error) : submission.error"
+        :title="
+          submission.kind === 'player_import'
+            ? playerImportErrorText(submission.error)
+            : submission.kind === 'staff_import'
+              ? staffImportErrorText(submission.error)
+              : submission.error
+        "
       />
       <p v-if="submission.kind === 'submit'" class="text-xs text-muted">Retrying is always safe: it asks play-tools who is still missing and sends only them.</p>
 

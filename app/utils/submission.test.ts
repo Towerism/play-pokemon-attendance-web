@@ -6,6 +6,7 @@ import {
   clearConfirmed,
   historyLabel,
   isSubmissionActive,
+  playerImportErrorText,
   playerImportSummary,
   progressPercent,
   staffImportErrorText,
@@ -229,7 +230,8 @@ describe('staff jobs in History', () => {
 });
 
 describe('a player import in History and Settings', () => {
-  const result = { tournamentsTotal: 117, tournamentsRead: 117, tournamentsFailed: 0, playersFound: 640, newPlayers: [] };
+  const none = { sessionsTotal: 0, sessionsRead: 0, sessionsFailed: 0, sessionsError: null };
+  const result = { tournamentsTotal: 117, tournamentsRead: 117, tournamentsFailed: 0, ...none, playersFound: 640, newPlayers: [] };
 
   it('is labelled "Player import" in the history list, reads while running, and cannot be undone', () => {
     expect(historyLabel({ kind: 'player_import', undoOf: null, playSessionLabel: 'Player import' })).toBe('Player import');
@@ -246,8 +248,49 @@ describe('a player import in History and Settings', () => {
     expect(playerImportSummary({ ...result, newPlayers: [...one, { playerId: '2' as PlayerId, name: '' }] })).toBe(
       'Read 117 of 117 tournaments · 640 players found · 2 new players',
     );
-    expect(playerImportSummary({ tournamentsTotal: 0, tournamentsRead: 0, tournamentsFailed: 0, playersFound: 0, newPlayers: [] })).toBe(
-      'No tournaments to read',
+    expect(playerImportSummary({ ...result, tournamentsTotal: 0, tournamentsRead: 0, playersFound: 0 })).toBe('No tournaments or play sessions to read');
+  });
+
+  it("adds the league's play sessions it read, counting what it could not read together", () => {
+    const two = [
+      { playerId: '1' as PlayerId, name: 'Pat Player' },
+      { playerId: '2' as PlayerId, name: 'Quinn Quick' },
+    ];
+    expect(
+      playerImportSummary({ ...result, tournamentsTotal: 2, tournamentsRead: 2, sessionsTotal: 4, sessionsRead: 3, sessionsFailed: 1, playersFound: 5, newPlayers: two }),
+    ).toBe('Read 2 of 2 tournaments and 3 of 4 play sessions · 1 could not be read · 5 players found · 2 new players');
+    expect(playerImportSummary({ ...result, tournamentsTotal: 2, tournamentsRead: 2, playersFound: 3 })).toBe('Read 2 of 2 tournaments · 3 players found');
+    expect(playerImportSummary({ ...result, tournamentsTotal: 0, tournamentsRead: 0, sessionsTotal: 3, sessionsRead: 3, playersFound: 4 })).toBe(
+      'Read 3 of 3 play sessions · 4 players found',
     );
+  });
+
+  it('says why no play session was read', () => {
+    const tournamentsOnly = { ...result, tournamentsTotal: 2, tournamentsRead: 2, playersFound: 3 };
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'needs_reconnect' })).toBe(
+      'Read 2 of 2 tournaments · 3 players found · Play sessions not read: the Pokémon account reading them needs reconnecting',
+    );
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'login_rejected' })).toContain(
+      "Play sessions not read: play-tools rejected the login of the Pokémon account reading them. Reconnect it in Settings",
+    );
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'forbidden' })).toContain("Play sessions not read: play-tools refused to show this league's play sessions");
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'not_connected' })).toContain("Play sessions not read: no Pokémon account in the league is connected");
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'unavailable' })).toContain('Play sessions not read: play-tools could not be reached');
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'rate_limited' })).toContain('Play sessions not read: play-tools could not be reached');
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'league_not_selected' })).toContain('Play sessions not read: league_not_selected');
+    expect(playerImportSummary({ ...result, tournamentsTotal: 0, tournamentsRead: 0, playersFound: 0, sessionsError: 'unavailable' })).toBe(
+      'No tournaments or play sessions to read · Play sessions not read: play-tools could not be reached',
+    );
+  });
+
+  it("explains why a player import read nothing, without blaming tournaments, and leaves the staff import's words alone", () => {
+    expect(playerImportErrorText('not_found')).toBe('Nothing could be read.');
+    expect(playerImportErrorText('unexpected_shape')).toBe('Nothing could be read.');
+    expect(playerImportErrorText('forbidden')).toBe('play-tools refused the request. Check which Pokémon account is connected.');
+    expect(playerImportErrorText('login_rejected')).toBe("play-tools rejected the Pokémon account's login. Reconnect it in Settings, then retry.");
+    expect(staffImportErrorText('forbidden')).toBe('play-tools refused to show these tournaments. Check which Pokémon account is connected.');
+    expect(playerImportErrorText('needs_reconnect')).toBe(staffImportErrorText('needs_reconnect'));
+    expect(playerImportErrorText('Something else.')).toBe('Something else.');
+    expect(staffImportErrorText('not_found')).toBe('No tournament could be read.');
   });
 });
