@@ -1,4 +1,3 @@
-import type { ConnectionView } from '../../server/modules/pokemon/connection';
 import type {
   ClearPreview,
   PlayerImportResult,
@@ -159,21 +158,13 @@ export function playerImportSummary(r: PlayerImportResult): string {
 
 /** Why a player import read none of the league's play sessions (#195), by the code on its `sessions_failed` event. */
 const SESSIONS_ERRORS: Record<string, string> = {
-  login_rejected: "play-tools rejected the submitting professor's login. Reconnect them in Settings",
+  login_rejected: "play-tools rejected the login of the Pokémon account reading them. Reconnect it in Settings",
   forbidden: "play-tools refused to show this league's play sessions",
-  needs_reconnect: 'the submitting professor needs reconnecting',
-  not_connected: "the league's Pokémon account isn't connected",
+  needs_reconnect: 'the Pokémon account reading them needs reconnecting',
+  not_connected: "no Pokémon account in the league is connected",
   unavailable: 'play-tools could not be reached',
   rate_limited: 'play-tools could not be reached',
 };
-
-/** Why Import staff (or players) from play-tools can't start; null when it can. */
-export function staffImportBlocked(c: Pick<ConnectionView, 'status' | 'league'> | null | undefined): string | null {
-  if (!c || c.status === 'not_connected') return 'Connect a Pokémon account first.';
-  if (c.status === 'needs_reconnect') return 'Reconnect the Pokémon account first.';
-  if (!c.league) return 'Choose the league first.';
-  return null;
-}
 
 const STAFF_IMPORT_ERRORS: Record<string, string> = {
   forbidden: 'play-tools refused to show these tournaments. Check which Pokémon account is connected.',
@@ -194,7 +185,7 @@ const PLAYER_IMPORT_ERRORS: Record<string, string> = {
   not_found: 'Nothing could be read.',
   unexpected_shape: 'Nothing could be read.',
   forbidden: 'play-tools refused the request. Check which Pokémon account is connected.',
-  login_rejected: "play-tools rejected the submitting professor's login. Reconnect them in Settings, then retry.",
+  login_rejected: "play-tools rejected the Pokémon account's login. Reconnect it in Settings, then retry.",
 };
 
 /** Why a player import stopped: its own words where the staff import's would mislead, else the staff import's. */

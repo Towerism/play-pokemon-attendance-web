@@ -4,11 +4,13 @@ import { createPtcOAuthClient } from '../modules/pokemon/adapters/ptc-oauth/clie
 import {
   ConnectError,
   type ConnectErrorCode,
+  ConnectionAccessError,
+  type ConnectionAccessCode,
   ConnectionNotFoundError,
-  type ConnectionView,
   LeagueNotFoundError,
   type PokemonConnectionService,
   type ProfessorConnection,
+  type UpstreamLeague,
   createPokemonConnectionService,
 } from '../modules/pokemon/connection';
 import { PokemonUpstreamError } from '../modules/pokemon/ports/errors';
@@ -26,18 +28,24 @@ export function usePokemon(): PokemonConnectionService {
       oauth: createPtcOAuthClient({ baseUrl: config.pokemon.accessUrl }),
       gateway: (tokens, connectionId) =>
         createPlayToolsHttpAdapter({ tokens, connectionId, baseUrl: config.pokemon.apiUrl, log: useLogger('pokemon') }),
+      accounts: {
+        actor: (id) => useAccounts().actor(id),
+        clearReverify: (id) => useAccounts().clearReverify(id),
+        seatsUsed: () => useInvites().seatsUsed(),
+        boundPlayerId: (id) => useInvites().boundPlayerId(id),
+      },
+      // Leases end inside the connection service's own transactions; their notices are sent after (ADR-0015 §5).
+      leases: { store: useLeaseStore(), ended: (rows) => useLeases().notifyEnded(rows) },
       log: useLogger('pokemon'),
     });
   }
   return pokemon;
 }
 
-/** The play-tools gateway as the league's submitting professor, for attendance; every call fails `not_connected` while none is chosen. */
-export function leagueGateway(leagueId: string) {
-  return connectionGateway(usePokemon().getStatus(leagueId).connectionId);
-}
-
-/** The play-tools gateway as one professor's connection: tournaments are read and staffed as their organizer (#75). */
+/**
+ * The play-tools gateway as one professor's connection: attendance goes in as whoever submits (ADR-0015 §4), and
+ * tournaments are read and staffed as their organizer (#75).
+ */
 export function connectionGateway(connectionId: number | null) {
   return createPlayToolsHttpAdapter({
     tokens: usePokemon(),
@@ -47,25 +55,18 @@ export function connectionGateway(connectionId: number | null) {
   });
 }
 
-/** A connection as the API returns it: no internal id, never a token. */
-export function connectionJson({ id: _id, ...connection }: ProfessorConnection) {
+/** A connection as the API returns it: no internal id, no holder's user id, never a token. */
+export function connectionJson({ id: _id, userId: _user, ...connection }: ProfessorConnection) {
   return connection;
 }
 
-/** The league's binding as the API returns it: who submits for it, and where to. */
-export function leagueBindingJson(view: ConnectionView) {
-  if (!view.league) return null;
-  return {
-    professorPlayerId: view.professor?.playerId ?? null,
-    activityGroupId: view.league.id,
-    displayName: view.league.name,
-    displayId: view.league.displayId,
-    canSubmit: view.league.canSubmit,
-  };
+/** The league's activity group as the API returns it (ADR-0015 §3): it names no connection. */
+export function leagueJson(league: UpstreamLeague | null) {
+  return league && { activityGroupId: league.id, displayName: league.name, displayId: league.displayId };
 }
 
 export function upstreamLeagueJson(league: League) {
-  return { activityGroupId: league.id, displayName: league.name, displayId: league.displayId, canSubmit: league.canSubmit };
+  return { activityGroupId: league.id, displayName: league.name, displayId: league.displayId };
 }
 
 const CONNECT_STATUS: Record<ConnectErrorCode, number> = {
@@ -74,12 +75,25 @@ const CONNECT_STATUS: Record<ConnectErrorCode, number> = {
   expired: 400,
   code_rejected: 400,
   connection_limit: 409,
+  connection_held: 409,
+  one_connection_only: 409,
+  invite_player_mismatch: 409,
   profile_unavailable: 502,
   upstream_unavailable: 502,
 };
 
+const ACCESS_STATUS: Record<ConnectionAccessCode, number> = {
+  organizer_not_connected: 409,
+  needs_reconnect: 409,
+  not_your_connection: 403,
+  reverify_required: 403,
+};
+
 /** Maps pokemon-module errors to HTTP; `data.code` tells the UI what to show. Anything else is rethrown. */
 export function pokemonHttpError(err: unknown): never {
+  if (err instanceof ConnectionAccessError) {
+    throw createError({ statusCode: ACCESS_STATUS[err.code], message: err.message, data: { code: err.code, professorPlayerId: err.professorPlayerId } });
+  }
   if (err instanceof ConnectError) throw createError({ statusCode: CONNECT_STATUS[err.code], message: err.message, data: { code: err.code } });
   if (err instanceof ConnectionNotFoundError) throw createError({ statusCode: 404, message: err.message, data: { code: 'connection_not_found' } });
   if (err instanceof LeagueNotFoundError) throw createError({ statusCode: 404, message: err.message, data: { code: 'league_not_found' } });

@@ -4,14 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { s256Challenge } from './adapters/ptc-oauth/pkce';
+import type { Actor } from '../accounts/service';
 import {
   ConnectError,
+  ConnectionAccessError,
   ConnectionNotFoundError,
   LeagueNotFoundError,
   type PokemonConnectionService,
   connectionAad,
   createPokemonConnectionService,
 } from './connection';
+import { type EndedLease, createLeaseStore } from './leases';
 import { PokemonUpstreamError } from './ports/errors';
 import type { League } from './ports/play-tools-gateway';
 import type { PtcOAuthClient, TokenGrant } from './ports/ptc-oauth';
@@ -22,7 +25,11 @@ import { tokenVault } from '../../bootstrap/vaults';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const MIN = 60_000;
 const HOUR = 60 * MIN;
-const USER = 1;
+const OWNER: Actor = { userId: 1, username: 'organizer', role: 'owner' };
+const MISTY: Actor = { userId: 2, username: 'misty', role: 'professor' };
+const GARY: Actor = { userId: 3, username: 'gary', role: 'professor' };
+const ACTORS = new Map([OWNER, MISTY, GARY].map((a) => [a.userId, a]));
+const USER = OWNER.userId;
 
 const STORE: League = { id: 'group-1', name: 'Card Shop', displayId: 'L5012', canSubmit: true };
 const OTHER_STORE: League = { id: 'group-2', name: 'Game Den', displayId: 'L7000', canSubmit: true };
@@ -45,8 +52,17 @@ let professors: Map<string, Professor>;
 let profileError: Error | undefined;
 let profileCalls: string[];
 let leagueCalls: string[];
+let leaguesInFlight: number;
+let mostLeaguesInFlight: number;
 let service: PokemonConnectionService;
-let log: { warn: ReturnType<typeof vi.fn> };
+let log: { warn: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+/** Seats taken besides the owner's connections: active professors and open invites (the accounts module counts them). */
+let otherSeats: number;
+/** The player ID each professor's invite binds them to. */
+let bound: Map<number, string>;
+let reverifyCleared: number[];
+/** Leases the connection service ended, in the order their notices were handed over. */
+let ended: EndedLease[];
 
 /** Hydra as a fake: one rotating chain per account (by `sub`), tracking which refresh token belongs to whom. */
 class FakeOAuth implements PtcOAuthClient {
@@ -113,8 +129,16 @@ function build(): PokemonConnectionService {
         async listLeagues() {
           const p = await who();
           leagueCalls.push(p.playerId);
-          if (p.leagues instanceof Error) throw p.leagues;
-          return p.leagues;
+          leaguesInFlight += 1;
+          mostLeaguesInFlight = Math.max(mostLeaguesInFlight, leaguesInFlight);
+          try {
+            // A macrotask, so reads started together would overlap here.
+            await new Promise((r) => setTimeout(r, 0));
+            if (p.leagues instanceof Error) throw p.leagues;
+            return p.leagues;
+          } finally {
+            leaguesInFlight -= 1;
+          }
         },
         async getProfessorProfile() {
           const p = await who();
@@ -124,6 +148,13 @@ function build(): PokemonConnectionService {
         },
       };
     },
+    accounts: {
+      actor: (id: number) => ACTORS.get(id) ?? null,
+      seatsUsed: () => service.ownerConnectionCount() + otherSeats,
+      boundPlayerId: (id: number) => bound.get(id) ?? null,
+      clearReverify: (id: number) => reverifyCleared.push(id),
+    },
+    leases: { store: createLeaseStore({ db: database.db, now: () => clock }), ended: (rows: readonly EndedLease[]) => ended.push(...rows) },
     now: () => clock,
     log,
   });
@@ -148,16 +179,19 @@ const storedRefreshToken = (playerId: string) => {
   const r = rowOf(playerId)!;
   return vault.decrypt(r.refresh_token_ciphertext, connectionAad(r.id));
 };
-const binding = () =>
-  database.sqlite.prepare('select * from league_upstream where league_id = ?').get(L) as { connection_id: number; activity_group_id: string } | undefined;
+const binding = () => database.sqlite.prepare('select * from league_upstream where league_id = ?').get(L) as { activity_group_id: string } | undefined;
+const membershipOf = (p: Professor) =>
+  database.sqlite.prepare('select status, can_submit, checked_at from league_membership where connection_id = ?').get(idOf(p)) as
+    | { status: string; can_submit: number; checked_at: number | null }
+    | undefined;
 const idOf = (p: Professor) => rowOf(p.playerId)!.id;
 
 /** Runs the whole connect flow the way the Settings page does, logging into `as`. */
-async function connect(as: Professor = ASH, svc = service, userId = USER) {
+async function connect(as: Professor = ASH, svc = service, actor = OWNER) {
   oauth.subject = as.sub;
-  const { authorizeUrl } = svc.startConnect(userId);
+  const { authorizeUrl } = svc.startConnect(actor.userId);
   const state = new URL(authorizeUrl).searchParams.get('state');
-  return svc.completeConnect(L, userId, `https://play-tools.pokemon.com/loggedIn?code=code-${state}&state=${state}&scope=openid`);
+  return svc.completeConnect(L, actor, `https://play-tools.pokemon.com/loggedIn?code=code-${state}&state=${state}&scope=openid`);
 }
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -172,6 +206,9 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 beforeEach(() => {
   database = openDatabase(':memory:');
   migrateDatabase(database.db, MIGRATIONS_DIR);
+  for (const a of ACTORS.values()) {
+    database.sqlite.prepare('insert into app_user (id, username, password_hash, role, created_at) values (?, ?, ?, ?, 1)').run(a.userId, a.username, 'h', a.role);
+  }
   vault = tokenVault(randomBytes(32).toString('base64'));
   clock = new Date('2026-10-14T22:00:00Z');
   oauth = new FakeOAuth();
@@ -179,41 +216,31 @@ beforeEach(() => {
   profileError = undefined;
   profileCalls = [];
   leagueCalls = [];
-  log = { warn: vi.fn() };
+  leaguesInFlight = 0;
+  mostLeaguesInFlight = 0;
+  log = { warn: vi.fn(), info: vi.fn() };
+  otherSeats = 0;
+  bound = new Map();
+  reverifyCleared = [];
+  ended = [];
   service = build();
 });
 afterEach(() => database.close());
 
-describe('getStatus (the league view submission and staffing read)', () => {
-  it('is not_connected before anyone connects', () => {
-    expect(service.getStatus(L)).toEqual({
-      status: 'not_connected',
-      reason: null,
-      connectedAt: null,
-      lastRefreshedAt: null,
-      league: null,
-      connectionId: null,
-      professor: null,
-    });
+describe("league (the league's activity group, naming no connection)", () => {
+  it('is null before a league is chosen', () => {
+    expect(service.league(L)).toBeNull();
   });
 
-  it("describes the league's submitting professor and their league", async () => {
+  it('is the chosen activity group, without any permission of its own', async () => {
     await connect(ASH);
-    expect(service.getStatus(L)).toEqual({
-      status: 'connected',
-      reason: null,
-      connectedAt: clock,
-      lastRefreshedAt: clock,
-      league: STORE,
-      connectionId: idOf(ASH),
-      professor: { playerId: '0012345', name: null },
-    });
+    expect(service.league(L)).toEqual({ id: STORE.id, name: STORE.name, displayId: STORE.displayId });
   });
 
-  it('is connected with no league while professors are connected but none submits for the league', async () => {
-    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
+  it('stays chosen when every connection is disconnected', async () => {
     await connect(ASH);
-    expect(service.getStatus(L)).toMatchObject({ status: 'connected', league: null, connectionId: null, professor: null });
+    await service.disconnect(L, OWNER, ASH.playerId);
+    expect(service.league(L)).toEqual({ id: STORE.id, name: STORE.name, displayId: STORE.displayId });
   });
 });
 
@@ -229,7 +256,7 @@ describe('connect flow (§4.1, paste-back)', () => {
     const { authorizeUrl } = service.startConnect(USER);
     const params = new URL(authorizeUrl).searchParams;
 
-    const result = await service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=abc&state=${params.get('state')}`);
+    const result = await service.completeConnect(L, OWNER, `https://play-tools.pokemon.com/loggedIn?code=abc&state=${params.get('state')}`);
 
     expect(oauth.exchanges).toHaveLength(1);
     expect(oauth.exchanges[0]!.code).toBe('abc');
@@ -245,7 +272,10 @@ describe('connect flow (§4.1, paste-back)', () => {
         reason: null,
         connectedAt: clock,
         lastRefreshedAt: clock,
-        submitsForLeague: true,
+        userId: OWNER.userId,
+        mine: true,
+        membership: 'member',
+        canSubmit: true,
       },
     });
     expect(rowOf('0012345')).toMatchObject({ ptc_user_id: ASH.sub, professor_name: null });
@@ -275,9 +305,9 @@ describe('connect flow (§4.1, paste-back)', () => {
     expect(JSON.stringify(await connect())).not.toMatch(/ory_rt|access-/);
   });
 
-  it('leaves the league unchosen when the professor has several leagues', async () => {
+  it('leaves the league unchosen when the professor has several leagues, and the connection unknown', async () => {
     professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
-    expect((await connect()).connection.submitsForLeague).toBe(false);
+    expect((await connect()).connection).toMatchObject({ membership: 'unknown', canSubmit: false });
     expect(binding()).toBeUndefined();
   });
 
@@ -297,14 +327,14 @@ describe('connect flow (§4.1, paste-back)', () => {
     ['a login error', 'https://play-tools.pokemon.com/loggedIn?error=access_denied'],
   ])('refuses %s with invalid_url', async (_label, pasted) => {
     service.startConnect(USER);
-    const err = await rejection(service.completeConnect(L, USER, pasted));
+    const err = await rejection(service.completeConnect(L, OWNER, pasted));
     expect((err as ConnectError).code).toBe('invalid_url');
     expect(oauth.exchanges).toEqual([]);
   });
 
   it('refuses a state it never issued', async () => {
     service.startConnect(USER);
-    const err = await rejection(service.completeConnect(L, USER, 'https://play-tools.pokemon.com/loggedIn?code=a&state=forged'));
+    const err = await rejection(service.completeConnect(L, OWNER, 'https://play-tools.pokemon.com/loggedIn?code=a&state=forged'));
     expect((err as ConnectError).code).toBe('unknown_attempt');
     expect(oauth.exchanges).toEqual([]);
   });
@@ -312,7 +342,7 @@ describe('connect flow (§4.1, paste-back)', () => {
   it("refuses a state started by another app user (bound to the starter's session)", async () => {
     const { authorizeUrl } = service.startConnect(USER);
     const state = new URL(authorizeUrl).searchParams.get('state');
-    const err = await rejection(service.completeConnect(L, 2, `https://play-tools.pokemon.com/loggedIn?code=a&state=${state}`));
+    const err = await rejection(service.completeConnect(L, MISTY, `https://play-tools.pokemon.com/loggedIn?code=a&state=${state}`));
     expect((err as ConnectError).code).toBe('unknown_attempt');
     expect(oauth.exchanges).toEqual([]);
   });
@@ -320,9 +350,9 @@ describe('connect flow (§4.1, paste-back)', () => {
   it('uses each attempt once: a replayed paste creates no second connection', async () => {
     const { authorizeUrl } = service.startConnect(USER);
     const pasted = `https://play-tools.pokemon.com/loggedIn?code=a&state=${new URL(authorizeUrl).searchParams.get('state')}`;
-    await service.completeConnect(L, USER, pasted);
+    await service.completeConnect(L, OWNER, pasted);
 
-    const err = await rejection(service.completeConnect(L, USER, pasted));
+    const err = await rejection(service.completeConnect(L, OWNER, pasted));
     expect((err as ConnectError).code).toBe('unknown_attempt');
     expect(oauth.exchanges).toHaveLength(1);
     expect(rows()).toHaveLength(1);
@@ -332,19 +362,19 @@ describe('connect flow (§4.1, paste-back)', () => {
     const { authorizeUrl } = service.startConnect(USER);
     const pasted = `https://play-tools.pokemon.com/loggedIn?code=a&state=${new URL(authorizeUrl).searchParams.get('state')}`;
     oauth.nextError = new PokemonUpstreamError('unavailable', 'down');
-    await rejection(service.completeConnect(L, USER, pasted));
-    expect(((await rejection(service.completeConnect(L, USER, pasted))) as ConnectError).code).toBe('unknown_attempt');
+    await rejection(service.completeConnect(L, OWNER, pasted));
+    expect(((await rejection(service.completeConnect(L, OWNER, pasted))) as ConnectError).code).toBe('unknown_attempt');
   });
 
   it('expires an attempt after 10 minutes, and accepts one at exactly 10', async () => {
     const late = new URL(service.startConnect(USER).authorizeUrl).searchParams.get('state');
     advance(10 * MIN + 1);
-    const err = await rejection(service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${late}`));
+    const err = await rejection(service.completeConnect(L, OWNER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${late}`));
     expect((err as ConnectError).code).toBe('expired');
 
     const onTime = new URL(service.startConnect(USER).authorizeUrl).searchParams.get('state');
     advance(10 * MIN);
-    await expect(service.completeConnect(L, USER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${onTime}`)).resolves.toMatchObject({
+    await expect(service.completeConnect(L, OWNER, `https://play-tools.pokemon.com/loggedIn?code=a&state=${onTime}`)).resolves.toMatchObject({
       outcome: 'added',
     });
   });
@@ -370,10 +400,10 @@ describe('several professors', () => {
     const { outcome, connection } = await connect(BROCK);
 
     expect(outcome).toBe('added');
-    expect(connection).toMatchObject({ professorPlayerId: '222', submitsForLeague: false });
+    expect(connection).toMatchObject({ professorPlayerId: '222', membership: 'outside', canSubmit: false });
     expect(rows()).toHaveLength(2);
     expect(rowOf(ASH.playerId)).toEqual(before);
-    expect(binding()!.connection_id).toBe(idOf(ASH));
+    expect(binding()!.activity_group_id).toBe(STORE.id);
   });
 
   it('reconnecting a professor replaces their token, clears needs_reconnect and keeps the league', async () => {
@@ -381,20 +411,21 @@ describe('several professors', () => {
     oauth.nextError = new PokemonUpstreamError('needs_reconnect', 'revoked');
     advance(HOUR);
     await rejection(service.getAccessToken(idOf(ASH)));
-    expect(service.getStatus(L).status).toBe('needs_reconnect');
+    expect(rowOf(ASH.playerId)!.status).toBe('needs_reconnect');
 
     professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE]; // would leave a fresh connection unchosen
     const { outcome, connection } = await connect(ASH);
 
     expect(outcome).toBe('reconnected');
-    expect(connection).toMatchObject({ status: 'connected', reason: null, submitsForLeague: true });
+    expect(connection).toMatchObject({ status: 'connected', reason: null, membership: 'member' });
+    expect(binding()!.activity_group_id).toBe(STORE.id);
     expect(rows()).toHaveLength(1);
     expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_2');
   });
 
   it("keeps the organizer's display name across a reconnect", async () => {
     await connect(ASH);
-    service.renameProfessor(L, ASH.playerId, { name: 'Ash K.' });
+    service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash K.' });
     await connect(ASH);
     expect(rowOf(ASH.playerId)!.professor_name).toBe('Ash K.');
   });
@@ -402,22 +433,22 @@ describe('several professors', () => {
   it("keeps the professor's full name across a reconnect, and never takes one from Pokémon", async () => {
     await connect(ASH);
     expect(rowOf(ASH.playerId)!.professor_full_name).toBeNull();
-    service.renameProfessor(L, ASH.playerId, { fullName: 'Ash Ketchum' });
+    service.renameProfessor(L, OWNER, ASH.playerId, { fullName: 'Ash Ketchum' });
     await connect(ASH);
     expect(rowOf(ASH.playerId)!.professor_full_name).toBe('Ash Ketchum');
   });
 
-  it('lists the connections sorted by display name, unnamed ones by player id, marking the one that submits for the league', async () => {
+  it('lists the connections sorted by display name, unnamed ones by player id, with each one’s membership', async () => {
     await connect(BROCK);
     await connect(ASH);
     professors.set('sub-misty', { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [] });
     await connect(professors.get('sub-misty')!);
-    service.renameProfessor(L, BROCK.playerId, { name: 'Brock Harrison' });
-    service.renameProfessor(L, ASH.playerId, { name: 'Ash Ketchum' });
-    expect(service.listConnections(L).map((c) => [c.professorName ?? c.professorPlayerId, c.submitsForLeague])).toEqual([
-      ['Ash Ketchum', false],
-      ['Brock Harrison', true],
-      ['0000444', false],
+    service.renameProfessor(L, OWNER, BROCK.playerId, { name: 'Brock Harrison' });
+    service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash Ketchum' });
+    expect(service.listConnections(L, OWNER).map((c) => [c.professorName ?? c.professorPlayerId, c.membership])).toEqual([
+      ['Ash Ketchum', 'outside'],
+      ['Brock Harrison', 'member'],
+      ['0000444', 'outside'],
     ]);
   });
 
@@ -558,7 +589,7 @@ describe('getAccessToken (TokenProvider contract, per connection)', () => {
     vault = tokenVault(randomBytes(32).toString('base64'));
     const restarted = build();
     expect(((await rejection(restarted.getAccessToken(idOf(ASH)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
-    expect(restarted.getStatus(L)).toMatchObject({ status: 'needs_reconnect', reason: expect.stringMatching(/key/) });
+    expect(rowOf(ASH.playerId)).toMatchObject({ status: 'needs_reconnect', status_reason: expect.stringMatching(/key/) });
   });
 
   it('passes a transient failure through, stays connected, and tries again next call', async () => {
@@ -566,7 +597,7 @@ describe('getAccessToken (TokenProvider contract, per connection)', () => {
     advance(HOUR);
     oauth.nextError = new PokemonUpstreamError('unavailable', 'down');
     expect(((await rejection(service.getAccessToken(idOf(ASH)))) as PokemonUpstreamError).code).toBe('unavailable');
-    expect(service.getStatus(L).status).toBe('connected');
+    expect(rowOf(ASH.playerId)!.status).toBe('connected');
     expect((await service.getAccessToken(idOf(ASH))).value).toBe('access-2');
   });
 
@@ -655,48 +686,39 @@ describe('keepAliveAll (hourly task)', () => {
   });
 });
 
-describe('league binding', () => {
+describe('the league picker (owner only: the leagues of their own connections)', () => {
   const THIRD: League = { id: 'group-3', name: 'Pewter Gym', displayId: 'L7100', canSubmit: true };
   const markNeedsReconnect = (p: Professor) =>
     database.sqlite.prepare("update pokemon_connection set status = 'needs_reconnect' where professor_player_id = ?").run(p.playerId);
 
-  it("lists the leagues every connected professor shares, as the named professor sees them, and which is chosen", async () => {
+  it("offers every league of the owner's connections once, never a professor's, and never reads as a professor", async () => {
     professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
     await connect(ASH);
-    professors.get(BROCK.sub)!.leagues = [THIRD, { ...OTHER_STORE, name: 'Game Den (Brock)', canSubmit: false }];
+    professors.get(BROCK.sub)!.leagues = [OTHER_STORE, THIRD];
     await connect(BROCK);
+    const misty: Professor = { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [{ id: 'group-9', name: 'Cerulean', displayId: 'L9', canSubmit: true }] };
+    professors.set(misty.sub, misty);
+    await connect(misty, service, MISTY);
     leagueCalls = [];
 
-    expect(await service.listUpstreamLeagues(L, ASH.playerId)).toEqual({ leagues: [OTHER_STORE], selectedId: null, excluded: [] });
+    expect(await service.listUpstreamLeagues(L, OWNER)).toEqual({ leagues: [STORE, OTHER_STORE, THIRD], selectedId: null, excluded: [] });
     expect(leagueCalls.sort()).toEqual([ASH.playerId, BROCK.playerId].sort());
-    expect(await service.listUpstreamLeagues(L, BROCK.playerId)).toEqual({
-      leagues: [{ ...OTHER_STORE, name: 'Game Den (Brock)', canSubmit: false }],
-      // The one shared league bound itself to Brock when he connected.
-      selectedId: 'group-2',
-      excluded: [],
-    });
   });
 
-  it("lists a lone professor's own leagues", async () => {
+  it('says which league is chosen', async () => {
     await connect(ASH);
-    expect(await service.listUpstreamLeagues(L, ASH.playerId)).toEqual({ leagues: [STORE], selectedId: 'group-1', excluded: [] });
+    expect(await service.listUpstreamLeagues(L, OWNER)).toEqual({ leagues: [STORE], selectedId: 'group-1', excluded: [] });
   });
 
-  it('lists nothing when the professors share no league', async () => {
-    await connect(ASH);
-    await connect(BROCK);
-    expect((await service.listUpstreamLeagues(L, ASH.playerId)).leagues).toEqual([]);
-  });
-
-  it('leaves out a professor who needs a reconnect, naming them, without calling Pokémon as them', async () => {
+  it("leaves out an owner connection that needs a reconnect, naming it, without calling Pokémon as it", async () => {
     professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
     await connect(ASH);
     await connect(BROCK);
-    service.renameProfessor(L, BROCK.playerId, { name: 'Brock Harrison' });
+    service.renameProfessor(L, OWNER, BROCK.playerId, { name: 'Brock Harrison' });
     markNeedsReconnect(BROCK);
     leagueCalls = [];
 
-    expect(await service.listUpstreamLeagues(L, ASH.playerId)).toEqual({
+    expect(await service.listUpstreamLeagues(L, OWNER)).toEqual({
       leagues: [STORE, OTHER_STORE],
       selectedId: null,
       excluded: [{ playerId: BROCK.playerId, name: 'Brock Harrison' }],
@@ -704,64 +726,47 @@ describe('league binding', () => {
     expect(leagueCalls).toEqual([ASH.playerId]);
   });
 
-  it("fails the list when another professor's leagues can't be read for any other reason", async () => {
+  it("fails the list when one of the owner's connections can't be read for any other reason", async () => {
     await connect(ASH);
     await connect(BROCK);
     professors.get(BROCK.sub)!.leagues = new PokemonUpstreamError('unavailable', 'down');
-    await expect(service.listUpstreamLeagues(L, ASH.playerId)).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(service.listUpstreamLeagues(L, OWNER)).rejects.toMatchObject({ code: 'unavailable' });
   });
 
-  it('binds the league to the chosen professor and a shared league', async () => {
+  it('chooses one of those leagues, and says how many connections it could not check', async () => {
     professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
     await connect(ASH);
-    professors.get(BROCK.sub)!.leagues = [OTHER_STORE, STORE];
     await connect(BROCK);
 
-    const view = await service.selectLeague(L, BROCK.playerId, 'group-2');
-
-    expect(view).toMatchObject({ league: OTHER_STORE, connectionId: idOf(BROCK), professor: { playerId: '222', name: null } });
-    expect(binding()).toMatchObject({ connection_id: idOf(BROCK), activity_group_id: 'group-2' });
+    expect(await service.selectLeague(L, OWNER, 'group-2')).toEqual({ league: { id: 'group-2', name: 'Game Den', displayId: 'L7000' }, unchecked: 0 });
+    expect(binding()).toMatchObject({ activity_group_id: 'group-2', activity_group_name: 'Game Den' });
   });
 
-  it("refuses a league the chosen professor can't see, keeping the current binding", async () => {
+  it("refuses a league none of the owner's connections is in, keeping the current one", async () => {
     await connect(ASH);
-    await connect(BROCK);
-    await expect(service.selectLeague(L, BROCK.playerId, 'group-1')).rejects.toBeInstanceOf(LeagueNotFoundError);
-    expect(binding()!.connection_id).toBe(idOf(ASH));
+    const misty: Professor = { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [OTHER_STORE] };
+    professors.set(misty.sub, misty);
+    await connect(misty, service, MISTY);
+
+    await expect(service.selectLeague(L, OWNER, 'group-2')).rejects.toBeInstanceOf(LeagueNotFoundError);
+    expect(binding()!.activity_group_id).toBe('group-1');
   });
 
-  it('refuses a league the chosen professor sees but another professor lacks, keeping the current binding', async () => {
-    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
-    await connect(ASH);
-    await service.selectLeague(L, ASH.playerId, 'group-1');
-    professors.get(BROCK.sub)!.leagues = [OTHER_STORE];
-    await connect(BROCK);
-
-    await expect(service.selectLeague(L, ASH.playerId, 'group-1')).rejects.toBeInstanceOf(LeagueNotFoundError);
-    expect(binding()).toMatchObject({ connection_id: idOf(ASH), activity_group_id: 'group-1' });
-  });
-
-  it('binds automatically after a connect only when exactly one league is shared', async () => {
+  it("chooses the league after an owner's connect when their connections are in exactly one", async () => {
     professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
     await connect(ASH);
     expect(binding()).toBeUndefined();
-
-    professors.get(BROCK.sub)!.leagues = [OTHER_STORE, THIRD];
-    await connect(BROCK);
-    expect(binding()).toMatchObject({ connection_id: idOf(BROCK), activity_group_id: 'group-2' });
-  });
-
-  it('binds nothing after a connect when several leagues are shared', async () => {
-    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
+    professors.get(ASH.sub)!.leagues = [STORE];
+    professors.get(BROCK.sub)!.leagues = [STORE];
     await connect(ASH);
-    professors.get(BROCK.sub)!.leagues = [OTHER_STORE, STORE];
-    await connect(BROCK);
-    expect(binding()).toBeUndefined();
+    expect(binding()).toMatchObject({ activity_group_id: 'group-1' });
   });
 
-  it('refuses an unknown professor', async () => {
-    await expect(service.listUpstreamLeagues(L, '999')).rejects.toBeInstanceOf(ConnectionNotFoundError);
-    await expect(service.selectLeague(L, '999', 'group-1')).rejects.toBeInstanceOf(ConnectionNotFoundError);
+  it("chooses nothing after a professor's connect", async () => {
+    const misty: Professor = { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [STORE] };
+    professors.set(misty.sub, misty);
+    await connect(misty, service, MISTY);
+    expect(binding()).toBeUndefined();
   });
 });
 
@@ -769,36 +774,44 @@ describe('listActingConnections (who can read and act upstream)', () => {
   it('lists every connection with its professor and status, never a token', async () => {
     await connect(ASH);
     await connect(BROCK);
-    service.renameProfessor(L, BROCK.playerId, { name: 'Brock Harrison' });
+    service.renameProfessor(L, OWNER, BROCK.playerId, { name: 'Brock Harrison' });
     database.sqlite.prepare("update pokemon_connection set status = 'needs_reconnect' where professor_player_id = ?").run(BROCK.playerId);
 
     const listed = service.listActingConnections();
     expect(listed).toEqual([
-      { id: idOf(ASH), professorPlayerId: ASH.playerId, professorName: null, status: 'connected' },
-      { id: idOf(BROCK), professorPlayerId: BROCK.playerId, professorName: 'Brock Harrison', status: 'needs_reconnect' },
+      { id: idOf(ASH), professorPlayerId: ASH.playerId, professorName: null, status: 'connected', userId: OWNER.userId, membership: 'member', canSubmit: true },
+      {
+        id: idOf(BROCK),
+        professorPlayerId: BROCK.playerId,
+        professorName: 'Brock Harrison',
+        status: 'needs_reconnect',
+        userId: OWNER.userId,
+        membership: 'outside',
+        canSubmit: false,
+      },
     ]);
     expect(JSON.stringify(listed)).not.toMatch(/ory_rt|access-/);
   });
 });
 
 describe('disconnect', () => {
-  it("revokes that professor's token, forgets only them, and clears the league binding they held", async () => {
+  it("revokes that professor's token and forgets only them and their membership, keeping the league", async () => {
     await connect(ASH);
     await connect(BROCK);
 
-    expect(await service.disconnect(L, ASH.playerId)).toEqual({ revoked: true });
+    expect(await service.disconnect(L, OWNER, ASH.playerId)).toEqual({ revoked: true });
 
     expect(oauth.revoked).toEqual(['ory_rt_1']);
     expect(rows().map((r) => r.professor_player_id)).toEqual(['222']);
-    expect(binding()).toBeUndefined();
-    expect(service.getStatus(L)).toMatchObject({ status: 'connected', league: null, connectionId: null });
+    expect(database.sqlite.prepare('select count(*) n from league_membership where connection_id = 1').get()).toEqual({ n: 0 });
+    expect(binding()!.activity_group_id).toBe(STORE.id);
     expect(((await rejection(service.getAccessToken(1))) as PokemonUpstreamError).code).toBe('not_connected');
   });
 
   it('still forgets the token locally when Hydra cannot be reached', async () => {
     await connect();
     oauth.revokeError = new PokemonUpstreamError('unavailable', 'down');
-    expect(await service.disconnect(L, ASH.playerId)).toEqual({ revoked: false });
+    expect(await service.disconnect(L, OWNER, ASH.playerId)).toEqual({ revoked: false });
     expect(rows()).toEqual([]);
     expect(log.warn).toHaveBeenCalledWith('Could not revoke the refresh token at Pokémon; forgetting it locally anyway (down).', {
       err: expect.any(PokemonUpstreamError),
@@ -806,7 +819,7 @@ describe('disconnect', () => {
   });
 
   it('refuses an unknown professor', async () => {
-    await expect(service.disconnect(L, '999')).rejects.toBeInstanceOf(ConnectionNotFoundError);
+    await expect(service.disconnect(L, OWNER, '999')).rejects.toBeInstanceOf(ConnectionNotFoundError);
     expect(oauth.revoked).toEqual([]);
   });
 });
@@ -816,18 +829,19 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
   function carriedOver(opts: { status?: 'connected' | 'needs_reconnect'; boundTo?: League } = {}) {
     const id = database.sqlite
       .prepare(
-        `insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at)
-         values (?, ?, ?, ?, ?)`,
+        `insert into pokemon_connection (user_id, ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at)
+         values (1, ?, ?, ?, ?, ?)`,
       )
       .run(ASH.sub, vault.encrypt('ory_rt_v1', L), opts.status ?? 'connected', Math.floor(clock.getTime() / 1000), Math.floor(clock.getTime() / 1000))
       .lastInsertRowid as number;
+    // As migration 0020 leaves it: the connection that submitted before is a member that may submit.
+    database.sqlite
+      .prepare('insert into league_membership (connection_id, league_id, status, can_submit) values (?, ?, ?, ?)')
+      .run(id, L, opts.boundTo ? 'member' : 'unknown', Number(opts.boundTo?.canSubmit ?? false));
     if (opts.boundTo) {
       database.sqlite
-        .prepare(
-          `insert into league_upstream (league_id, connection_id, activity_group_id, activity_group_name, activity_group_display_id, activity_group_can_submit)
-           values (?, ?, ?, ?, ?, ?)`,
-        )
-        .run(L, id, opts.boundTo.id, opts.boundTo.name, opts.boundTo.displayId, Number(opts.boundTo.canSubmit));
+        .prepare('insert into league_upstream (league_id, activity_group_id, activity_group_name, activity_group_display_id) values (?, ?, ?, ?)')
+        .run(L, opts.boundTo.id, opts.boundTo.name, opts.boundTo.displayId);
     }
     return id;
   }
@@ -848,7 +862,7 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
 
     expect(oauth.refreshCalls).toEqual(['ory_rt_v1']);
     expect(rows()[0]).toMatchObject({ id, professor_player_id: ASH.playerId, professor_name: null, status: 'connected' });
-    expect(service.getStatus(L)).toMatchObject({ league: STORE, connectionId: id, professor: { playerId: ASH.playerId } });
+    expect(service.listActingConnections()).toEqual([expect.objectContaining({ id, professorPlayerId: ASH.playerId, membership: 'member', canSubmit: true })]);
   });
 
   it('re-seals nothing twice', () => {
@@ -859,7 +873,7 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
 
   it('lists an unidentified connection with no player id until it is identified', async () => {
     carriedOver({ boundTo: STORE });
-    expect(service.listConnections(L)).toEqual([expect.objectContaining({ professorPlayerId: null, professorName: null, submitsForLeague: true })]);
+    expect(service.listConnections(L, OWNER)).toEqual([expect.objectContaining({ professorPlayerId: null, professorName: null, membership: 'member' })]);
   });
 
   it('marks it needs_reconnect when its refresh is refused, leaving it unidentified', async () => {
@@ -881,7 +895,8 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
 
     expect(outcome).toBe('reconnected');
     expect(rows()).toHaveLength(1);
-    expect(connection).toMatchObject({ id, professorPlayerId: BROCK.playerId, status: 'connected', submitsForLeague: true });
+    expect(connection).toMatchObject({ id, professorPlayerId: BROCK.playerId, status: 'connected', userId: OWNER.userId });
+    expect(binding()!.activity_group_id).toBe(STORE.id);
   });
 
   it("merges into the professor's own connection when both turn out to be the same person, keeping the league", async () => {
@@ -899,7 +914,7 @@ describe('the connection carried over from v1 (ADR-0008 upgrade)', () => {
 
     expect(rows()).toEqual([expect.objectContaining({ professor_player_id: ASH.playerId })]);
     // The professor's own connection stays; the carried-over chain (just refreshed to ory_rt_2) is revoked.
-    expect(binding()!.connection_id).toBe(rows()[0]!.id);
+    expect(membershipOf(ASH)).toMatchObject({ status: 'member', can_submit: 1 });
     expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_1');
     expect(oauth.revoked).toEqual(['ory_rt_2']);
   });
@@ -910,10 +925,10 @@ describe('edge cases', () => {
     await connect(ASH);
     const callsBefore = oauth.refreshCalls.length + profileCalls.length;
 
-    expect(service.renameProfessor(L, ASH.playerId, { name: 'Ash Ketchum' })).toMatchObject({ professorPlayerId: ASH.playerId, professorName: 'Ash Ketchum' });
-    expect(service.getStatus(L).professor).toEqual({ playerId: ASH.playerId, name: 'Ash Ketchum' });
-    expect(service.renameProfessor(L, ASH.playerId, { name: 'Ash K.' }).professorName).toBe('Ash K.');
-    expect(service.renameProfessor(L, ASH.playerId, { name: null }).professorName).toBeNull();
+    expect(service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash Ketchum' })).toMatchObject({ professorPlayerId: ASH.playerId, professorName: 'Ash Ketchum' });
+    expect(service.listActingConnections()[0]).toMatchObject({ professorPlayerId: ASH.playerId, professorName: 'Ash Ketchum' });
+    expect(service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash K.' }).professorName).toBe('Ash K.');
+    expect(service.renameProfessor(L, OWNER, ASH.playerId, { name: null }).professorName).toBeNull();
 
     expect(rowOf(ASH.playerId)!.professor_name).toBeNull();
     expect(oauth.refreshCalls.length + profileCalls.length).toBe(callsBefore);
@@ -922,28 +937,28 @@ describe('edge cases', () => {
   it('lets two professors share a display name (it identifies nobody)', async () => {
     await connect(ASH);
     await connect(BROCK);
-    service.renameProfessor(L, ASH.playerId, { name: 'Prof' });
-    service.renameProfessor(L, BROCK.playerId, { name: 'Prof' });
+    service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Prof' });
+    service.renameProfessor(L, OWNER, BROCK.playerId, { name: 'Prof' });
     expect(rows().map((r) => r.professor_name)).toEqual(['Prof', 'Prof']);
   });
 
   it('refuses to name a professor nobody connected', () => {
-    expect(() => service.renameProfessor(L, '999', { name: 'Nobody' })).toThrow(ConnectionNotFoundError);
-    expect(() => service.renameProfessor(L, '999', { fullName: 'Nobody' })).toThrow(ConnectionNotFoundError);
+    expect(() => service.renameProfessor(L, OWNER, '999', { name: 'Nobody' })).toThrow(ConnectionNotFoundError);
+    expect(() => service.renameProfessor(L, OWNER, '999', { fullName: 'Nobody' })).toThrow(ConnectionNotFoundError);
     expect(rows()).toEqual([]);
   });
 
   it('sets and clears the full name on its own, leaving the display name as it is, and sends it nowhere', async () => {
     await connect(ASH);
-    service.renameProfessor(L, ASH.playerId, { name: 'Ash K.' });
+    service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash K.' });
     const callsBefore = oauth.refreshCalls.length + profileCalls.length;
 
-    expect(service.renameProfessor(L, ASH.playerId, { fullName: 'Ash Ketchum' })).toMatchObject({
+    expect(service.renameProfessor(L, OWNER, ASH.playerId, { fullName: 'Ash Ketchum' })).toMatchObject({
       professorName: 'Ash K.',
       professorFullName: 'Ash Ketchum',
     });
-    expect(service.listConnections(L)).toEqual([expect.objectContaining({ professorName: 'Ash K.', professorFullName: 'Ash Ketchum' })]);
-    expect(service.renameProfessor(L, ASH.playerId, { fullName: null })).toMatchObject({ professorName: 'Ash K.', professorFullName: null });
+    expect(service.listConnections(L, OWNER)).toEqual([expect.objectContaining({ professorName: 'Ash K.', professorFullName: 'Ash Ketchum' })]);
+    expect(service.renameProfessor(L, OWNER, ASH.playerId, { fullName: null })).toMatchObject({ professorName: 'Ash K.', professorFullName: null });
 
     expect(rowOf(ASH.playerId)).toMatchObject({ professor_name: 'Ash K.', professor_full_name: null });
     expect(oauth.refreshCalls.length + profileCalls.length).toBe(callsBefore);
@@ -951,9 +966,9 @@ describe('edge cases', () => {
 
   it('changes the display name alone without touching the full name, or both at once', async () => {
     await connect(ASH);
-    service.renameProfessor(L, ASH.playerId, { name: 'Ash K.', fullName: 'Ash Ketchum' });
-    expect(service.renameProfessor(L, ASH.playerId, { name: 'Ash' })).toMatchObject({ professorName: 'Ash', professorFullName: 'Ash Ketchum' });
-    expect(service.renameProfessor(L, ASH.playerId, { name: null, fullName: 'Satoshi Ketchum' })).toMatchObject({
+    service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash K.', fullName: 'Ash Ketchum' });
+    expect(service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash' })).toMatchObject({ professorName: 'Ash', professorFullName: 'Ash Ketchum' });
+    expect(service.renameProfessor(L, OWNER, ASH.playerId, { name: null, fullName: 'Satoshi Ketchum' })).toMatchObject({
       professorName: null,
       professorFullName: 'Satoshi Ketchum',
     });
@@ -961,13 +976,13 @@ describe('edge cases', () => {
 
   it("keeps the professor's own display name when a carried-over twin merges into them", async () => {
     database.sqlite
-      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .prepare('insert into pokemon_connection (user_id, ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (1, ?, ?, ?, ?, ?)')
       .run(ASH.sub, vault.encrypt('ory_rt_v1', L), 'connected', 1, 1);
     (oauth as unknown as { owners: Map<string, string> }).owners.set('ory_rt_v1', ASH.sub);
     service.resealCarriedOver(L);
     professors.set('sub-ash-again', { ...ASH, sub: 'sub-ash-again' });
     await connect(professors.get('sub-ash-again')!);
-    service.renameProfessor(L, ASH.playerId, { name: 'Ash Ketchum' });
+    service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash Ketchum' });
 
     await service.identifyCarriedOver();
 
@@ -978,14 +993,14 @@ describe('edge cases', () => {
     await connect(ASH);
     vault = tokenVault(randomBytes(32).toString('base64'));
     const restarted = build();
-    expect(await restarted.disconnect(L, ASH.playerId)).toEqual({ revoked: false });
+    expect(await restarted.disconnect(L, OWNER, ASH.playerId)).toEqual({ revoked: false });
     expect(rows()).toEqual([]);
     expect(oauth.revoked).toEqual([]);
   });
 
   it('identifies a carried-over connection on a later refresh when Pokémon could not say who it was the first time', async () => {
     const id = database.sqlite
-      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .prepare('insert into pokemon_connection (user_id, ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (1, ?, ?, ?, ?, ?)')
       .run(ASH.sub, vault.encrypt('ory_rt_v1', L), 'connected', 1, 1).lastInsertRowid as number;
     (oauth as unknown as { owners: Map<string, string> }).owners.set('ory_rt_v1', ASH.sub);
     service.resealCarriedOver(L);
@@ -1003,12 +1018,350 @@ describe('edge cases', () => {
 
   it('leaves a ciphertext that opens under neither key for its first use to mark needs_reconnect', async () => {
     database.sqlite
-      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .prepare('insert into pokemon_connection (user_id, ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (1, ?, ?, ?, ?, ?)')
       .run(ASH.sub, tokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L), 'connected', 1, 1);
     expect(service.resealCarriedOver(L)).toBe(0);
     await service.identifyCarriedOver();
     expect(rows()[0]).toMatchObject({ status: 'needs_reconnect', status_reason: expect.stringMatching(/key/) });
     expect(oauth.refreshCalls).toEqual([]);
+  });
+});
+
+const MISTY_ACCOUNT: Professor = { sub: 'sub-misty', playerId: '0000444', name: null, leagues: [STORE] };
+const GARY_ACCOUNT: Professor = { sub: 'sub-gary', playerId: '0000555', name: null, leagues: [STORE] };
+
+/** The owner's connection chooses the league (STORE); then each professor connects their own account. */
+async function leagueWithProfessors() {
+  professors.set(MISTY_ACCOUNT.sub, { ...MISTY_ACCOUNT });
+  professors.set(GARY_ACCOUNT.sub, { ...GARY_ACCOUNT });
+  await connect(ASH);
+  await connect(MISTY_ACCOUNT, service, MISTY);
+}
+
+describe('who holds a connection (ADR-0015 §2)', () => {
+  it("gives a professor's connect to that professor", async () => {
+    await leagueWithProfessors();
+    expect(rowOf(MISTY_ACCOUNT.playerId)).toMatchObject({ user_id: MISTY.userId });
+    expect(service.listConnections(L, MISTY)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ professorPlayerId: MISTY_ACCOUNT.playerId, mine: true, membership: 'member', canSubmit: true }),
+        expect.objectContaining({ professorPlayerId: ASH.playerId, mine: false }),
+      ]),
+    );
+  });
+
+  it("moves the owner's connection to the professor who logs into it, keeping its row and names, and records the move", async () => {
+    await connect(ASH);
+    service.renameProfessor(L, OWNER, ASH.playerId, { name: 'Ash K.', fullName: 'Ash Ketchum' });
+    const before = rowOf(ASH.playerId)!;
+    advance(MIN);
+
+    const { outcome, connection } = await connect(ASH, service, MISTY);
+
+    expect(outcome).toBe('claimed');
+    expect(connection).toMatchObject({ id: before.id, professorName: 'Ash K.', professorFullName: 'Ash Ketchum', userId: MISTY.userId, mine: true });
+    expect(rowOf(ASH.playerId)).toMatchObject({ id: before.id, user_id: MISTY.userId, claimed_from_user_id: OWNER.userId, claimed_at: clock.getTime() / 1000 });
+    expect(storedRefreshToken(ASH.playerId)).toBe('ory_rt_2');
+    expect(membershipOf(ASH)).toMatchObject({ status: 'member' });
+    expect(log.info).toHaveBeenCalledWith(`Pokémon connection for professor ${ASH.playerId} moved from organizer to misty`, {
+      professorPlayerId: ASH.playerId,
+      fromUser: 'organizer',
+      toUser: 'misty',
+    });
+  });
+
+  it.each([
+    ['the owner', OWNER],
+    ['another professor', GARY],
+  ])("refuses %s a connect for a professor's account, leaving it as it was and revoking the fresh login", async (_who, actor) => {
+    await leagueWithProfessors();
+    const before = rowOf(MISTY_ACCOUNT.playerId);
+
+    const err = await rejection(connect(MISTY_ACCOUNT, service, actor));
+
+    expect(err).toBeInstanceOf(ConnectError);
+    expect((err as ConnectError).code).toBe('connection_held');
+    expect(rowOf(MISTY_ACCOUNT.playerId)).toEqual(before);
+    expect(oauth.revoked).toEqual(['ory_rt_3']);
+  });
+
+  it('refuses a professor who holds a connection a second Pokémon account, new or the owner’s', async () => {
+    await leagueWithProfessors();
+
+    expect(((await rejection(connect(GARY_ACCOUNT, service, MISTY))) as ConnectError).code).toBe('one_connection_only');
+    expect(((await rejection(connect(ASH, service, MISTY))) as ConnectError).code).toBe('one_connection_only');
+    expect(rows().map((r) => [r.professor_player_id, (r as unknown as { user_id: number }).user_id])).toEqual([
+      [ASH.playerId, OWNER.userId],
+      [MISTY_ACCOUNT.playerId, MISTY.userId],
+    ]);
+    expect(oauth.revoked).toEqual(['ory_rt_3', 'ory_rt_4']);
+  });
+
+  it('lets a professor reconnect their own account', async () => {
+    await leagueWithProfessors();
+    await expect(connect(MISTY_ACCOUNT, service, MISTY)).resolves.toMatchObject({ outcome: 'reconnected' });
+  });
+
+  it("never gives a professor the owner's carried-over v1 connection", async () => {
+    database.sqlite
+      .prepare("insert into pokemon_connection (user_id, ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (1, 'sub-old', x'00', 'needs_reconnect', 1, 1)")
+      .run();
+    professors.set(MISTY_ACCOUNT.sub, { ...MISTY_ACCOUNT });
+
+    await expect(connect(MISTY_ACCOUNT, service, MISTY)).resolves.toMatchObject({ outcome: 'added' });
+    expect(rows().map((r) => r.professor_player_id)).toEqual([null, MISTY_ACCOUNT.playerId]);
+  });
+
+  it('settles an owner and a professor connecting the same account at once with one row', async () => {
+    const settled = await Promise.allSettled([connect(ASH, service, OWNER), connect(ASH, service, MISTY)]);
+    expect(rows()).toHaveLength(1);
+    const outcomes = settled.map((r) => (r.status === 'fulfilled' ? r.value.outcome : (r.reason as ConnectError).code)).sort();
+    expect([['added', 'claimed'], ['added', 'connection_held']]).toContainEqual(outcomes);
+  });
+
+  it('lets only the holder disconnect a connection, the owner included', async () => {
+    await leagueWithProfessors();
+
+    for (const [actor, playerId] of [
+      [OWNER, MISTY_ACCOUNT.playerId],
+      [MISTY, ASH.playerId],
+    ] as const) {
+      const err = await rejection(service.disconnect(L, actor, playerId));
+      expect(err).toBeInstanceOf(ConnectionAccessError);
+      expect(err).toMatchObject({ code: 'not_your_connection', professorPlayerId: playerId });
+    }
+    expect(rows()).toHaveLength(2);
+    await expect(service.disconnect(L, MISTY, MISTY_ACCOUNT.playerId)).resolves.toEqual({ revoked: true });
+  });
+
+  it("lets the owner change any display name, but only the holder change a full name", async () => {
+    await leagueWithProfessors();
+
+    expect(service.renameProfessor(L, OWNER, MISTY_ACCOUNT.playerId, { name: 'Misty W.' }).professorName).toBe('Misty W.');
+    expect(() => service.renameProfessor(L, OWNER, MISTY_ACCOUNT.playerId, { fullName: 'Misty Waterflower' })).toThrow(
+      expect.objectContaining({ code: 'not_your_connection' }),
+    );
+    expect(() => service.renameProfessor(L, MISTY, ASH.playerId, { name: 'Ash' })).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+    expect(service.renameProfessor(L, MISTY, MISTY_ACCOUNT.playerId, { name: 'Misty', fullName: 'Misty Waterflower' })).toMatchObject({
+      professorName: 'Misty',
+      professorFullName: 'Misty Waterflower',
+    });
+  });
+
+  it('shows the owner every connection, a member the league’s, and a professor outside the league only their own', async () => {
+    await leagueWithProfessors();
+    professors.get(GARY_ACCOUNT.sub)!.leagues = [OTHER_STORE];
+    await connect(GARY_ACCOUNT, service, GARY);
+    const ids = (viewer: Actor) => service.listConnections(L, viewer).map((c) => c.professorPlayerId).sort();
+
+    expect(ids(OWNER)).toEqual([ASH.playerId, MISTY_ACCOUNT.playerId, GARY_ACCOUNT.playerId].sort());
+    expect(ids(MISTY)).toEqual([ASH.playerId, MISTY_ACCOUNT.playerId].sort());
+    expect(ids(GARY)).toEqual([GARY_ACCOUNT.playerId]);
+  });
+});
+
+describe('connect attempts per user', () => {
+  const stateOf = (url: string) => new URL(url).searchParams.get('state')!;
+  const paste = (state: string) => `https://play-tools.pokemon.com/loggedIn?code=c&state=${state}`;
+
+  it("keeps at most two in flight per user, dropping that user's oldest, never another user's", async () => {
+    professors.set(MISTY_ACCOUNT.sub, { ...MISTY_ACCOUNT });
+    const mistys = stateOf(service.startConnect(MISTY.userId).authorizeUrl);
+    const first = stateOf(service.startConnect(OWNER.userId).authorizeUrl);
+    const second = stateOf(service.startConnect(OWNER.userId).authorizeUrl);
+    const third = stateOf(service.startConnect(OWNER.userId).authorizeUrl);
+
+    expect(((await rejection(service.completeConnect(L, OWNER, paste(first)))) as ConnectError).code).toBe('unknown_attempt');
+    oauth.subject = ASH.sub;
+    await expect(service.completeConnect(L, OWNER, paste(second))).resolves.toMatchObject({ outcome: 'added' });
+    oauth.subject = BROCK.sub;
+    await expect(service.completeConnect(L, OWNER, paste(third))).resolves.toMatchObject({ outcome: 'added' });
+    oauth.subject = MISTY_ACCOUNT.sub;
+    await expect(service.completeConnect(L, MISTY, paste(mistys))).resolves.toMatchObject({ outcome: 'added' });
+  });
+});
+
+describe('league membership (ADR-0015 §3)', () => {
+  it('reads it at connect: member with that league’s permission, checked now', async () => {
+    await connect(ASH);
+    expect(membershipOf(ASH)).toEqual({ status: 'member', can_submit: 1, checked_at: clock.getTime() / 1000 });
+  });
+
+  it("is outside when a successful read lacks the league's group", async () => {
+    await connect(ASH);
+    await connect(BROCK);
+    expect(membershipOf(BROCK)).toMatchObject({ status: 'outside', can_submit: 0 });
+  });
+
+  it('stays unknown and unchecked when the read at a connect fails, so the next keep-alive reads it again', async () => {
+    await connect(ASH);
+    professors.get(ASH.sub)!.leagues = new PokemonUpstreamError('unavailable', 'down');
+    await connect(ASH);
+    expect(membershipOf(ASH)).toEqual({ status: 'unknown', can_submit: 0, checked_at: null });
+  });
+
+  it('stays unknown while no league is chosen', async () => {
+    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
+    await connect(ASH);
+    advance(25 * HOUR);
+    await service.keepAliveAll();
+    expect(membershipOf(ASH)).toMatchObject({ status: 'unknown', checked_at: null });
+  });
+
+  it('reads every connection again, one at a time, when the owner changes the league; a failed read leaves only that one unknown', async () => {
+    professors.get(ASH.sub)!.leagues = [STORE, OTHER_STORE];
+    await connect(ASH);
+    await service.selectLeague(L, OWNER, STORE.id);
+    professors.get(BROCK.sub)!.leagues = [OTHER_STORE];
+    await connect(BROCK);
+    professors.set(MISTY_ACCOUNT.sub, { ...MISTY_ACCOUNT, leagues: [OTHER_STORE] });
+    await connect(MISTY_ACCOUNT, service, MISTY);
+    // The picker reads only the owner's connections; the professor's read is the one that fails.
+    professors.get(MISTY_ACCOUNT.sub)!.leagues = new PokemonUpstreamError('rate_limited', 'slow down');
+    leagueCalls = [];
+    mostLeaguesInFlight = 0;
+
+    const { unchecked } = await service.selectLeague(L, OWNER, OTHER_STORE.id);
+
+    expect(unchecked).toBe(1);
+    expect(membershipOf(ASH)).toMatchObject({ status: 'member' });
+    expect(membershipOf(BROCK)).toMatchObject({ status: 'member' });
+    expect(membershipOf(MISTY_ACCOUNT)).toMatchObject({ status: 'unknown', checked_at: null });
+    // The picker's reads as the owner's two connections, then one read per connection.
+    expect(leagueCalls).toEqual([ASH.playerId, BROCK.playerId, ASH.playerId, BROCK.playerId, MISTY_ACCOUNT.playerId]);
+    expect(mostLeaguesInFlight).toBe(1);
+  });
+
+  describe('the keep-alive', () => {
+    it('reads only connections last checked 24 hours ago or more', async () => {
+      await connect(ASH);
+      await connect(BROCK);
+      database.sqlite.prepare('update league_membership set checked_at = ? where connection_id = ?').run(clock.getTime() / 1000 - 25 * 3600, idOf(ASH));
+      database.sqlite.prepare('update league_membership set checked_at = ? where connection_id = ?').run(clock.getTime() / 1000 - 3600, idOf(BROCK));
+      leagueCalls = [];
+
+      await service.keepAliveAll();
+
+      expect(leagueCalls).toEqual([ASH.playerId]);
+      expect(membershipOf(ASH)!.checked_at).toBe(clock.getTime() / 1000);
+    });
+
+    it('reads a connection never checked', async () => {
+      await connect(ASH);
+      database.sqlite.prepare('update league_membership set checked_at = null').run();
+      leagueCalls = [];
+      await service.keepAliveAll();
+      expect(leagueCalls).toEqual([ASH.playerId]);
+    });
+
+    it('keeps the state when the read fails', async () => {
+      await connect(ASH);
+      advance(25 * HOUR);
+      professors.get(ASH.sub)!.leagues = new PokemonUpstreamError('unavailable', 'down');
+      await service.keepAliveAll();
+      expect(membershipOf(ASH)).toMatchObject({ status: 'member', can_submit: 1 });
+    });
+
+    it('marks a connection outside once a successful read lacks the league', async () => {
+      await connect(ASH);
+      advance(25 * HOUR);
+      professors.get(ASH.sub)!.leagues = [OTHER_STORE];
+      await service.keepAliveAll();
+      expect(membershipOf(ASH)).toMatchObject({ status: 'outside', can_submit: 0 });
+    });
+  });
+});
+
+describe('actingConnection (the one place a professor becomes a connection for a write)', () => {
+  it("answers the holder's connection", async () => {
+    await leagueWithProfessors();
+    expect(service.actingConnection(MISTY, MISTY_ACCOUNT.playerId, { kind: 'own' })).toEqual({ connectionId: idOf(MISTY_ACCOUNT), leaseId: null });
+    expect(service.actingConnection(OWNER, ASH.playerId, { kind: 'own' })).toEqual({ connectionId: idOf(ASH), leaseId: null });
+  });
+
+  it("refuses anyone else, the owner included, naming the professor", async () => {
+    await leagueWithProfessors();
+    for (const [actor, playerId] of [
+      [OWNER, MISTY_ACCOUNT.playerId],
+      [MISTY, ASH.playerId],
+      [GARY, MISTY_ACCOUNT.playerId],
+    ] as const) {
+      expect(() => service.actingConnection(actor, playerId, { kind: 'own' })).toThrow(
+        expect.objectContaining({ name: 'ConnectionAccessError', code: 'not_your_connection', professorPlayerId: playerId }),
+      );
+    }
+  });
+
+  it('answers organizer_not_connected when nobody holds that player id', () => {
+    expect(() => service.actingConnection(OWNER, '999', { kind: 'own' })).toThrow(
+      expect.objectContaining({ code: 'organizer_not_connected', professorPlayerId: '999' }),
+    );
+  });
+
+  it("answers needs_reconnect for the holder's connection that needs one, and not_your_connection to anyone else", async () => {
+    await leagueWithProfessors();
+    database.sqlite.prepare("update pokemon_connection set status = 'needs_reconnect'").run();
+    expect(() => service.actingConnection(MISTY, MISTY_ACCOUNT.playerId, { kind: 'own' })).toThrow(expect.objectContaining({ code: 'needs_reconnect' }));
+    expect(() => service.actingConnection(OWNER, MISTY_ACCOUNT.playerId, { kind: 'own' })).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+  });
+});
+
+describe('readingConnection (attendance reads for a request)', () => {
+  it("reads as the caller's own member connection first", async () => {
+    await leagueWithProfessors();
+    expect(service.readingConnection(L, MISTY)).toBe(idOf(MISTY_ACCOUNT));
+    expect(service.readingConnection(L, OWNER)).toBe(idOf(ASH));
+  });
+
+  it('otherwise reads as any member, connected connection, lowest id first', async () => {
+    await leagueWithProfessors();
+    database.sqlite.prepare("update pokemon_connection set status = 'needs_reconnect' where id = ?").run(idOf(ASH));
+    expect(service.readingConnection(L, OWNER)).toBe(idOf(MISTY_ACCOUNT));
+    expect(service.readingConnection(L, null)).toBe(idOf(MISTY_ACCOUNT));
+  });
+
+  it('never reads as a connection outside the league or not yet confirmed in it', async () => {
+    await connect(ASH);
+    database.sqlite.prepare("update league_membership set status = 'unknown'").run();
+    expect(() => service.readingConnection(L, OWNER)).toThrow(expect.objectContaining({ code: 'not_connected' }));
+  });
+});
+
+describe("access (who may see the league's pages)", () => {
+  it('lets the owner in with or without a connection', () => {
+    expect(service.access(OWNER)).toEqual({ member: true, waiting: null });
+  });
+
+  it('keeps a professor waiting until their connection is confirmed in the league, saying why', async () => {
+    expect(service.access(MISTY)).toEqual({ member: false, waiting: 'no_connection' });
+    await leagueWithProfessors();
+    expect(service.access(MISTY)).toEqual({ member: true, waiting: null });
+    database.sqlite.prepare("update league_membership set status = 'unknown' where connection_id = ?").run(idOf(MISTY_ACCOUNT));
+    expect(service.access(MISTY)).toEqual({ member: false, waiting: 'unknown' });
+    database.sqlite.prepare("update league_membership set status = 'outside' where connection_id = ?").run(idOf(MISTY_ACCOUNT));
+    expect(service.access(MISTY)).toEqual({ member: false, waiting: 'outside' });
+  });
+});
+
+describe('listReadableConnections (reads across professors)', () => {
+  it('leaves out connections outside the league, keeping unknown ones', async () => {
+    await connect(ASH);
+    await connect(BROCK);
+    professors.set(MISTY_ACCOUNT.sub, { ...MISTY_ACCOUNT });
+    await connect(MISTY_ACCOUNT, service, MISTY);
+    database.sqlite.prepare("update league_membership set status = 'unknown' where connection_id = ?").run(idOf(MISTY_ACCOUNT));
+
+    expect(service.listReadableConnections().map((c) => c.professorPlayerId)).toEqual([ASH.playerId, MISTY_ACCOUNT.playerId]);
+  });
+});
+
+describe('fullNameOf (the name written into a TDF whose organizer is replaced)', () => {
+  it("answers a connection's full name, or null when unset or nobody is connected with that player id", async () => {
+    await connect(ASH);
+    expect(service.fullNameOf(ASH.playerId)).toBeNull();
+    service.renameProfessor(L, OWNER, ASH.playerId, { fullName: 'Ash Ketchum' });
+    expect(service.fullNameOf(ASH.playerId)).toBe('Ash Ketchum');
+    expect(service.fullNameOf('999')).toBeNull();
   });
 });
 
@@ -1036,7 +1389,7 @@ describe('every AAD the token vault sees binds a row (the kit refuses an empty o
 
   const insertCarriedOver = (sub: string, ciphertext: Buffer) =>
     database.sqlite
-      .prepare('insert into pokemon_connection (ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (?, ?, ?, ?, ?)')
+      .prepare('insert into pokemon_connection (user_id, ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at) values (1, ?, ?, ?, ?, ?)')
       .run(sub, ciphertext, 'connected', 1, 1).lastInsertRowid as number;
 
   it('across connect, refresh, reseal, disconnect and a replaced key, on the paths that throw too', async () => {
@@ -1052,12 +1405,12 @@ describe('every AAD the token vault sees binds a row (the kit refuses an empty o
     insertCarriedOver('sub-foreign', tokenVault(randomBytes(32).toString('base64')).encrypt('ory_rt_x', L));
     expect(service.resealCarriedOver(L)).toBe(1); // tries its own row, then the league id; skips the foreign one
     await connect(BROCK);
-    expect(await service.disconnect(L, ASH.playerId)).toEqual({ revoked: true });
+    expect(await service.disconnect(L, OWNER, ASH.playerId)).toEqual({ revoked: true });
 
     vault = recording(tokenVault(randomBytes(32).toString('base64')), calls); // the key was replaced
     const restarted = build();
     expect(((await rejection(restarted.getAccessToken(idOf(BROCK)))) as PokemonUpstreamError).code).toBe('needs_reconnect');
-    expect(await restarted.disconnect(L, BROCK.playerId)).toEqual({ revoked: false });
+    expect(await restarted.disconnect(L, OWNER, BROCK.playerId)).toEqual({ revoked: false });
 
     expect(calls.length).toBeGreaterThan(0);
     for (const { aad } of calls) expect(aad).toMatch(/^(pokemon_connection:[1-9]\d*|default)$/);
@@ -1065,5 +1418,213 @@ describe('every AAD the token vault sees binds a row (the kit refuses an empty o
     expect(calls.filter((c) => c.aad === L && !c.threw)).not.toEqual([]); // the carried-over row under the league id
     expect(calls.filter((c) => c.aad.startsWith('pokemon_connection:') && c.threw)).not.toEqual([]);
     expect(calls.filter((c) => c.op === 'encrypt').map((c) => c.aad)).not.toContain(L);
+  });
+});
+
+describe('invites, reset links and the seat budget (ADR-0015 §6, §8)', () => {
+  it("refuses an owner connect that would add a connection once 10 seats are used, but never a reconnect or a professor's connect", async () => {
+    await connect(ASH);
+    otherSeats = 9;
+
+    const err = await rejection(connect(BROCK));
+    expect(err).toMatchObject({ code: 'connection_limit', message: expect.stringContaining('professors and open invites') });
+    expect(rowOf(BROCK.playerId)).toBeUndefined();
+    expect(oauth.revoked).toEqual([expect.stringMatching(/^ory_rt_/)]);
+
+    await expect(connect(ASH)).resolves.toMatchObject({ outcome: 'reconnected' });
+    professors.set(MISTY_ACCOUNT.sub, { ...MISTY_ACCOUNT });
+    await expect(connect(MISTY_ACCOUNT, service, MISTY)).resolves.toMatchObject({ outcome: 'added' });
+  });
+
+  it("refuses a bound professor any Pokémon account but the invite's, before anything else, revoking the fresh login", async () => {
+    await leagueWithProfessors();
+    bound.set(GARY.userId, GARY_ACCOUNT.playerId);
+    const before = rows().length;
+
+    const err = await rejection(connect(MISTY_ACCOUNT, service, GARY));
+    expect(err).toMatchObject({ name: 'ConnectError', code: 'invite_player_mismatch' });
+    expect(rows()).toHaveLength(before);
+    expect(oauth.revoked).toHaveLength(1);
+
+    await expect(connect(GARY_ACCOUNT, service, GARY)).resolves.toMatchObject({ outcome: 'added' });
+  });
+
+  it('holds a professor who must prove their login after a reset, and refuses their connection for writes', async () => {
+    await leagueWithProfessors();
+    const resetMisty: Actor = { ...MISTY, reverifyRequired: true };
+
+    expect(service.access(resetMisty)).toEqual({ member: false, waiting: 'reverify_required' });
+    expect(() => service.actingConnection(resetMisty, MISTY_ACCOUNT.playerId, { kind: 'own' })).toThrow(
+      expect.objectContaining({ name: 'ConnectionAccessError', code: 'reverify_required', professorPlayerId: MISTY_ACCOUNT.playerId }),
+    );
+  });
+
+  it('clears the reset proof on a successful connect, and not on a refused one', async () => {
+    await leagueWithProfessors();
+    const resetMisty: Actor = { ...MISTY, reverifyRequired: true };
+
+    await rejection(connect(GARY_ACCOUNT, service, resetMisty));
+    expect(reverifyCleared).toEqual([]);
+    await connect(MISTY_ACCOUNT, service, resetMisty);
+    expect(reverifyCleared).toEqual([MISTY.userId]);
+  });
+
+  it("counts the owner's connections only", async () => {
+    await leagueWithProfessors();
+    await connect(BROCK);
+    expect(service.ownerConnectionCount()).toBe(2);
+  });
+
+  it("names a professor's connection, for Settings → Professors and for Discord", async () => {
+    await connect(ASH);
+    await connect(ASH, service, MISTY);
+
+    expect(service.connectionOf(MISTY.userId)).toEqual({
+      playerId: ASH.playerId,
+      name: null,
+      status: 'connected',
+      membership: 'member',
+      claimedAt: clock,
+    });
+    expect(service.recipientOf(MISTY.userId)).toBe(ASH.playerId);
+    expect(service.connectionOf(GARY.userId)).toBeNull();
+    expect(service.recipientOf(GARY.userId)).toBeNull();
+  });
+
+  it("removes a professor's connection and its membership at once, then revokes its login at Pokémon", async () => {
+    await leagueWithProfessors();
+    const id = idOf(MISTY_ACCOUNT);
+    const removal = service.prepareRemoval(MISTY.userId);
+
+    service.deleteConnectionsOf(MISTY.userId);
+
+    expect(rowOf(MISTY_ACCOUNT.playerId)).toBeUndefined();
+    expect(database.sqlite.prepare('select * from league_membership where connection_id = ?').get(id)).toBeUndefined();
+    expect(oauth.revoked).toEqual([]);
+    await removal.revoke();
+    expect(oauth.revoked).toEqual(['ory_rt_2']);
+    await expect(service.getAccessToken(id)).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('removes nothing for a user with no connection, and revoking then does nothing', async () => {
+    await connect(ASH);
+    const removal = service.prepareRemoval(GARY.userId);
+    service.deleteConnectionsOf(GARY.userId);
+    await removal.revoke();
+    expect(rows()).toHaveLength(1);
+    expect(oauth.revoked).toEqual([]);
+  });
+});
+
+describe('tournament leases (ADR-0015 §5)', () => {
+  const DAY = 86_400_000;
+  const staff = (tournamentId: string) => ({ kind: 'tournament' as const, tournamentId, use: 'staff' as const });
+
+  /** A lease of `tournamentId` from `connectionId` to `lesseeUserId`, written as the lease service would. */
+  function lend(connectionId: number, tournamentId: string, lesseeUserId: number, endsAt = new Date(clock.getTime() + 7 * DAY)): number {
+    const r = database.sqlite
+      .prepare(
+        `insert into tournament_lease (league_id, connection_id, tournament_id, tournament_label, lessee_user_id, granted_by, granted_at, ends_at)
+         values (?, ?, ?, ?, ?, 'organizer', ?, ?) returning id`,
+      )
+      .get(L, connectionId, tournamentId, `${tournamentId} · 2026-11-07`, lesseeUserId, Math.floor(clock.getTime() / 1000), Math.floor(endsAt.getTime() / 1000)) as { id: number };
+    return r.id;
+  }
+  const leaseRows = () => database.sqlite.prepare('select id, tournament_id, ended_at, end_reason from tournament_lease order by id').all() as Record<string, unknown>[];
+
+  it("lets the lent professor act through the organizer's connection for that tournament only", async () => {
+    await leagueWithProfessors();
+    const leaseId = lend(idOf(ASH), 't1', MISTY.userId);
+
+    expect(service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toEqual({ connectionId: idOf(ASH), leaseId });
+    expect(service.actingConnection(MISTY, ASH.playerId, { kind: 'tournament', tournamentId: 't1', use: 'results' })).toEqual({ connectionId: idOf(ASH), leaseId });
+    expect(service.actingConnection(OWNER, ASH.playerId, staff('t1'))).toEqual({ connectionId: idOf(ASH), leaseId: null });
+    for (const [actor, scope] of [
+      [MISTY, { kind: 'own' }],
+      [MISTY, staff('t2')],
+      [GARY, staff('t1')],
+    ] as const) {
+      expect(() => service.actingConnection(actor, ASH.playerId, scope)).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+    }
+  });
+
+  it('stops honouring a lease once its end passes, or while the lent professor is not a league member', async () => {
+    await leagueWithProfessors();
+    lend(idOf(ASH), 't1', MISTY.userId, new Date(clock.getTime() + DAY));
+
+    database.sqlite.prepare("update league_membership set status = 'unknown' where connection_id = ?").run(idOf(MISTY_ACCOUNT));
+    expect(() => service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+    database.sqlite.prepare("update league_membership set status = 'member' where connection_id = ?").run(idOf(MISTY_ACCOUNT));
+    expect(() => service.actingConnection({ ...MISTY, reverifyRequired: true }, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'reverify_required' }));
+
+    advance(DAY);
+    expect(() => service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+    expect(leaseRows()[0]).toMatchObject({ ended_at: null });
+  });
+
+  it("answers needs_reconnect to the lent professor when the organizer's connection needs one", async () => {
+    await leagueWithProfessors();
+    lend(idOf(ASH), 't1', MISTY.userId);
+    database.sqlite.prepare("update pokemon_connection set status = 'needs_reconnect' where id = ?").run(idOf(ASH));
+    expect(() => service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'needs_reconnect' }));
+  });
+
+  it("ends a connection's leases when it is disconnected, handing over their notices, and they go with it", async () => {
+    await leagueWithProfessors();
+    const leaseId = lend(idOf(ASH), 't1', MISTY.userId);
+
+    await service.disconnect(L, OWNER, ASH.playerId);
+
+    expect(ended).toEqual([expect.objectContaining({ id: leaseId, reason: 'connection_gone', lesseeUserId: MISTY.userId })]);
+    expect(leaseRows()).toEqual([]);
+  });
+
+  it("ends the owner's leases on a connection its professor takes over, keeping them", async () => {
+    await connect(ASH);
+    const leaseId = lend(idOf(ASH), 't1', GARY.userId);
+
+    await connect(ASH, service, MISTY);
+
+    expect(ended).toEqual([expect.objectContaining({ id: leaseId, reason: 'connection_gone' })]);
+    expect(leaseRows()).toEqual([expect.objectContaining({ id: leaseId, end_reason: 'connection_gone' })]);
+  });
+
+  it("ends a professor's leases when a read finds their connection outside the league, and no others", async () => {
+    await leagueWithProfessors();
+    const theirs = lend(idOf(ASH), 't1', MISTY.userId);
+    lend(idOf(ASH), 't2', GARY.userId);
+    professors.get(MISTY_ACCOUNT.sub)!.leagues = [OTHER_STORE];
+
+    await connect(MISTY_ACCOUNT, service, MISTY);
+
+    expect(ended).toEqual([expect.objectContaining({ id: theirs, reason: 'lessee_outside' })]);
+    expect(leaseRows().map((r) => r.end_reason)).toEqual(['lessee_outside', null]);
+  });
+
+  it('ends nothing when a membership read fails', async () => {
+    await leagueWithProfessors();
+    lend(idOf(ASH), 't1', MISTY.userId);
+    professors.get(MISTY_ACCOUNT.sub)!.leagues = new Error('play-tools is down');
+
+    await connect(MISTY_ACCOUNT, service, MISTY);
+
+    expect(ended).toEqual([]);
+  });
+
+  it("ends a removed professor's leases both ways, handing over notices only after the removal", async () => {
+    await leagueWithProfessors();
+    const fromThem = lend(idOf(MISTY_ACCOUNT), 't2', OWNER.userId);
+    const toThem = lend(idOf(ASH), 't1', MISTY.userId);
+
+    const removal = service.prepareRemoval(MISTY.userId);
+    database.db.transaction(() => service.deleteConnectionsOf(MISTY.userId));
+    expect(ended).toEqual([]);
+    await removal.revoke();
+
+    expect(ended).toEqual([
+      expect.objectContaining({ id: fromThem, reason: 'connection_gone' }),
+      expect.objectContaining({ id: toThem, reason: 'lessee_removed' }),
+    ]);
+    expect(leaseRows()).toEqual([expect.objectContaining({ id: toThem, end_reason: 'lessee_removed' })]);
   });
 });

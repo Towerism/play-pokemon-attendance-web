@@ -141,6 +141,27 @@
       "when": 1792098709344,
       "tag": "0019_skipped_while_unknown",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1792426169839,
+      "tag": "0020_professor_logins",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1792434330679,
+      "tag": "0021_invites_and_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1792438743270,
+      "tag": "0022_tournament_leases",
+      "breakpoints": true
     }
   ]
 }

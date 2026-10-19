@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { ESLint } from 'eslint';
 import { describe, expect, it } from 'vitest';
 
@@ -36,7 +38,9 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useMetrics()',
     'usePlaySessionResolver()',
     'useStaffing()',
-    'requireLeague(e)',
+    'requireActor(e)',
+    'requireMember(e)',
+    'requireOwner(e)',
     "useLogger('x')",
     'useIntegrationTokens()',
     'useIntegrationDays()',
@@ -321,5 +325,14 @@ describe("the launcher logs through attendance's configured logger", () => {
 
   it('accepts runLauncher given createAppLogger', async () => {
     expect(await errors('server/bootstrap/launcher.ts', launch(", logger: createAppLogger({ scope: 'startup' })"))).toEqual([]);
+  });
+});
+
+describe('the messaging module knows no feature (ADR-0015 §7)', () => {
+  it('names no feature that sends through it', () => {
+    const dir = join(process.cwd(), 'server', 'modules', 'messaging');
+    const sources = readdirSync(dir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+    expect(sources.length).toBeGreaterThan(0);
+    for (const f of sources) expect(readFileSync(join(dir, f), 'utf8'), f).not.toMatch(/invite|lease|professor/i);
   });
 });

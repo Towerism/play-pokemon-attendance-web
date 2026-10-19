@@ -7,6 +7,7 @@ import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import type { TournamentDetails } from '../pokemon/ports/play-tools-gateway';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, OLIVE, VENUE, series, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The tournaments module's side of Edit… (#93, ADR-0010 decisions 8 and 11): the form, the preview across a
 // schedule, the local writes, and each job item's fresh read. The job itself is the submission module's.
@@ -69,7 +70,7 @@ function inPlayTools(id: number, n: number, opts: Parameters<typeof upstreamTour
 }
 
 function customTemplate(overrides: Parameters<typeof templateBody>[0] = {}) {
-  return service.createTemplate(L, templateBody({ name: 'Tuesday Cup', type: { kind: 'custom' }, details: 'Bring a deck.', ...overrides }));
+  return service.createTemplate(L, templateBody({ name: 'Tuesday Cup', type: { kind: 'custom' }, details: 'Bring a deck.', ...overrides }), OWNER);
 }
 
 /** A weekly Tuesday schedule of one template (two with `sibling`), planned on read. */
@@ -166,8 +167,8 @@ describe('the edit form', () => {
     setRow(rows[1]!.id, `state = 'skipped', skipped_while_unknown = 1, tournament_id = ${tournamentId}`);
     const refused = { code: 'not_editable', details: { state: 'skipped', skippedWhileUnknown: true } };
     await expect(service.editForm(L, planned(rows[1]!.id))).rejects.toMatchObject(refused);
-    await expect(service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }))).rejects.toMatchObject(refused);
-    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'New' } }))).rejects.toMatchObject(refused);
+    await expect(service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }), OWNER)).rejects.toMatchObject(refused);
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'New' } }), OWNER)).rejects.toMatchObject(refused);
   });
 
   it('marks a cancelled or old tournament as locked', async () => {
@@ -193,17 +194,17 @@ describe('the preview: refusals on the tournament itself', () => {
   ] as const)('%s', async (code, changes, opts) => {
     const { id } = await created(opts as never);
     if (code === 'date_too_far_past') now = new Date('2026-10-18T17:00:00Z'); // the window opened on the 17th
-    await expect(service.editPreview(L, planned(id), body(changes))).rejects.toMatchObject({ code });
+    await expect(service.editPreview(L, planned(id), body(changes), OWNER)).rejects.toMatchObject({ code });
   });
 
   it('gives the date the reschedule window opens', async () => {
     const { id } = await created();
-    await expect(service.editPreview(L, planned(id), body({ localDate: '2026-10-22' }))).rejects.toMatchObject({ details: { opensOn: '2026-10-17' } });
+    await expect(service.editPreview(L, planned(id), body({ localDate: '2026-10-22' }), OWNER)).rejects.toMatchObject({ details: { opensOn: '2026-10-17' } });
   });
 
   it('lets a start time change on the same date through: it is not a reschedule', async () => {
     const { id } = await created();
-    const preview = await service.editPreview(L, planned(id), body({ startTime: '19:00' }));
+    const preview = await service.editPreview(L, planned(id), body({ startTime: '19:00' }), OWNER);
     expect(preview).toMatchObject({ reschedule: false, inPlayTools: [{ plannedId: id, changes: [{ field: 'startTime', before: '18:00', after: '19:00' }] }] });
   });
 
@@ -212,37 +213,37 @@ describe('the preview: refusals on the tournament itself', () => {
     upstream.state.tournaments[0]!.details!.series = { id: 's-oct', name: 'League Challenge' };
     upstream.state.series = [series('s-oct', 'League Challenge', '2026-10-01', '2026-10-31')];
     now = new Date('2026-10-18T17:00:00Z');
-    await expect(service.editPreview(L, planned(id), body({ localDate: '2026-11-03' }))).rejects.toMatchObject({
+    await expect(service.editPreview(L, planned(id), body({ localDate: '2026-11-03' }), OWNER)).rejects.toMatchObject({
       code: 'outside_series_window',
       details: { window: { from: '2026-10-01', to: '2026-10-31' } },
     });
-    await expect(service.editPreview(L, planned(id), body({ category: 'tcg_exp' }))).rejects.toMatchObject({ code: 'format_not_in_series' });
-    expect((await service.editPreview(L, planned(id), body({ localDate: '2026-10-22' }))).warnings).toContain('may_need_approval');
+    await expect(service.editPreview(L, planned(id), body({ category: 'tcg_exp' }), OWNER)).rejects.toMatchObject({ code: 'format_not_in_series' });
+    expect((await service.editPreview(L, planned(id), body({ localDate: '2026-10-22' }), OWNER)).warnings).toContain('may_need_approval');
   });
 
   it('warns when the series is no longer listed, and leaves the date to play-tools', async () => {
     const { id } = await created();
     upstream.state.tournaments[0]!.details!.series = { id: 's-gone', name: 'League Challenge' };
     now = new Date('2026-10-18T17:00:00Z');
-    expect((await service.editPreview(L, planned(id), body({ localDate: '2026-11-03' }))).warnings).toContain('series_window_unknown');
+    expect((await service.editPreview(L, planned(id), body({ localDate: '2026-11-03' }), OWNER)).warnings).toContain('series_window_unknown');
   });
 
   it('refuses a scope or siblings off a schedule, and a template update with no template', async () => {
     upstream.state.tournaments.push(upstreamTournament(guid(7), '2026-10-24T17:00:00Z'));
-    await expect(service.editPreview(L, tournament(guid(7)), body({ name: 'X' }, { scope: 'later' }))).rejects.toMatchObject({ code: 'not_in_schedule' });
-    await expect(service.editPreview(L, tournament(guid(7)), body({ name: 'X' }, { withSiblings: true }))).rejects.toMatchObject({ code: 'not_in_schedule' });
-    await expect(service.editPreview(L, tournament(guid(7)), body({ name: 'X' }, { updateTemplate: true }))).rejects.toMatchObject({ code: 'no_template' });
+    await expect(service.editPreview(L, tournament(guid(7)), body({ name: 'X' }, { scope: 'later' }), OWNER)).rejects.toMatchObject({ code: 'not_in_schedule' });
+    await expect(service.editPreview(L, tournament(guid(7)), body({ name: 'X' }, { withSiblings: true }), OWNER)).rejects.toMatchObject({ code: 'not_in_schedule' });
+    await expect(service.editPreview(L, tournament(guid(7)), body({ name: 'X' }, { updateTemplate: true }), OWNER)).rejects.toMatchObject({ code: 'no_template' });
   });
 
   it('says a reschedule into the next 7 days is short notice', async () => {
     const { id } = await created();
     now = new Date('2026-10-18T17:00:00Z');
-    expect(await service.editPreview(L, planned(id), body({ localDate: '2026-10-22' }))).toMatchObject({ reschedule: true, shortNotice: true });
+    expect(await service.editPreview(L, planned(id), body({ localDate: '2026-10-22' }), OWNER)).toMatchObject({ reschedule: true, shortNotice: true });
   });
 
   it('warns another planned tournament of the template holds the new date and time', async () => {
     const { rows } = await weekly();
-    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ localDate: '2026-10-27' }));
+    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ localDate: '2026-10-27' }), OWNER);
     expect(preview.warnings).toEqual(['another_planned_at_time']);
     expect(preview.planned).toEqual([expect.objectContaining({ plannedId: rows[1]!.id })]);
   });
@@ -258,7 +259,7 @@ describe('the preview across the schedule', () => {
     inPlayTools(b!.id, 3);
     setRow(cancelled!.id, "state = 'cancelled'");
 
-    const preview = await service.editPreview(L, planned(edited!.id), body({ venue: LIBRARY, details: 'Moved to the library.' }, { scope: 'later' }));
+    const preview = await service.editPreview(L, planned(edited!.id), body({ venue: LIBRARY, details: 'Moved to the library.' }, { scope: 'later' }), OWNER);
 
     expect(preview.inPlayTools.map((e) => e.plannedId)).toEqual([edited!.id, a!.id, b!.id]);
     expect(preview.inPlayTools[1]!.changes).toEqual([
@@ -279,7 +280,7 @@ describe('the preview across the schedule', () => {
     upstream.state.tournaments.find((t) => t.id === same)!.details!.details = 'New';
     upstream.state.tournaments = upstream.state.tournaments.filter((t) => t.id !== guid(3));
 
-    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }, { scope: 'later' }));
+    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }, { scope: 'later' }), OWNER);
 
     expect(preview.leftOut.map((l) => [l.entry.plannedId, l.reason, l.code])).toEqual([
       [rows[2]!.id, 'tournament_locked', undefined],
@@ -293,7 +294,7 @@ describe('the preview across the schedule', () => {
     const slot0 = rows.filter((r) => r.slot_position === 0);
     const slot1 = rows.filter((r) => r.slot_position === 1);
 
-    const preview = await service.editPreview(L, planned(slot0[1]!.id), body({ name: 'Halloween Cup', details: 'Costumes' }, { scope: 'later', withSiblings: true }));
+    const preview = await service.editPreview(L, planned(slot0[1]!.id), body({ name: 'Halloween Cup', details: 'Costumes' }, { scope: 'later', withSiblings: true }), OWNER);
 
     const changed = (id: number) => [...preview.planned, ...preview.inPlayTools].find((e) => e.plannedId === id)!.changes.map((c) => c.field);
     expect(changed(slot0[1]!.id)).toEqual(['name', 'details']);
@@ -310,7 +311,7 @@ describe('the preview across the schedule', () => {
     upstream.state.tournaments.push(upstreamTournament(guid(100), '2026-10-20T23:00:00Z', { name: 'Tuesday Cup', details: fullDetails(new Date('2026-10-20T23:00:00Z')) }));
     upstream.state.calls.length = 0;
 
-    await expect(service.editPreview(L, planned(all[0]!.id), body({ details: 'X' }, { scope: 'later', withSiblings: true }))).rejects.toMatchObject({
+    await expect(service.editPreview(L, planned(all[0]!.id), body({ details: 'X' }, { scope: 'later', withSiblings: true }), OWNER)).rejects.toMatchObject({
       code: 'too_many_tournaments',
       details: { count: 61 },
     });
@@ -323,7 +324,7 @@ describe('Update the template', () => {
     const { rows, template, schedule } = await weekly();
     setRow(rows[3]!.id, `overrides = '${JSON.stringify({ details: 'Keep this' })}'`);
 
-    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }, { updateTemplate: true }));
+    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }, { updateTemplate: true }), OWNER);
 
     expect(preview.template).toEqual({
       templateId: template.id,
@@ -335,7 +336,7 @@ describe('Update the template', () => {
 
 describe('applying locally', () => {
   const apply = async (target: ReturnType<typeof planned>, raw: Record<string, unknown>) => {
-    const plan = await service.editing.prepare(L, target, ApplyBody.parse(raw));
+    const plan = await service.editing.prepare(L, target, ApplyBody.parse(raw), OWNER);
     return { plan, updated: database.db.transaction(() => service.editing.applyLocal(L, plan, 'organizer')) };
   };
 
@@ -379,7 +380,7 @@ describe('applying locally', () => {
     const held = rows[3]!.id;
     setRow(held, "state = 'skipped', skipped_while_unknown = 1");
 
-    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ venue: LIBRARY }, { scope: 'later' }));
+    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ venue: LIBRARY }, { scope: 'later' }), OWNER);
     expect(preview.leftOut).toEqual([{ entry: expect.objectContaining({ plannedId: held }), reason: 'skipped_while_unknown' }]);
     await apply(planned(rows[1]!.id), { changes: { venue: LIBRARY }, scope: 'later' });
 
@@ -418,7 +419,7 @@ describe('applying locally', () => {
     const { rows, template } = await weekly();
     const oneOff = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-30', overrides: { details: 'Costumes welcome' } }).plannedId!;
 
-    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }, { updateTemplate: true }));
+    const preview = await service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }, { updateTemplate: true }), OWNER);
     expect(preview.template!.shadowedBy.flatMap((s) => s.plannedIds)).toContain(oneOff);
 
     await apply(planned(rows[1]!.id), { changes: { details: 'New' }, updateTemplate: true });
@@ -432,16 +433,16 @@ describe('applying locally', () => {
     const { rows } = await weekly();
     inPlayTools(rows[1]!.id, 1);
     now = new Date('2026-10-18T17:00:00Z');
-    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { localDate: '2026-10-22' } }))).rejects.toMatchObject({
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { localDate: '2026-10-22' } }), OWNER)).rejects.toMatchObject({
       code: 'short_notice_not_acknowledged',
     });
-    const plan = await service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { localDate: '2026-10-22' }, acknowledgeShortNotice: true }));
+    const plan = await service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { localDate: '2026-10-22' }, acknowledgeShortNotice: true }), OWNER);
     expect(plan).toMatchObject({ reschedule: true, label: 'Reschedule Tuesday Cup · 2026-10-20', items: [{ shortNotice: true }] });
   });
 
   it('refuses an apply with everything excluded', async () => {
     const { rows } = await weekly();
-    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'X' }, excluded: [`p:${rows[1]!.id}`] }))).rejects.toMatchObject({
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'X' }, excluded: [`p:${rows[1]!.id}`] }), OWNER)).rejects.toMatchObject({
       code: 'nothing_to_edit',
     });
   });
@@ -452,7 +453,7 @@ describe("a job item's turn", () => {
     const { rows } = await weekly();
     inPlayTools(rows[1]!.id, 1);
     if (at) now = at;
-    const plan = await service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes, acknowledgeShortNotice: true }));
+    const plan = await service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes, acknowledgeShortNotice: true }), OWNER);
     return { row: rows[1]!, item: { ...plan.items[0]!, position: 0 } };
   }
 
@@ -491,3 +492,27 @@ describe("a job item's turn", () => {
     expect(moved).toEqual([{ tournamentId: guid(1), to: '2026-10-22' }]);
   });
 });
+
+describe('who may edit (ADR-0015 §4)', () => {
+  const MISTY = professorActor(2, 'misty');
+
+  it("refuses a professor editing the owner's tournament, but shows them the preview", async () => {
+    const { rows } = await weekly();
+    inPlayTools(rows[1]!.id, 1);
+
+    await expect(service.editPreview(L, planned(rows[1]!.id), body({ details: 'New' }), MISTY)).resolves.toBeDefined();
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'New' } }), MISTY)).rejects.toMatchObject({
+      code: 'not_your_connection',
+      details: { professorPlayerId: OLIVE.professorPlayerId },
+    });
+  });
+
+  it("refuses a professor editing the owner's planned tournament", async () => {
+    const { rows } = await weekly();
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'New' } }), MISTY)).rejects.toMatchObject({
+      code: 'not_your_connection',
+    });
+    await expect(service.editing.prepare(L, planned(rows[1]!.id), ApplyBody.parse({ changes: { details: 'New' } }), OWNER)).resolves.toBeDefined();
+  });
+});
+

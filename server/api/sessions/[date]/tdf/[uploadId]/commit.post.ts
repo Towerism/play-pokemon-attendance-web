@@ -3,7 +3,7 @@ import { TdfFileDeletedError, UploadNotFoundError } from '../../../../../modules
 
 /** Import a previewed `.tdf`: players, session players and sightings. Committing again is a no-op. */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
+  const { leagueId } = await requireMember(event);
   const { date, uploadId } = await getValidatedRouterParams(event, TdfUploadParams.parse);
   try {
     return useTdfImports().commit(leagueId, date, uploadId);

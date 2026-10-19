@@ -4,6 +4,7 @@ import { dateIn } from '../../../shared/time/local-time';
 import type { SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { plannedTournament, scaffoldSlot, tournamentScaffold, tournamentSchedule, tournamentScheduleOverride, tournamentTemplate } from '../../db/schema';
+import type { Actor } from '../accounts/service';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { TournamentChanges, TournamentDetails } from '../pokemon/ports/play-tools-gateway';
@@ -27,7 +28,7 @@ import {
   siblingFields,
 } from './edit';
 import { TournamentsError } from './errors';
-import { organizerReads } from './organizer';
+import { assertMayActAs, organizerReads } from './organizer';
 import type { LiveReads } from './live-reads';
 import { heldSkipped, replannable } from './plan';
 import type { TemplateSettings } from './settings';
@@ -125,10 +126,11 @@ export type ItemRead =
 /** What the submission module's `tournament_edit` job uses (#93), as `creation` is for creates. */
 export interface TournamentEditing {
   /**
-   * The preview worked out again, minus `excluded`, with the apply's own refusals. Reads only.
-   * @throws TournamentsError (the preview's), `short_notice_not_acknowledged`, `nothing_to_edit`
+   * The preview worked out again, minus `excluded`, with the apply's own refusals. Reads only. The tournament itself
+   * must be `actor`'s to change (ADR-0015 §4); others the edit reaches that aren't are left out.
+   * @throws TournamentsError (the preview's), `short_notice_not_acknowledged`, `nothing_to_edit`, `not_your_connection`
    */
-  prepare(leagueId: string, target: EditTarget, body: ApplyBody): Promise<EditPlan>;
+  prepare(leagueId: string, target: EditTarget, body: ApplyBody, actor: Actor): Promise<EditPlan>;
   /** The local writes; call inside the job's transaction. Returns how many planned rows changed. */
   applyLocal(leagueId: string, plan: EditPlan, by: string): number;
   /** Fresh read, checks and delta. @throws PokemonUpstreamError `not_connected`, `needs_reconnect`, `forbidden`: the job stops */
@@ -145,7 +147,7 @@ export interface TournamentEditing {
 /** The service internals editing works with. */
 export interface EditingContext {
   db: Db;
-  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
+  connections: Pick<PokemonConnectionService, 'league' | 'listActingConnections' | 'actingConnection'>;
   gateway: (connectionId: number) => Pick<import('./service').TournamentsGateway, 'getTournament'>;
   live: LiveReads;
   staffing?: Pick<StaffingService, 'moveTournament'>;
@@ -181,7 +183,11 @@ interface Check {
   details?: Record<string, unknown>;
 }
 
-export function createEditing(ctx: EditingContext): { editForm: (l: string, t: EditTarget) => Promise<EditForm>; editPreview: (l: string, t: EditTarget, b: EditBody) => Promise<EditPreview>; editing: TournamentEditing } {
+export function createEditing(ctx: EditingContext): {
+  editForm: (l: string, t: EditTarget) => Promise<EditForm>;
+  editPreview: (l: string, t: EditTarget, b: EditBody, actor: Actor) => Promise<EditPreview>;
+  editing: TournamentEditing;
+} {
   const { db } = ctx;
 
   function acting(playerId: string): ActingConnection | undefined {
@@ -191,8 +197,8 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
   const reads = organizerReads(ctx);
 
   async function resolve(leagueId: string, target: EditTarget): Promise<Resolved> {
-    const status = ctx.connections.getStatus(leagueId);
-    const group = status.league?.id;
+    const league = ctx.connections.league(leagueId);
+    const group = league?.id;
     if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
     const row =
       target.kind === 'planned'
@@ -202,7 +208,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
             .from(plannedTournament)
             .where(and(eq(plannedTournament.leagueId, leagueId), eq(plannedTournament.tournamentId, target.id)))
             .get() ?? null);
-    const base = { group, leagueDisplayId: status.league?.displayId ?? null };
+    const base = { group, leagueDisplayId: league?.displayId ?? null };
     if (!row) {
       const guid = (target as Extract<EditTarget, { kind: 'tournament' }>).id;
       return { ...base, row: null, template: null, schedule: null, settings: null, upstream: await reads.ofGuid(group, guid) };
@@ -321,8 +327,27 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
     siblings: CarriedField[];
   }
 
-  async function compute(leagueId: string, target: EditTarget, body: EditBody): Promise<Computed> {
+  /** Whether `actor` may change a tournament in `organizerPlayerId`'s name; `local` for a row not in play-tools yet. */
+  function mayChange(actor: Actor, organizerPlayerId: string, local: boolean): boolean {
+    try {
+      assertMayActAs(ctx.connections, actor, organizerPlayerId, { local, ownerCleanup: local });
+      return true;
+    } catch (err) {
+      if (err instanceof TournamentsError && err.code === 'not_your_connection') return false;
+      throw err;
+    }
+  }
+
+  /**
+   * The preview. `enforce` (the apply) refuses a tournament `actor` may not change; the preview itself is a read every
+   * member may make (ADR-0015 §4). Either way, other tournaments the edit reaches that aren't `actor`'s are left out.
+   */
+  async function compute(leagueId: string, target: EditTarget, body: EditBody, actor: Actor, enforce: boolean): Promise<Computed> {
     const t = await resolve(leagueId, target);
+    if (enforce) {
+      if (t.upstream) assertMayActAs(ctx.connections, actor, t.upstream.read.organizerPlayerId);
+      else if (t.template) assertMayActAs(ctx.connections, actor, t.template.organizerPlayerId, { local: true, ownerCleanup: true });
+    }
     const { changes } = body;
     if (t.upstream && locked(t.upstream.read)) throw new TournamentsError('tournament_locked', "play-tools no longer lets a professor edit this tournament.");
     const before = t.upstream ? formValues(t.upstream.read, fallbackOf(t.settings, t.upstream.read)) : rowValues(t.row!, t.settings!);
@@ -386,7 +411,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
       out.local.push({ key: primary.key, plannedId: t.row!.id, changes });
     }
 
-    if (t.schedule && t.row && (body.scope !== 'this' || body.withSiblings)) await scope(leagueId, body, t, out);
+    if (t.schedule && t.row && (body.scope !== 'this' || body.withSiblings)) await scope(leagueId, body, t, out, actor);
     out.preview.count = out.preview.inPlayTools.length;
 
     if (body.updateTemplate) out.preview.template = templateSection(leagueId, t.template!, out);
@@ -394,7 +419,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
   }
 
   /** The other tournaments the edit reaches across the schedule (ADR-0010 decision 11). */
-  async function scope(leagueId: string, body: EditBody, t: Resolved, out: Computed) {
+  async function scope(leagueId: string, body: EditBody, t: Resolved, out: Computed, actor: Actor) {
     const rows = db.select().from(plannedTournament).where(eq(plannedTournament.scheduleId, t.schedule!.id)).all();
     const byId = new Map(rows.map((r) => [r.id, r]));
     const scopeRow = (r: PlannedRow) => ({
@@ -438,6 +463,11 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
       const changes = pickChanges(body.changes, fieldsFor(sibling));
       if (r.state !== 'created') {
         hold(r, sibling);
+        const { organizerPlayerId } = db.select().from(tournamentTemplate).where(eq(tournamentTemplate.id, r.templateId)).get()!;
+        if (!mayChange(actor, organizerPlayerId, true)) {
+          out.preview.leftOut.push({ entry: targetOf(r, sibling), reason: 'not_your_connection' });
+          continue;
+        }
         const before = rowValues(r, settings.get(r.id)!);
         const diff = diffValues(before, applyValues(before, changes));
         if (diff.length === 0) out.preview.leftOut.push({ entry: targetOf(r, sibling, before), reason: 'no_change' });
@@ -447,7 +477,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
         }
         continue;
       }
-      const entry = await upstreamEntry(r, sibling, changes, t, targetOf);
+      const entry = await upstreamEntry(r, sibling, changes, t, targetOf, actor);
       if ('reason' in entry) out.preview.leftOut.push(entry);
       else {
         out.preview.inPlayTools.push(entry.entry);
@@ -463,6 +493,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
     changes: EditChanges,
     t: Resolved,
     targetOf: (r: PlannedRow, sibling: boolean, v?: EditValues) => PreviewTarget,
+    actor: Actor,
   ): Promise<{ entry: PreviewTarget; reason: string; code?: string } | { entry: PreviewEntry; item: EditItem & { key: string } }> {
     const template = db.select().from(tournamentTemplate).where(eq(tournamentTemplate.id, r.templateId)).get()!;
     const leftOut = (reason: string, code?: string) => ({ entry: targetOf(r, sibling), reason, ...(code && { code }) });
@@ -481,6 +512,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
       if (!(err instanceof PokemonUpstreamError)) throw err;
       return leftOut('unreadable', err.code);
     }
+    if (!mayChange(actor, fresh.organizerPlayerId, false)) return leftOut('not_your_connection');
     if (locked(fresh)) return leftOut('tournament_locked');
     const s = ctx.settingsFor([r]).get(r.id)!;
     const checked = await check(fresh, changes, c, t.group, s.venue.country);
@@ -565,8 +597,8 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
   }
 
   const editing: TournamentEditing = {
-    async prepare(leagueId, target, body) {
-      const c = await compute(leagueId, target, body);
+    async prepare(leagueId, target, body, actor) {
+      const c = await compute(leagueId, target, body, actor, true);
       const excluded = new Set(body.excluded);
       const items = c.items.filter((i) => !excluded.has(i.key));
       const local = c.local.filter((l) => !excluded.has(l.key));
@@ -648,7 +680,7 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
       const c = ctx.connections.listActingConnections().find((x) => x.professorPlayerId === item.professorPlayerId);
       if (!c) throw new PokemonUpstreamError('not_connected', `Professor ${item.professorPlayerId}'s Pokémon account is no longer connected.`);
       if (c.status === 'needs_reconnect') throw new PokemonUpstreamError('needs_reconnect', `Reconnect ${c.professorName ?? `Professor ${item.professorPlayerId}`} in Settings.`);
-      const group = ctx.connections.getStatus(leagueId).league?.id;
+      const group = ctx.connections.league(leagueId)?.id;
       if (!group) return { kind: 'fail', code: 'league_not_selected', message: 'Choose the league in Settings first.' };
       let fresh: TournamentDetails;
       try {
@@ -728,8 +760,8 @@ export function createEditing(ctx: EditingContext): { editForm: (l: string, t: E
       };
     },
 
-    async editPreview(leagueId, target, body) {
-      return (await compute(leagueId, target, body)).preview;
+    async editPreview(leagueId, target, body, actor) {
+      return (await compute(leagueId, target, body, actor, false)).preview;
     },
 
     editing,

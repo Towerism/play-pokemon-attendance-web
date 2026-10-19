@@ -1,4 +1,6 @@
 import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import { type BrowserContext, type Page, test as base, expect } from '@playwright/test';
 import { type FakePlaySession, type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
@@ -107,6 +109,8 @@ export function fixtureFile(name: string): string {
 }
 
 interface Fixtures {
+  /** Extra env for the app, set with `test.use({ appEnv: { … } })`. */
+  appEnv: Record<string, string>;
   /** A fresh fake play-tools for this test. */
   fake: FakePokemon;
   /** A fresh app (the production build) on its own port and data dir, pointed at `fake`. */
@@ -120,6 +124,8 @@ interface Fixtures {
 }
 
 export const test = base.extend<Fixtures>({
+  appEnv: [{}, { option: true }],
+
   // eslint-disable-next-line no-empty-pattern -- Playwright reads a fixture's dependencies from this pattern.
   fake: async ({}, use) => {
     const fake = await startFakePokemon();
@@ -127,8 +133,8 @@ export const test = base.extend<Fixtures>({
     await fake.close();
   },
 
-  app: async ({ fake }, use, testInfo) => {
-    const app = await startServer({ env: { ...fake.env, ...APP_ENV } });
+  app: async ({ fake, appEnv }, use, testInfo) => {
+    const app = await startServer({ env: { ...fake.env, ...APP_ENV, ...appEnv } });
     try {
       await use(app);
     } finally {
@@ -238,3 +244,53 @@ export async function finishedStatus(api: Api, id: number): Promise<string> {
     .toBe(false);
   return status;
 }
+
+/**
+ * A professor as an invite makes them (ADR-0015 §1, §6), added straight to the database with the owner's password,
+ * and signed in, for journeys that aren't about inviting. Returns their API client; `shareSession` puts the browser on it.
+ */
+export async function addProfessor(app: TestServer, username: string): Promise<Api> {
+  const db = new Database(join(app.dataDir, 'app.db'));
+  try {
+    db.pragma('busy_timeout = 5000');
+    db.prepare(`insert into app_user (username, password_hash, role, created_at) select ?, password_hash, 'professor', 1 from app_user where role = 'owner'`).run(username);
+  } finally {
+    db.close();
+  }
+  const api = client(app.url);
+  expect((await api.request('/api/auth/login', { method: 'POST', json: { username, password: OWNER.password } })).status, `log in as ${username}`).toBe(200);
+  return api;
+}
+
+/**
+ * Tournament Genie's side of the Discord channel (ADR-0015 §7), played over HTTP with a `messages:deliver` token minted
+ * as the owner. `poll` once makes the channel count Genie as connected.
+ */
+export async function genie(app: TestServer, owner: Api) {
+  const minted = await owner.request('/api/integrations/tokens', { method: 'POST', json: { label: 'Tournament Genie', scopes: ['messages:deliver'] } });
+  expect(minted.status, 'mint a Genie token').toBe(201);
+  const headers = { authorization: `Bearer ${((await minted.json()) as { secret: string }).secret}` };
+  return {
+    async poll(wait = 0): Promise<{ id: number; playerId: string; link: { url: string } | null }[]> {
+      const res = await fetch(`${app.url}/api/integrations/v1/messages?wait=${wait}`, { headers });
+      expect(res.status, 'Genie poll').toBe(200);
+      return ((await res.json()) as { messages: { id: number; playerId: string; link: { url: string } | null }[] }).messages;
+    },
+    async report(id: number, status: string) {
+      const res = await fetch(`${app.url}/api/integrations/v1/messages/${id}/result`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      expect(res.status, 'Genie result').toBe(204);
+    },
+  };
+}
+
+/** Paste-back connect over the API as `api`, logging into the fake account with `code`. */
+export async function connectAccount(api: Api, code: string) {
+  const start = await api.request('/api/pokemon/connect/start', { method: 'POST', json: {} });
+  const state = new URL(((await start.json()) as { authorizeUrl: string }).authorizeUrl).searchParams.get('state')!;
+  return api.request('/api/pokemon/connect/complete', { method: 'POST', json: { url: loggedInUrl(state, code) } });
+}
+

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AttendanceDayV1, CreateIntegrationTokenBody, IntegrationTokenIdParam } from './integrations';
+import { AttendanceDayV1, CreateIntegrationTokenBody, IntegrationTokenIdParam, MessageResultBody, MessagesQuery, MessagesV1 } from './integrations';
 
 const day = {
   date: '2026-10-14',
@@ -43,7 +43,7 @@ describe('CreateIntegrationTokenBody', () => {
     ['a trimmed label', { label: '  Genie  ' }, 'Genie'],
     ['60 characters', { label: 'x'.repeat(60) }, 'x'.repeat(60)],
   ])('accepts %s', (_l, body, label) => {
-    expect(CreateIntegrationTokenBody.parse(body)).toEqual({ label });
+    expect(CreateIntegrationTokenBody.parse(body)).toEqual({ label, scopes: ['integrations:read'] });
   });
 
   it.each([
@@ -64,5 +64,37 @@ describe('IntegrationTokenIdParam', () => {
   });
   it.each(['0', '-1', '1.5', 'abc', '1e3'])('rejects %j', (id) => {
     expect(IntegrationTokenIdParam.safeParse({ id }).success).toBe(false);
+  });
+});
+
+describe('the Discord channel wire (ADR-0015 §7)', () => {
+  it('reads wait (0–25, default 0) and limit (1–50, default 20) from the query', () => {
+    expect(MessagesQuery.parse({})).toEqual({ wait: 0, limit: 20 });
+    expect(MessagesQuery.parse({ wait: '25', limit: '50' })).toEqual({ wait: 25, limit: 50 });
+    expect(MessagesQuery.parse({ wait: '0', limit: '1' })).toEqual({ wait: 0, limit: 1 });
+    for (const q of [{ wait: '-1' }, { wait: '26' }, { wait: '1.5' }, { wait: 'x' }, { limit: '0' }, { limit: '51' }]) {
+      expect(MessagesQuery.safeParse(q).success, JSON.stringify(q)).toBe(false);
+    }
+  });
+
+  it('takes a result of delivered, no_discord_user, dm_refused or failed, with a reason of at most 200 characters', () => {
+    expect(MessageResultBody.parse({ status: 'failed', reason: 'x'.repeat(200) })).toEqual({ status: 'failed', reason: 'x'.repeat(200) });
+    expect(MessageResultBody.parse({ status: 'delivered' })).toEqual({ status: 'delivered' });
+    for (const b of [{}, { status: 'sent' }, { status: 'failed', reason: 'x'.repeat(201) }]) expect(MessageResultBody.safeParse(b).success).toBe(false);
+  });
+
+  it('pins the poll answer strictly, so a renamed field fails', () => {
+    const message = { id: 1, playerId: '0012345', text: 'hi', link: { label: 'Accept the invite', url: 'https://x/invite#s' }, expiresAt: '2026-10-22T12:00:00.000Z' };
+    expect(MessagesV1.parse({ messages: [message, { ...message, link: null }] }).messages).toHaveLength(2);
+    expect(MessagesV1.safeParse({ messages: [{ ...message, topic: 'invite' }] }).success).toBe(false);
+  });
+});
+
+describe('minting a token with scopes', () => {
+  it('defaults to integrations:read and refuses an empty or unknown scope', () => {
+    expect(CreateIntegrationTokenBody.parse({ label: 'Genie' })).toEqual({ label: 'Genie', scopes: ['integrations:read'] });
+    expect(CreateIntegrationTokenBody.parse({ label: 'Genie', scopes: ['messages:deliver'] })).toEqual({ label: 'Genie', scopes: ['messages:deliver'] });
+    expect(CreateIntegrationTokenBody.safeParse({ label: 'Genie', scopes: [] }).success).toBe(false);
+    expect(CreateIntegrationTokenBody.safeParse({ label: 'Genie', scopes: ['admin'] }).success).toBe(false);
   });
 });

@@ -13,6 +13,8 @@ const LAST_WITHOUT_FULL_NAME = '0011_tdf_archive';
 
 let database: OpenDatabase;
 let previous: string;
+/** Through the last migration before professor logins (0020), which gives each connection to an account these fixtures don't make. */
+let through: string;
 
 /** A copy of the migrations folder whose journal stops at `tag`. */
 function migrationsUpTo(tag: string): string {
@@ -28,11 +30,13 @@ function migrationsUpTo(tag: string): string {
 beforeEach(() => {
   database = openDatabase(':memory:');
   previous = migrationsUpTo(LAST_WITHOUT_FULL_NAME);
+  through = migrationsUpTo('0019_skipped_while_unknown');
   migrateDatabase(database.db, previous);
 });
 afterEach(() => {
   database.close();
   rmSync(previous, { recursive: true, force: true });
+  rmSync(through, { recursive: true, force: true });
 });
 
 it('keeps every connection as it was, with no full name yet', () => {
@@ -43,7 +47,7 @@ it('keeps every connection as it was, with no full name yet', () => {
     )
     .run();
 
-  migrateDatabase(database.db, MIGRATIONS_DIR);
+  migrateDatabase(database.db, through);
 
   expect(
     database.sqlite

@@ -4,7 +4,7 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
-import type { ActingConnection, ConnectionView } from '../pokemon/connection';
+import type { ActingConnection } from '../pokemon/connection';
 import type { DateRange, League, Tournament, TournamentDetails, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import { type RosterService, createRosterService } from '../roster/service';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
@@ -14,6 +14,7 @@ import { GROUP, ROLES, playing, staffer, tournament } from '../staffing/test-hel
 import { SubmissionError } from './errors';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, type SubmissionView, createSubmissionService } from './service';
+import { HELD_BY_OWNER, OWNER, professorActor, stubConnections } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';
@@ -110,7 +111,8 @@ let sightings: SightingsService;
 let sessions: SessionsService;
 let staffing: StaffingService;
 let upstream: FakeTournaments;
-let connection: ConnectionView;
+/** The league's chosen activity group (ADR-0015 §3), or none. */
+let connection: { league: { id: string; name: string; displayId: string | null } | null };
 /** The professors connected; Olive (1) organizes `upstream`'s tournaments. */
 let professors: ActingConnection[];
 /** Play-tools as each connection sees it; a connection with no entry sees `upstream`. */
@@ -147,7 +149,7 @@ function build(): SubmissionService {
     sessions,
     roster,
     sightings,
-    connections: { getStatus: () => connection, listActingConnections: () => professors },
+    connections: stubConnections({ professors: () => professors, league: () => connection.league }),
     gateway: () => noAttendance,
     staffGateway: (connectionId) => asConnection.get(connectionId ?? 0) ?? upstream,
     staffing,
@@ -173,21 +175,13 @@ beforeEach(() => {
   upstream = new FakeTournaments();
   // 21:00 in Chicago on the 13th is already the 14th in UTC.
   clock = new Date('2026-10-14T02:00:00Z');
-  connection = {
-    status: 'connected',
-    reason: null,
-    connectedAt: clock,
-    lastRefreshedAt: clock,
-    league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
-    connectionId: 1,
-    professor: { playerId: '0012345', name: 'Ash Ketchum' },
-  };
-  professors = [{ id: 1, professorPlayerId: ORGANIZER, professorName: 'Olive Organizer', status: 'connected' }];
+  connection = { league: { id: GROUP, name: 'Card Shop', displayId: 'L5012' } };
+  professors = [{ id: 1, professorPlayerId: ORGANIZER, professorName: 'Olive Organizer', status: 'connected', ...HELD_BY_OWNER }];
   asConnection = new Map();
   staffing = createStaffingService({
     db: database.db,
     roster,
-    connections: { getStatus: () => connection, listActingConnections: () => professors },
+    connections: stubConnections({ professors: () => professors, league: () => connection.league }),
     staffGateway: () => upstream,
     timeZone: TZ,
     now: () => clock,
@@ -201,7 +195,7 @@ afterEach(() => database.close());
 
 /** Starts an import and waits for it to finish. */
 async function importStaff(): Promise<SubmissionView> {
-  const { submissionId } = await service.importStaff(L, 'organizer');
+  const { submissionId } = await service.importStaff(L, OWNER);
   await service.idle();
   return service.get(L, submissionId);
 }
@@ -343,9 +337,9 @@ describe('starting an import', () => {
   it('is refused while another job holds the league, and creates nothing', async () => {
     let release!: () => void;
     upstream.gate = new Promise((r) => (release = r));
-    await service.importStaff(L, 'organizer');
+    await service.importStaff(L, OWNER);
 
-    const err = await refusal(service.importStaff(L, 'organizer'));
+    const err = await refusal(service.importStaff(L, OWNER));
 
     expect(err).toBeInstanceOf(SubmissionError);
     expect(err.code).toBe('submission_running');
@@ -357,15 +351,15 @@ describe('starting an import', () => {
   it('holds the league while it runs: a staff job is refused, and the lease frees when it ends', async () => {
     let release!: () => void;
     upstream.gate = new Promise((r) => (release = r));
-    await service.importStaff(L, 'organizer');
+    await service.importStaff(L, OWNER);
 
-    expect((await refusal(service.applyStaff(L, '2026-10-14' as SessionDate, { tournamentId: 't-1', startedBy: 'o' }))).code).toBe(
+    expect((await refusal(service.applyStaff(L, '2026-10-14' as SessionDate, { tournamentId: 't-1', actor: OWNER }))).code).toBe(
       'submission_running',
     );
 
     release();
     await service.idle();
-    expect(await service.importStaff(L, 'organizer')).toEqual({ submissionId: expect.any(Number) });
+    expect(await service.importStaff(L, OWNER)).toEqual({ submissionId: expect.any(Number) });
     await service.idle();
   });
 
@@ -375,14 +369,14 @@ describe('starting an import', () => {
       'needs_reconnect',
       'every professor needs a reconnect',
       [
-        { id: 1, professorPlayerId: ORGANIZER, professorName: null, status: 'needs_reconnect' as const },
-        { id: 2, professorPlayerId: '0000222', professorName: null, status: 'needs_reconnect' as const },
+        { id: 1, professorPlayerId: ORGANIZER, professorName: null, status: 'needs_reconnect' as const, ...HELD_BY_OWNER },
+        { id: 2, professorPlayerId: '0000222', professorName: null, status: 'needs_reconnect' as const, ...HELD_BY_OWNER },
       ],
     ],
   ])('is refused with %s when %s, before any call', async (code, _l, connected) => {
     professors = connected;
 
-    const err = await refusal(service.importStaff(L, 'organizer'));
+    const err = await refusal(service.importStaff(L, OWNER));
 
     expect(err).toBeInstanceOf(PokemonUpstreamError);
     expect(err.code).toBe(code);
@@ -393,7 +387,7 @@ describe('starting an import', () => {
   it('is refused with league_not_selected when no league is chosen', async () => {
     connection = { ...connection, league: null };
 
-    const err = await refusal(service.importStaff(L, 'organizer'));
+    const err = await refusal(service.importStaff(L, OWNER));
 
     expect(err).toBeInstanceOf(SubmissionError);
     expect(err.code).toBe('league_not_selected');
@@ -403,7 +397,7 @@ describe('starting an import', () => {
   it('is refused with shutting_down once the app is stopping', async () => {
     await service.shutdown();
 
-    expect((await refusal(service.importStaff(L, 'organizer'))).code).toBe('shutting_down');
+    expect((await refusal(service.importStaff(L, OWNER))).code).toBe('shutting_down');
     expect(jobs().n).toBe(0);
   });
 });
@@ -647,7 +641,7 @@ describe('progress and history', () => {
 
   it('streams planned, one tournament_read per tournament, then finished with the status', async () => {
     const seen: { type: string; done: number; total: number }[] = [];
-    const { submissionId } = await service.importStaff(L, 'organizer');
+    const { submissionId } = await service.importStaff(L, OWNER);
     service.subscribe(submissionId, (e) => seen.push({ type: e.type, done: e.done, total: e.total }));
     await service.idle();
 
@@ -665,7 +659,7 @@ describe('progress and history', () => {
 
     expect(service.list(L)).toEqual([expect.objectContaining({ id: view.id, kind: 'staff_import', playSessionLabel: 'Staff import' })]);
     expect(view).toMatchObject({ undoable: false, undoBlockedReason: 'not_undoable' });
-    expect((await refusal(service.undo(L, view.id, 'organizer'))).code).toBe('not_undoable');
+    expect((await refusal(service.undo(L, view.id, OWNER))).code).toBe('not_undoable');
   });
 
   it('logs ids and counts, never a name', async () => {
@@ -690,6 +684,15 @@ describe('retry, crash and shutdown', () => {
     upstream.add(tournament('t-2'), staffer('200', 'judge'));
   });
 
+  it("refuses a professor's retry of an import: imports are the owner's (ADR-0015 §4)", async () => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw down();
+    };
+    const partial = await importStaff();
+    upstream.onRead = undefined;
+    await expect(service.retry(L, partial.id, professorActor(2, 'misty'))).rejects.toMatchObject({ code: 'owner_only' });
+  });
+
   it('retries a partial import as a new attempt that reads everything again and duplicates nothing', async () => {
     upstream.onRead = (t) => {
       if (t === 't-2') throw down();
@@ -698,7 +701,7 @@ describe('retry, crash and shutdown', () => {
     upstream.onRead = undefined;
     upstream.calls = [];
 
-    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    const { submissionId } = await service.retry(L, first.id, OWNER);
     await service.idle();
     const second = service.get(L, submissionId);
 
@@ -712,7 +715,7 @@ describe('retry, crash and shutdown', () => {
   it('a running import found on boot becomes interrupted, and its lease is freed', async () => {
     let release!: () => void;
     upstream.gate = new Promise((r) => (release = r));
-    const { submissionId } = await service.importStaff(L, 'organizer');
+    const { submissionId } = await service.importStaff(L, OWNER);
 
     // A new process: the old job's promise is abandoned.
     const rebooted = build();
@@ -750,7 +753,7 @@ describe('importing from every connected professor (#75)', () => {
   beforeEach(() => {
     brock = new FakeTournaments();
     asConnection.set(2, brock);
-    professors = [...professors, { id: 2, professorPlayerId: BROCK, professorName: 'Brock Harrison', status: 'connected' }];
+    professors = [...professors, { id: 2, professorPlayerId: BROCK, professorName: 'Brock Harrison', status: 'connected', ...HELD_BY_OWNER }];
     upstream.add(tournament('olives'), staffer('100', 'judge'));
     brock.add(tournament('brocks', { organizer: BROCK }), staffer('200', 'scorekeeper'));
   });

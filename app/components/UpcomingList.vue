@@ -11,6 +11,17 @@ const emit = defineEmits<{ create: [plannedIds: number[]]; retry: [plannedId: nu
 const toast = useToast();
 
 const { data: upcoming, error } = useUpcoming();
+// Rows whose organizer another user holds offer only Download TDF, saying who may change them (ADR-0015 §4).
+const { data: connections } = usePokemonConnection();
+const actionsOf = (e: UpcomingEntry) => rowActions(e, onlyText(connections.value, e.organizer?.playerId));
+// A play-tools tournament the viewer organizes can be lent (ADR-0015 §5); its lease is added after the listing cache.
+const leaseOf = (e: UpcomingEntry) => (e as WithLease<UpcomingEntry>).lease ?? null;
+const canLend = (e: UpcomingEntry) => !!e.tournamentId && e.state !== 'cancelled' && e.state !== 'skipped';
+const lendable = computed(() =>
+  (upcoming.value?.tournaments ?? [])
+    .filter((e) => canLend(e) && !leaseOf(e) && connections.value?.connections.some((c) => c.mine && c.professorPlayerId === e.organizer?.playerId))
+    .map((e) => ({ tournamentId: e.tournamentId!, label: name(e), startsAt: e.startsAt })),
+);
 const clockPending = computed(() => !props.today && !props.clockFailed);
 const loading = computed(() => (!upcoming.value && !error.value) || clockPending.value);
 const selected = ref<Set<number>>(new Set());
@@ -25,7 +36,7 @@ const idOf = (e: UpcomingEntry) => String(e.plannedId ?? e.tournamentId);
 
 // A refresh can take `create` away (the row is being created): it leaves the selection.
 watch(upcoming, (u) => {
-  const creatable = new Set((u?.tournaments ?? []).filter((e) => rowActions(e).actions.includes('create')).map((e) => e.plannedId!));
+  const creatable = new Set((u?.tournaments ?? []).filter((e) => actionsOf(e).actions.includes('create')).map((e) => e.plannedId!));
   selected.value = new Set([...selected.value].filter((id) => creatable.has(id)));
 });
 
@@ -119,7 +130,7 @@ async function download(e: UpcomingEntry) {
           <li v-for="e in g.entries" :key="keyOf(e)" :aria-label="name(e)" class="rounded border border-default p-3 text-sm space-y-2 min-w-0">
             <div class="flex items-start gap-2">
               <UCheckbox
-                v-if="rowActions(e).actions.includes('create')"
+                v-if="actionsOf(e).actions.includes('create')"
                 :model-value="selected.has(e.plannedId!)"
                 :aria-label="`Select ${name(e)}`"
                 class="pt-0.5"
@@ -153,13 +164,23 @@ async function download(e: UpcomingEntry) {
                   <p v-else-if="e.type.status === 'series_not_found'" class="text-warning">play-tools has no matching series for this date yet.</p>
                   <p v-else class="text-warning">Couldn’t read {{ professorName(e.organizer) }}’s series.</p>
                 </template>
-                <p v-if="rowActions(e).organizerNote" class="text-warning">
-                  {{ rowActions(e).organizerNote }} <NuxtLink to="/settings" class="underline">Open Settings</NuxtLink>
+                <p v-if="actionsOf(e).organizerNote && !leaseOf(e)" :class="actionsOf(e).settings ? 'text-warning' : 'text-muted'">
+                  {{ actionsOf(e).organizerNote }} <NuxtLink v-if="actionsOf(e).settings" to="/settings" class="underline">Open Settings</NuxtLink>
                 </p>
+                <LeaseControls
+                  v-if="e.tournamentId"
+                  :tournament-id="e.tournamentId"
+                  :label="name(e)"
+                  :organizer-player-id="e.organizer?.playerId"
+                  :lease="leaseOf(e)"
+                  :candidates="lendable"
+                  :lendable="canLend(e)"
+                  @changed="refreshUpcoming()"
+                />
               </div>
             </div>
             <div class="flex flex-wrap gap-1">
-              <template v-for="a in rowActions(e).actions" :key="a">
+              <template v-for="a in actionsOf(e).actions" :key="a">
                 <UButton v-if="a === 'create'" size="xs" :aria-label="`Create in play-tools ${name(e)}`" @click="emit('create', [e.plannedId!])">Create in play-tools</UButton>
                 <UButton v-else-if="a === 'retry_create'" size="xs" color="warning" :aria-label="`Retry create… ${name(e)}`" @click="emit('retry', e.plannedId!)">Retry create…</UButton>
                 <UButton

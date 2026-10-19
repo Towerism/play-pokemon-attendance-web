@@ -16,6 +16,7 @@ Everything the app keeps lives in one appdata folder,
 | `/data/secrets/session-password` | Signs login cookies | Generated on first boot, mode 0600. Absent if you set `NUXT_SESSION_PASSWORD` |
 | `/data/secrets/token-vault.key` | Encrypts the saved Pokémon login | Generated on first boot, mode 0600. Absent if you set `NUXT_TOKEN_VAULT_KEY` |
 | `/data/secrets/tdf-vault.key` | Encrypts the stored tournament files (`.tdf`), which hold players' birthdates (ADR-0012) | Generated on first boot, mode 0600. Absent if you set `NUXT_TDF_VAULT_KEY` (env only, not in the template). **Losing it loses the stored files** |
+| `/data/secrets/message-vault.key` | Encrypts invite and password reset links waiting for Tournament Genie to send them on Discord (ADR-0015) | Generated on first boot of a release with professor invites, mode 0600. Absent if you set `NUXT_MESSAGE_VAULT_KEY` (env only, not in the template). Losing it loses only links not yet delivered; mint them again |
 
 ## Install
 
@@ -145,7 +146,9 @@ in `app.db` with its own key (ADR-0012). The same backup holds that key
 (`secrets/tdf-vault.key`) next to the encrypted files, so anyone with the backup
 can open every stored TDF, players' birthdates included, and many players are
 minors. Encryption protects a copy of `app.db` on its own and the Litestream
-replica, not an appdata backup.
+replica, not an appdata backup. The same goes for invite links waiting for
+Tournament Genie (`secrets/message-vault.key`), though those are deleted as soon
+as Genie reports on them.
 
 ### Appdata Backup plugin (recommended)
 

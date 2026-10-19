@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authRedirect } from './auth-redirect';
+import { authRedirect, waitingRedirect } from './auth-redirect';
 
 describe('authRedirect', () => {
   it('sends a logged-out visitor to /login, remembering where they were going', () => {
@@ -34,4 +34,29 @@ describe('authRedirect', () => {
       expect(authRedirect({ path: '/login', fullPath: '/login', query: { redirect } }, true)).toBe('/');
     },
   );
+});
+
+describe('waitingRedirect (ADR-0015 §3: a professor not yet in the league sees only Settings)', () => {
+  it('sends a non-member to Settings from any other page, and lets them stay there', () => {
+    expect(waitingRedirect('/', { member: false })).toBe('/settings');
+    expect(waitingRedirect('/tournaments', { member: false })).toBe('/settings');
+    expect(waitingRedirect('/settings', { member: false })).toBeUndefined();
+  });
+
+  it('lets a member go anywhere, and waits while access is not known yet', () => {
+    expect(waitingRedirect('/tournaments', { member: true })).toBeUndefined();
+    expect(waitingRedirect('/tournaments', null)).toBeUndefined();
+    expect(waitingRedirect('/login', { member: false })).toBeUndefined();
+  });
+});
+
+describe('the invite page (ADR-0015 §6)', () => {
+  it('is outside the login wall, and a signed-in browser stays on it to be told to log out', () => {
+    expect(authRedirect({ path: '/invite', fullPath: '/invite' }, false)).toBeUndefined();
+    expect(authRedirect({ path: '/invite', fullPath: '/invite' }, true)).toBeUndefined();
+  });
+
+  it('is never sent to Settings by the waiting room', () => {
+    expect(waitingRedirect('/invite', { member: false })).toBeUndefined();
+  });
 });

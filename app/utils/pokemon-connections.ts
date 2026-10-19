@@ -1,4 +1,4 @@
-/** One professor's connection, as `GET /api/pokemon/connections` returns it (ADR-0008). Never carries a token. */
+/** One professor's connection, as `GET /api/pokemon/connections` returns it (ADR-0008, ADR-0015). Never carries a token. */
 export interface ProfessorConnectionJson {
   professorPlayerId: string | null;
   professorName: string | null;
@@ -8,21 +8,27 @@ export interface ProfessorConnectionJson {
   reason: string | null;
   connectedAt: string;
   lastRefreshedAt: string;
-  submitsForLeague: boolean;
+  /** The viewer holds it: only they write to play-tools through it (ADR-0015 §2). */
+  mine: boolean;
+  membership: 'member' | 'outside' | 'unknown';
+  /** A member allowed to record attendance for the league. */
+  canSubmit: boolean;
 }
 
-export interface LeagueBindingJson {
-  professorPlayerId: string | null;
+/** The league's activity group (ADR-0015 §3): it names no connection. */
+export interface LeagueJson {
   activityGroupId: string;
   displayName: string;
   displayId: string | null;
-  canSubmit: boolean;
 }
 
 export interface ConnectionsResponse {
   connections: ProfessorConnectionJson[];
-  league: LeagueBindingJson | null;
+  league: LeagueJson | null;
 }
+
+/** Why a professor sees only Settings (ADR-0015 §3, §8); null for a league member. */
+export type WaitingReason = null | 'no_connection' | 'outside' | 'unknown' | 'reverify_required';
 
 type Maybe<T> = T | null | undefined;
 
@@ -42,43 +48,102 @@ export function professorShortLabel(c: Pick<ProfessorConnectionJson, 'professorP
   return c.professorName ?? `Professor ${c.professorPlayerId}`;
 }
 
-/** The connection that makes the league's upstream calls, if one is chosen. */
-export function submittingProfessor(r: Maybe<ConnectionsResponse>): ProfessorConnectionJson | null {
-  return r?.connections.find((c) => c.submitsForLeague) ?? null;
+/** The viewer's connections that can record attendance now: theirs, a member allowed to, and connected. */
+const submitters = (r: Maybe<ConnectionsResponse>) => (r?.connections ?? []).filter((c) => c.mine && c.canSubmit && c.status === 'connected');
+
+export type SubmitAsChoice =
+  | { kind: 'one'; playerId: string; text: string }
+  | { kind: 'several'; options: { value: string; label: string }[] }
+  | { kind: 'none'; text: string };
+
+/** What the submit dialog shows (ADR-0015 §4): who it submits as, a choice among the viewer's own, or that none can. */
+export function submitAsChoice(r: Maybe<ConnectionsResponse>): SubmitAsChoice {
+  const able = submitters(r);
+  if (able.length === 1) return { kind: 'one', playerId: able[0]!.professorPlayerId!, text: `Submitting as ${professorLabel(able[0]!)}` };
+  if (able.length > 1) return { kind: 'several', options: able.map((c) => ({ value: c.professorPlayerId!, label: professorLabel(c) })) };
+  return { kind: 'none', text: `None of your Pokémon accounts can record attendance for ${r?.league?.displayName ?? 'the league'}.` };
 }
 
-/** The league-level view the submit and staff checks read: the submitting professor's status and the league. */
-export function leagueConnection(r: Maybe<ConnectionsResponse>): {
-  status: 'connected' | 'needs_reconnect' | 'not_connected';
-  league: { id: string; name: string; displayId: string | null; canSubmit: boolean } | null;
-} {
-  const submitting = submittingProfessor(r);
-  const status = submitting ? submitting.status : r?.connections.length ? 'connected' : 'not_connected';
-  const league = r?.league ? { id: r.league.activityGroupId, name: r.league.displayName, displayId: r.league.displayId, canSubmit: r.league.canSubmit } : null;
-  return { status, league };
-}
-
-/** The global banner's text: only when the league's submitting professor needs a reconnect (others are flagged in Settings). */
+/** The layout's banner: one of the viewer's own connections needs a reconnect (others' are theirs to fix). */
 export function reconnectBanner(r: Maybe<ConnectionsResponse>): string | null {
-  const submitting = submittingProfessor(r);
-  if (submitting?.status !== 'needs_reconnect') return null;
-  return `Pokémon no longer accepts ${professorShortLabel(submitting)}’s login. Reconnect before submitting attendance.`;
+  const stale = r?.connections.find((c) => c.mine && c.status === 'needs_reconnect');
+  return stale ? `Pokémon no longer accepts ${professorShortLabel(stale)}’s login. Reconnect it in Settings.` : null;
 }
 
-/** "Submitting as Brock Harrison (0000222)", for the submit dialog. */
-export function submitAsText(r: Maybe<ConnectionsResponse>): string | null {
-  const submitting = submittingProfessor(r);
-  return submitting ? `Submitting as ${professorLabel(submitting)}` : null;
+/**
+ * "Only <professor> can change this", where another user holds the organizer's connection (ADR-0015 §4). Null when the
+ * viewer holds it, or when nobody has that player id connected: the existing "connect the organizer" notices apply.
+ */
+export function onlyText(r: Maybe<ConnectionsResponse>, organizerPlayerId: string | null | undefined): string | null {
+  const c = organizerPlayerId ? r?.connections.find((x) => x.professorPlayerId === organizerPlayerId) : undefined;
+  return c && !c.mine ? `Only ${professorLabel(c)} can change this` : null;
+}
+
+export interface OrganizerOption {
+  value: string;
+  label: string;
+  disabled: boolean;
+  description?: string;
+}
+
+/** The template form's organizer choices: the viewer's own connections, plus another's current one shown, not pickable. */
+export function organizerOptions(r: Maybe<ConnectionsResponse>, current: string | null): OrganizerOption[] {
+  const all = r?.connections ?? [];
+  const mine: OrganizerOption[] = all
+    .filter((c) => c.mine && c.professorPlayerId)
+        // The form reads the organizer's venues and series from play-tools, so a login needing a reconnect can't be picked.
+    .map((c) => ({ value: c.professorPlayerId!, label: professorLabel(c), disabled: c.status !== 'connected', ...(c.status !== 'connected' && { description: 'Reconnect in Settings' }) }));
+  const theirs = current ? all.find((c) => c.professorPlayerId === current && !c.mine) : undefined;
+  if (!theirs) return mine;
+  return [...mine, { value: current!, label: professorLabel(theirs), disabled: true, description: `Only ${professorShortLabel(theirs)} can choose this` }];
+}
+
+/** A create's rows refused because another user holds their organizer (ADR-0015 §4), as one line; null when none. */
+export function refusedText(
+  r: Maybe<ConnectionsResponse>,
+  refused: readonly { plannedTournamentId: number; professorPlayerId: string }[],
+  labelOf: (plannedTournamentId: number) => string,
+): string | null {
+  if (refused.length === 0) return null;
+  const parts = refused.map((x) => {
+    const c = r?.connections.find((y) => y.professorPlayerId === x.professorPlayerId);
+    const who = c ? professorLabel(c) : `Professor ${x.professorPlayerId}`;
+    return `only ${who} can create ${labelOf(x.plannedTournamentId)}`;
+  });
+  return `Left out: ${parts.join('; ')}.`;
+}
+
+/**
+ * Why a professor sees only Settings (ADR-0015 §3). After a password reset (§8) they log in to Pokémon as their own
+ * account, `ownLabel`, to prove it's them; with no connection that is the first connect.
+ */
+export function waitingText(waiting: WaitingReason, leagueName: string | null, ownLabel: string | null = null): string | null {
+  if (waiting === 'reverify_required') return ownLabel ? `Log in to Pokémon as ${ownLabel} to confirm it's you.` : 'Connect your Pokémon account to use the league.';
+  if (waiting === 'no_connection') return 'Connect your Pokémon account to use the league.';
+  if (waiting === 'outside') return `Your Pokémon account isn't in ${leagueName ?? 'the league'} in play-tools.`;
+  if (waiting === 'unknown') return 'Checking your Pokémon account’s league…';
+  return null;
+}
+
+/** Why the staff and player imports can't start yet: they read every connection in the league. */
+export function importsBlocked(r: Maybe<ConnectionsResponse>): string | null {
+  const readable = (r?.connections ?? []).filter((c) => c.membership !== 'outside');
+  if (readable.length === 0) return 'Connect a Pokémon account first.';
+  if (readable.every((c) => c.status === 'needs_reconnect')) return 'Reconnect the Pokémon account first.';
+  if (!r?.league) return 'Choose the league first.';
+  return null;
 }
 
 /** Who started a History entry, and as which professor when that was recorded; an import reads as every one (#75). */
-export function startedByText(s: { startedBy: string; professor: { playerId: string; name: string | null } | null; kind?: string }): string {
+export function startedByText(s: { startedBy: string; professor: { playerId: string; name: string | null } | null; kind?: string; leased?: boolean }): string {
   const everyone = s.kind === 'staff_import' || s.kind === 'player_import';
   if (!s.professor) return everyone ? `${s.startedBy}, as every connected professor` : s.startedBy;
-  return `${s.startedBy}, as ${professorLabel({ professorPlayerId: s.professor.playerId, professorName: s.professor.name })}`;
+  const professor = professorLabel({ professorPlayerId: s.professor.playerId, professorName: s.professor.name });
+  // A leased job ran through the organizer's connection for the lent professor (ADR-0015 §5).
+  return s.leased ? `${s.startedBy} for ${professor}` : `${s.startedBy}, as ${professor}`;
 }
 
-/** Under the league picker: who the shared leagues leave out because their login needs a reconnect (#75). */
+/** Under the league picker: which of the owner's connections it leaves out because their login needs a reconnect. */
 export function excludedText(excluded: readonly { playerId: string | null; name: string | null }[]): string | null {
   if (!excluded.length) return null;
   const names = excluded.map((p) => professorShortLabel({ professorPlayerId: p.playerId, professorName: p.name }));
@@ -86,5 +151,19 @@ export function excludedText(excluded: readonly { playerId: string | null; name:
   return `${list} ${names.length === 1 ? "isn't" : "aren't"} included until reconnected.`;
 }
 
-/** The league picker when the connected professors share no league in play-tools (#75). */
-export const NO_SHARED_LEAGUE = "These professors share no league in play-tools. Disconnect the one who isn't in your league.";
+/** The league picker when none of the owner's connections manages a league in play-tools (ADR-0015 §3). */
+export const NO_LEAGUE = "None of your Pokémon accounts manages a league in play-tools.";
+
+/**
+ * Why History offers no Retry or Undo for an attempt, if it doesn't (ADR-0015 §4): it ran as another user's connection,
+ * no professor was recorded for it, or it is an import, which is the owner's.
+ */
+export function historyLock(
+  r: Maybe<ConnectionsResponse>,
+  s: { kind: string; professor: { playerId: string } | null },
+  role: 'owner' | 'professor' | undefined,
+): string | null {
+  if (s.kind === 'staff_import' || s.kind === 'player_import') return role === 'owner' ? null : 'Only the owner can run an import.';
+  if (!s.professor) return 'No professor was recorded for this attempt, so it can’t be retried or undone.';
+  return onlyText(r, s.professor.playerId);
+}

@@ -20,7 +20,9 @@ export type StaffingErrorCode =
   /** No connected professor organizes the tournament: only its organizer may log its staff (#75). */
   | 'organizer_not_connected'
   /** The tournament's organizer is connected but needs a reconnect (`details.professorPlayerId`). */
-  | 'needs_reconnect';
+  | 'needs_reconnect'
+  /** Another user holds the organizer's connection, or nobody can tell who organizes it (ADR-0015 §4; `details.professorPlayerId`). */
+  | 'not_your_connection';
 
 export class StaffingError extends Error {
   override name = 'StaffingError';

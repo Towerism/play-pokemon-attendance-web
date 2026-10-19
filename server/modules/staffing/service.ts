@@ -2,7 +2,8 @@ import { and, asc, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { staffAssignment, staffHistory } from '../../db/schema';
-import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
+import type { Actor } from '../accounts/service';
+import { type ActingConnection, ConnectionAccessError, type PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
   PlayToolsGateway,
@@ -152,19 +153,20 @@ export interface StaffingService {
    * staff job sends the change; until then `appliedRole` keeps the old role.
    * @throws StaffingError `not_found`, `unknown_role`, `tournament_locked`
    */
-  changeRole(leagueId: string, date: SessionDate, assignmentId: number, role: string): Promise<StaffAssignmentView>;
+  changeRole(leagueId: string, date: SessionDate, assignmentId: number, role: string, actor: Actor): Promise<StaffAssignmentView>;
   /**
    * Deletes an assignment that never reached play-tools; tombstones one that
    * did, for the staff job to delete upstream.
-   * @throws StaffingError `not_found`, `tournament_locked`
+   * The owner may delete one that never reached play-tools when its organizer can't be acted as by anyone (ADR-0015 §4).
+   * @throws StaffingError `not_found`, `tournament_locked`, `not_your_connection`
    */
-  removeAssignment(leagueId: string, date: SessionDate, assignmentId: number): Promise<void>;
+  removeAssignment(leagueId: string, date: SessionDate, assignmentId: number, actor: Actor): Promise<void>;
   /**
    * Adds (or revives) the wanted staffer for one of the date's tournaments.
    * `created` is false when they were already wanted there in that role.
    * @throws StaffingError, PokemonUpstreamError
    */
-  addAssignment(leagueId: string, date: SessionDate, input: AddStaff, by: string): Promise<{ created: boolean; assignment: StaffAssignmentView }>;
+  addAssignment(leagueId: string, date: SessionDate, input: AddStaff, actor: Actor): Promise<{ created: boolean; assignment: StaffAssignmentView }>;
   /**
    * The date's tournaments (this league's, read live as each connected
    * professor, in start order) with their staff, after seeding the staff list
@@ -195,7 +197,19 @@ export interface StaffingService {
    * @throws StaffingError `unknown_tournament`, `tournament_locked`, `nothing_to_apply`, `unknown_role`, `league_not_selected`,
    *   `organizer_not_connected`, `needs_reconnect`; PokemonUpstreamError
    */
-  prepareApply(leagueId: string, date: SessionDate, tournamentId: string): Promise<{ tournamentId: string; label: string; professor: ActingProfessor }>;
+  prepareApply(
+    leagueId: string,
+    date: SessionDate,
+    tournamentId: string,
+    actor: Actor,
+  ): Promise<{ tournamentId: string; label: string; professor: ActingProfessor; leaseId: number | null }>;
+  /**
+   * Who organizes each of the date's tournaments in the league, from one listing per connection (play-tools lists only
+   * the caller's own tournaments). A professor whose listing fails, for any reason, is left out. For a staff batch's first check
+   * (ADR-0015 §4); each job still reads its tournament fresh at its turn.
+   * @throws StaffingError `league_not_selected`, PokemonUpstreamError `not_connected`
+   */
+  organizersOn(leagueId: string, date: SessionDate): Promise<Map<string, PlayerId>>;
   /** The tournament's assignments, live and tombstoned, oldest first. */
   assignmentsFor(leagueId: string, tournamentId: string): StaffAssignmentRecord[];
   /**
@@ -235,7 +249,7 @@ export type StaffGateway = Pick<
 export interface StaffingDeps {
   db: Db;
   roster: RosterService;
-  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
+  connections: Pick<PokemonConnectionService, 'league' | 'listActingConnections' | 'listReadableConnections' | 'actingConnection'>;
   /** Play-tools as one professor's connection; `null` serves only the role list, which makes no call. */
   staffGateway: (connectionId: number | null) => StaffGateway;
   /** The league timezone (ADR-0006): tournament dates are read in it. */
@@ -283,7 +297,8 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
   }
 
   const roles = () => deps.staffGateway(null).listStaffRoles();
-  const acting = () => deps.connections.listActingConnections();
+  // Reads across professors leave out connections outside the league (ADR-0015 §3).
+  const acting = () => deps.connections.listReadableConnections();
   const professorOf = (c: ActingConnection) => ({ playerId: c.professorPlayerId, name: c.professorName });
   const byStart = (a: { startsAt: Date | null }, b: { startsAt: Date | null }) => (a.startsAt?.getTime() ?? 0) - (b.startsAt?.getTime() ?? 0);
 
@@ -295,9 +310,9 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
     if (acting().length === 0) {
       throw new PokemonUpstreamError('not_connected', 'No Pokémon account is connected. Connect one in Settings.');
     }
-    const c = deps.connections.getStatus(leagueId);
-    if (!c.league) throw new StaffingError('league_not_selected', 'Choose the league in Settings first.');
-    return c.league.id;
+    const league = deps.connections.league(leagueId);
+    if (!league) throw new StaffingError('league_not_selected', 'Choose the league in Settings first.');
+    return league.id;
   }
 
   /** The connected professor with exactly this player id. */
@@ -311,22 +326,56 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
     };
   }
 
-  /** The connection to act on a tournament as: its organizer's, and only theirs (#75). */
-  function actingAs(organizerPlayerId: PlayerId, conns: readonly ActingConnection[]): ActingConnection {
-    const owner = conns.find((c) => c.professorPlayerId !== null && c.professorPlayerId === organizerPlayerId);
-    if (!owner) {
-      throw new StaffingError(
+  /**
+   * The connection a staff change is made through: the organizer's, when the actor holds it or holds a live lease on
+   * this tournament (#75, ADR-0015 §4, §5). The pokemon module decides; its refusals keep the staffing codes the UI reads.
+   */
+  function writeAs(actor: Actor, organizerPlayerId: PlayerId, tournamentId: string): ActingConnection & { leaseId: number | null } {
+    try {
+      const { connectionId, leaseId } = deps.connections.actingConnection(actor, organizerPlayerId, { kind: 'tournament', tournamentId, use: 'staff' });
+      return { ...deps.connections.listActingConnections().find((c) => c.id === connectionId)!, leaseId };
+    } catch (err) {
+      if (!(err instanceof ConnectionAccessError)) throw err;
+      throw staffingRefusal(err, organizerPlayerId);
+    }
+  }
+
+  function staffingRefusal(err: ConnectionAccessError, organizerPlayerId: string): StaffingError {
+    const name = deps.connections.listActingConnections().find((c) => c.professorPlayerId === organizerPlayerId)?.professorName ?? `Professor ${organizerPlayerId}`;
+    if (err.code === 'organizer_not_connected') {
+      return new StaffingError(
         'organizer_not_connected',
         `Only the tournament's organizer may log its staff. Connect Professor ${organizerPlayerId}'s Pokémon account in Settings.`,
         { organizerPlayerId },
       );
     }
-    if (owner.status === 'needs_reconnect') {
-      throw new StaffingError('needs_reconnect', `Reconnect ${owner.professorName ?? `Professor ${organizerPlayerId}`} in Settings to log staff on their tournament.`, {
-        professorPlayerId: organizerPlayerId,
+    if (err.code === 'needs_reconnect') {
+      return new StaffingError('needs_reconnect', `Reconnect ${name} in Settings to log staff on their tournament.`, { professorPlayerId: organizerPlayerId });
+    }
+    return new StaffingError('not_your_connection', `Only ${name} can change this tournament's staff.`, { professorPlayerId: organizerPlayerId });
+  }
+
+  /**
+   * A change that stays local to an assignment play-tools never got. Only the organizer's holder may make it, but a
+   * login that needs a reconnect doesn't stop them, and the owner may delete it (`cleanup`) when nobody can act as
+   * the organizer, or nobody can read the tournament so its organizer is unknown (ADR-0015 §4).
+   */
+  function assertMayChangeLocally(actor: Actor, organizerPlayerId: PlayerId | null, cleanup: boolean, tournamentId: string): void {
+    const ownerCleanup = cleanup && actor.role === 'owner';
+    if (organizerPlayerId === null) {
+      if (ownerCleanup) return;
+      throw new StaffingError('not_your_connection', "Nobody can read this tournament in play-tools, so its organizer is unknown and its staff can't change.", {
+        professorPlayerId: '',
       });
     }
-    return owner;
+    try {
+      deps.connections.actingConnection(actor, organizerPlayerId, { kind: 'tournament', tournamentId, use: 'staff' });
+    } catch (err) {
+      if (!(err instanceof ConnectionAccessError)) throw err;
+      if (err.code === 'needs_reconnect') return;
+      if (err.code === 'organizer_not_connected' && ownerCleanup) return;
+      throw staffingRefusal(err, organizerPlayerId);
+    }
   }
 
   const startsOn = (t: Pick<Tournament, 'startsAt'>, date: SessionDate) => {
@@ -353,15 +402,14 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
   }
 
   /**
-   * One of the date's tournaments for this league, found in a professor's own list (play-tools lists
-   * only the caller's tournaments), with the organizer to act as. Null when nobody has it on the date.
-   * @throws StaffingError `organizer_not_connected`, `needs_reconnect`; PokemonUpstreamError when a
-   *   professor who might have it couldn't be read
+   * One of the date's tournaments for this league, found in a professor's own list (play-tools lists only the caller's
+   * tournaments), with its details. `tournament` is null when nobody who could be read lists it but its details say it
+   * is the league's on that date: its organizer isn't connected, or can't act. Null when nobody has it on the date.
+   * @throws PokemonUpstreamError when a professor who might have it couldn't be read
    */
-  async function locate(leagueId: string, date: SessionDate, tournamentId: string) {
+  async function locate(leagueId: string, date: SessionDate, tournamentId: string): Promise<{ tournament: Tournament | null; details: TournamentDetails } | null> {
     const groupId = leagueGroup(leagueId);
-    const conns = acting();
-    const usable = conns.filter((c) => c.status === 'connected');
+    const usable = acting().filter((c) => c.status === 'connected');
     const failures: PokemonUpstreamError[] = [];
     for (const c of usable) {
       const gateway = deps.staffGateway(c.id);
@@ -377,7 +425,7 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
       if (!tournament) continue;
       const details = await detailsOf(gateway, tournamentId);
       if (!details) return null;
-      return { tournament, details, organizer: actingAs(details.organizerPlayerId, conns) };
+      return { tournament, details };
     }
     // Nobody who could be read lists it. Its details say whose it is: a professor who isn't connected, or can't act.
     for (const c of usable) {
@@ -389,11 +437,17 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
         continue;
       }
       if (!details || details.groupId !== groupId || !startsOn(details, date)) break;
-      // Fresh: a login refused while listing above is marked needs_reconnect by now.
-      actingAs(details.organizerPlayerId, acting());
+      return { tournament: null, details };
     }
     if (failures.length) throw failures[0];
     return null;
+  }
+
+  /** Who organizes one of the date's tournaments, for a change that stays local; null when nobody can tell. */
+  async function organizerOfAssignment(leagueId: string, date: SessionDate, tournamentId: string) {
+    if (acting().length === 0) return { found: null, organizerPlayerId: null };
+    const found = await locate(leagueId, date, tournamentId);
+    return { found, organizerPlayerId: found?.details.organizerPlayerId ?? null };
   }
 
   type DayRead = { tournament: Tournament; details: TournamentDetails; participants: TournamentParticipant[] };
@@ -471,12 +525,14 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
   const unknownTournament = (tournamentId: string, date: SessionDate) =>
     new StaffingError('unknown_tournament', `Tournament ${tournamentId} is not one of this league's tournaments on ${date}.`);
 
-  /** One of the date's tournaments for this league, read fresh as its organizer, or `unknown_tournament`. */
-  async function freshTournament(leagueId: string, date: SessionDate, tournamentId: string) {
+  /** One of the date's tournaments for this league, read fresh as its organizer, whom the actor must hold, or `unknown_tournament`. */
+  async function freshTournament(leagueId: string, date: SessionDate, tournamentId: string, actor: Actor) {
     const found = await locate(leagueId, date, tournamentId);
     if (!found) throw unknownTournament(tournamentId, date);
-    const participants = await deps.staffGateway(found.organizer.id).listTournamentParticipants(tournamentId);
-    return { ...found, participants };
+    const organizer = writeAs(actor, found.details.organizerPlayerId, tournamentId);
+    if (!found.tournament) throw unknownTournament(tournamentId, date);
+    const participants = await deps.staffGateway(organizer.id).listTournamentParticipants(tournamentId);
+    return { tournament: found.tournament, details: found.details, organizer, participants };
   }
 
   function assertEditable(tournament: Tournament) {
@@ -543,14 +599,19 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
     return row;
   }
 
-  /** An applied change needs the tournament still open upstream; `orMissing` also accepts one play-tools no longer lists. */
-  async function assertStillEditable(leagueId: string, date: SessionDate, tournamentId: string, orMissing: boolean) {
+  /**
+   * A change to an assignment play-tools holds: the organizer's holder only, and the tournament still open upstream.
+   * `orMissing` also accepts one play-tools no longer lists, once its organizer is known.
+   */
+  async function assertMayChangeApplied(leagueId: string, date: SessionDate, tournamentId: string, actor: Actor, orMissing: boolean) {
     const found = await locate(leagueId, date, tournamentId);
-    if (!found && orMissing) return;
     if (!found) {
+      if (orMissing) assertMayChangeLocally(actor, null, false, tournamentId);
       throw new StaffingError('tournament_locked', 'Play-tools no longer lists this tournament; its staff can no longer change.');
     }
-    assertEditable(found.tournament);
+    writeAs(actor, found.details.organizerPlayerId, tournamentId);
+    if (found.tournament) assertEditable(found.tournament);
+    else if (!orMissing) throw new StaffingError('tournament_locked', 'Play-tools no longer lists this tournament; its staff can no longer change.');
   }
 
   function recordAppStaff(leagueId: string, rows: readonly AppStaffRow[]): void {
@@ -579,15 +640,17 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
   return {
     listRoles: () => roles(),
 
-    async changeRole(leagueId, date, assignmentId, role) {
+    async changeRole(leagueId, date, assignmentId, role, actor) {
       const row = liveOn(leagueId, date, assignmentId);
       assertRole(role);
       if (row.role === role) return viewOf(leagueId, row);
       let appliedRole: string | null = null;
       if (row.recordId) {
-        await assertStillEditable(leagueId, date, row.tournamentId, false);
+        await assertMayChangeApplied(leagueId, date, row.tournamentId, actor, false);
         const heldUpstream = row.appliedRole ?? row.role;
         appliedRole = heldUpstream === role ? null : heldUpstream;
+      } else {
+        assertMayChangeLocally(actor, (await organizerOfAssignment(leagueId, date, row.tournamentId)).organizerPlayerId, false, row.tournamentId);
       }
       const updated = db
         .update(staffAssignment)
@@ -599,25 +662,26 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
       return viewOf(leagueId, updated);
     },
 
-    async removeAssignment(leagueId, date, assignmentId) {
+    async removeAssignment(leagueId, date, assignmentId, actor) {
       const row = liveOn(leagueId, date, assignmentId);
       if (!row.recordId) {
+        assertMayChangeLocally(actor, (await organizerOfAssignment(leagueId, date, row.tournamentId)).organizerPlayerId, true, row.tournamentId);
         db.delete(staffAssignment).where(eq(staffAssignment.id, row.id)).run();
         return;
       }
-      await assertStillEditable(leagueId, date, row.tournamentId, true);
+      await assertMayChangeApplied(leagueId, date, row.tournamentId, actor, true);
       db.update(staffAssignment)
         .set({ removedAt: now(), state: 'removing' })
         .where(and(eq(staffAssignment.id, row.id), isNull(staffAssignment.removedAt)))
         .run();
     },
 
-    async addAssignment(leagueId, date, input, by) {
+    async addAssignment(leagueId, date, input, actor) {
       assertRole(input.role);
       const live = liveAssignment(leagueId, input.tournamentId, input.playerId);
       if (live) return existing(leagueId, live, input.role);
 
-      const { tournament, details, participants } = await freshTournament(leagueId, date, input.tournamentId);
+      const { tournament, details, participants } = await freshTournament(leagueId, date, input.tournamentId, actor);
       assertEditable(tournament);
       if (input.playerId === details.organizerPlayerId) {
         throw new StaffingError('organizer_cannot_staff', "A tournament's organizer can't be its staff.");
@@ -654,7 +718,7 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
               tournamentLabel: labelOf(tournament),
               playerId: input.playerId,
               role: input.role,
-              createdBy: by,
+              createdBy: actor.username,
               createdAt: now(),
             })
             .returning()
@@ -768,10 +832,12 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
 
     recordAppStaff,
 
-    async prepareApply(leagueId, date, tournamentId) {
+    async prepareApply(leagueId, date, tournamentId, actor) {
       const found = await locate(leagueId, date, tournamentId);
       if (!found) throw unknownTournament(tournamentId, date);
-      const { tournament, organizer } = found;
+      const organizer = writeAs(actor, found.details.organizerPlayerId, tournamentId);
+      const { tournament } = found;
+      if (!tournament) throw unknownTournament(tournamentId, date);
       assertEditable(tournament);
       const rows = ofTournament(leagueId, tournamentId);
       if (rows.length === 0) throw new StaffingError('nothing_to_apply', 'This tournament has no staff to assign or remove.');
@@ -780,7 +846,24 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
         tournamentId,
         label: labelOf(tournament),
         professor: { connectionId: organizer.id, playerId: organizer.professorPlayerId!, name: organizer.professorName },
+        leaseId: organizer.leaseId,
       };
+    },
+
+    async organizersOn(leagueId, date) {
+      const groupId = leagueGroup(leagueId);
+      const found = new Map<string, PlayerId>();
+      for (const c of acting().filter((x) => x.status === 'connected' && x.professorPlayerId !== null)) {
+        let listed: Tournament[];
+        try {
+          listed = await deps.staffGateway(c.id).listTournaments(localDay(date, timeZone));
+        } catch {
+          // Only a first check: each tournament's turn reads it again and reports what went wrong there.
+          continue;
+        }
+        for (const t of listed) if (t.groupId === groupId && !found.has(t.id)) found.set(t.id, c.professorPlayerId as PlayerId);
+      }
+      return found;
     },
 
     assignmentsFor(leagueId, tournamentId) {

@@ -11,6 +11,7 @@ import { createStaffingService } from '../staffing/service';
 import type { CancelItem } from './cancelling';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, OLIVE, VENUE, participants, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The tournaments module's side of Cancel… (#94, ADR-0010 decision 8): the confirm preview from a fresh read as the
 // organizer, the apply's refusals and typed confirmation, each job item's fresh read, and the local follow-ups. The job
@@ -67,7 +68,7 @@ const details: Partial<TournamentDetails> = { venue: { id: VENUE.id, timeZone: T
 
 /** A planned row created in play-tools as Olive's tournament, listing `players` and `staff`. */
 function created(counts: { players?: number; staff?: number } = {}, opts: Parameters<typeof upstreamTournament>[2] = {}) {
-  const t = service.createTemplate(L, templateBody({ name: 'Tuesday Cup', type: { kind: 'custom' } }));
+  const t = service.createTemplate(L, templateBody({ name: 'Tuesday Cup', type: { kind: 'custom' } }), OWNER);
   const planned = service.createPlanned(L, { templateId: t.id, localDate: '2026-10-20' });
   const id = planned.plannedId!;
   upstream.state.tournaments.push(upstreamTournament(GUID, START.toISOString(), { name: 'Tuesday Cup', displayId: '26-10-000001', details, ...opts }));
@@ -152,7 +153,7 @@ describe('the confirm preview', () => {
 
     upstream.state.tournaments.push(upstreamTournament(GUID, START.toISOString(), { groupId: 'another-league', details }));
     expect((await refusal(service.cancelling.preview(L, byGuid())))?.code).toBe('not_found');
-    expect((await refusal(service.cancelling.prepare(L, byGuid(), {})))?.code).toBe('not_found');
+    expect((await refusal(service.cancelling.prepare(L, byGuid(), {}, OWNER)))?.code).toBe('not_found');
 
     (stub() as { groupId: string }).groupId = 'group-1';
     (stub() as { organizer: string }).organizer = '9999993';
@@ -182,7 +183,7 @@ describe('the confirm preview', () => {
     const id = created();
     setRow(id, `state = '${state}', tournament_id = null`);
     expect(await refusal(service.cancelling.preview(L, byPlanned(id)))).toMatchObject({ code: 'not_in_play_tools', details: { state } });
-    expect(await refusal(service.cancelling.prepare(L, byPlanned(id), {}))).toMatchObject({ code: 'not_in_play_tools' });
+    expect(await refusal(service.cancelling.prepare(L, byPlanned(id), {}, OWNER))).toMatchObject({ code: 'not_in_play_tools' });
     expect(upstream.state.calls).toEqual([]);
   });
 
@@ -224,12 +225,12 @@ describe('the apply: refusals and the typed confirmation', () => {
     ['as the date instead', { confirmation: '2026-10-20' }],
   ])('refuses a confirmation %s when anyone is listed', async (_what, body) => {
     const id = created({ players: 1 });
-    expect(await refusal(service.cancelling.prepare(L, byPlanned(id), body))).toMatchObject({ code: 'confirmation_mismatch', details: { required: true } });
+    expect(await refusal(service.cancelling.prepare(L, byPlanned(id), body, OWNER))).toMatchObject({ code: 'confirmation_mismatch', details: { required: true } });
   });
 
   it('takes the exact display id, and marks the item confirmed', async () => {
     const id = created({ players: 1 });
-    expect(await service.cancelling.prepare(L, byPlanned(id), { confirmation: '26-10-000001' })).toEqual({
+    expect(await service.cancelling.prepare(L, byPlanned(id), { confirmation: '26-10-000001' }, OWNER)).toEqual({
       kind: 'cancel',
       item: { plannedId: id, tournamentId: GUID, label: 'Tuesday Cup · 2026-10-20', professorPlayerId: OLIVE.professorPlayerId, confirmed: true },
     });
@@ -237,32 +238,32 @@ describe('the apply: refusals and the typed confirmation', () => {
 
   it('takes the local date when play-tools gives no display id', async () => {
     const id = created({ players: 1 }, { displayId: null });
-    expect((await service.cancelling.prepare(L, byPlanned(id), { confirmation: '2026-10-20' })).kind).toBe('cancel');
+    expect((await service.cancelling.prepare(L, byPlanned(id), { confirmation: '2026-10-20' }, OWNER)).kind).toBe('cancel');
   });
 
   it('needs and ignores no confirmation when nobody is listed: the item is unconfirmed', async () => {
     const id = created();
-    const plan = await service.cancelling.prepare(L, byPlanned(id), { confirmation: 'anything' });
+    const plan = await service.cancelling.prepare(L, byPlanned(id), { confirmation: 'anything' }, OWNER);
     expect(plan).toMatchObject({ kind: 'cancel', item: { confirmed: false } });
   });
 
   it('is already_cancelled for a tournament play-tools already cancelled, after the confirmation', async () => {
     const id = created({ players: 2 }, { status: 'cancelled', applicationState: 'cancelled' });
-    expect((await refusal(service.cancelling.prepare(L, byPlanned(id), {})))?.code).toBe('confirmation_mismatch');
-    expect(await service.cancelling.prepare(L, byPlanned(id), { confirmation: '26-10-000001' })).toMatchObject({ kind: 'already_cancelled' });
+    expect((await refusal(service.cancelling.prepare(L, byPlanned(id), {}, OWNER)))?.code).toBe('confirmation_mismatch');
+    expect(await service.cancelling.prepare(L, byPlanned(id), { confirmation: '26-10-000001' }, OWNER)).toMatchObject({ kind: 'already_cancelled' });
   });
 
   it('refuses a tournament play-tools no longer lets a professor cancel, with its status', async () => {
     const id = created({}, { status: 'complete' });
-    expect(await refusal(service.cancelling.prepare(L, byPlanned(id), {}))).toMatchObject({ code: 'tournament_locked', details: { status: 'complete' } });
+    expect(await refusal(service.cancelling.prepare(L, byPlanned(id), {}, OWNER))).toMatchObject({ code: 'tournament_locked', details: { status: 'complete' } });
   });
 
   it('changes nothing locally, whatever it answers', async () => {
     const id = created({ players: 1 });
     seedStaff(GUID);
     const before = staffRows();
-    await refusal(service.cancelling.prepare(L, byPlanned(id), {}));
-    await service.cancelling.prepare(L, byPlanned(id), { confirmation: '26-10-000001' });
+    await refusal(service.cancelling.prepare(L, byPlanned(id), {}, OWNER));
+    await service.cancelling.prepare(L, byPlanned(id), { confirmation: '26-10-000001' }, OWNER);
     expect(rowOf(id).state).toBe('created');
     expect(staffRows()).toEqual(before);
     expect(upstream.state.cancels).toEqual([]);
@@ -335,3 +336,18 @@ describe('the local follow-ups', () => {
     expect(rowOf(id)).toMatchObject({ state: 'cancelled', upstream_status: 'sanctioned', display_id: '26-10-000001' });
   });
 });
+
+describe('who may cancel (ADR-0015 §4)', () => {
+  it("refuses a professor cancelling the owner's tournament, sending nothing", async () => {
+    const id = created();
+    const err = await refusal(service.cancelling.prepare(L, byPlanned(id), { confirmation: '26-10-000001' }, professorActor(2, 'misty')));
+    expect(err).toMatchObject({ code: 'not_your_connection', details: { professorPlayerId: OLIVE.professorPlayerId } });
+    expect(upstream.state.cancels).toEqual([]);
+  });
+
+  it("still shows a professor the cancel preview: reads are shared", async () => {
+    const id = created();
+    await expect(service.cancelling.preview(L, byPlanned(id))).resolves.toMatchObject({ name: 'Tuesday Cup' });
+  });
+});
+

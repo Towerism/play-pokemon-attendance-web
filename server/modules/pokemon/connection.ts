@@ -1,60 +1,70 @@
 import { type Logger, type StringVault, VaultError, silentLogger } from '@towerism/selfhost-kit';
-import { asc, count, eq, isNull } from 'drizzle-orm';
+import { asc, count, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
-import { leagueUpstream, pokemonConnection } from '../../db/schema';
+import { leagueMembership, leagueUpstream, pokemonConnection } from '../../db/schema';
+import type { AccountsService, Actor } from '../accounts/service';
 import { createPkcePair, createState, parseCallbackUrl } from './adapters/ptc-oauth/pkce';
+import type { EndedLease, LeaseStore } from './leases';
 import { PokemonUpstreamError } from './ports/errors';
 import type { League, PlayToolsGateway, ProfessorProfile } from './ports/play-tools-gateway';
 import type { PtcOAuthClient, TokenGrant } from './ports/ptc-oauth';
-import type { AccessToken, ConnectionStatus, TokenProvider } from './ports/token-provider';
+import type { AccessToken, TokenProvider } from './ports/token-provider';
 
-/** One professor's connection, as Settings lists it. Never carries a token. */
-export interface ProfessorConnection {
-  id: number;
-  /** Null only for a connection carried over from v1 that hasn't been identified yet. */
-  professorPlayerId: string | null;
-  professorName: string | null;
-  /** The professor's full name for TDFs (ADR-0011 decision 8): set by the organizer, never from Pokémon. */
-  professorFullName: string | null;
-  status: 'connected' | 'needs_reconnect';
-  /** Why a reconnect is needed; null otherwise. */
-  reason: string | null;
-  connectedAt: Date;
-  lastRefreshedAt: Date;
-  /** This professor's connection makes the league's upstream calls. */
-  submitsForLeague: boolean;
+/** Whether a connection's Pokémon account is in the league's activity group (ADR-0015 §3). */
+export type MembershipStatus = 'member' | 'outside' | 'unknown';
+
+/**
+ * Why a professor sees only their own account (ADR-0015 §3, §8); null for a league member. `reverify_required`: they
+ * accepted a password reset link and haven't completed a Pokémon connect since.
+ */
+export type WaitingReason = null | 'no_connection' | 'outside' | 'unknown' | 'reverify_required';
+
+/** The league's upstream activity group (ADR-0015 §3): chosen by the owner, naming no connection. */
+export interface UpstreamLeague {
+  id: string;
+  name: string;
+  displayId: string | null;
 }
 
-/** The league's side: whose connection submits for it, and where to. Never carries a token. */
-export interface ConnectionView {
-  /** The submitting connection's status; `connected` with no league while professors are connected but none is chosen. */
-  status: ConnectionStatus;
-  reason: string | null;
-  connectedAt: Date | null;
-  lastRefreshedAt: Date | null;
-  /** The upstream league attendance goes to; null until chosen. */
-  league: League | null;
-  /** The submitting connection; null until chosen. */
-  connectionId: number | null;
-  professor: { playerId: string | null; name: string | null } | null;
-}
-
-/** A connection as staffing and submission see it: whose it is and whether it can act. Never carries a token. */
+/** A connection as staffing, submission and tournaments see it: whose it is and whether it can act. Never carries a token. */
 export interface ActingConnection {
   id: number;
   professorPlayerId: string | null;
   professorName: string | null;
   status: 'connected' | 'needs_reconnect';
+  /** The user who holds it (ADR-0015 §2). */
+  userId: number;
+  membership: MembershipStatus;
+  /** A member allowed to record attendance for the league. */
+  canSubmit: boolean;
 }
 
-/** The leagues every connected professor shares (#75), as the named professor sees them. */
-export interface SharedLeagues {
+/** One professor's connection, as Settings lists it for one viewer. Never carries a token. */
+export interface ProfessorConnection extends ActingConnection {
+  /** The professor's full name for TDFs (ADR-0011 decision 8): set by the holder, never from Pokémon. */
+  professorFullName: string | null;
+  /** Why a reconnect is needed; null otherwise. */
+  reason: string | null;
+  connectedAt: Date;
+  lastRefreshedAt: Date;
+  /** The viewer holds it. */
+  mine: boolean;
+}
+
+/** The leagues the owner may choose from: those of the owner's own connections (ADR-0015 §3). */
+export interface UpstreamLeagues {
   leagues: League[];
-  /** The league's activity group when the named professor submits for it. */
+  /** The league's activity group, once chosen. */
   selectedId: string | null;
-  /** Professors left out of the shared set because they need a reconnect. */
+  /** Owner connections left out because they need a reconnect. */
   excluded: { playerId: string | null; name: string | null }[];
 }
+
+/**
+ * What `actingConnection` checks (ADR-0015 §4): `own` is the holder's connection only (attendance, templates, creating,
+ * editing and cancelling tournaments); `tournament` also honours a live lease on that tournament (§5).
+ */
+export type ActingScope = { kind: 'own' } | { kind: 'tournament'; tournamentId: string; use: 'staff' | 'results' };
 
 export type KeepAliveResult =
   | { outcome: 'refreshed' | 'skipped_recent' | 'not_connected' | 'needs_reconnect' }
@@ -76,7 +86,13 @@ export type ConnectErrorCode =
   /** Pokémon could not be reached while identifying the professor. */
   | 'upstream_unavailable'
   /** Already `MAX_CONNECTIONS` professors, and this is a new one. */
-  | 'connection_limit';
+  | 'connection_limit'
+  /** Another user holds a connection for that Pokémon account, and it isn't the owner's going to a professor (ADR-0015 §2). */
+  | 'connection_held'
+  /** A professor who holds a connection logged in as a different Pokémon account (ADR-0015 §2). */
+  | 'one_connection_only'
+  /** A professor whose invite was bound to a player ID logged in as another Pokémon account (ADR-0015 §6). */
+  | 'invite_player_mismatch';
 
 export class ConnectError extends Error {
   override name = 'ConnectError';
@@ -88,10 +104,27 @@ export class ConnectError extends Error {
   }
 }
 
+/**
+ * Why `actingConnection` (or a holder-only change) refused: 409 for the first two, 403 for `not_your_connection` and
+ * `reverify_required` (a professor who must prove their Pokémon login after a password reset, ADR-0015 §8).
+ */
+export type ConnectionAccessCode = 'organizer_not_connected' | 'needs_reconnect' | 'not_your_connection' | 'reverify_required';
+
+export class ConnectionAccessError extends Error {
+  override name = 'ConnectionAccessError';
+  constructor(
+    readonly code: ConnectionAccessCode,
+    message: string,
+    readonly professorPlayerId: string,
+  ) {
+    super(message);
+  }
+}
+
 export class LeagueNotFoundError extends Error {
   override name = 'LeagueNotFoundError';
   constructor(activityGroupId: string) {
-    super(`League ${activityGroupId} is not one of that professor's leagues.`);
+    super(`League ${activityGroupId} is not one of your Pokémon accounts' leagues.`);
   }
 }
 
@@ -102,37 +135,84 @@ export class ConnectionNotFoundError extends Error {
   }
 }
 
+/** A professor's connection, as Settings → Professors shows it to the owner. Never carries a token. */
+export interface HeldConnection {
+  playerId: string | null;
+  name: string | null;
+  status: 'connected' | 'needs_reconnect';
+  membership: MembershipStatus;
+  /** When it moved from the owner to this professor (ADR-0015 §2); null otherwise. */
+  claimedAt: Date | null;
+}
+
 export interface PokemonConnectionService extends TokenProvider {
-  getStatus(leagueId: string): ConnectionView;
-  listConnections(leagueId: string): ProfessorConnection[];
-  /** Every connection, oldest first, for reading and acting as each professor (#75). */
+  /** The league's activity group, or null until the owner chooses one. */
+  league(leagueId: string): UpstreamLeague | null;
+  /** The connections `viewer` may see: the owner every one, a member every one not `outside`, anyone else only their own. */
+  listConnections(leagueId: string, viewer: Actor): ProfessorConnection[];
+  /** Every connection, oldest first, for finding the one a job recorded. */
   listActingConnections(): ActingConnection[];
+  /** The full name for TDFs (ADR-0011 decision 8) of the connection with that player id; null when unset or none. */
+  fullNameOf(professorPlayerId: string): string | null;
+  /** Connections not `outside`, oldest first: reads across professors (ADR-0015 §3). */
+  listReadableConnections(): ActingConnection[];
+  /**
+   * The connection `actor` may write to play-tools through for `professorPlayerId` (ADR-0015 §4): one they hold, or for
+   * a `tournament` scope one lent to them for that tournament (`leaseId` then names the lease, §5).
+   * @throws ConnectionAccessError `organizer_not_connected`, `needs_reconnect`, `not_your_connection`, `reverify_required`
+   */
+  actingConnection(actor: Actor, professorPlayerId: string, scope: ActingScope): { connectionId: number; leaseId: number | null };
+  /**
+   * The connection a request reads the league's play sessions as: the caller's lowest-id member connection that is
+   * connected, else anyone's. @throws PokemonUpstreamError `not_connected` when there is none
+   */
+  readingConnection(leagueId: string, actor: Actor | null): number;
+  /** Whether `actor` may see the league's pages, and why not (ADR-0015 §3). The owner always may. */
+  access(actor: Actor): { member: boolean; waiting: WaitingReason };
   /** Begins a connect for `userId`: the attempt (PKCE verifier + state) lives 10 minutes, in memory only. */
   startConnect(userId: number): { authorizeUrl: string; expiresAt: Date };
-  /** Adds the professor the pasted login belongs to, or reconnects them. @throws ConnectError, PokemonUpstreamError */
-  completeConnect(leagueId: string, userId: number, pastedUrl: string): Promise<{ connection: ProfessorConnection; outcome: 'added' | 'reconnected' }>;
   /**
-   * Sets a professor's display name (ADR-0008: display only, never from or to Pokémon), full name (ADR-0011 decision 8:
-   * set by the organizer, never from Pokémon), or both. A name left out stays as it is; null clears it.
-   * @throws ConnectionNotFoundError
+   * Adds the Pokémon account the pasted login belongs to, reconnects it, or moves it from the owner to the professor
+   * logging in (ADR-0015 §2); then reads its league membership. @throws ConnectError, PokemonUpstreamError
    */
-  renameProfessor(leagueId: string, professorPlayerId: string, names: { name?: string | null; fullName?: string | null }): ProfessorConnection;
+  completeConnect(leagueId: string, actor: Actor, pastedUrl: string): Promise<{ connection: ProfessorConnection; outcome: 'added' | 'reconnected' | 'claimed' }>;
   /**
-   * The leagues every connected professor shares (#75), each read as that professor. A professor who needs a
-   * reconnect is left out and named; any other failure throws, so a league is never chosen from a partial set.
-   * @throws ConnectionNotFoundError, PokemonUpstreamError
+   * Sets a display name (ADR-0008: display only; the holder or the owner), a full name (ADR-0011 decision 8: the
+   * holder only), or both. A name left out stays as it is; null clears it.
+   * @throws ConnectionNotFoundError, ConnectionAccessError `not_your_connection`
    */
-  listUpstreamLeagues(leagueId: string, professorPlayerId: string): Promise<SharedLeagues>;
-  /** Makes that professor's connection submit for the league, to a league every professor shares. @throws ConnectionNotFoundError, LeagueNotFoundError, PokemonUpstreamError */
-  selectLeague(leagueId: string, professorPlayerId: string, activityGroupId: string): Promise<ConnectionView>;
-  /** Rotates each refresh token whose last refresh is ≥ 45 min old, one connection at a time. Never throws. */
+  renameProfessor(leagueId: string, actor: Actor, professorPlayerId: string, names: { name?: string | null; fullName?: string | null }): ProfessorConnection;
+  /**
+   * The leagues of the owner's own connections, each read as that connection. One that needs a reconnect is left out
+   * and named; any other failure throws, so a league is never chosen from a partial set. @throws PokemonUpstreamError
+   */
+  listUpstreamLeagues(leagueId: string, owner: Actor): Promise<UpstreamLeagues>;
+  /**
+   * Chooses one of those leagues, then reads every connection's membership again, one at a time. `unchecked` counts
+   * the reads that failed. @throws LeagueNotFoundError, PokemonUpstreamError
+   */
+  selectLeague(leagueId: string, owner: Actor, activityGroupId: string): Promise<{ league: UpstreamLeague; unchecked: number }>;
+  /** Rotates each refresh token whose last refresh is ≥ 45 min old, then reads memberships ≥ 24 h old; one connection at a time. Never throws. */
   keepAliveAll(): Promise<KeepAliveReport[]>;
-  /** Revokes at Hydra (best effort) and forgets that professor; the league forgets them too if they submitted for it. @throws ConnectionNotFoundError */
-  disconnect(leagueId: string, professorPlayerId: string): Promise<{ revoked: boolean }>;
+  /** Revokes at Hydra (best effort) and forgets the actor's own connection. @throws ConnectionNotFoundError, ConnectionAccessError */
+  disconnect(leagueId: string, actor: Actor, professorPlayerId: string): Promise<{ revoked: boolean }>;
   /** Boot, before any refresh: re-seals tokens still sealed with the league id (v1) under their own row. Returns how many. */
   resealCarriedOver(leagueId: string): number;
   /** Boot: refreshes connected, unidentified connections so they learn their professor. Never throws. */
   identifyCarriedOver(): Promise<void>;
+  /** How many connections the owner holds: their part of the seat budget (ADR-0015 §6). */
+  ownerConnectionCount(): number;
+  /** The connection `userId` holds, or null. */
+  connectionOf(userId: number): HeldConnection | null;
+  /** The player ID a message to `userId` goes to: their connection's, once known. */
+  recipientOf(userId: number): string | null;
+  /**
+   * Removing a professor (ADR-0015 §8), step 1: reads their connections' refresh tokens while the rows exist. Call
+   * `revoke` once the removal has committed; it revokes them at Pokémon, best effort, and never throws.
+   */
+  prepareRemoval(userId: number): { revoke(): Promise<void> };
+  /** Step 2, inside the caller's transaction: deletes `userId`'s connections (their membership rows go with them). */
+  deleteConnectionsOf(userId: number): void;
 }
 
 export interface PokemonConnectionDeps {
@@ -141,8 +221,18 @@ export interface PokemonConnectionDeps {
   oauth: PtcOAuthClient;
   /** League discovery and identity through the play-tools adapter, authorised as the given connection. */
   gateway: (tokens: TokenProvider, connectionId: number) => Pick<PlayToolsGateway, 'listLeagues' | 'getProfessorProfile'>;
+  /**
+   * The accounts module: who holds a connection (a connection moves only from the owner to a professor, ADR-0015 §2),
+   * the seat budget and the player ID an invite binds (§6), and the proof after a password reset (§8).
+   */
+  accounts: Pick<AccountsService, 'actor' | 'clearReverify'> & { seatsUsed(): number; boundPlayerId(userId: number): string | null };
+  /**
+   * Tournament leases (ADR-0015 §5): the store `actingConnection` checks and that disconnects, claims, removals and
+   * membership reads end leases in; `ended` sends their notices once the ending has committed.
+   */
+  leases?: { store: LeaseStore; ended(rows: readonly EndedLease[]): void };
   now?: () => Date;
-  log?: Pick<Logger, 'warn'>;
+  log?: Pick<Logger, 'warn' | 'info'>;
 }
 
 /** The token vault's AAD for a connection's refresh token: a ciphertext only opens on its own row (ADR-0008). */
@@ -150,12 +240,16 @@ export const connectionAad = (id: number) => `pokemon_connection:${id}`;
 
 const ATTEMPT_TTL_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 20;
-/** ADR-0008: at most this many professors per install. */
+/** ADR-0015 §6: one account can't push out other users' attempts by starting connects over and over. */
+const MAX_ATTEMPTS_PER_USER = 2;
+/** ADR-0008, ADR-0015 §6: at most this many connections per install; the seat budget keeps the same number. */
 export const MAX_CONNECTIONS = 10;
 /** ADR-0003: a cached access token is used while it has at least this long left. */
 const MIN_VALIDITY_MS = 2 * 60_000;
 // Under the hourly schedule, so a slightly late run still refreshes.
 const KEEPALIVE_AFTER_MS = 45 * 60_000;
+/** ADR-0015 §3: the keep-alive reads a connection's membership again once its last read is this old. */
+const MEMBERSHIP_STALE_MS = 24 * 60 * 60_000;
 
 interface Attempt {
   userId: number;
@@ -165,13 +259,13 @@ interface Attempt {
 
 type Row = typeof pokemonConnection.$inferSelect;
 type Binding = typeof leagueUpstream.$inferSelect;
+type Membership = typeof leagueMembership.$inferSelect;
 
 /**
- * The pokemon-connection module (ADR-0003, ADR-0008): one connection per
- * professor, each with its own encrypted refresh token, and `TokenProvider`.
- * Refreshes are serialised per connection, and a rotated refresh token is
- * written to the database before the new access token is handed to anyone:
- * Hydra revokes the whole chain when an old refresh token is replayed.
+ * The pokemon-connection module (ADR-0003, ADR-0008, ADR-0015): one connection per professor, each with its own
+ * encrypted refresh token and the user who holds it, and `TokenProvider`. Refreshes are serialised per connection,
+ * and a rotated refresh token is written to the database before the new access token is handed to anyone: Hydra
+ * revokes the whole chain when an old refresh token is replayed.
  */
 export function createPokemonConnectionService(deps: PokemonConnectionDeps): PokemonConnectionService {
   const { db, vault, oauth } = deps;
@@ -179,6 +273,18 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
   const log = deps.log ?? silentLogger;
 
   const attempts = new Map<string, Attempt>();
+  /** Leases a removal ended, by user, until the removal's `revoke` hands their notices over after the commit. */
+  const removalEndings = new Map<number, EndedLease[]>();
+
+  /** Hands leases that ended to the lease service for their notices. Never throws: the ending has committed. */
+  function notifyEnded(rows: readonly EndedLease[]) {
+    if (rows.length === 0 || !deps.leases) return;
+    try {
+      deps.leases.ended(rows);
+    } catch (err) {
+      log.warn(`Lease end notices could not be sent (${(err as Error).message}).`, { err });
+    }
+  }
   const accessTokens = new Map<number, AccessToken>();
   const locks = new Map<number, Promise<unknown>>();
 
@@ -197,6 +303,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     db.select().from(pokemonConnection).where(eq(pokemonConnection.professorPlayerId, playerId)).get();
   const all = (): Row[] => db.select().from(pokemonConnection).orderBy(asc(pokemonConnection.id)).all();
   const bindingOf = (leagueId: string): Binding | undefined => db.select().from(leagueUpstream).where(eq(leagueUpstream.leagueId, leagueId)).get();
+  const memberships = (): Map<number, Membership> => new Map(db.select().from(leagueMembership).all().map((m) => [m.connectionId, m]));
 
   function requireByPlayer(playerId: string): Row {
     const r = loadByPlayer(playerId);
@@ -204,50 +311,31 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     return r;
   }
 
-  const leagueOf = (b: Binding): League => ({
-    id: b.activityGroupId,
-    name: b.activityGroupName,
-    displayId: b.activityGroupDisplayId,
-    canSubmit: b.activityGroupCanSubmit,
-  });
+  const labelOf = (r: Pick<Row, 'professorName' | 'professorPlayerId'>) => r.professorName ?? `Professor ${r.professorPlayerId}`;
+  const notYours = (r: Row, what: string) =>
+    new ConnectionAccessError('not_your_connection', `Only the user who connected ${labelOf(r)} can ${what}.`, r.professorPlayerId ?? '');
 
-  function professorView(r: Row, b: Binding | undefined): ProfessorConnection {
+  function acting(r: Row, m: Membership | undefined): ActingConnection {
+    const membership = m?.status ?? 'unknown';
     return {
       id: r.id,
       professorPlayerId: r.professorPlayerId,
       professorName: r.professorName,
-      professorFullName: r.professorFullName,
       status: r.status,
-      reason: r.statusReason,
-      connectedAt: r.connectedAt,
-      lastRefreshedAt: r.lastRefreshedAt,
-      submitsForLeague: b?.connectionId === r.id,
+      userId: r.userId,
+      membership,
+      canSubmit: membership === 'member' && (m?.canSubmit ?? false),
     };
   }
 
-  function leagueView(leagueId: string): ConnectionView {
-    const b = bindingOf(leagueId);
-    const r = b && load(b.connectionId);
-    if (!b || !r) {
-      const anyone = db.select({ n: count() }).from(pokemonConnection).get()!.n > 0;
-      return {
-        status: anyone ? 'connected' : 'not_connected',
-        reason: null,
-        connectedAt: null,
-        lastRefreshedAt: null,
-        league: null,
-        connectionId: null,
-        professor: null,
-      };
-    }
+  function professorView(r: Row, viewer: Actor, m = memberships().get(r.id)): ProfessorConnection {
     return {
-      status: r.status,
+      ...acting(r, m),
+      professorFullName: r.professorFullName,
       reason: r.statusReason,
       connectedAt: r.connectedAt,
       lastRefreshedAt: r.lastRefreshedAt,
-      league: leagueOf(b),
-      connectionId: r.id,
-      professor: { playerId: r.professorPlayerId, name: r.professorName },
+      mine: r.userId === viewer.userId,
     };
   }
 
@@ -335,42 +423,131 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     db.update(pokemonConnection).set({ professorPlayerId: profile.playerId }).where(eq(pokemonConnection.id, id)).run();
   }
 
-  /** A carried-over connection turned out to be a professor who is already connected: keep theirs, and the league binding. */
+  /** A carried-over connection turned out to be a professor who is already connected: keep theirs, with the better membership. */
   async function mergeInto(kept: Row, dropped: Row): Promise<void> {
     const token = open(dropped);
     db.transaction((tx) => {
-      tx.update(leagueUpstream).set({ connectionId: kept.id }).where(eq(leagueUpstream.connectionId, dropped.id)).run();
+      const theirs = tx.select().from(leagueMembership).where(eq(leagueMembership.connectionId, dropped.id)).get();
+      const ours = tx.select().from(leagueMembership).where(eq(leagueMembership.connectionId, kept.id)).get();
+      if (theirs?.status === 'member' && ours?.status !== 'member') {
+        tx.update(leagueMembership)
+          .set({ status: 'member', canSubmit: theirs.canSubmit, checkedAt: theirs.checkedAt })
+          .where(eq(leagueMembership.connectionId, kept.id))
+          .run();
+      }
       tx.delete(pokemonConnection).where(eq(pokemonConnection.id, dropped.id)).run();
     });
     accessTokens.delete(dropped.id);
     await revokeQuietly(token);
   }
 
-  function bind(leagueId: string, connectionId: number, league: League): void {
-    const values = {
-      connectionId,
-      activityGroupId: league.id,
-      activityGroupName: league.name,
-      activityGroupDisplayId: league.displayId,
-      activityGroupCanSubmit: league.canSubmit,
-    };
+  function bind(leagueId: string, league: League): void {
+    const values = { activityGroupId: league.id, activityGroupName: league.name, activityGroupDisplayId: league.displayId };
     db.insert(leagueUpstream).values({ leagueId, ...values }).onConflictDoUpdate({ target: leagueUpstream.leagueId, set: values }).run();
   }
 
-  /** Writes a completed connect: reconnects the professor's row, claims a carried-over one, or adds a row under the cap. */
-  function persistConnect(grant: TokenGrant & { refreshToken: string }, profile: ProfessorProfile): { id: number; outcome: 'added' | 'reconnected' } {
+  const upstreamOf = (b: Binding): UpstreamLeague => ({ id: b.activityGroupId, name: b.activityGroupName, displayId: b.activityGroupDisplayId });
+
+  /** Back to `unknown` and unchecked: the next keep-alive reads it again if the read that follows fails. */
+  function resetMembership(leagueId: string, connectionId: number): void {
+    const values = { leagueId, status: 'unknown' as const, canSubmit: false, checkedAt: null };
+    db.insert(leagueMembership).values({ connectionId, ...values }).onConflictDoUpdate({ target: leagueMembership.connectionId, set: values }).run();
+  }
+
+  /**
+   * Reads one connection's leagues as that connection and records whether the league's group is among them. A failed
+   * read changes nothing. Returns whether it read.
+   */
+  async function checkMembership(leagueId: string, connectionId: number): Promise<boolean> {
+    const b = bindingOf(leagueId);
+    if (!b) return true;
+    let leagues: League[];
+    try {
+      leagues = await deps.gateway(service, connectionId).listLeagues();
+    } catch (err) {
+      log.warn(`Could not read a Pokémon account's leagues; its league membership stays as it was (${(err as Error).message}).`, { err });
+      return false;
+    }
+    const found = leagues.find((l) => l.id === b.activityGroupId);
+    const endedLeases = db.transaction(() => {
+      db.update(leagueMembership)
+        .set({ leagueId, status: found ? 'member' : 'outside', canSubmit: found?.canSubmit ?? false, checkedAt: now() })
+        .where(eq(leagueMembership.connectionId, connectionId))
+        .run();
+      // A professor whose account isn't in the league can't keep a lease (ADR-0015 §5). The owner is always a member.
+      const holder = found ? null : load(connectionId);
+      if (!holder || deps.accounts.actor(holder.userId)?.role !== 'professor') return [];
+      return deps.leases?.store.endHeldBy(holder.userId, 'lessee_outside') ?? [];
+    });
+    notifyEnded(endedLeases);
+    return true;
+  }
+
+  /** After the owner chooses a league: every connection reset, then read one at a time. Returns how many reads failed. */
+  async function recheckAll(leagueId: string): Promise<number> {
+    let unchecked = 0;
+    for (const r of all()) {
+      resetMembership(leagueId, r.id);
+      // A connection that needs a reconnect can't be read; it stays unknown until it reconnects.
+      if (r.status !== 'connected' || !(await checkMembership(leagueId, r.id))) unchecked += 1;
+    }
+    return unchecked;
+  }
+
+  /**
+   * Writes a completed connect (ADR-0015 §2): reconnects the actor's own row, moves the owner's row to a professor,
+   * claims a carried-over row of the actor's, or adds a row under the cap. Any other connect for a held account is
+   * refused. Runs in one transaction, so two connects for one account settle with one row.
+   */
+  function persistConnect(
+    actor: Actor,
+    grant: TokenGrant & { refreshToken: string },
+    profile: ProfessorProfile,
+  ): { id: number; outcome: 'added' | 'reconnected' | 'claimed'; claimedFrom?: Actor; endedLeases?: EndedLease[] } {
     return db.transaction((tx) => {
       const at = now();
       const fields = { ptcUserId: grant.subject, status: 'connected' as const, statusReason: null, connectedAt: at, lastRefreshedAt: at };
       const seal = (id: number) => vault.encrypt(grant.refreshToken, connectionAad(id));
 
-      const own = tx.select().from(pokemonConnection).where(eq(pokemonConnection.professorPlayerId, profile.playerId)).get();
-      const carried = tx
-        .select()
-        .from(pokemonConnection)
-        .where(isNull(pokemonConnection.professorPlayerId))
-        .all()
-        .find((r) => r.status === 'needs_reconnect' || r.ptcUserId === grant.subject);
+      const rowsNow = tx.select().from(pokemonConnection).orderBy(asc(pokemonConnection.id)).all();
+      const own = rowsNow.find((r) => r.professorPlayerId === profile.playerId);
+      const bound = actor.role === 'professor' ? deps.accounts.boundPlayerId(actor.userId) : null;
+      if (bound !== null && bound !== profile.playerId) {
+        throw new ConnectError(
+          'invite_player_mismatch',
+          `Your invite is for Pokémon account ${bound}, so only that account can be connected here. Log in to Pokémon as that account.`,
+        );
+      }
+      if (actor.role === 'professor') {
+        const held = rowsNow.find((r) => r.userId === actor.userId);
+        if (held && held.professorPlayerId !== profile.playerId) {
+          throw new ConnectError(
+            'one_connection_only',
+            `You already connected ${labelOf(held)}. Disconnect it first, or log in to Pokémon as that account to reconnect it.`,
+          );
+        }
+      }
+
+      if (own && own.userId !== actor.userId) {
+        const holder = deps.accounts.actor(own.userId);
+        if (holder?.role !== 'owner' || actor.role !== 'professor') {
+          throw new ConnectError(
+            'connection_held',
+            `Someone else in this app has already connected Pokémon account ${profile.playerId}. They can disconnect it first.`,
+          );
+        }
+        tx.update(pokemonConnection)
+          .set({ ...fields, userId: actor.userId, claimedFromUserId: own.userId, claimedAt: at, refreshTokenCiphertext: seal(own.id) })
+          .where(eq(pokemonConnection.id, own.id))
+          .run();
+        // The owner no longer holds it, so every lease they granted on it ends (ADR-0015 §2, §5).
+        const endedLeases = deps.leases?.store.endOnConnection(own.id, 'connection_gone') ?? [];
+        return { id: own.id, outcome: 'claimed' as const, claimedFrom: holder, endedLeases };
+      }
+
+      const carried = own
+        ? undefined
+        : rowsNow.find((r) => r.professorPlayerId === null && r.userId === actor.userId && (r.status === 'needs_reconnect' || r.ptcUserId === grant.subject));
       const target = own ?? carried;
       if (target) {
         tx.update(pokemonConnection)
@@ -383,9 +560,16 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       if (tx.select({ n: count() }).from(pokemonConnection).get()!.n >= MAX_CONNECTIONS) {
         throw new ConnectError('connection_limit', `Already ${MAX_CONNECTIONS} Pokémon accounts are connected. Disconnect one first.`);
       }
+      // A professor's own seat already covers their connection; an owner's new one takes a seat (ADR-0015 §6).
+      if (actor.role === 'owner' && deps.accounts.seatsUsed() >= MAX_CONNECTIONS) {
+        throw new ConnectError(
+          'connection_limit',
+          `All ${MAX_CONNECTIONS} places are taken by your Pokémon accounts, professors and open invites. Revoke an invite or remove a professor first.`,
+        );
+      }
       const { id } = tx
         .insert(pokemonConnection)
-        .values({ ...fields, professorPlayerId: profile.playerId, refreshTokenCiphertext: Buffer.alloc(0) })
+        .values({ ...fields, userId: actor.userId, professorPlayerId: profile.playerId, refreshTokenCiphertext: Buffer.alloc(0) })
         .returning({ id: pokemonConnection.id })
         .get();
       tx.update(pokemonConnection).set({ refreshTokenCiphertext: seal(id) }).where(eq(pokemonConnection.id, id)).run();
@@ -405,39 +589,40 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     }
   }
 
-  /** The leagues `named` shares with every other professor; those needing a reconnect are left out (#75). */
-  async function sharedLeagues(named: Row): Promise<{ leagues: League[]; excluded: SharedLeagues['excluded'] }> {
-    let leagues = await deps.gateway(service, named.id).listLeagues();
-    const excluded: SharedLeagues['excluded'] = [];
-    for (const other of all()) {
-      if (other.id === named.id) continue;
-      const leaveOut = () => excluded.push({ playerId: other.professorPlayerId, name: other.professorName });
-      if (other.status === 'needs_reconnect') {
+  /** The leagues of `userId`'s connections, deduplicated, each read as that connection. */
+  async function leaguesOf(userId: number): Promise<{ leagues: League[]; excluded: UpstreamLeagues['excluded'] }> {
+    const leagues: League[] = [];
+    const excluded: UpstreamLeagues['excluded'] = [];
+    for (const r of all().filter((x) => x.userId === userId)) {
+      const leaveOut = () => excluded.push({ playerId: r.professorPlayerId, name: r.professorName });
+      if (r.status === 'needs_reconnect') {
         leaveOut();
         continue;
       }
       let theirs: League[];
       try {
-        theirs = await deps.gateway(service, other.id).listLeagues();
+        theirs = await deps.gateway(service, r.id).listLeagues();
       } catch (err) {
         if (!(err instanceof PokemonUpstreamError && err.code === 'needs_reconnect')) throw err;
         leaveOut();
         continue;
       }
-      const ids = new Set(theirs.map((l) => l.id));
-      leagues = leagues.filter((l) => ids.has(l.id));
+      for (const l of theirs) if (!leagues.some((x) => x.id === l.id)) leagues.push(l);
     }
     return { leagues, excluded };
   }
 
-  /** After a connect: a league with no submitting professor takes this one when exactly one league is shared. */
-  async function autoSelectLeague(leagueId: string, id: number): Promise<void> {
-    if (bindingOf(leagueId)) return;
+  /** After an owner's connect: a league with none chosen takes the one league their connections are in, if there is one. */
+  async function autoSelectLeague(leagueId: string, owner: Actor): Promise<boolean> {
+    if (bindingOf(leagueId)) return false;
     try {
-      const { leagues } = await sharedLeagues(load(id)!);
-      if (leagues.length === 1) bind(leagueId, id, leagues[0]!);
+      const { leagues } = await leaguesOf(owner.userId);
+      if (leagues.length !== 1) return false;
+      bind(leagueId, leagues[0]!);
+      return true;
     } catch (err) {
       log.warn(`League discovery after connecting failed; pick the league in Settings (${(err as Error).message}).`, { err });
+      return false;
     }
   }
 
@@ -457,21 +642,94 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     });
   }
 
-  const service: PokemonConnectionService = {
-    getStatus: (leagueId) => leagueView(leagueId),
+  /** The keep-alive's membership read: a connected connection whose last read is a day old, or that was never read. */
+  async function recheckIfStale(leagueId: string, id: number): Promise<void> {
+    const r = load(id);
+    if (!r || r.status !== 'connected') return;
+    const m = memberships().get(id);
+    if (!m) resetMembership(leagueId, id);
+    else if (m.checkedAt && now().getTime() - m.checkedAt.getTime() < MEMBERSHIP_STALE_MS) return;
+    await checkMembership(leagueId, id);
+  }
 
-    listConnections(leagueId) {
+  const visibleTo = (viewer: Actor, r: Row, m: Membership | undefined) => {
+    if (viewer.role === 'owner' || r.userId === viewer.userId) return true;
+    return service.access(viewer).member && m?.status !== 'outside';
+  };
+
+  const service: PokemonConnectionService = {
+    league(leagueId) {
       const b = bindingOf(leagueId);
+      return b ? upstreamOf(b) : null;
+    },
+
+    listConnections(_leagueId, viewer) {
+      const ms = memberships();
       // Named professors first, by name; then the rest by player id.
       const named = (r: Row) => (r.professorName === null ? 1 : 0);
       return all()
+        .filter((r) => visibleTo(viewer, r, ms.get(r.id)))
         .sort(
           (x, y) =>
             named(x) - named(y) ||
             (x.professorName ?? '').localeCompare(y.professorName ?? '') ||
             (x.professorPlayerId ?? '').localeCompare(y.professorPlayerId ?? ''),
         )
-        .map((r) => professorView(r, b));
+        .map((r) => professorView(r, viewer, ms.get(r.id)));
+    },
+
+    listActingConnections() {
+      const ms = memberships();
+      return all().map((r) => acting(r, ms.get(r.id)));
+    },
+
+    fullNameOf: (professorPlayerId) => loadByPlayer(professorPlayerId)?.professorFullName ?? null,
+
+    listReadableConnections() {
+      return service.listActingConnections().filter((c) => c.membership !== 'outside');
+    },
+
+    actingConnection(actor, professorPlayerId, scope) {
+      const r = loadByPlayer(professorPlayerId);
+      if (!r) {
+        throw new ConnectionAccessError(
+          'organizer_not_connected',
+          `Professor ${professorPlayerId} isn't connected. Their Pokémon account must be connected in Settings to act as them.`,
+          professorPlayerId,
+        );
+      }
+      // A lease counts only for one tournament's staff or results, and never for an `own` scope (ADR-0015 §4, §5).
+      const leaseId =
+        r.userId === actor.userId || scope.kind !== 'tournament' ? null : (deps.leases?.store.liveFor(actor.userId, r.id, scope.tournamentId) ?? null);
+      if (r.userId !== actor.userId && leaseId === null) throw notYours(r, 'act as them in play-tools');
+      if (leaseId !== null && !actor.reverifyRequired && !service.access(actor).member) throw notYours(r, 'act as them in play-tools');
+      if (actor.reverifyRequired) {
+        throw new ConnectionAccessError(
+          'reverify_required',
+          `Log in to Pokémon as ${labelOf(r)} in Settings to confirm it's you after your password reset.`,
+          professorPlayerId,
+        );
+      }
+      if (r.status === 'needs_reconnect') {
+        throw new ConnectionAccessError('needs_reconnect', `Reconnect ${labelOf(r)} in Settings.`, professorPlayerId);
+      }
+      return { connectionId: r.id, leaseId };
+    },
+
+    readingConnection(_leagueId, actor) {
+      const usable = service.listActingConnections().filter((c) => c.membership === 'member' && c.status === 'connected');
+      const pick = (actor && usable.find((c) => c.userId === actor.userId)) ?? usable[0];
+      if (!pick) throw new PokemonUpstreamError('not_connected', 'No Pokémon account confirmed in the league is connected. Connect one in Settings.');
+      return pick.id;
+    },
+
+    access(actor) {
+      if (actor.role === 'owner') return { member: true, waiting: null };
+      if (actor.reverifyRequired) return { member: false, waiting: 'reverify_required' };
+      const held = all().find((r) => r.userId === actor.userId);
+      if (!held) return { member: false, waiting: 'no_connection' };
+      const status = memberships().get(held.id)?.status ?? 'unknown';
+      return status === 'member' ? { member: true, waiting: null } : { member: false, waiting: status };
     },
 
     getAccessToken(id) {
@@ -489,6 +747,8 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     startConnect(userId) {
       const at = now().getTime();
       for (const [state, a] of attempts) if (a.expiresAt < at) attempts.delete(state);
+      const theirs = [...attempts].filter(([, a]) => a.userId === userId);
+      while (theirs.length >= MAX_ATTEMPTS_PER_USER) attempts.delete(theirs.shift()![0]);
       while (attempts.size >= MAX_ATTEMPTS) attempts.delete(attempts.keys().next().value!);
 
       const { verifier, challenge } = createPkcePair();
@@ -498,12 +758,12 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       return { authorizeUrl: oauth.authorizeUrl(challenge, state), expiresAt: new Date(expiresAt) };
     },
 
-    async completeConnect(leagueId, userId, pastedUrl) {
+    async completeConnect(leagueId, actor, pastedUrl) {
       const parsed = parseCallbackUrl(pastedUrl);
       if (!parsed.ok) throw new ConnectError('invalid_url', parsed.error);
 
       const attempt = attempts.get(parsed.state);
-      if (!attempt || attempt.userId !== userId) {
+      if (!attempt || attempt.userId !== actor.userId) {
         throw new ConnectError('unknown_attempt', 'This login was not started here, or was already used. Start the connection again.');
       }
       attempts.delete(parsed.state);
@@ -529,7 +789,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
 
       const write = () => {
         try {
-          const done = persistConnect({ ...grant, refreshToken }, profile);
+          const done = persistConnect(actor, { ...grant, refreshToken }, profile);
           accessTokens.set(done.id, token);
           return done;
         } catch (err) {
@@ -538,14 +798,32 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         }
       };
       const own = loadByPlayer(profile.playerId);
-      const { id, outcome } = own ? await withLock(own.id, async () => write()) : write();
+      const { id, outcome, claimedFrom, endedLeases } = own ? await withLock(own.id, async () => write()) : write();
+      notifyEnded(endedLeases ?? []);
+      if (claimedFrom) {
+        log.info(`Pokémon connection for professor ${profile.playerId} moved from ${claimedFrom.username} to ${actor.username}`, {
+          professorPlayerId: profile.playerId,
+          fromUser: claimedFrom.username,
+          toUser: actor.username,
+        });
+      }
 
-      await autoSelectLeague(leagueId, id);
-      return { connection: professorView(load(id)!, bindingOf(leagueId)), outcome };
+      if (actor.reverifyRequired) deps.accounts.clearReverify(actor.userId);
+
+      const chosen = actor.role === 'owner' && (await autoSelectLeague(leagueId, actor));
+      if (chosen) await recheckAll(leagueId);
+      else {
+        resetMembership(leagueId, id);
+        await checkMembership(leagueId, id);
+      }
+      return { connection: professorView(load(id)!, actor), outcome };
     },
 
-    renameProfessor(leagueId, professorPlayerId, { name, fullName }) {
+    renameProfessor(_leagueId, actor, professorPlayerId, { name, fullName }) {
       const r = requireByPlayer(professorPlayerId);
+      const holder = r.userId === actor.userId;
+      if (name !== undefined && !holder && actor.role !== 'owner') throw notYours(r, 'rename it');
+      if (fullName !== undefined && !holder) throw notYours(r, 'change its full name');
       // Drizzle leaves an undefined field out of the update, so a name that wasn't sent stays as it is.
       if (name !== undefined || fullName !== undefined) {
         db.update(pokemonConnection)
@@ -553,36 +831,35 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
           .where(eq(pokemonConnection.id, r.id))
           .run();
       }
-      return professorView(load(r.id)!, bindingOf(leagueId));
+      return professorView(load(r.id)!, actor);
     },
 
-    listActingConnections: () =>
-      all().map((r) => ({ id: r.id, professorPlayerId: r.professorPlayerId, professorName: r.professorName, status: r.status })),
-
-    async listUpstreamLeagues(leagueId, professorPlayerId) {
-      const r = requireByPlayer(professorPlayerId);
-      const { leagues, excluded } = await sharedLeagues(r);
-      const b = bindingOf(leagueId);
-      return { leagues, selectedId: b?.connectionId === r.id ? b.activityGroupId : null, excluded };
+    async listUpstreamLeagues(leagueId, owner) {
+      const { leagues, excluded } = await leaguesOf(owner.userId);
+      return { leagues, selectedId: bindingOf(leagueId)?.activityGroupId ?? null, excluded };
     },
 
-    async selectLeague(leagueId, professorPlayerId, activityGroupId) {
-      const r = requireByPlayer(professorPlayerId);
-      const { leagues } = await service.listUpstreamLeagues(leagueId, professorPlayerId);
+    async selectLeague(leagueId, owner, activityGroupId) {
+      const { leagues } = await leaguesOf(owner.userId);
       const chosen = leagues.find((l) => l.id === activityGroupId);
       if (!chosen) throw new LeagueNotFoundError(activityGroupId);
-      bind(leagueId, r.id, chosen);
-      return leagueView(leagueId);
+      bind(leagueId, chosen);
+      const unchecked = await recheckAll(leagueId);
+      return { league: upstreamOf(bindingOf(leagueId)!), unchecked };
     },
 
     async keepAliveAll() {
       const reports: KeepAliveReport[] = [];
-      for (const r of all()) reports.push({ connectionId: r.id, professorPlayerId: r.professorPlayerId, ...(await keepAlive(r.id)) });
+      for (const r of all()) {
+        reports.push({ connectionId: r.id, professorPlayerId: r.professorPlayerId, ...(await keepAlive(r.id)) });
+        for (const b of db.select().from(leagueUpstream).all()) await recheckIfStale(b.leagueId, r.id);
+      }
       return reports;
     },
 
-    async disconnect(_leagueId, professorPlayerId) {
+    async disconnect(_leagueId, actor, professorPlayerId) {
       const r = requireByPlayer(professorPlayerId);
+      if (r.userId !== actor.userId) throw notYours(r, 'disconnect it');
       return withLock(r.id, async () => {
         accessTokens.delete(r.id);
         let revoked = false;
@@ -591,7 +868,13 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         } catch (err) {
           if (!(err instanceof VaultError)) throw err;
         }
-        db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
+        // Its leases end, then go with it (ADR-0015 §5); their notices go out once the delete has committed.
+        const endedLeases = db.transaction(() => {
+          const e = deps.leases?.store.endOnConnection(r.id, 'connection_gone') ?? [];
+          db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
+          return e;
+        });
+        notifyEnded(endedLeases);
         return { revoked };
       });
     },
@@ -632,6 +915,57 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
           log.warn(`Could not refresh a carried-over Pokémon connection at boot (${(err as Error).message}).`, { err });
         });
       }
+    },
+
+    ownerConnectionCount() {
+      return all().filter((r) => deps.accounts.actor(r.userId)?.role === 'owner').length;
+    },
+
+    connectionOf(userId) {
+      const r = all().find((x) => x.userId === userId);
+      if (!r) return null;
+      return {
+        playerId: r.professorPlayerId,
+        name: r.professorName,
+        status: r.status,
+        membership: memberships().get(r.id)?.status ?? 'unknown',
+        claimedAt: r.claimedAt,
+      };
+    },
+
+    recipientOf(userId) {
+      return all().find((r) => r.userId === userId)?.professorPlayerId ?? null;
+    },
+
+    prepareRemoval(userId) {
+      const tokens: string[] = [];
+      for (const r of all().filter((x) => x.userId === userId)) {
+        try {
+          tokens.push(vault.decrypt(r.refreshTokenCiphertext, connectionAad(r.id)));
+        } catch (err) {
+          if (!(err instanceof VaultError)) throw err;
+        }
+      }
+      return {
+        async revoke() {
+          // The leases `deleteConnectionsOf` ended inside the removal: their notices go out only after it committed.
+          const endedLeases = removalEndings.get(userId) ?? [];
+          removalEndings.delete(userId);
+          notifyEnded(endedLeases);
+          for (const t of tokens) await revokeQuietly(t);
+        },
+      };
+    },
+
+    deleteConnectionsOf(userId) {
+      const endedLeases: EndedLease[] = [];
+      for (const r of all().filter((x) => x.userId === userId)) {
+        accessTokens.delete(r.id);
+        endedLeases.push(...(deps.leases?.store.endOnConnection(r.id, 'connection_gone') ?? []));
+        db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
+      }
+      endedLeases.push(...(deps.leases?.store.endHeldBy(userId, 'lessee_removed') ?? []));
+      removalEndings.set(userId, endedLeases);
     },
   };
 

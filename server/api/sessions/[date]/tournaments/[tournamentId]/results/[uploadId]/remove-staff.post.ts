@@ -5,12 +5,11 @@ import { ResultsRemoveStaffBody, ResultsUploadParams } from '#shared/schemas/res
  * its organizer, then a staff job as the organizer removes only them. 202, then follow `/api/submissions/{id}/events`.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { date, tournamentId, uploadId } = await getValidatedRouterParams(event, ResultsUploadParams.parse);
   const { playerIds } = await readValidatedBody(event, ResultsRemoveStaffBody.parse);
   const started = await useSubmissions()
-    .removeResultsStaff(leagueId, { date, tournamentId, uploadId, playerIds, startedBy: user.username })
+    .removeResultsStaff(leagueId, { date, tournamentId, uploadId, playerIds, actor })
     .catch(resultsHttpError);
   setResponseStatus(event, 202);
   return started;

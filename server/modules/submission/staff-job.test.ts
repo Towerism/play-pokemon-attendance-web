@@ -4,7 +4,7 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
-import type { ActingConnection, ConnectionView } from '../pokemon/connection';
+import type { ActingConnection } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
   DateRange,
@@ -21,6 +21,7 @@ import { type StaffingService, createStaffingService } from '../staffing/service
 import { GROUP, ROLES, playing, staffer, tournament } from '../staffing/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, type SubmissionView, createSubmissionService } from './service';
+import { HELD_BY_OWNER, OWNER, type StubLease, professorActor, stubConnections } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';
@@ -140,7 +141,8 @@ let sightings: SightingsService;
 let sessions: SessionsService;
 let staffing: StaffingService;
 let upstream: FakeStaffTools;
-let connection: ConnectionView;
+/** The league's chosen activity group (ADR-0015 §3), or none. */
+let connection: { league: { id: string; name: string; displayId: string | null } | null };
 /** The professors connected: Olive organizes the tournament; Ash submits attendance. */
 let professors: ActingConnection[];
 /** The connection each of the staff job's gateways was built for. */
@@ -150,6 +152,9 @@ let sleeps: number[];
 let onSleep: ((signal: AbortSignal) => Promise<void> | void) | undefined;
 let logs: { level: string; message: string; fields: unknown }[];
 let service: SubmissionService;
+/** Leases the stubs know (ADR-0015 §5), and which of them are still live. */
+let leases: StubLease[];
+let live: Set<number>;
 
 const noResolver: PlaySessionResolver = {
   resolve: () => Promise.reject(new Error('a staff job never resolves play sessions')),
@@ -169,7 +174,7 @@ function build(over: { staffDelayMs?: number } = {}): SubmissionService {
     sessions,
     roster,
     sightings,
-    connections: { getStatus: () => connection, listActingConnections: () => professors },
+    connections: stubConnections({ professors: () => professors, league: () => connection.league, leases: () => leases.filter((l) => live.has(l.id)) }),
     gateway: () => noAttendance,
     staffGateway: (connectionId) => {
       jobGateways.push(connectionId);
@@ -184,6 +189,7 @@ function build(over: { staffDelayMs?: number } = {}): SubmissionService {
       clock = new Date(clock.getTime() + ms);
     },
     staffDelayMs: over.staffDelayMs ?? DELAY,
+    leases: { isLive: (leaseId) => live.has(leaseId), endLeasesForTournament: () => {} },
     log: { info: record('info'), warn: record('warn') },
   });
 }
@@ -198,24 +204,18 @@ beforeEach(() => {
   upstream.tournaments = [tournament(T, { name: 'League Challenge', displayId: '26-10-1', organizer: ORGANIZER })];
   upstream.list(staffer(ORGANIZER, 'organizer', 'Olive Organizer', 'org-rec'));
   clock = new Date('2026-10-14T12:00:00Z');
-  connection = {
-    status: 'connected',
-    reason: null,
-    connectedAt: clock,
-    lastRefreshedAt: clock,
-    league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
-    connectionId: 1,
-    professor: { playerId: '0012345', name: 'Ash Ketchum' },
-  };
+  connection = { league: { id: GROUP, name: 'Card Shop', displayId: 'L5012' } };
   professors = [
-    { id: 7, professorPlayerId: '0012345', professorName: 'Ash Ketchum', status: 'connected' },
-    { id: 1, professorPlayerId: ORGANIZER, professorName: 'Olive Organizer', status: 'connected' },
+    { id: 7, professorPlayerId: '0012345', professorName: 'Ash Ketchum', status: 'connected', ...HELD_BY_OWNER },
+    { id: 1, professorPlayerId: ORGANIZER, professorName: 'Olive Organizer', status: 'connected', ...HELD_BY_OWNER },
   ];
   jobGateways = [];
+  leases = [];
+  live = new Set();
   staffing = createStaffingService({
     db: database.db,
     roster,
-    connections: { getStatus: () => connection, listActingConnections: () => professors },
+    connections: stubConnections({ professors: () => professors, league: () => connection.league, leases: () => leases.filter((l) => live.has(l.id)) }),
     staffGateway: () => upstream,
     timeZone: TZ,
     now: () => clock,
@@ -229,7 +229,7 @@ afterEach(() => database.close());
 
 /** The organizer wants `playerId` on the tournament in `role`; returns the assignment id. */
 async function want(playerId: string, role = 'judge', name = `Staffer ${playerId}`): Promise<number> {
-  const { assignment } = await staffing.addAssignment(L, DATE, { tournamentId: T, playerId: id(playerId), role, name }, 'organizer');
+  const { assignment } = await staffing.addAssignment(L, DATE, { tournamentId: T, playerId: id(playerId), role, name }, OWNER);
   return assignment.id;
 }
 
@@ -255,7 +255,7 @@ function wantDirectly(playerId: string, role = 'judge'): number {
 
 async function apply(): Promise<SubmissionView> {
   upstream.resetLog();
-  const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, startedBy: 'organizer' });
+  const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: OWNER });
   await service.idle();
   return service.get(L, submissionId);
 }
@@ -383,7 +383,7 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
 
   it("sends a role change for this app's own record only, and clears the old role", async () => {
     const a = await applied('00123');
-    await staffing.changeRole(L, DATE, a, 'headjudge');
+    await staffing.changeRole(L, DATE, a, 'headjudge', OWNER);
 
     const view = await apply();
 
@@ -398,8 +398,8 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
     const b = await want('00456');
     upstream.list(staffer('00123', 'judge', '', 'theirs-1'), staffer('00456', 'judge', '', 'theirs-2'));
     await apply();
-    await staffing.changeRole(L, DATE, a, 'scorekeeper');
-    await staffing.removeAssignment(L, DATE, b);
+    await staffing.changeRole(L, DATE, a, 'scorekeeper', OWNER);
+    await staffing.removeAssignment(L, DATE, b, OWNER);
 
     const view = await apply();
 
@@ -411,8 +411,8 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
     const gone = await applied('00111');
     const rerole = await applied('00222');
     await want('00333');
-    await staffing.removeAssignment(L, DATE, gone);
-    await staffing.changeRole(L, DATE, rerole, 'scorekeeper');
+    await staffing.removeAssignment(L, DATE, gone, OWNER);
+    await staffing.changeRole(L, DATE, rerole, 'scorekeeper', OWNER);
 
     const view = await apply();
 
@@ -424,7 +424,7 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
 
   it('calls a tombstoned record play-tools no longer has already_removed, sends nothing and drops the row', async () => {
     const gone = await applied('00111');
-    await staffing.removeAssignment(L, DATE, gone);
+    await staffing.removeAssignment(L, DATE, gone, OWNER);
     upstream.participants.set(T, upstream.on().filter((p) => p.playerId !== '00111'));
 
     const view = await apply();
@@ -458,7 +458,7 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
 
   it('assigns afresh, after a re-read, when the record a role change targets is gone', async () => {
     const a = await applied('00123');
-    await staffing.changeRole(L, DATE, a, 'scorekeeper');
+    await staffing.changeRole(L, DATE, a, 'scorekeeper', OWNER);
     upstream.onChange = () => {
       upstream.participants.set(T, upstream.on().filter((p) => p.playerId !== '00123'));
       return 'not_found';
@@ -474,7 +474,7 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
 
   it('fails a role change play-tools refuses and keeps the role play-tools holds', async () => {
     const a = await applied('00123');
-    await staffing.changeRole(L, DATE, a, 'scorekeeper');
+    await staffing.changeRole(L, DATE, a, 'scorekeeper', OWNER);
     upstream.onChange = () => {
       throw new PokemonUpstreamError('unexpected_shape', 'Changing a staff role: play-tools answered 400.');
     };
@@ -499,7 +499,7 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
 
   it('fails a removal the closing re-read still lists', async () => {
     const gone = await applied('00111');
-    await staffing.removeAssignment(L, DATE, gone);
+    await staffing.removeAssignment(L, DATE, gone, OWNER);
     upstream.onRemove = () => 'removed';
 
     const view = await apply();
@@ -511,7 +511,7 @@ describe('a staff job (ADR-0007: plan → execute → reconcile)', () => {
   it('never writes sightings, session players or attendance, even when it removes someone who also played', async () => {
     sessions.addPlayer(L, DATE, { playerId: id('00111'), name: 'Played Too' });
     const gone = await applied('00111');
-    await staffing.removeAssignment(L, DATE, gone);
+    await staffing.removeAssignment(L, DATE, gone, OWNER);
     const before = { sightings: sightings.on(L, DATE), session: sessions.getSession(L, DATE).players };
 
     await apply();
@@ -768,24 +768,24 @@ describe('pacing (human-scale traffic)', () => {
 describe('starting a staff job', () => {
   it("refuses a tournament that isn't one of the league's on the date, creating nothing", async () => {
     await want('00123');
-    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: 't-nope', startedBy: 'o' }))).code).toBe('unknown_tournament');
+    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: 't-nope', actor: OWNER }))).code).toBe('unknown_tournament');
     expect(submissions()).toBe(0);
   });
 
   it('refuses a tournament past its edit window', async () => {
     await want('00123');
     upstream.tournaments = [tournament(T, { editableUntil: new Date(clock.getTime() - 1), organizer: ORGANIZER })];
-    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, startedBy: 'o' }))).code).toBe('tournament_locked');
+    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, actor: OWNER }))).code).toBe('tournament_locked');
     expect(submissions()).toBe(0);
   });
 
   it('refuses a tournament with no assignments', async () => {
-    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, startedBy: 'o' }))).code).toBe('nothing_to_apply');
+    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, actor: OWNER }))).code).toBe('nothing_to_apply');
   });
 
   it('refuses an assignment holding a role play-tools does not offer', async () => {
     wantDirectly('00123', 'organizer');
-    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, startedBy: 'o' }))).code).toBe('unknown_role');
+    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, actor: OWNER }))).code).toBe('unknown_role');
   });
 
   it('refuses while another job holds the league’s lease', async () => {
@@ -798,9 +798,9 @@ describe('starting a staff job', () => {
       upstream.onDetails = undefined;
       return new Promise<void>((r) => (release = r));
     };
-    const first = await service.applyStaff(L, DATE, { tournamentId: T, startedBy: 'o' });
+    const first = await service.applyStaff(L, DATE, { tournamentId: T, actor: OWNER });
 
-    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, startedBy: 'o' }))).code).toBe('submission_running');
+    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, actor: OWNER }))).code).toBe('submission_running');
 
     release();
     await service.idle();
@@ -810,13 +810,13 @@ describe('starting a staff job', () => {
   it('refuses once shutting down', async () => {
     await want('00123');
     await service.shutdown();
-    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, startedBy: 'o' }))).code).toBe('shutting_down');
+    expect((await refusal(service.applyStaff(L, DATE, { tournamentId: T, actor: OWNER }))).code).toBe('shutting_down');
   });
 
   it('is never undoable', async () => {
     await want('00123');
     const view = await apply();
-    expect((await refusal(service.undo(L, view.id, 'o'))).code).toBe('not_undoable');
+    expect((await refusal(service.undo(L, view.id, OWNER))).code).toBe('not_undoable');
   });
 });
 
@@ -829,7 +829,7 @@ describe('retry, crash and shutdown', () => {
     upstream.onAssign = undefined;
     upstream.resetLog();
 
-    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    const { submissionId } = await service.retry(L, first.id, OWNER);
     await service.idle();
     const retry = service.get(L, submissionId);
 
@@ -928,7 +928,7 @@ describe('the professor a staff job runs as (#75)', () => {
     const first = await apply();
     professors = professors.filter((p) => p.id !== 1);
 
-    await expect(service.retry(L, first.id, 'organizer')).rejects.toMatchObject({ code: 'organizer_not_connected' });
+    await expect(service.retry(L, first.id, OWNER)).rejects.toMatchObject({ code: 'organizer_not_connected' });
     expect(service.list(L).filter((s) => s.kind === 'staff')).toHaveLength(1);
   });
 
@@ -937,13 +937,81 @@ describe('the professor a staff job runs as (#75)', () => {
     upstream.onAssign = () => ({ status: 'refused', code: 'missing_certification' });
     const first = await apply();
     upstream.onAssign = undefined;
-    professors = [...professors, { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison', status: 'connected' }];
+    professors = [...professors, { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison', status: 'connected', ...HELD_BY_OWNER }];
     upstream.tournaments = [tournament(T, { name: 'League Challenge', displayId: '26-10-1', organizer: '0000222' })];
     jobGateways = [];
 
-    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    const { submissionId } = await service.retry(L, first.id, OWNER);
     await service.idle();
     expect(service.get(L, submissionId).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
     expect(new Set(jobGateways)).toEqual(new Set([2]));
+  });
+});
+
+describe('a staff job under a lease (ADR-0015 §5)', () => {
+  const MISTY = professorActor(2, 'misty');
+  const lend = () => {
+    leases = [{ id: 7, connectionId: 1, tournamentId: T, lesseeUserId: MISTY.userId }];
+    live = new Set([7]);
+  };
+  const submissionRow = (submissionId: number) =>
+    database.sqlite.prepare('select started_by, professor_player_id, lease_id from submission where id = ?').get(submissionId);
+
+  it("runs as the organizer's connection, recording the lent professor and the lease", async () => {
+    lend();
+    await want('00123');
+    upstream.resetLog();
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+
+    expect(service.get(L, submissionId)).toMatchObject({ status: 'succeeded', startedBy: 'misty', leased: true });
+    expect(submissionRow(submissionId)).toEqual({ started_by: 'misty', professor_player_id: ORGANIZER, lease_id: 7 });
+    expect(jobGateways.at(-1)).toBe(1);
+  });
+
+  it('stops before the next write once the lease ends, settling what was already sent', async () => {
+    lend();
+    await want('00123');
+    await want('00456');
+    await want('00789');
+    upstream.onAssign = (_p, _r, n) => {
+      if (n === 1) live.delete(7);
+    };
+    upstream.resetLog();
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+
+    const view = service.get(L, submissionId);
+    expect(upstream.calls.filter((c) => c.startsWith('assign'))).toEqual(['assign 00123 judge']);
+    expect(view).toMatchObject({ error: 'lease_ended' });
+    expect(item(view, '00123')!.outcome).toBe('assigned');
+  });
+
+  it('sends nothing when the lease ended before the job started', async () => {
+    lend();
+    await want('00123');
+    upstream.onRead = () => live.delete(7);
+    upstream.resetLog();
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+
+    expect(upstream.writes).toEqual([]);
+    expect(service.get(L, submissionId)).toMatchObject({ error: 'lease_ended' });
+  });
+
+  it("runs the organizer's retry of a leased job as their own", async () => {
+    lend();
+    await want('00123');
+    upstream.onAssign = () => ({ status: 'refused', code: 'cannot_duplicate_participant' });
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+    upstream.onAssign = undefined;
+
+    const { submissionId: retried } = await service.retry(L, submissionId, OWNER);
+    await service.idle();
+    expect(submissionRow(retried)).toMatchObject({ started_by: 'organizer', lease_id: null });
+
+    live.delete(7);
+    await expect(service.retry(L, submissionId, MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
   });
 });

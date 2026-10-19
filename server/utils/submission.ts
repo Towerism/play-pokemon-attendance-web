@@ -13,8 +13,8 @@ export const leagueTimeZone = () => Intl.DateTimeFormat().resolvedOptions().time
 /** Today's session date in the league timezone; curation metrics are as of this date. */
 export const leagueToday = () => dateIn(new Date(), leagueTimeZone());
 
-/** Attendance calls are made as the league's submitting professor (ADR-0008); tournament calls as each tournament's organizer (#75). */
-const gateway = (leagueId: string) => leagueGateway(leagueId);
+/** Attendance calls are made as whoever submits (ADR-0015 §4); tournament calls as each tournament's organizer (#75). */
+const gateway = (connectionId: number) => connectionGateway(connectionId);
 
 export function usePlaySessionResolver(): PlaySessionResolver {
   resolver ??= createPlaySessionResolver({ connections: usePokemon(), gateway, timeZone: leagueTimeZone() });
@@ -44,6 +44,10 @@ export function useSubmissions(): SubmissionService {
       tournaments: { ...useTournaments(), results: useTournamentResults() },
       tournamentGateway: connectionGateway,
       tournamentDelayMs: Number(useRuntimeConfig().tournament.delayMs) || 0,
+      leases: {
+        isLive: (leaseId) => useLeaseStore().isLive(leaseId),
+        endLeasesForTournament: (tournamentId, reason) => useLeases().endLeasesForTournament(tournamentId, reason),
+      },
       log: useLogger('submission'),
     });
   }
@@ -57,7 +61,8 @@ export async function stopSubmissions(): Promise<void> {
 
 const STATUS: Record<SubmissionErrorCode, number> = {
   league_not_selected: 409,
-  cannot_submit: 403,
+  cannot_submit: 409,
+  submit_as_required: 409,
   unknown_play_session: 422,
   edit_window_closed: 422,
   nothing_to_submit: 422,
@@ -68,6 +73,7 @@ const STATUS: Record<SubmissionErrorCode, number> = {
   nothing_to_undo: 422,
   confirmation_mismatch: 422,
   nothing_to_clear: 422,
+  owner_only: 403,
 };
 
 /** Maps submission, staffing (a staff job's checks) and Pokémon errors to HTTP; `data.code` tells the UI what to show. */

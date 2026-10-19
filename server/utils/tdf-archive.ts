@@ -1,6 +1,8 @@
 import { tdfVault } from '../bootstrap/vaults';
 import { createTdfUploadReferrer } from '../modules/sessions/tdf-import';
 import { createResultUploadReferrer } from '../modules/tournaments/results';
+import type { Actor } from '../modules/accounts/service';
+import { mayAccessTdf } from '../modules/tdf-archive/access';
 import { TdfFileNotFoundError, TdfKeyMismatchError } from '../modules/tdf-archive/errors';
 import { type TdfArchiveService, createTdfArchiveService } from '../modules/tdf-archive/service';
 
@@ -25,3 +27,30 @@ export function tdfArchiveHttpError(err: unknown): unknown {
   }
   return err;
 }
+
+/**
+ * Which stored TDFs `actor` may list, download or delete (ADR-0015 §4, §5): every file for the owner; for a professor,
+ * files they uploaded or that belong to tournaments one of their own connections organizes, and for downloading, the
+ * results files of a tournament lent to them.
+ */
+export function tdfAccess(leagueId: string, actor: Actor, use: 'list' | 'download' | 'delete' = 'list'): (file: { id: number; createdBy: string }) => boolean {
+  if (actor.role === 'owner') return () => true;
+  const own = usePokemon()
+    .listActingConnections()
+    .filter((c) => c.userId === actor.userId && c.professorPlayerId !== null)
+    .map((c) => c.professorPlayerId!);
+  const results = useTournamentResults();
+  const reach = {
+    organized: results.fileIdsOrganizedBy(leagueId, own),
+    leased: results.fileIdsOfTournaments(leagueId, [...useLeases().leasedTournamentIdsOf(actor.userId)]),
+    results: results.resultFileIds(leagueId),
+  };
+  return (file) => mayAccessTdf(actor, file, reach, use);
+}
+
+/** 404 unless `actor` may reach stored file `fileId` for `use`: a file they may not reach answers as one that doesn't exist. */
+export function assertTdfAccess(leagueId: string, actor: Actor, fileId: number, use: 'download' | 'delete'): void {
+  const file = useTdfArchive().list(leagueId).find((f) => f.id === fileId);
+  if (!file || !tdfAccess(leagueId, actor, use)(file)) throw tdfArchiveHttpError(new TdfFileNotFoundError(fileId));
+}
+

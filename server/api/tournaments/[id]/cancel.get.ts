@@ -6,7 +6,7 @@ import { EditTargetParam } from '#shared/schemas/tournaments';
  * what to type to confirm.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
+  const { leagueId } = await requireMember(event);
   const { id } = await getValidatedRouterParams(event, EditTargetParam.parse);
   return useTournaments().cancelling.preview(leagueId, id).catch(tournamentsHttpError);
 });

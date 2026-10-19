@@ -5,11 +5,10 @@ import { ApplyBody, EditTargetParam } from '#shared/schemas/tournaments';
  * `tournament_edit` job. 202 with the job, then follow `/api/submissions/{id}/events`; 200 when only planned ones changed.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { id } = await getValidatedRouterParams(event, EditTargetParam.parse);
   const body = await readValidatedBody(event, ApplyBody.parse);
-  const started = await useSubmissions().editTournaments(leagueId, { target: id, body, startedBy: user.username }).catch(submissionHttpError);
+  const started = await useSubmissions().editTournaments(leagueId, { target: id, body, actor }).catch(submissionHttpError);
   setResponseStatus(event, started.submissionId === null ? 200 : 202);
   return started;
 });

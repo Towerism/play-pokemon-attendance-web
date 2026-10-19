@@ -1,7 +1,7 @@
 <script setup lang="ts">
 const { user, clear } = useUserSession();
 
-const links = [
+const allLinks = [
   { to: '/', label: 'This week' },
   { to: '/regulars', label: 'Regulars' },
   { to: '/players', label: 'Players' },
@@ -10,7 +10,13 @@ const links = [
   { to: '/settings', label: 'Settings' },
 ];
 
-// Global reconnect banner (architecture §8): shown on every page once Pokémon refuses the submitting professor's login.
+// Who is signed in, and whether they may see the league (ADR-0015 §3). A professor not yet confirmed in it sees only
+// Settings. The server refuses every other page anyway, so this never holds a navigation back while it loads.
+const { data: settings, execute: loadSettings } = await useSettings({ immediate: false });
+const waiting = computed(() => (user.value && settings.value ? !settings.value.access.member : false));
+const links = computed(() => (waiting.value ? allLinks.filter((l) => l.to === '/settings') : allLinks));
+
+// Global reconnect banner (architecture §8): shown on every page once Pokémon refuses one of the viewer's own logins.
 const { data: connection, execute: loadConnection } = await usePokemonConnection({ immediate: false });
 // The required-events badge on Tournaments (ADR-0010 decision 12): read only with a session; a failed read hides it.
 const { data: coverage, execute: loadCoverage } = await useRequiredEvents({ immediate: false });
@@ -18,12 +24,13 @@ watch(
   user,
   (u) => {
     if (!u) return;
+    void loadSettings();
     void loadConnection();
     void loadCoverage();
   },
   { immediate: true },
 );
-const attention = computed(() => (user.value ? badgeCount(coverage.value) : 0));
+const attention = computed(() => (user.value && !waiting.value ? badgeCount(coverage.value) : 0));
 const attentionLabel = computed(() => `${attention.value} required events need attention`);
 const reconnectTitle = computed(() => (user.value ? reconnectBanner(connection.value) : null));
 
@@ -38,6 +45,14 @@ watch(
   () => {
     menuOpen.value = false;
   },
+);
+watch(
+  [() => router.currentRoute.value.path, () => settings.value?.access ?? null],
+  ([path, access]) => {
+    const target = waitingRedirect(path, access);
+    if (target) void navigateTo(target);
+  },
+  { immediate: true },
 );
 
 /** The drawer's links say which page is open; `/` matches exactly, the rest by prefix, like the active highlight. */

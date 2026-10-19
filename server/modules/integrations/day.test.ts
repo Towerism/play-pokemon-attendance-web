@@ -6,10 +6,11 @@ import type { Tournament } from '../pokemon/ports/play-tools-gateway';
 import type { DaySnapshot } from '../staffing/service';
 import { IntegrationError } from './errors';
 import { toAttendanceDay } from './day';
+import { HELD_BY_OWNER } from '../pokemon/test-connections';
 
 const DATE = '2026-10-14' as SessionDate;
-const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
-const BROCK: ActingConnection = { id: 2, professorPlayerId: '0000222', professorName: null, status: 'connected' };
+const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected', ...HELD_BY_OWNER };
+const BROCK: ActingConnection = { id: 2, professorPlayerId: '0000222', professorName: null, status: 'connected', ...HELD_BY_OWNER };
 
 function tournament(id: string, opts: Partial<Tournament> = {}): Tournament {
   return {
@@ -155,7 +156,7 @@ describe('toAttendanceDay', () => {
   });
 
   it('refuses the day when a connected professor still has no player id', () => {
-    const unidentified: ActingConnection = { id: 3, professorPlayerId: null, professorName: null, status: 'needs_reconnect' };
+    const unidentified: ActingConnection = { id: 3, professorPlayerId: null, professorName: null, status: 'needs_reconnect', ...HELD_BY_OWNER };
     const run = () => project(snapshot([], [{ connectionId: 3, outcome: { status: 'unread', code: 'needs_reconnect' } }]), [unidentified]);
     expect(run).toThrow(IntegrationError);
     expect(run).toThrow(expect.objectContaining({ code: 'professor_unidentified' }));

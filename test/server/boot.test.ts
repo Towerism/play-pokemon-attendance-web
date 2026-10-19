@@ -22,14 +22,14 @@ describe('a fresh install (empty /data, no env)', () => {
 
   it('creates the database and generates every secret, owner-only, under the data dir', () => {
     expect(statSync(join(server.dataDir, 'app.db')).isFile()).toBe(true);
-    for (const file of ['session-password', 'token-vault.key', 'tdf-vault.key']) {
+    for (const file of ['session-password', 'token-vault.key', 'tdf-vault.key', 'message-vault.key']) {
       expect(statSync(join(server.dataDir, 'secrets', file)).mode & 0o777).toBe(0o600);
     }
   });
 
   it('prints a setup code to the log, and never a secret', async () => {
     expect(await server.setupCode()).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
-    for (const file of ['session-password', 'token-vault.key', 'tdf-vault.key']) {
+    for (const file of ['session-password', 'token-vault.key', 'tdf-vault.key', 'message-vault.key']) {
       const secret = readFileSync(join(server.dataDir, 'secrets', file), 'utf8').trim();
       expect(server.logs()).not.toContain(secret);
     }

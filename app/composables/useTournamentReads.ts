@@ -5,7 +5,7 @@ import type { Scaffold, Schedule, Template } from '../../server/modules/tourname
 
 /** The league's time zone and today's date there, from settings: never play-tools, never the browser's own zone. */
 export function useLeagueClock() {
-  return useFetch<{ league: { timeZone: string; today: string } }>('/api/settings', { key: 'settings', dedupe: 'defer' });
+  return useSettings();
 }
 
 /** The Templates tab's list; Show archived is shared state so every user of the key asks for the same list. */

@@ -94,6 +94,11 @@ describe('tournamentCards', () => {
 });
 
 describe('cardEditable', () => {
+  it("offers no Edit… on a tournament someone else's connection organizes (ADR-0015 §4)", () => {
+    expect(cardEditable({ tournament: staffTournament(), entry: null }, 'Only Misty can change this')).toBe(false);
+    expect(cardEditable({ tournament: staffTournament(), entry: entry({ tournamentId: GUID_A, state: 'created', actions: [] }) }, 'Only Misty')).toBe(false);
+  });
+
   it('follows the paired entry’s actions', () => {
     expect(cardEditable({ tournament: staffTournament(), entry: entry({ tournamentId: GUID_A, state: 'created', actions: [] }) })).toBe(true);
     expect(cardEditable({ tournament: staffTournament(), entry: entry({ tournamentId: GUID_A, state: 'created', upstreamStatus: 'cancelled', actions: [] }) })).toBe(false);

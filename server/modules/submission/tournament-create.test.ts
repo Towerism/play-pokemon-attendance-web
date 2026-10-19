@@ -11,6 +11,7 @@ import { type TournamentsService, createTournamentsService } from '../tournament
 import { BROCK, GROUP, OLIVE, type StubTournament, stubPlayTools, templateBody, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The `tournament_create` job (#92, ADR-0010 decision 5) on the submission rails: adopt before create, one POST at a
 // time and paced, a 5xx never resent, the window checked again before each send, rows held while it runs.
@@ -130,7 +131,7 @@ const rowOf = (id: number) => database.sqlite.prepare('select * from planned_tou
 const setRow = (id: number, set: string) => database.sqlite.prepare(`update planned_tournament set ${set} where id = ?`).run(id);
 
 function customTemplate(overrides: Parameters<typeof templateBody>[0] = {}) {
-  return tournaments.createTemplate(L, templateBody({ name: 'Friday Cup {date}', type: { kind: 'custom' }, ...overrides }));
+  return tournaments.createTemplate(L, templateBody({ name: 'Friday Cup {date}', type: { kind: 'custom' }, ...overrides }), OWNER);
 }
 const plan = (templateId: number, localDate: string, startTime?: string) =>
   tournaments.createPlanned(L, { templateId, localDate, ...(startTime && { startTime }) }).plannedId!;
@@ -140,7 +141,7 @@ async function create(plannedIds: number[], opts: { acknowledgeShortNotice?: boo
     plannedIds,
     acknowledgeShortNotice: opts.acknowledgeShortNotice ?? false,
     retryUnknown: opts.retryUnknown ?? false,
-    startedBy: 'organizer',
+    actor: OWNER,
   });
   await service.idle();
   return service.get(L, submissionId);
@@ -170,7 +171,7 @@ describe('creating planned tournaments', () => {
       return undefined;
     };
 
-    const started = service.createTournaments(L, { plannedIds: [a, b], acknowledgeShortNotice: false, retryUnknown: false, startedBy: 'organizer' });
+    const started = service.createTournaments(L, { plannedIds: [a, b], acknowledgeShortNotice: false, retryUnknown: false, actor: OWNER });
     await held.reached;
     expect([rowOf(a).state, rowOf(b).state]).toEqual(['creating', 'creating']);
     held.open();
@@ -336,7 +337,7 @@ describe('a create that may have landed (5xx, timeout)', () => {
     land();
     onCreate = undefined;
 
-    await expect(service.createTournaments(L, { plannedIds: [late], acknowledgeShortNotice: false, retryUnknown: false, startedBy: 'organizer' })).rejects.toMatchObject({
+    await expect(service.createTournaments(L, { plannedIds: [late], acknowledgeShortNotice: false, retryUnknown: false, actor: OWNER })).rejects.toMatchObject({
       code: 'retry_not_confirmed',
     });
     posts = [];
@@ -412,7 +413,7 @@ describe('when the app stops', () => {
       await new Promise(() => {}); // the crash: never answers
       return undefined;
     };
-    void service.createTournaments(L, { plannedIds: [sent, unsent, triedBefore], acknowledgeShortNotice: false, retryUnknown: false, startedBy: 'organizer' });
+    void service.createTournaments(L, { plannedIds: [sent, unsent, triedBefore], acknowledgeShortNotice: false, retryUnknown: false, actor: OWNER });
     await held.reached;
 
     const afterBoot = build();
@@ -430,7 +431,7 @@ describe('when the app stops', () => {
     onSleep = () => {
       void service.shutdown();
     };
-    const { submissionId } = await service.createTournaments(L, { plannedIds: [a, b], acknowledgeShortNotice: false, retryUnknown: false, startedBy: 'organizer' });
+    const { submissionId } = await service.createTournaments(L, { plannedIds: [a, b], acknowledgeShortNotice: false, retryUnknown: false, actor: OWNER });
     await service.idle();
     expect(posts).toHaveLength(1);
     expect([rowOf(a).state, rowOf(b).state]).toEqual(['created', 'planned']);
@@ -449,9 +450,9 @@ describe('on the rails', () => {
       await held.opened;
       return undefined;
     };
-    const first = service.createTournaments(L, { plannedIds: [a], acknowledgeShortNotice: false, retryUnknown: false, startedBy: 'organizer' });
+    const first = service.createTournaments(L, { plannedIds: [a], acknowledgeShortNotice: false, retryUnknown: false, actor: OWNER });
     await held.reached;
-    await expect(service.createTournaments(L, { plannedIds: [b], acknowledgeShortNotice: false, retryUnknown: false, startedBy: 'organizer' })).rejects.toMatchObject({
+    await expect(service.createTournaments(L, { plannedIds: [b], acknowledgeShortNotice: false, retryUnknown: false, actor: OWNER })).rejects.toMatchObject({
       code: 'submission_running',
     });
     expect(rowOf(b).state).toBe('planned');
@@ -473,7 +474,7 @@ describe('on the rails', () => {
     expect(first.status).toBe('partial');
     onCreate = undefined;
 
-    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    const { submissionId } = await service.retry(L, first.id, OWNER);
     await service.idle();
     const retry = service.get(L, submissionId);
     expect(retry).toMatchObject({ retryOf: first.id, status: 'succeeded' });
@@ -486,7 +487,7 @@ describe('on the rails', () => {
     onCreate = () => ({ fail: new PokemonUpstreamError('refused', 'No.', { status: 400 }) });
     const first = await create([id]);
     clock = new Date('2026-10-17T17:00:00Z');
-    await expect(service.retry(L, first.id, 'organizer')).rejects.toMatchObject({ code: 'short_notice_not_acknowledged' });
+    await expect(service.retry(L, first.id, OWNER)).rejects.toMatchObject({ code: 'short_notice_not_acknowledged' });
   });
 
   it('records each item’s short notice; the job’s starter acknowledged it', async () => {
@@ -506,7 +507,7 @@ describe('create through a date', () => {
 
   it('creates every planned row through the date in one job, and marks the schedule', async () => {
     const schedule = weekly();
-    const { submissionId } = await service.createThrough(L, { scheduleId: schedule.id, date: '2026-11-10', acknowledgeShortNotice: true, startedBy: 'organizer' });
+    const { submissionId } = await service.createThrough(L, { scheduleId: schedule.id, date: '2026-11-10', acknowledgeShortNotice: true, actor: OWNER });
     await service.idle();
     const job = service.get(L, submissionId);
     expect(job).toMatchObject({ status: 'succeeded', playSessionLabel: 'Create Tuesday Cup through 2026-11-10' });
@@ -516,17 +517,17 @@ describe('create through a date', () => {
 
   it('refuses more than 60, suggesting a nearer date, and an empty list', async () => {
     const schedule = weekly();
-    await expect(service.createThrough(L, { scheduleId: schedule.id, date: '2027-12-31', acknowledgeShortNotice: true, startedBy: 'organizer' })).rejects.toMatchObject({
+    await expect(service.createThrough(L, { scheduleId: schedule.id, date: '2027-12-31', acknowledgeShortNotice: true, actor: OWNER })).rejects.toMatchObject({
       code: 'date_too_far_ahead',
     });
     const t = tournaments.listTemplates(L, {})[0]!;
     const scaffold = tournaments.createScaffold(L, { name: 'Twice', slots: [{ templateId: t.id, dayOffset: 0, startTime: '10:00' }, { templateId: t.id, dayOffset: 0, startTime: '14:00' }] });
     const busy = tournaments.createSchedule(L, { scaffoldId: scaffold.id, rule: { kind: 'weekly', weekday: 6, every: 1 }, startsOn: '2026-10-01', endsOn: null, horizonWeeks: 2 });
-    await expect(service.createThrough(L, { scheduleId: busy.id, date: '2027-06-30', acknowledgeShortNotice: true, startedBy: 'organizer' })).rejects.toMatchObject({
+    await expect(service.createThrough(L, { scheduleId: busy.id, date: '2027-06-30', acknowledgeShortNotice: true, actor: OWNER })).rejects.toMatchObject({
       code: 'too_many_tournaments',
       details: { count: expect.any(Number), suggestedThrough: expect.any(String) },
     });
-    await expect(service.createThrough(L, { scheduleId: schedule.id, date: '2026-10-12', acknowledgeShortNotice: true, startedBy: 'organizer' })).rejects.toMatchObject({
+    await expect(service.createThrough(L, { scheduleId: schedule.id, date: '2026-10-12', acknowledgeShortNotice: true, actor: OWNER })).rejects.toMatchObject({
       code: 'nothing_to_create',
     });
     expect(posts).toEqual([]);
@@ -534,3 +535,24 @@ describe('create through a date', () => {
 });
 
 void GROUP;
+
+describe('a create across organizers (ADR-0015 §4)', () => {
+  it("creates the caller's rows and answers the rows someone else's connection organizes as refused", async () => {
+    upstream.state.professors = upstream.state.professors.map((p) => (p.id === BROCK.id ? { ...p, userId: 2 } : p));
+    const olives = plan(customTemplate().id, '2026-11-06');
+    const brockTemplate = tournaments.createTemplate(
+      L,
+      templateBody({ name: 'Brock Cup {date}', type: { kind: 'custom' }, organizerPlayerId: BROCK.professorPlayerId as never }),
+      professorActor(2, 'brock'),
+    );
+    const brocks = plan(brockTemplate.id, '2026-11-06', '12:00');
+
+    const started = await service.createTournaments(L, { plannedIds: [olives, brocks], acknowledgeShortNotice: false, retryUnknown: false, actor: OWNER });
+    await service.idle();
+
+    expect(started.refused).toEqual([{ plannedTournamentId: brocks, code: 'not_your_connection', professorPlayerId: BROCK.professorPlayerId }]);
+    expect(service.get(L, started.submissionId).tournamentItems.map((i) => i.plannedTournamentId)).toEqual([olives]);
+    expect(rowOf(brocks).state).toBe('planned');
+  });
+});
+

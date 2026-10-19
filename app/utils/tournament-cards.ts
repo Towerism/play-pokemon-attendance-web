@@ -30,7 +30,8 @@ export function tournamentCards(
 }
 
 /** **Edit…** in a card's menu: the entry's actions decide; without one, a listed tournament whose organizer can act. */
-export function cardEditable({ tournament, entry }: CardPair): boolean {
+export function cardEditable({ tournament, entry }: CardPair, only: string | null = null): boolean {
+  if (only) return false;
   if (entry) return rowActions(entry).actions.includes('edit');
   const o = tournament.organizer;
   return !tournament.missing && !tournament.unavailable && !!o && o.connected && !o.needsReconnect;

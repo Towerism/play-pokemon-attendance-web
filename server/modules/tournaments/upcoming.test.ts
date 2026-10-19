@@ -6,6 +6,7 @@ import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import { TournamentsError } from './errors';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, GROUP, OLIVE, series, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
+import { HELD_BY_OWNER, OWNER } from '../pokemon/test-connections';
 
 // What Upcoming and the form options read from play-tools, as each professor (ADR-0010 decisions 6 and 10).
 
@@ -35,7 +36,7 @@ const link = (plannedId: number, tournamentId: string) =>
 
 describe('Upcoming with play-tools’ tournaments', () => {
   it('merges a linked row with its tournament, lists the league’s others, and leaves out other leagues', async () => {
-    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '18:00' }));
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '18:00' }), OWNER);
     const planned = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-20' });
     link(planned.plannedId!, 'g1');
     upstream.state.tournaments = [
@@ -88,11 +89,11 @@ describe('Upcoming with play-tools’ tournaments', () => {
   });
 
   it('names a professor whose read failed, and still shows everyone else and every planned row', async () => {
-    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' } }));
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' } }), OWNER);
     service.createPlanned(L, { templateId: template.id, localDate: '2026-10-20' });
     upstream.state.tournaments = [upstreamTournament('g1', '2026-10-21T23:00:00Z')];
     upstream.state.failNext.set('listTournaments@2', new PokemonUpstreamError('unavailable', 'play-tools is down'));
-    upstream.state.professors.push({ id: 3, professorPlayerId: '9999993', professorName: 'Misty', status: 'needs_reconnect' });
+    upstream.state.professors.push({ id: 3, professorPlayerId: '9999993', professorName: 'Misty', status: 'needs_reconnect', ...HELD_BY_OWNER });
 
     const result = await service.upcoming(L, {});
     expect(result.unread).toEqual([
@@ -104,7 +105,7 @@ describe('Upcoming with play-tools’ tournaments', () => {
   });
 
   it('with no professor connected, lists planned rows only and calls nobody', async () => {
-    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' } }));
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' } }), OWNER);
     service.createPlanned(L, { templateId: template.id, localDate: '2026-10-20' });
     upstream.state.professors = [];
     const result = await service.upcoming(L, {});
@@ -164,7 +165,7 @@ describe('the listing cache on Upcoming (#98)', () => {
   });
 
   it('lists live for a create-through preview, whatever is cached', async () => {
-    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' } }));
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' } }), OWNER);
     const scaffold = service.createScaffold(L, { name: 'Fridays', slots: [{ templateId: template.id, dayOffset: 0, startTime: null }] });
     const schedule = service.createSchedule(L, { scaffoldId: scaffold.id, rule: { kind: 'weekly', weekday: 5, every: 1 }, startsOn: '2026-10-16', endsOn: null });
     await service.createThrough(L, schedule.id, '2026-11-30');
@@ -191,7 +192,7 @@ describe('Download TDF on Upcoming', () => {
   };
 
   it('says which tournaments the app holds a results file for', async () => {
-    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '18:00' }));
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '18:00' }), OWNER);
     const linked = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-20' });
     link(linked.plannedId!, 'g1');
     service.createPlanned(L, { templateId: template.id, localDate: '2026-10-21' });
@@ -219,7 +220,7 @@ describe('series on Upcoming', () => {
   const DEC = series('lc-dec', 'League Challenge December 2026', '2026-12-01', '2026-12-31');
 
   function premierRows(organizer = OLIVE.professorPlayerId!) {
-    const template = service.createTemplate(L, templateBody({ organizerPlayerId: organizer as never }));
+    const template = service.createTemplate(L, templateBody({ organizerPlayerId: organizer as never }), OWNER);
     const nov = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-17' });
     const jan = service.createPlanned(L, { templateId: template.id, localDate: '2027-01-19' });
     return { template, nov, jan };
@@ -274,14 +275,14 @@ describe('series on Upcoming', () => {
   it('takes the row’s series pick', async () => {
     upstream.state.series = [NOV];
     const { jan } = premierRows();
-    service.updatePlanned(L, jan.plannedId!, { seriesId: 'custom' });
+    service.updatePlanned(L, jan.plannedId!, { seriesId: 'custom' }, OWNER);
     const entry = (await service.upcoming(L, { from: '2026-10-12', to: '2027-02-01' })).tournaments.find((t) => t.plannedId === jan.plannedId)!;
     expect(entry.type).toEqual({ kind: 'custom' });
     expect(entry.actions).toContain('create');
   });
 
   it('offers no create for a start a DST change skips', async () => {
-    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '02:30' }));
+    const template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '02:30' }), OWNER);
     now = new Date('2027-03-10T17:00:00Z');
     const planned = service.createPlanned(L, { templateId: template.id, localDate: '2027-03-14' });
     expect(planned).toMatchObject({ startsAt: null, timeProblem: 'nonexistent', actions: ['skip'] });

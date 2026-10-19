@@ -1,6 +1,7 @@
 /** Test-only stand-ins for the staffing module's upstream ports. Not imported by production code. */
 import type { PlayerId } from '../../../shared/types/ids';
-import type { ActingConnection, ConnectionView } from '../pokemon/connection';
+import type { ActingConnection } from '../pokemon/connection';
+import { HELD_BY_OWNER, type StubLease, stubConnections } from '../pokemon/test-connections';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
   StaffAssignResult,
@@ -70,7 +71,7 @@ export const playing = (playerId: string, name = ''): TournamentParticipant => (
 export type StubProfessor = ActingConnection & { upstreamAs?: string };
 
 /** The default professor: the organizer `tournament()` uses. */
-export const OLIVE: StubProfessor = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
+export const OLIVE: StubProfessor = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected', ...HELD_BY_OWNER };
 
 /**
  * An in-memory play-tools as several professors see it (S6): each connection lists only the
@@ -79,6 +80,8 @@ export const OLIVE: StubProfessor = { id: 1, professorPlayerId: '9999991', profe
  */
 export function stubPlayTools() {
   const state = {
+    /** Live tournament leases (ADR-0015 §5). */
+    leases: [] as StubLease[],
     tournaments: [] as TournamentDetails[],
     participants: new Map<string, TournamentParticipant[]>(),
     /** Tournament ids `getTournament` answers `not_found` for (deleted after being listed). */
@@ -97,15 +100,8 @@ export function stubPlayTools() {
     clock: () => Date.now(),
     /** Runs before every call once it is counted in flight; may wait (a gate) or throw (a failure). */
     before: undefined as ((call: string, as: number) => unknown) | undefined,
-    connection: {
-      status: 'connected',
-      reason: null,
-      connectedAt: new Date(0),
-      lastRefreshedAt: new Date(0),
-      league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
-      connectionId: 1,
-      professor: { playerId: '9999991', name: 'Olive Organizer' },
-    } as ConnectionView,
+    /** The league's chosen activity group (ADR-0015 §3), or null. */
+    connection: { league: { id: GROUP, name: 'Card Shop', displayId: 'L5012' } as { id: string; name: string; displayId: string | null } | null },
   };
   let inFlight = 0;
   let maxInFlight = 0;
@@ -191,13 +187,14 @@ export function stubPlayTools() {
     state,
     /** The gateway as one connection; `null` serves only the role list (no call). */
     gateway: (connectionId: number | null) => gatewayAs(connectionId ?? 0),
-    connections: {
-      getStatus: () => state.connection,
-      listActingConnections: (): ActingConnection[] => state.professors.map(({ upstreamAs: _u, ...p }) => ({ ...p })),
-    },
-    /** Connects another professor (or replaces one with the same id). */
+    connections: stubConnections({
+      professors: () => state.professors.map(({ upstreamAs: _u, ...p }) => p),
+      league: () => state.connection.league,
+      leases: () => state.leases,
+    }),
+    /** Connects another professor (or replaces one with the same id); the owner's unless `userId` says otherwise. */
     addProfessor(p: Partial<StubProfessor> & { id: number; professorPlayerId: string | null }): StubProfessor {
-      const added: StubProfessor = { professorName: null, status: 'connected', ...p };
+      const added: StubProfessor = { professorName: null, status: 'connected', ...HELD_BY_OWNER, ...p };
       state.professors = [...state.professors.filter((x) => x.id !== p.id), added];
       return added;
     },

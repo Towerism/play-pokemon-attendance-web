@@ -33,9 +33,52 @@ export const AttendanceDayV1 = z.strictObject({
 });
 export type AttendanceDayV1 = z.infer<typeof AttendanceDayV1>;
 
-/** Mint an integration token (`POST /api/integrations/tokens`). */
+/** What a token may do (ADR-0013, amended by ADR-0015 §7). Mirrors `INTEGRATION_SCOPES` in the integrations module. */
+export const INTEGRATION_SCOPES = ['integrations:read', 'messages:deliver'] as const;
+
+/** Mint an integration token (`POST /api/integrations/tokens`); a token minted without scopes reads the day only. */
 export const CreateIntegrationTokenBody = z.object({
   label: z.string().trim().min(1, 'Name the token').max(60, 'At most 60 characters'),
+  scopes: z.array(z.enum(INTEGRATION_SCOPES)).min(1, 'Choose at least one').default(['integrations:read']),
+});
+
+const wholeNumber = (min: number, max: number, fallback: number) =>
+  z
+    .string()
+    .regex(/^\d{1,3}$/, 'A whole number')
+    .transform(Number)
+    .pipe(z.number().min(min).max(max))
+    .default(fallback);
+
+/** `GET /api/integrations/v1/messages?wait=&limit=`: the Discord channel's long poll (ADR-0015 §7). */
+export const MessagesQuery = z.object({ wait: wholeNumber(0, 25, 0), limit: wholeNumber(1, 50, 20) });
+
+/** The long poll's answer. Strict, like `AttendanceDayV1`: no topic, ref or sender ever reaches Genie. */
+export const MessagesV1 = z.strictObject({
+  messages: z.array(
+    z.strictObject({
+      id: z.number().int().positive(),
+      playerId: z.string().min(1),
+      text: z.string().min(1).max(1800),
+      link: z.strictObject({ label: z.string().min(1).max(60), url: z.string().min(1) }).nullable(),
+      expiresAt: z.iso.datetime(),
+    }),
+  ),
+});
+export type MessagesV1 = z.infer<typeof MessagesV1>;
+
+/** `POST /api/integrations/v1/messages/{id}/result`. */
+export const MessageResultBody = z.strictObject({
+  status: z.enum(['delivered', 'no_discord_user', 'dm_refused', 'failed']),
+  reason: z.string().max(200).optional(),
+});
+
+/** `{id}` of a message. */
+export const MessageIdParam = z.object({
+  id: z
+    .string()
+    .regex(/^[1-9]\d{0,15}$/, 'Not a message id')
+    .transform(Number),
 });
 
 /** `DELETE /api/integrations/tokens/{id}`. */

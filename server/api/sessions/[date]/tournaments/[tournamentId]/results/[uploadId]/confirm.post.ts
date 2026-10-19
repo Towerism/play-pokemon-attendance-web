@@ -6,11 +6,10 @@ import { ResultsConfirmBody, ResultsUploadParams } from '#shared/schemas/results
  * play-tools accepts the file; follow `/api/submissions/{id}/events`.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { date, tournamentId, uploadId } = await getValidatedRouterParams(event, ResultsUploadParams.parse);
   const body = await readValidatedBody(event, ResultsConfirmBody.parse);
-  const started = await useSubmissions().uploadResults(leagueId, { date, tournamentId, uploadId, body, startedBy: user.username }).catch(resultsHttpError);
+  const started = await useSubmissions().uploadResults(leagueId, { date, tournamentId, uploadId, body, actor }).catch(resultsHttpError);
   setResponseStatus(event, 202);
   return started;
 });

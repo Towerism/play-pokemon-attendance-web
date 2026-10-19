@@ -136,6 +136,7 @@ describe('staffing API', () => {
             assignments: [],
             upstreamOnly: [{ playerId: '00555', name: 'Jo Judge', role: 'judge' }],
             players: [{ playerId: '00888' }],
+            lease: null,
           },
         ],
         unread: [],
@@ -245,14 +246,13 @@ describe('staffing API', () => {
       });
     });
 
-    it('is 409 league_not_selected when the account has several leagues and none is chosen', async () => {
+    it('keeps the league chosen across a disconnect and a reconnect, even once the account has several leagues (ADR-0015 §3)', async () => {
       fake.leagues.push({ guid: 'group-2', display_id: 'L7000', display_name: 'Game Den', canSubmit: true });
       try {
         await api(`/pokemon/connections/${FAKE_PLAYER_ID}`, { method: 'DELETE' });
         await connect(browser);
         const res = await api(`/sessions/${WED}/staff`);
-        expect(res.status).toBe(409);
-        expect(await code(res)).toBe('league_not_selected');
+        expect(res.status).toBe(200);
       } finally {
         fake.leagues.pop();
       }

@@ -1,16 +1,35 @@
 import { sql } from 'drizzle-orm';
 import { blob, index, integer, primaryKey, sqliteTable, text, unique, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
-/** Organizer accounts for the app itself (not Pokémon accounts). */
-export const appUser = sqliteTable('app_user', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  /** Stored lower-cased; logins are case-insensitive. */
-  username: text('username').notNull().unique(),
-  passwordHash: text('password_hash').notNull(),
-  createdAt: integer('created_at', { mode: 'timestamp' })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
+/**
+ * Accounts for the app itself (not Pokémon accounts), owned by the accounts module (ADR-0015 §1): the owner, who set
+ * the install up, and professors. Rows are never deleted, so a username keeps meaning one person in history.
+ */
+export const appUser = sqliteTable(
+  'app_user',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    /** Stored lower-cased; logins are case-insensitive. */
+    username: text('username').notNull().unique(),
+    passwordHash: text('password_hash').notNull(),
+    /** Exactly one `owner`; read from here on every request, never from the session cookie. */
+    role: text('role', { enum: ['owner', 'professor'] })
+      .notNull()
+      .default('professor'),
+    /** Set when the owner removes a professor: they can't sign in, and their next request is refused. */
+    removedAt: integer('removed_at', { mode: 'timestamp' }),
+    lastSignInAt: integer('last_sign_in_at', { mode: 'timestamp' }),
+    /**
+     * Set when a professor accepts a password reset link (ADR-0015 §8). Until their next successful Pokémon connect they
+     * are held to the waiting room, because a reset link can travel through Discord.
+     */
+    reverifyRequiredAt: integer('reverify_required_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [uniqueIndex('app_user_one_owner').on(t.role).where(sql`${t.role} = 'owner'`)],
+);
 
 /**
  * A Play! Pokémon league. v1 runs one league, seeded as `default` by the
@@ -20,6 +39,78 @@ export const league = sqliteTable('league', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
 });
+
+/**
+ * A one-time link the owner mints (ADR-0015 §6, §8): an invite creates a professor; with `for_user_id` set it is a
+ * password reset link for that professor. Owned by the accounts module. Only the secret's SHA-256 is kept.
+ */
+export const appInvite = sqliteTable('app_invite', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  leagueId: text('league_id')
+    .notNull()
+    .references(() => league.id),
+  /** Lowercase hex SHA-256 of the secret, which is never stored. */
+  secretHash: text('secret_hash').notNull().unique(),
+  /** `ppa_inv_…` plus the secret's last 4 characters. */
+  secretHint: text('secret_hint').notNull(),
+  /** Display only, e.g. the invitee's Discord name. */
+  label: text('label'),
+  /** The only Pokémon account the professor this invite creates may connect. */
+  forPlayerId: text('for_player_id'),
+  /** Set for a password reset link: the professor whose password it sets. */
+  forUserId: integer('for_user_id').references(() => appUser.id),
+  /** The owner's username. */
+  createdBy: text('created_by').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  revokedAt: integer('revoked_at', { mode: 'timestamp' }),
+  acceptedAt: integer('accepted_at', { mode: 'timestamp' }),
+  /** The professor it created, or the one it reset. */
+  acceptedUserId: integer('accepted_user_id').references(() => appUser.id),
+  /** Its Discord message in the messaging module's table, when sent by Discord. No foreign key: that table isn't ours. */
+  messageId: integer('message_id'),
+  /** What Genie reported, for Settings → Professors; null for a copied link. */
+  delivery: text('delivery', { enum: ['sending', 'delivered', 'no_discord_user', 'dm_refused', 'undeliverable', 'expired'] }),
+});
+
+/**
+ * A direct message for Tournament Genie to deliver on Discord (ADR-0015 §7). Owned by the messaging module, which no
+ * other module reads. The link is sealed by the message vault and deleted once the message is final, expired or
+ * cancelled; rows are deleted 30 days after they were created, because the text can hold names.
+ */
+export const outboundMessage = sqliteTable(
+  'outbound_message',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** Who it is for: Genie finds the Discord user for this player ID. */
+    playerId: text('player_id').notNull(),
+    /** Plain text, at most 1,800 characters. */
+    text: text('text').notNull(),
+    /** The sending feature's own name; never sent to Genie. */
+    topic: text('topic').notNull(),
+    /** The sender's own id for it. */
+    ref: text('ref'),
+    linkLabel: text('link_label'),
+    /** The link's URL, sealed under AAD `outbound_message:<id>`. */
+    linkCiphertext: blob('link_ciphertext', { mode: 'buffer' }),
+    status: text('status', { enum: ['pending', 'delivered', 'no_discord_user', 'dm_refused', 'undeliverable', 'expired', 'cancelled'] }).notNull(),
+    statusReason: text('status_reason'),
+    /** Failures Genie reported; the 5th makes the message undeliverable. */
+    attempts: integer('attempts').notNull().default(0),
+    /** When it may be handed out next: after a hand-out (60 s) or a failure (backoff). */
+    nextAttemptAt: integer('next_attempt_at', { mode: 'timestamp' }).notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+    deliveredAt: integer('delivered_at', { mode: 'timestamp' }),
+    /** When the sender's topic handler ran for its final result; a final row with this null is replayed at boot. */
+    handledAt: integer('handled_at', { mode: 'timestamp' }),
+  },
+  (t) => [index('outbound_message_due_idx').on(t.leagueId, t.status, t.nextAttemptAt), index('outbound_message_created_idx').on(t.createdAt)],
+);
 
 /** Every player ID that ever entered the system (architecture §5). Names belong to the player, not the league. */
 export const player = sqliteTable('player', {
@@ -232,6 +323,12 @@ export const submission = sqliteTable(
      * job runs (#96). No FK across modules.
      */
     resultsUploadId: integer('results_upload_id'),
+    /**
+     * The tournament lease (`tournament_lease`) a `staff` or `tdf_upload` job ran under (ADR-0015 §5): `started_by` is
+     * the lent professor, and the professor it ran as is the organizer. No FK: the lease may be deleted with its
+     * connection, and History reads names from this row.
+     */
+    leaseId: integer('lease_id'),
   },
   (t) => [index('submission_league_date_idx').on(t.leagueId, t.sessionDate)],
 );
@@ -424,6 +521,13 @@ export const submissionLock = sqliteTable('submission_lock', {
 export const pokemonConnection = sqliteTable('pokemon_connection', {
   /** Also the vault's AAD (`pokemon_connection:<id>`), so a ciphertext only opens on its own row. */
   id: integer('id').primaryKey({ autoIncrement: true }),
+  /** The user who completed its connect, the only one who writes to play-tools through it (ADR-0015 §2). */
+  userId: integer('user_id')
+    .notNull()
+    .references(() => appUser.id),
+  /** The owner, when a professor took this connection over from them (ADR-0015 §2). */
+  claimedFromUserId: integer('claimed_from_user_id').references(() => appUser.id),
+  claimedAt: integer('claimed_at', { mode: 'timestamp' }),
   /** The professor's player id; null only for a connection carried over from v1 until its first refresh identifies it. */
   professorPlayerId: text('professor_player_id').unique(),
   /** Null when upstream offers no name. */
@@ -445,23 +549,81 @@ export const pokemonConnection = sqliteTable('pokemon_connection', {
 });
 
 /**
- * Where the league's attendance goes (ADR-0008): the professor whose
- * connection makes every upstream call for it, and the activity group. Owned
- * by the pokemon module; deleting the connection forgets the binding.
+ * The league's upstream activity group, chosen by the owner from their own connections' leagues (ADR-0015 §3).
+ * Owned by the pokemon module. It names no connection: attendance goes in as whoever submits.
  */
 export const leagueUpstream = sqliteTable('league_upstream', {
   leagueId: text('league_id')
     .primaryKey()
     .references(() => league.id),
-  connectionId: integer('connection_id')
-    .notNull()
-    .references(() => pokemonConnection.id, { onDelete: 'cascade' }),
   activityGroupId: text('activity_group_id').notNull(),
   activityGroupName: text('activity_group_name').notNull(),
   activityGroupDisplayId: text('activity_group_display_id'),
-  /** `criteria.play_sessions.create_attendance` when the group was chosen. */
-  activityGroupCanSubmit: integer('activity_group_can_submit', { mode: 'boolean' }).notNull(),
 });
+
+/**
+ * Whether a connection's Pokémon account is in the league's activity group (ADR-0015 §3), from the last successful
+ * read of its leagues. A failed read never changes it. A professor sees the league only while theirs is `member`.
+ */
+export const leagueMembership = sqliteTable('league_membership', {
+  connectionId: integer('connection_id')
+    .primaryKey()
+    .references(() => pokemonConnection.id, { onDelete: 'cascade' }),
+  leagueId: text('league_id')
+    .notNull()
+    .references(() => league.id),
+  status: text('status', { enum: ['member', 'outside', 'unknown'] }).notNull(),
+  /** `criteria.play_sessions.create_attendance` for the league; false unless `member`. */
+  canSubmit: integer('can_submit', { mode: 'boolean' }).notNull().default(false),
+  /** The last successful read; null until one, and again after a connect or a league change resets it. */
+  checkedAt: integer('checked_at', { mode: 'timestamp' }),
+});
+
+/** Why a tournament lease ended (ADR-0015 §5). */
+export const LEASE_END_REASONS = ['expired', 'ended', 'given_back', 'lessee_removed', 'lessee_outside', 'connection_gone', 'tournament_cancelled'] as const;
+
+/** What became of a lease's grant notice through the Discord channel, or why none was sent. */
+export const LEASE_NOTICE_STATES = ['sending', 'delivered', 'no_discord_user', 'dm_refused', 'undeliverable', 'expired', 'genie_unavailable', 'no_recipient'] as const;
+
+/**
+ * A tournament lent to one named league member (ADR-0015 §5): while it is live (`ended_at` null and `ends_at` ahead),
+ * they may staff the tournament and upload its results through the organizer's connection. Owned by the pokemon module.
+ * Ended rows are kept, except that a connection's leases go with it.
+ */
+export const tournamentLease = sqliteTable(
+  'tournament_lease',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** The organizer's connection, through which the lent professor acts. */
+    connectionId: integer('connection_id')
+      .notNull()
+      .references(() => pokemonConnection.id, { onDelete: 'cascade' }),
+    /** Upstream tournament GUID. */
+    tournamentId: text('tournament_id').notNull(),
+    /** `<name> · <local start date>`, for display. */
+    tournamentLabel: text('tournament_label').notNull(),
+    lesseeUserId: integer('lessee_user_id')
+      .notNull()
+      .references(() => appUser.id),
+    /** The grantor's username. */
+    grantedBy: text('granted_by').notNull(),
+    grantedAt: integer('granted_at', { mode: 'timestamp' }).notNull(),
+    endsAt: integer('ends_at', { mode: 'timestamp' }).notNull(),
+    endedAt: integer('ended_at', { mode: 'timestamp' }),
+    endReason: text('end_reason', { enum: LEASE_END_REASONS }),
+    /** The grant notice's `outbound_message` id. No FK: that table belongs to the messaging module. */
+    noticeMessageId: integer('notice_message_id'),
+    noticeDelivery: text('notice_delivery', { enum: LEASE_NOTICE_STATES }),
+  },
+  (t) => [
+    uniqueIndex('tournament_lease_live_idx').on(t.tournamentId).where(sql`${t.endedAt} is null`),
+    index('tournament_lease_lessee_idx').on(t.lesseeUserId),
+    index('tournament_lease_connection_idx').on(t.connectionId),
+  ],
+);
 
 /**
  * Staff the organizer wants on a tournament (ADR-0007): desired state, applied
@@ -555,8 +717,8 @@ export const integrationToken = sqliteTable(
     tokenHash: text('token_hash').notNull().unique(),
     /** `ppa_int_…` plus the secret's last 4 characters, to tell tokens apart. */
     tokenHint: text('token_hint').notNull(),
-    /** The only scope in v1: read the integrations API. */
-    scope: text('scope').notNull().default('integrations:read'),
+    /** Space-separated: `integrations:read` (the day route) and/or `messages:deliver` (the Discord channel; ADR-0015 §7). */
+    scopes: text('scopes').notNull().default('integrations:read'),
     /** Organizer username. */
     createdBy: text('created_by').notNull(),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
