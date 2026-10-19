@@ -1,16 +1,30 @@
 import { sql } from 'drizzle-orm';
 import { blob, index, integer, primaryKey, sqliteTable, text, unique, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
-/** Organizer accounts for the app itself (not Pokémon accounts). */
-export const appUser = sqliteTable('app_user', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  /** Stored lower-cased; logins are case-insensitive. */
-  username: text('username').notNull().unique(),
-  passwordHash: text('password_hash').notNull(),
-  createdAt: integer('created_at', { mode: 'timestamp' })
-    .notNull()
-    .$defaultFn(() => new Date()),
-});
+/**
+ * Accounts for the app itself (not Pokémon accounts), owned by the accounts module (ADR-0015 §1): the owner, who set
+ * the install up, and professors. Rows are never deleted, so a username keeps meaning one person in history.
+ */
+export const appUser = sqliteTable(
+  'app_user',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    /** Stored lower-cased; logins are case-insensitive. */
+    username: text('username').notNull().unique(),
+    passwordHash: text('password_hash').notNull(),
+    /** Exactly one `owner`; read from here on every request, never from the session cookie. */
+    role: text('role', { enum: ['owner', 'professor'] })
+      .notNull()
+      .default('professor'),
+    /** Set when the owner removes a professor: they can't sign in, and their next request is refused. */
+    removedAt: integer('removed_at', { mode: 'timestamp' }),
+    lastSignInAt: integer('last_sign_in_at', { mode: 'timestamp' }),
+    createdAt: integer('created_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [uniqueIndex('app_user_one_owner').on(t.role).where(sql`${t.role} = 'owner'`)],
+);
 
 /**
  * A Play! Pokémon league. v1 runs one league, seeded as `default` by the
@@ -424,6 +438,13 @@ export const submissionLock = sqliteTable('submission_lock', {
 export const pokemonConnection = sqliteTable('pokemon_connection', {
   /** Also the vault's AAD (`pokemon_connection:<id>`), so a ciphertext only opens on its own row. */
   id: integer('id').primaryKey({ autoIncrement: true }),
+  /** The user who completed its connect, the only one who writes to play-tools through it (ADR-0015 §2). */
+  userId: integer('user_id')
+    .notNull()
+    .references(() => appUser.id),
+  /** The owner, when a professor took this connection over from them (ADR-0015 §2). */
+  claimedFromUserId: integer('claimed_from_user_id').references(() => appUser.id),
+  claimedAt: integer('claimed_at', { mode: 'timestamp' }),
   /** The professor's player id; null only for a connection carried over from v1 until its first refresh identifies it. */
   professorPlayerId: text('professor_player_id').unique(),
   /** Null when upstream offers no name. */
@@ -445,22 +466,34 @@ export const pokemonConnection = sqliteTable('pokemon_connection', {
 });
 
 /**
- * Where the league's attendance goes (ADR-0008): the professor whose
- * connection makes every upstream call for it, and the activity group. Owned
- * by the pokemon module; deleting the connection forgets the binding.
+ * The league's upstream activity group, chosen by the owner from their own connections' leagues (ADR-0015 §3).
+ * Owned by the pokemon module. It names no connection: attendance goes in as whoever submits.
  */
 export const leagueUpstream = sqliteTable('league_upstream', {
   leagueId: text('league_id')
     .primaryKey()
     .references(() => league.id),
-  connectionId: integer('connection_id')
-    .notNull()
-    .references(() => pokemonConnection.id, { onDelete: 'cascade' }),
   activityGroupId: text('activity_group_id').notNull(),
   activityGroupName: text('activity_group_name').notNull(),
   activityGroupDisplayId: text('activity_group_display_id'),
-  /** `criteria.play_sessions.create_attendance` when the group was chosen. */
-  activityGroupCanSubmit: integer('activity_group_can_submit', { mode: 'boolean' }).notNull(),
+});
+
+/**
+ * Whether a connection's Pokémon account is in the league's activity group (ADR-0015 §3), from the last successful
+ * read of its leagues. A failed read never changes it. A professor sees the league only while theirs is `member`.
+ */
+export const leagueMembership = sqliteTable('league_membership', {
+  connectionId: integer('connection_id')
+    .primaryKey()
+    .references(() => pokemonConnection.id, { onDelete: 'cascade' }),
+  leagueId: text('league_id')
+    .notNull()
+    .references(() => league.id),
+  status: text('status', { enum: ['member', 'outside', 'unknown'] }).notNull(),
+  /** `criteria.play_sessions.create_attendance` for the league; false unless `member`. */
+  canSubmit: integer('can_submit', { mode: 'boolean' }).notNull().default(false),
+  /** The last successful read; null until one, and again after a connect or a league change resets it. */
+  checkedAt: integer('checked_at', { mode: 'timestamp' }),
 });
 
 /**

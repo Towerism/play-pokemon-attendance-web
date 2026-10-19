@@ -141,6 +141,13 @@
       "when": 1792098709344,
       "tag": "0019_skipped_while_unknown",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1792426169839,
+      "tag": "0020_professor_logins",
+      "breakpoints": true
     }
   ]
 }

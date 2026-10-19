@@ -14,6 +14,8 @@ const LAST_SINGLE_CONNECTION = '0008_staff_job';
 
 let database: OpenDatabase;
 let previous: string;
+/** Through the last migration before professor logins (0020), which gives each connection to an account these fixtures don't make. */
+let through: string;
 
 /** A copy of the migrations folder whose journal stops at `tag`. */
 function migrationsUpTo(tag: string): string {
@@ -43,17 +45,19 @@ const rows = (sql: string) => database.sqlite.prepare(sql).all() as Record<strin
 beforeEach(() => {
   database = openDatabase(':memory:');
   previous = migrationsUpTo(LAST_SINGLE_CONNECTION);
+  through = migrationsUpTo('0019_skipped_while_unknown');
   migrateDatabase(database.db, previous);
 });
 afterEach(() => {
   database.close();
   rmSync(previous, { recursive: true, force: true });
+  rmSync(through, { recursive: true, force: true });
 });
 
 describe('upgrade to plural Pokémon connections', () => {
   it('carries the existing connection over, unidentified, with its token, status and timestamps untouched', () => {
     legacyConnection(null);
-    migrateDatabase(database.db, MIGRATIONS_DIR);
+    migrateDatabase(database.db, through);
 
     expect(rows('select * from pokemon_connection')).toEqual([
       {
@@ -74,7 +78,7 @@ describe('upgrade to plural Pokémon connections', () => {
 
   it("keeps the league's chosen upstream league, now pointing at the carried-over connection", () => {
     legacyConnection({ id: 'group-1', name: 'Card Shop', displayId: 'L5012', canSubmit: true });
-    migrateDatabase(database.db, MIGRATIONS_DIR);
+    migrateDatabase(database.db, through);
 
     expect(rows('select * from league_upstream')).toEqual([
       {
@@ -89,7 +93,7 @@ describe('upgrade to plural Pokémon connections', () => {
   });
 
   it('starts empty when nothing was connected', () => {
-    migrateDatabase(database.db, MIGRATIONS_DIR);
+    migrateDatabase(database.db, through);
     expect(rows('select * from pokemon_connection')).toEqual([]);
     expect(rows('select * from league_upstream')).toEqual([]);
   });
@@ -101,14 +105,14 @@ describe('upgrade to plural Pokémon connections', () => {
          values ('default', '2026-10-07', 'ps-1', 'Open play', 'organizer', 1760000000, 'succeeded')`,
       )
       .run();
-    migrateDatabase(database.db, MIGRATIONS_DIR);
+    migrateDatabase(database.db, through);
     expect(rows('select session_date, professor_player_id, professor_name from submission')).toEqual([
       { session_date: '2026-10-07', professor_player_id: null, professor_name: null },
     ]);
   });
 
   it('enforces one connection per professor player id', () => {
-    migrateDatabase(database.db, MIGRATIONS_DIR);
+    migrateDatabase(database.db, through);
     const insert = database.sqlite.prepare(
       `insert into pokemon_connection (professor_player_id, ptc_user_id, refresh_token_ciphertext, status, connected_at, last_refreshed_at)
        values ('0012345', ?, x'00', 'connected', 1, 1)`,
@@ -119,7 +123,7 @@ describe('upgrade to plural Pokémon connections', () => {
 
   it('forgets the league binding when its connection is deleted', () => {
     legacyConnection({ id: 'group-1', name: 'Card Shop', displayId: 'L5012', canSubmit: true });
-    migrateDatabase(database.db, MIGRATIONS_DIR);
+    migrateDatabase(database.db, through);
     database.sqlite.prepare('delete from pokemon_connection where id = 1').run();
     expect(rows('select * from league_upstream')).toEqual([]);
   });
