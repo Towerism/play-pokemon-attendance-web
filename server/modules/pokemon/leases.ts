@@ -108,6 +108,8 @@ const MAX_AFTER_START_MS = 30 * DAY_MS;
 const DEFAULT_DAYS_AFTER_START = 7;
 const END_NOTICE_LIFETIME_MS = DAY_MS;
 const LINK_LABEL = 'Open Play! Pokémon Attendance';
+/** The Discord channel's limit on a message's text (ADR-0015 §7). */
+const MAX_NOTICE_TEXT = 1800;
 /** Reads that mean "not this connection's tournament". */
 const NOT_THEIRS: ReadonlySet<string> = new Set(['not_found', 'forbidden', 'refused']);
 
@@ -313,7 +315,7 @@ export function createLeaseService(deps: LeaseDeps): LeaseService {
     const playerId = recipientOf(e.lesseeUserId);
     if (playerId === null) return 'no_recipient';
     if (!deps.channel.available()) return 'genie_unavailable';
-    const text = `Your lease on ${withoutMentions(e.label)} has ended: ${withoutMentions(REASON_TEXT[e.reason](e.organizerName))}.`;
+    const text = `Your lease on ${withoutMentions(e.label)} has ended: ${withoutMentions(REASON_TEXT[e.reason](e.organizerName))}.`.slice(0, MAX_NOTICE_TEXT);
     const expiresAt = new Date(now().getTime() + END_NOTICE_LIFETIME_MS);
     // `send` writes the message before it first yields, so nothing here needs to wait for it.
     deps.channel.send({ playerId, text, link: link(), expiresAt, topic: TOPIC, ref: `end:${e.id}` }, { waitMs: 0, sender }).catch((err: unknown) => {
@@ -505,10 +507,17 @@ export function createLeaseService(deps: LeaseDeps): LeaseService {
         });
       }
 
-      const labels = rows.map((r) => withoutMentions(r.tournamentLabel)).join(', ');
       const earliest = new Date(Math.min(...rows.map((r) => r.endsAt.getTime())));
       const it = rows.length > 1 ? 'them' : 'it';
-      const text = `${withoutMentions(actor.username)} lent you ${labels} on Play! Pokémon Attendance until ${lastDay(earliest)}. You can staff ${it} and upload ${rows.length > 1 ? 'their' : 'its'} results there.`;
+      const textWith = (shown: number) => {
+        const labels = rows.slice(0, shown).map((r) => withoutMentions(r.tournamentLabel));
+        if (shown < rows.length) labels.push(`and ${rows.length - shown} more`);
+        return `${withoutMentions(actor.username)} lent you ${labels.join(', ')} on Play! Pokémon Attendance until ${lastDay(earliest)}. You can staff ${it} and upload ${rows.length > 1 ? 'their' : 'its'} results there.`;
+      };
+      // The channel takes at most 1,800 characters; long names drop off the end, counted, so the send can't fail.
+      let shown = rows.length;
+      while (shown > 1 && textWith(shown).length > MAX_NOTICE_TEXT) shown -= 1;
+      const text = textWith(shown).slice(0, MAX_NOTICE_TEXT);
       const notice = await queue(lessee.userId, text, earliest, `grant:${rows.map((r) => r.id).join(',')}`, actor.username);
       const delivery = notice.state === 'none' ? null : notice.state;
       db.update(tournamentLease)

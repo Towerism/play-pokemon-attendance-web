@@ -342,6 +342,17 @@ describe('granting', () => {
     expect(m!.link_label).toBeNull();
   });
 
+  it('keeps a grant notice for many long-named tournaments within the channel limit, naming how many it left out', async () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `long-${i}`);
+    for (const id of ids) tournaments.set(id, tournament(id, { name: `${'Very Long Regional League Challenge Name '.repeat(3)}${id}` }));
+    const { leases: granted } = await leases.grant(L, OWNER, { tournamentIds: ids, lesseeUserId: MISTY.userId });
+
+    expect(granted).toHaveLength(20);
+    const [m] = messages();
+    expect((m!.text as string).length).toBeLessThanOrEqual(1800);
+    expect(m!.text).toMatch(/and \d+ more/);
+  });
+
   it('logs the grant without the notice text', async () => {
     const { leases: granted } = await leases.grant(L, OWNER, { tournamentIds: ['t1'], lesseeUserId: MISTY.userId });
     expect(info).toHaveBeenCalledWith('tournament lease granted', {
