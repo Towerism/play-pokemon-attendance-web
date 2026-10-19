@@ -354,6 +354,16 @@ describe('importing players from play-tools', () => {
     expect(view.items.map((i) => [i.playerId, i.outcome])).toEqual([['0000300', 'new_player']]);
   });
 
+  it('stores a padded player id from a session as the digits alone, once', async () => {
+    roster.ensurePlayers(L, [{ playerId: id('0000800'), name: 'Good Id' }]);
+    league.add(session('s-1', '2026-10-07T23:00:00Z'), attended(' 0000800 ', 'Good Id'));
+
+    const view = await importPlayers();
+
+    expect(leaguePlayers()).toEqual({ '0000800': 'Good Id' });
+    expect(view.items.map((i) => [i.playerId, i.outcome])).toEqual([['0000800', 'found']]);
+  });
+
   it("skips a session record whose player id isn't digits, logging the session and count but no name", async () => {
     league.add(session('s-1', '2026-10-07T23:00:00Z'), attended('abc', 'Bad Id'), attended('12-34', 'Also Bad'), attended('0000800', 'Good Id'));
 
@@ -778,6 +788,23 @@ describe('reading play sessions', () => {
     expect(Object.keys(leaguePlayers()).sort()).toEqual(['0000100', '0000201', '0000202']);
   });
 
+  it('stops when the app does, between two session reads, and its last progress counts what it read', async () => {
+    let stopping: Promise<void> | undefined;
+    league.onRead = (s) => {
+      if (s === 's-2') stopping = service.shutdown();
+    };
+
+    const { submissionId } = await service.importPlayers(L, 'organizer');
+    await service.idle();
+    await stopping;
+    const view = service.get(L, submissionId);
+
+    expect(view.status).toBe('interrupted');
+    expect(league.calls).not.toContain(`attendance ${GROUP} s-3`);
+    expect(service.events(L, submissionId).at(-1)).toMatchObject({ type: 'finished', done: 3, total: 4 });
+    expect(view.playerImport).toMatchObject({ tournamentsRead: 1, sessionsTotal: 3, sessionsRead: 2 });
+  });
+
   it('logs session ids and codes, never a player name', async () => {
     league.onRead = (s) => {
       if (s === 's-1') throw refused(403);
@@ -834,6 +861,10 @@ describe('progress, history and retry', () => {
     ]);
     expect(all[0]).toMatchObject({ total: 3 });
     expect(all[1]).toMatchObject({ message: '2 tournaments and 3 play sessions to read.', done: 0, total: 5 });
+    expect(all.filter((e) => e.type === 'tournament_read').map((e) => e.message)).toEqual([
+      'Read 1 of 5 tournaments and play sessions.',
+      'Read 2 of 5 tournaments and play sessions.',
+    ]);
     expect(all.filter((e) => e.type === 'session_read').map((e) => [e.done, e.total])).toEqual([
       [3, 5],
       [4, 5],

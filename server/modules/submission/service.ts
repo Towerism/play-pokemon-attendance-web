@@ -424,13 +424,12 @@ function skipsTournament(err: PokemonUpstreamError): boolean {
 type ImportKind = 'staff_import' | 'player_import';
 const IMPORT_KINDS: readonly SubmissionKind[] = ['staff_import', 'player_import'];
 const isImport = (row: { kind: SubmissionKind }): row is { kind: ImportKind } => IMPORT_KINDS.includes(row.kind);
-/** Whether a player id read from play-tools is digits only, as every id the app stores must be. */
-function isPlayerId(raw: string): boolean {
+/** A player id read from play-tools as the app stores it (digits only, trimmed), or null when it isn't one. */
+function storedPlayerId(raw: string): PlayerId | null {
   try {
-    toPlayerId(raw);
-    return true;
+    return toPlayerId(raw);
   } catch {
-    return false;
+    return null;
   }
 }
 /** A `sessions_failed` event's message ends with its code, which the result reads back (#195; events carry no code column). */
@@ -1574,21 +1573,22 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
       db.transaction(() => seed(row, t, participants, found));
       done += 1;
-      emit(row, 'tournament_read', `Read ${done} of ${total} tournaments.`, done + failed, total);
+      emit(row, 'tournament_read', `Read ${done} of ${total} tournaments${andSessions ? ' and play sessions' : ''}.`, done + failed, total);
     }
     const tournamentsRead = done;
 
-    for (const [i, s] of (sessions?.list ?? []).entries()) {
+    const { gateway: sessionsGateway, groupId, list: sessionList } = sessions ?? { gateway: null, groupId: '', list: [] };
+    for (const [i, s] of sessionList.entries()) {
       let records: AttendanceRecord[];
       try {
-        records = await read(() => sessions!.gateway.listAttendance(sessions!.groupId, s.id), 'that play session');
+        records = await read(() => sessionsGateway!.listAttendance(groupId, s.id), 'that play session');
       } catch (err) {
         if (!(err instanceof PokemonUpstreamError)) throw err;
         if (!(err.retryable || skipsTournament(err))) {
           // The submitting professor's login itself (a 401, needs_reconnect): no other session can be read either.
           failed += 1;
-          sessionsLeft -= sessions!.list.length - i - 1;
-          total -= sessions!.list.length - i - 1;
+          sessionsLeft -= sessionList.length - i - 1;
+          total -= sessionList.length - i - 1;
           sessionsFailed(`Stopped reading the league's play sessions`, err.code);
           break;
         }
@@ -1606,7 +1606,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
       const players = records.filter((r) => r.isPlayer);
       // The adapter passes attendance ids through unchecked, and the submission diff needs it to (#195).
-      const valid = players.filter((r) => isPlayerId(r.playerId));
+      const valid = players.flatMap((r) => {
+        const playerId = storedPlayerId(r.playerId);
+        return playerId ? [{ playerId, name: r.name }] : [];
+      });
       if (valid.length < players.length) {
         const skipped = players.length - valid.length;
         log.warn(`${label} #${row.id} skipped ${skipped} records in play session ${s.id} whose player id isn't digits`, {
@@ -2946,7 +2949,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     setStatus(row, status, error);
     if (isImport(row)) {
       const r = importProgress(row);
-      emit(row, 'finished', `${IMPORT_LABEL[row.kind]} ${status}: ${error}`, r.tournamentsRead + r.tournamentsFailed, r.tournamentsTotal);
+      // `planned` counts a player import's play sessions too (#195), so its progress does.
+      const s = row.kind === 'player_import' ? playerImportResult(row, [], new Map()) : { sessionsRead: 0, sessionsFailed: 0 };
+      const done = r.tournamentsRead + r.tournamentsFailed + s.sessionsRead + s.sessionsFailed;
+      emit(row, 'finished', `${IMPORT_LABEL[row.kind]} ${status}: ${error}`, done, r.tournamentsTotal);
       return;
     }
     const c = counts(row);
