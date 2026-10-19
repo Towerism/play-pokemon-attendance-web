@@ -5,6 +5,7 @@
 - Issue: [#75](https://github.com/Towerism/play-pokemon-attendance-web/issues/75)
 - Amends: [ADR-0007](0007-staff-assignment.md) (decisions 3, 5 and 11) and [ADR-0008](0008-plural-pokemon-connections.md)
   (one connection makes every upstream call for the league)
+- Amended by: [ADR-0015](0015-professor-logins.md) (proposed, #199): the league is chosen from the owner's own leagues, a professor outside it is left out of every read instead of blocking the choice, and only the organizer's own app user may act on a tournament
 
 ## Context
 

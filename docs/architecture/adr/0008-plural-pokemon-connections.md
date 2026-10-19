@@ -5,6 +5,7 @@
 - Amends: [ADR-0003](0003-pokemon-auth-pkce-refresh-token.md) (one connection per league)
 - Amended by: [ADR-0011](0011-tdf-results-upload.md) decision 8: a connection also stores the professor's optional **full name**, like the display name: offered from play-tools' organizer name, confirmed by the organizer, and written into a TDF whose organizer is replaced
 - Amended by: [ADR-0009](0009-tournaments-as-their-organizer.md): only attendance calls go through the submitting professor; tournament calls go through each tournament's organizer, and the league must be one every professor shares (#75)
+- Amended by: [ADR-0015](0015-professor-logins.md) (proposed, #199): each connection belongs to the app user who connected it; the league no longer names a submitting professor, and attendance goes in as whoever submits
 
 ## Context
 
