@@ -73,6 +73,8 @@ export interface SubmissionSummary {
   /** `undo` removes the records the submission `undoOf` added; `clear` removes every player record in the play session. */
   kind: SubmissionKind;
   undoOf: number | null;
+  /** Run under a tournament lease (ADR-0015 §5): `startedBy` is the lent professor, `professor` the organizer. */
+  leased: boolean;
   /** Whether `undo` would start, as far as the database can tell (play-tools is not asked). */
   undoable: boolean;
   undoBlockedReason: 'not_undoable' | 'nothing_to_undo' | null;
@@ -331,6 +333,11 @@ export interface SubmissionService {
 
 export interface SubmissionDeps {
   db: Db;
+  /**
+   * Tournament leases (ADR-0015 §5): whether the lease a staff or results job runs under is still live, checked before
+   * each write; and the ending of a tournament's lease once a cancel job cancels it.
+   */
+  leases?: { isLive(leaseId: number): boolean; endLeasesForTournament(tournamentId: string, reason: 'tournament_cancelled'): void };
   sessions: Pick<SessionsService, 'getSession' | 'recordSubmission' | 'removePlayer' | 'resetAfterClear'>;
   roster: Pick<RosterService, 'ensurePlayers' | 'getPlayers'>;
   sightings: Pick<SightingsService, 'record' | 'retract'>;
@@ -443,7 +450,7 @@ const DRAFT_STATUS: Record<SubmissionStatus, SessionStatus> = {
 /** Stops a staff job for the whole tournament; the message is the code History shows. */
 class StaffStop extends Error {
   override name = 'StaffStop';
-  constructor(readonly code: 'tournament_locked' | 'forbidden' | 'unknown_tournament') {
+  constructor(readonly code: 'tournament_locked' | 'forbidden' | 'unknown_tournament' | 'lease_ended') {
     super(code);
   }
 }
@@ -673,6 +680,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return deps.connections.listActingConnections().find((c) => c.id === connectionId)!;
   }
 
+  /** Whether a leased job's lease has ended (ADR-0015 §5); never for a job run as the organizer's own. */
+  const leaseEnded = (row: Pick<Row, 'leaseId'>) => row.leaseId !== null && !(deps.leases?.isLive(row.leaseId) ?? false);
+
+  /** A leased staff job stops before its next write once its lease has ended. */
+  function assertLeaseLive(row: Pick<Row, 'leaseId'>): void {
+    if (leaseEnded(row)) throw new StaffStop('lease_ended');
+  }
+
   /**
    * The connection a staff job runs as: the professor stamped on it, its tournament's organizer (#75).
    * Never another professor's: a job whose professor is gone or can't act stops.
@@ -698,6 +713,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       retryOf: row.retryOf,
       kind: row.kind,
       undoOf: row.undoOf,
+      leased: row.leaseId !== null,
       undoable: blocked === null,
       undoBlockedReason: blocked,
       tournamentLabel: row.kind === 'staff' ? row.playSessionLabel.replace(STAFF_PREFIX, '') : null,
@@ -1066,6 +1082,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   async function runStaff(row: Row): Promise<void> {
     const { leagueId } = row;
     const tournamentId = row.playSessionId;
+    assertLeaseLive(row);
     const gateway = deps.staffGateway(stampedConnection(row));
     const roles = gateway.listStaffRoles();
     const roleLabel = (code: string) => roles.find((r) => r.code === code)?.label ?? code;
@@ -1143,9 +1160,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     emit(row, 'planned', `${toRemove.length} to remove, ${toRechange.length} role changes, ${toAssign.length} to assign.`, done, total);
 
     // 2. Execute: one write at a time, removals, then role changes, then assigns.
-    /** Keeps writes at least `staffDelayMs` apart, or longer when play-tools asks; stops on shutdown. */
+    /** Keeps writes at least `staffDelayMs` apart, or longer when play-tools asks; stops on shutdown or an ended lease. */
     async function pace(atLeastMs = 0): Promise<void> {
       if (stop.signal.aborted) throw stop.signal.reason;
+      assertLeaseLive(row);
       const lastWriteAt = lastStaffWrite.get(leagueId);
       const spacing = lastWriteAt === undefined ? 0 : lastWriteAt + staffDelayMs - now().getTime();
       const wait = Math.max(spacing, atLeastMs);
@@ -2468,7 +2486,18 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         log.warn(`Tournament cancel #${row.id} could not re-read ${l.it.tournamentId}: ${err.code}`, { submissionId: row.id, code: err.code });
       }
     }
-    const ok = tournamentItems(row.id).every((i) => i.outcome === 'cancelled' || i.outcome === 'already_cancelled');
+    const finalItems = tournamentItems(row.id);
+    const ok = finalItems.every((i) => i.outcome === 'cancelled' || i.outcome === 'already_cancelled');
+    // A tournament cancelled through the app can't stay lent (ADR-0015 §5). Its lease's ending never fails the job.
+    if (ok) {
+      for (const i of finalItems) {
+        try {
+          if (i.tournamentId) deps.leases?.endLeasesForTournament(i.tournamentId, 'tournament_cancelled');
+        } catch (err) {
+          log.warn(`Tournament cancel #${row.id} could not end the lease on ${i.tournamentId}: ${(err as Error).message}`, { submissionId: row.id });
+        }
+      }
+    }
     const status = ok ? 'succeeded' : 'failed';
     emit(row, 'reconciled', ok ? 'play-tools has the tournament cancelled.' : "play-tools doesn't have the tournament cancelled.", total, total);
     setStatus(row, status);
@@ -2511,6 +2540,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           retryOf: null,
           kind: 'tdf_upload',
           resultsUploadId: plan.uploadId,
+          leaseId: plan.leaseId,
         })
         .returning()
         .get();
@@ -2558,6 +2588,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       emit(row, 'tournament_sent', `${item.label}: ${outcome}.`, 1, 1);
     };
 
+    const endLeaseEnded = () => {
+      end('failed', { errorCode: 'lease_ended', error: 'The lease on this tournament ended before the file was sent. Nothing was sent.' }, { state: 'failed', errorCode: 'lease_ended' });
+      return finishTdfUpload(row, false);
+    };
+    if (leaseEnded(row)) return endLeaseEnded();
+
     // Wait its turn first, so the check that decides the send is the last thing before it.
     if (stop.signal.aborted) throw stop.signal.reason;
     const last = lastTournamentPost.get(leagueId);
@@ -2583,6 +2619,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       end('warnings_changed', { error: 'The warnings changed since they were shown. Nothing was sent. Use Upload again… to check them.' }, { state: 'warnings_changed' });
       return finishTdfUpload(row, false);
     }
+    // A leased send checks its lease once more right before the validate; after it, the confirm always finishes (ADR-0015 §5).
+    if (leaseEnded(row)) return endLeaseEnded();
 
     const { connectionId } = check;
     const g = tournamentGateway(connectionId);
@@ -2726,6 +2764,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           retryOf: input.retryOf,
           kind: 'staff',
           resultsUploadId: plan.uploadId,
+          leaseId: plan.leaseId,
         })
         .returning()
         .get();
@@ -2765,6 +2804,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   async function runStaffRemoval(row: Row): Promise<void> {
     const { leagueId } = row;
     const tournamentId = row.playSessionId;
+    assertLeaseLive(row);
     const gateway = deps.staffGateway(stampedConnection(row));
     setStatus(row, 'running');
     const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
@@ -2785,6 +2825,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     }
     async function pace(): Promise<void> {
       if (stop.signal.aborted) throw stop.signal.reason;
+      assertLeaseLive(row);
       const lastWriteAt = lastStaffWrite.get(leagueId);
       const w = lastWriteAt === undefined ? 0 : lastWriteAt + staffDelayMs - now().getTime();
       renewLock(row, Math.max(0, w));
@@ -3126,6 +3167,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         status: 'planned',
         retryOf,
         kind: 'staff',
+        leaseId: target.leaseId,
       })
       .returning()
       .get();
@@ -3221,11 +3263,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     leagueGroup(deps.connections, leagueId);
   }
 
-  /** Why a batch row whose organizer another user holds is refused before the batch starts (ADR-0015 §4); null when it may run. */
-  function refusedAtStart(actor: Actor, organizerPlayerId: string | undefined): { code: string; message: string } | null {
+  /**
+   * Why a batch row whose organizer another user holds, and hasn't lent it to the caller, is refused before the batch
+   * starts (ADR-0015 §4, §5); null when it may run.
+   */
+  function refusedAtStart(actor: Actor, organizerPlayerId: string | undefined, tournamentId: string): { code: string; message: string } | null {
     if (organizerPlayerId === undefined) return null; // nobody's listing had it: its turn reads it fresh
     try {
-      deps.connections.actingConnection(actor, organizerPlayerId, { kind: 'own' });
+      deps.connections.actingConnection(actor, organizerPlayerId, { kind: 'tournament', tournamentId, use: 'staff' });
       return null;
     } catch (err) {
       if (!(err instanceof ConnectionAccessError) || err.code !== 'not_your_connection') return null; // its turn refuses it, as before
@@ -3239,7 +3284,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     assertLeagueChosen(leagueId);
     assertUnlocked(leagueId);
     const organizers = await deps.staffing.organizersOn(leagueId, date);
-    const all = tournamentIds.map((tournamentId, position) => ({ position, tournamentId, refusal: refusedAtStart(actor, organizers.get(tournamentId)) }));
+    const all = tournamentIds.map((tournamentId, position) => ({ position, tournamentId, refusal: refusedAtStart(actor, organizers.get(tournamentId), tournamentId) }));
     if (all.every((i) => i.refusal)) {
       throw new StaffingError('not_your_connection', all[0]?.refusal?.message ?? 'None of these tournaments is yours to staff.', {
         professorPlayerId: organizers.get(all[0]?.tournamentId ?? '') ?? '',

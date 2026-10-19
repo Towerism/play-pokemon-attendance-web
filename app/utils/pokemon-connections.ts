@@ -135,10 +135,12 @@ export function importsBlocked(r: Maybe<ConnectionsResponse>): string | null {
 }
 
 /** Who started a History entry, and as which professor when that was recorded; an import reads as every one (#75). */
-export function startedByText(s: { startedBy: string; professor: { playerId: string; name: string | null } | null; kind?: string }): string {
+export function startedByText(s: { startedBy: string; professor: { playerId: string; name: string | null } | null; kind?: string; leased?: boolean }): string {
   const everyone = s.kind === 'staff_import' || s.kind === 'player_import';
   if (!s.professor) return everyone ? `${s.startedBy}, as every connected professor` : s.startedBy;
-  return `${s.startedBy}, as ${professorLabel({ professorPlayerId: s.professor.playerId, professorName: s.professor.name })}`;
+  const professor = professorLabel({ professorPlayerId: s.professor.playerId, professorName: s.professor.name });
+  // A leased job ran through the organizer's connection for the lent professor (ADR-0015 §5).
+  return s.leased ? `${s.startedBy} for ${professor}` : `${s.startedBy}, as ${professor}`;
 }
 
 /** Under the league picker: which of the owner's connections it leaves out because their login needs a reconnect. */

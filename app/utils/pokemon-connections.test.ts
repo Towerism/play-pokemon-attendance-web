@@ -56,6 +56,10 @@ describe('professorShortLabel (banner, toasts)', () => {
 });
 
 describe('startedByText (History)', () => {
+  it('names a leased job as the lent professor for the organizer (ADR-0015 §5)', () => {
+    expect(startedByText({ startedBy: 'misty', professor: { playerId: '0000222', name: 'Brock Harrison' }, leased: true })).toBe('misty for Brock Harrison (0000222)');
+  });
+
   it('adds the professor to who started the attempt, when it was recorded', () => {
     expect(startedByText({ startedBy: 'organizer', professor: { playerId: '0000222', name: 'Brock Harrison' } })).toBe(
       'organizer, as Brock Harrison (0000222)',

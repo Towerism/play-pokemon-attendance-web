@@ -38,6 +38,9 @@ interface Minted {
 
 const toast = useToast();
 const siteUrl = useRuntimeConfig().public.siteUrl;
+// Every live tournament lease, by organizer and lent professor (ADR-0015 §5, §8); End lease only on the owner's own.
+const { data: leaseList } = useLeaseList();
+const leaseZone = browserTimeZone();
 const { data, refresh } = await useFetch<ProfessorsJson>('/api/professors', { key: 'professors' });
 const formatDate = (iso: string) => new Date(iso).toLocaleString();
 
@@ -219,6 +222,28 @@ const inviteName = (i: InviteJson) => (i.kind === 'reset' ? `Password reset for 
               </p>
             </div>
             <UButton size="sm" color="error" variant="soft" :aria-label="`Revoke ${inviteName(i)}`" @click="revoke(i)">Revoke</UButton>
+          </li>
+        </ul>
+      </div>
+
+      <div v-if="leaseList?.leases.length">
+        <h3 class="text-sm font-medium">Lent tournaments</h3>
+        <ul class="divide-y divide-default">
+          <li v-for="l in leaseList.leases" :key="l.id" class="py-2 text-sm">
+            <p class="font-medium break-words">{{ l.label }}</p>
+            <p class="text-muted">
+              {{ l.organizer.name ?? `Professor ${l.organizer.playerId}` }} lent it to {{ l.lessee.name ?? l.lessee.username }} until {{ lastDayLabel(l.endsAt, leaseZone) }}
+              <template v-if="noticeLine(l.notice, l.lessee.name ?? l.lessee.username)"> · {{ noticeLine(l.notice, l.lessee.name ?? l.lessee.username) }}</template>
+            </p>
+            <LeaseControls
+              v-if="l.mine === 'organizer'"
+              :tournament-id="l.tournamentId"
+              :label="l.label"
+              :organizer-player-id="l.organizer.playerId"
+              :lease="{ id: l.id, lesseeUserId: l.lessee.userId, lesseeName: l.lessee.name ?? l.lessee.username, organizerName: l.organizer.name ?? `Professor ${l.organizer.playerId}`, endsAt: l.endsAt }"
+              :candidates="[]"
+              :lendable="false"
+            />
           </li>
         </ul>
       </div>

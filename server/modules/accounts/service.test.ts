@@ -166,6 +166,17 @@ describe('the actor behind a session', () => {
   it('is null for a user id that does not exist', () => {
     expect(accounts.actor(42)).toBeNull();
   });
+
+  it('lists every active user, oldest first, leaving removed ones out', async () => {
+    const { id } = await accounts.setup(owner);
+    const misty = addProfessor('misty');
+    addProfessor('surge', { removed: true });
+
+    expect(accounts.activeActors()).toEqual([
+      { userId: id, username: 'organizer', role: 'owner', reverifyRequired: false },
+      { userId: misty, username: 'misty', role: 'professor', reverifyRequired: false },
+    ]);
+  });
 });
 
 /** A professor row as an invite makes them; same password as the owner. */

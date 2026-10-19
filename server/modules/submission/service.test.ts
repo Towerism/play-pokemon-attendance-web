@@ -667,6 +667,7 @@ describe('history', () => {
       retryOf: null,
       kind: 'submit',
       undoOf: null,
+      leased: false,
       undoable: false,
       undoBlockedReason: 'nothing_to_undo',
       tournamentLabel: null,

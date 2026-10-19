@@ -4,6 +4,7 @@ import type { Db } from '../../db/client';
 import { leagueMembership, leagueUpstream, pokemonConnection } from '../../db/schema';
 import type { AccountsService, Actor } from '../accounts/service';
 import { createPkcePair, createState, parseCallbackUrl } from './adapters/ptc-oauth/pkce';
+import type { EndedLease, LeaseStore } from './leases';
 import { PokemonUpstreamError } from './ports/errors';
 import type { League, PlayToolsGateway, ProfessorProfile } from './ports/play-tools-gateway';
 import type { PtcOAuthClient, TokenGrant } from './ports/ptc-oauth';
@@ -59,8 +60,11 @@ export interface UpstreamLeagues {
   excluded: { playerId: string | null; name: string | null }[];
 }
 
-/** What `actingConnection` checks: the holder's own connection. Leases add a `tournament` scope (#203). */
-export type ActingScope = { kind: 'own' };
+/**
+ * What `actingConnection` checks (ADR-0015 §4): `own` is the holder's connection only (attendance, templates, creating,
+ * editing and cancelling tournaments); `tournament` also honours a live lease on that tournament (§5).
+ */
+export type ActingScope = { kind: 'own' } | { kind: 'tournament'; tournamentId: string; use: 'staff' | 'results' };
 
 export type KeepAliveResult =
   | { outcome: 'refreshed' | 'skipped_recent' | 'not_connected' | 'needs_reconnect' }
@@ -153,10 +157,11 @@ export interface PokemonConnectionService extends TokenProvider {
   /** Connections not `outside`, oldest first: reads across professors (ADR-0015 §3). */
   listReadableConnections(): ActingConnection[];
   /**
-   * The connection `actor` may write to play-tools through for `professorPlayerId` (ADR-0015 §4): only one they hold.
-   * @throws ConnectionAccessError `organizer_not_connected`, `needs_reconnect`, `not_your_connection`
+   * The connection `actor` may write to play-tools through for `professorPlayerId` (ADR-0015 §4): one they hold, or for
+   * a `tournament` scope one lent to them for that tournament (`leaseId` then names the lease, §5).
+   * @throws ConnectionAccessError `organizer_not_connected`, `needs_reconnect`, `not_your_connection`, `reverify_required`
    */
-  actingConnection(actor: Actor, professorPlayerId: string, scope: ActingScope): { connectionId: number };
+  actingConnection(actor: Actor, professorPlayerId: string, scope: ActingScope): { connectionId: number; leaseId: number | null };
   /**
    * The connection a request reads the league's play sessions as: the caller's lowest-id member connection that is
    * connected, else anyone's. @throws PokemonUpstreamError `not_connected` when there is none
@@ -221,6 +226,11 @@ export interface PokemonConnectionDeps {
    * the seat budget and the player ID an invite binds (§6), and the proof after a password reset (§8).
    */
   accounts: Pick<AccountsService, 'actor' | 'clearReverify'> & { seatsUsed(): number; boundPlayerId(userId: number): string | null };
+  /**
+   * Tournament leases (ADR-0015 §5): the store `actingConnection` checks and that disconnects, claims, removals and
+   * membership reads end leases in; `ended` sends their notices once the ending has committed.
+   */
+  leases?: { store: LeaseStore; ended(rows: readonly EndedLease[]): void };
   now?: () => Date;
   log?: Pick<Logger, 'warn' | 'info'>;
 }
@@ -263,6 +273,18 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
   const log = deps.log ?? silentLogger;
 
   const attempts = new Map<string, Attempt>();
+  /** Leases a removal ended, by user, until the removal's `revoke` hands their notices over after the commit. */
+  const removalEndings = new Map<number, EndedLease[]>();
+
+  /** Hands leases that ended to the lease service for their notices. Never throws: the ending has committed. */
+  function notifyEnded(rows: readonly EndedLease[]) {
+    if (rows.length === 0 || !deps.leases) return;
+    try {
+      deps.leases.ended(rows);
+    } catch (err) {
+      log.warn(`Lease end notices could not be sent (${(err as Error).message}).`, { err });
+    }
+  }
   const accessTokens = new Map<number, AccessToken>();
   const locks = new Map<number, Promise<unknown>>();
 
@@ -447,10 +469,17 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       return false;
     }
     const found = leagues.find((l) => l.id === b.activityGroupId);
-    db.update(leagueMembership)
-      .set({ leagueId, status: found ? 'member' : 'outside', canSubmit: found?.canSubmit ?? false, checkedAt: now() })
-      .where(eq(leagueMembership.connectionId, connectionId))
-      .run();
+    const endedLeases = db.transaction(() => {
+      db.update(leagueMembership)
+        .set({ leagueId, status: found ? 'member' : 'outside', canSubmit: found?.canSubmit ?? false, checkedAt: now() })
+        .where(eq(leagueMembership.connectionId, connectionId))
+        .run();
+      // A professor whose account isn't in the league can't keep a lease (ADR-0015 §5). The owner is always a member.
+      const holder = found ? null : load(connectionId);
+      if (!holder || deps.accounts.actor(holder.userId)?.role !== 'professor') return [];
+      return deps.leases?.store.endHeldBy(holder.userId, 'lessee_outside') ?? [];
+    });
+    notifyEnded(endedLeases);
     return true;
   }
 
@@ -474,7 +503,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
     actor: Actor,
     grant: TokenGrant & { refreshToken: string },
     profile: ProfessorProfile,
-  ): { id: number; outcome: 'added' | 'reconnected' | 'claimed'; claimedFrom?: Actor } {
+  ): { id: number; outcome: 'added' | 'reconnected' | 'claimed'; claimedFrom?: Actor; endedLeases?: EndedLease[] } {
     return db.transaction((tx) => {
       const at = now();
       const fields = { ptcUserId: grant.subject, status: 'connected' as const, statusReason: null, connectedAt: at, lastRefreshedAt: at };
@@ -511,7 +540,9 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
           .set({ ...fields, userId: actor.userId, claimedFromUserId: own.userId, claimedAt: at, refreshTokenCiphertext: seal(own.id) })
           .where(eq(pokemonConnection.id, own.id))
           .run();
-        return { id: own.id, outcome: 'claimed' as const, claimedFrom: holder };
+        // The owner no longer holds it, so every lease they granted on it ends (ADR-0015 §2, §5).
+        const endedLeases = deps.leases?.store.endOnConnection(own.id, 'connection_gone') ?? [];
+        return { id: own.id, outcome: 'claimed' as const, claimedFrom: holder, endedLeases };
       }
 
       const carried = own
@@ -658,7 +689,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       return service.listActingConnections().filter((c) => c.membership !== 'outside');
     },
 
-    actingConnection(actor, professorPlayerId, _scope) {
+    actingConnection(actor, professorPlayerId, scope) {
       const r = loadByPlayer(professorPlayerId);
       if (!r) {
         throw new ConnectionAccessError(
@@ -667,7 +698,11 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
           professorPlayerId,
         );
       }
-      if (r.userId !== actor.userId) throw notYours(r, 'act as them in play-tools');
+      // A lease counts only for one tournament's staff or results, and never for an `own` scope (ADR-0015 §4, §5).
+      const leaseId =
+        r.userId === actor.userId || scope.kind !== 'tournament' ? null : (deps.leases?.store.liveFor(actor.userId, r.id, scope.tournamentId) ?? null);
+      if (r.userId !== actor.userId && leaseId === null) throw notYours(r, 'act as them in play-tools');
+      if (leaseId !== null && !actor.reverifyRequired && !service.access(actor).member) throw notYours(r, 'act as them in play-tools');
       if (actor.reverifyRequired) {
         throw new ConnectionAccessError(
           'reverify_required',
@@ -678,7 +713,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       if (r.status === 'needs_reconnect') {
         throw new ConnectionAccessError('needs_reconnect', `Reconnect ${labelOf(r)} in Settings.`, professorPlayerId);
       }
-      return { connectionId: r.id };
+      return { connectionId: r.id, leaseId };
     },
 
     readingConnection(_leagueId, actor) {
@@ -763,7 +798,8 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         }
       };
       const own = loadByPlayer(profile.playerId);
-      const { id, outcome, claimedFrom } = own ? await withLock(own.id, async () => write()) : write();
+      const { id, outcome, claimedFrom, endedLeases } = own ? await withLock(own.id, async () => write()) : write();
+      notifyEnded(endedLeases ?? []);
       if (claimedFrom) {
         log.info(`Pokémon connection for professor ${profile.playerId} moved from ${claimedFrom.username} to ${actor.username}`, {
           professorPlayerId: profile.playerId,
@@ -832,7 +868,13 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         } catch (err) {
           if (!(err instanceof VaultError)) throw err;
         }
-        db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
+        // Its leases end, then go with it (ADR-0015 §5); their notices go out once the delete has committed.
+        const endedLeases = db.transaction(() => {
+          const e = deps.leases?.store.endOnConnection(r.id, 'connection_gone') ?? [];
+          db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
+          return e;
+        });
+        notifyEnded(endedLeases);
         return { revoked };
       });
     },
@@ -906,16 +948,24 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       }
       return {
         async revoke() {
+          // The leases `deleteConnectionsOf` ended inside the removal: their notices go out only after it committed.
+          const endedLeases = removalEndings.get(userId) ?? [];
+          removalEndings.delete(userId);
+          notifyEnded(endedLeases);
           for (const t of tokens) await revokeQuietly(t);
         },
       };
     },
 
     deleteConnectionsOf(userId) {
+      const endedLeases: EndedLease[] = [];
       for (const r of all().filter((x) => x.userId === userId)) {
         accessTokens.delete(r.id);
+        endedLeases.push(...(deps.leases?.store.endOnConnection(r.id, 'connection_gone') ?? []));
         db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
       }
+      endedLeases.push(...(deps.leases?.store.endHeldBy(userId, 'lessee_removed') ?? []));
+      removalEndings.set(userId, endedLeases);
     },
   };
 

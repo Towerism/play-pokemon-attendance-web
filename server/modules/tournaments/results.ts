@@ -75,6 +75,8 @@ export interface ConfirmPlan {
   label: string;
   date: SessionDate;
   importAttendance: boolean;
+  /** The lease the send runs under (ADR-0015 §5); null for the organizer's own. */
+  leaseId: number | null;
 }
 
 /** What Remove from staff starts a removal-only staff job for, after its checks. */
@@ -85,6 +87,8 @@ export interface RemovalPlan {
   label: string;
   date: SessionDate;
   playerIds: PlayerId[];
+  /** The lease the removal runs under (ADR-0015 §5); null for the organizer's own. */
+  leaseId: number | null;
 }
 
 /** The `tdf_upload` job's fresh check just before the send. */
@@ -150,6 +154,10 @@ export interface TournamentResults {
   tdfAvailable(leagueId: string, tournamentIds: readonly string[]): Set<string>;
   /** The stored files of results uploads for tournaments these professors organize (ADR-0015 §4), from local rows only. */
   fileIdsOrganizedBy(leagueId: string, organizerPlayerIds: readonly string[]): Set<number>;
+  /** The stored files of these tournaments' results uploads (a lent professor's downloads, ADR-0015 §5). Local rows only. */
+  fileIdsOfTournaments(leagueId: string, tournamentIds: readonly string[]): Set<number>;
+  /** Every stored file that belongs to a results upload. */
+  resultFileIds(leagueId: string): Set<number>;
 }
 
 export interface ResultsDeps {
@@ -483,7 +491,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       const by = actor.username;
       parseTdf(content);
       const located = await locate(leagueId, date, tournamentId);
-      assertMayActAs(deps.connections, actor, located.read.organizerPlayerId);
+      assertMayActAs(deps.connections, actor, located.read.organizerPlayerId, { tournament: { tournamentId, use: 'results' } });
       assertUploadable(located);
       const attendance = deps.attendance.preview(leagueId, date, { filename, content, by });
       const { fileId, sha256 } = archive.store(leagueId, { filename, content, by });
@@ -537,7 +545,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       const row = find(leagueId, date, tournamentId, uploadId);
       if (row.tdfFileId === null) throw new TournamentsError('tdf_file_deleted', 'The file for this upload was deleted. Drop it again.');
       const located = await locate(leagueId, date, tournamentId);
-      assertMayActAs(deps.connections, actor, located.read.organizerPlayerId);
+      assertMayActAs(deps.connections, actor, located.read.organizerPlayerId, { tournament: { tournamentId, use: 'results' } });
       assertUploadable(located);
       if (row.state === 'previewed') return refresh(leagueId, row, located, by);
       const open = openFor(leagueId, tournamentId, row.sha256);
@@ -571,7 +579,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       if (row.tdfFileId === null) throw new TournamentsError('tdf_file_deleted', 'The file for this upload was deleted. Drop it again.');
       const inFile = new Set<string>(parseTdf(archive.read(leagueId, row.tdfFileId).content).players.map((p) => p.playerId));
       const { read, organizer, participants } = await locate(leagueId, date, tournamentId);
-      assertMayActAs(deps.connections, actor, read.organizerPlayerId);
+      const { leaseId } = assertMayActAs(deps.connections, actor, read.organizerPlayerId, { tournament: { tournamentId, use: 'results' } });
       const failures: { playerId: string; reason: 'not_in_file' | 'not_staff' | 'organizer' }[] = [];
       for (const id of playerIds) {
         if (!inFile.has(id)) failures.push({ playerId: id, reason: 'not_in_file' });
@@ -586,13 +594,14 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
         label: [read.name ?? 'Tournament', date].join(' · '),
         date,
         playerIds: [...playerIds],
+        leaseId,
       };
     },
 
     prepareConfirm(leagueId, date, tournamentId, uploadId, body, actor) {
       const row = find(leagueId, date, tournamentId, uploadId);
       // Who may send it; a login that needs a reconnect stops the job before the send, as any job does.
-      assertMayActAs(deps.connections, actor, row.professorPlayerId!, { local: true });
+      const { leaseId } = assertMayActAs(deps.connections, actor, row.professorPlayerId!, { local: true, tournament: { tournamentId, use: 'results' } });
       if (row.state !== 'previewed') throw new TournamentsError('upload_not_open', 'This upload was already sent or closed. Use Upload again….', { state: row.state });
       if (row.pendingOrganizer !== null) {
         throw new TournamentsError('organizer_full_name_required', "Enter the organizer's full name first: the file's organizer will be replaced.");
@@ -610,6 +619,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
         label: [row.tournamentName ?? 'Tournament', row.sessionDate].join(' · '),
         date,
         importAttendance: body.importAttendance,
+        leaseId,
       };
     },
 
@@ -775,6 +785,21 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
         .from(tournamentResultUpload)
         .where(and(eq(tournamentResultUpload.leagueId, leagueId), inArray(tournamentResultUpload.professorPlayerId, [...organizerPlayerIds])))
         .all();
+      return new Set(rows.flatMap((r) => (r.fileId === null ? [] : [r.fileId])));
+    },
+
+    fileIdsOfTournaments(leagueId, tournamentIds) {
+      if (tournamentIds.length === 0) return new Set();
+      const rows = db
+        .select({ fileId: tournamentResultUpload.tdfFileId })
+        .from(tournamentResultUpload)
+        .where(and(eq(tournamentResultUpload.leagueId, leagueId), inArray(tournamentResultUpload.tournamentId, [...tournamentIds])))
+        .all();
+      return new Set(rows.flatMap((r) => (r.fileId === null ? [] : [r.fileId])));
+    },
+
+    resultFileIds(leagueId) {
+      const rows = db.select({ fileId: tournamentResultUpload.tdfFileId }).from(tournamentResultUpload).where(eq(tournamentResultUpload.leagueId, leagueId)).all();
       return new Set(rows.flatMap((r) => (r.fileId === null ? [] : [r.fileId])));
     },
   };

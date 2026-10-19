@@ -5,7 +5,7 @@ export default defineEventHandler(async (event) => {
   const { leagueId, actor } = await requireMember(event);
   const { id } = await getValidatedRouterParams(event, TdfFileIdParam.parse);
   try {
-    assertTdfAccess(leagueId, actor, id);
+    assertTdfAccess(leagueId, actor, id, 'delete');
     return { deleted: true, ...useTdfArchive().delete(leagueId, id) };
   } catch (err) {
     throw tdfArchiveHttpError(err);

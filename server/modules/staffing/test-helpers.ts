@@ -1,7 +1,7 @@
 /** Test-only stand-ins for the staffing module's upstream ports. Not imported by production code. */
 import type { PlayerId } from '../../../shared/types/ids';
 import type { ActingConnection } from '../pokemon/connection';
-import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-connections';
+import { HELD_BY_OWNER, type StubLease, stubConnections } from '../pokemon/test-connections';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
   StaffAssignResult,
@@ -80,6 +80,8 @@ export const OLIVE: StubProfessor = { id: 1, professorPlayerId: '9999991', profe
  */
 export function stubPlayTools() {
   const state = {
+    /** Live tournament leases (ADR-0015 §5). */
+    leases: [] as StubLease[],
     tournaments: [] as TournamentDetails[],
     participants: new Map<string, TournamentParticipant[]>(),
     /** Tournament ids `getTournament` answers `not_found` for (deleted after being listed). */
@@ -188,6 +190,7 @@ export function stubPlayTools() {
     connections: stubConnections({
       professors: () => state.professors.map(({ upstreamAs: _u, ...p }) => p),
       league: () => state.connection.league,
+      leases: () => state.leases,
     }),
     /** Connects another professor (or replaces one with the same id); the owner's unless `userId` says otherwise. */
     addProfessor(p: Partial<StubProfessor> & { id: number; professorPlayerId: string | null }): StubProfessor {

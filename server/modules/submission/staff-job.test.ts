@@ -21,7 +21,7 @@ import { type StaffingService, createStaffingService } from '../staffing/service
 import { GROUP, ROLES, playing, staffer, tournament } from '../staffing/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, type SubmissionView, createSubmissionService } from './service';
-import { HELD_BY_OWNER, OWNER, stubConnections } from '../pokemon/test-connections';
+import { HELD_BY_OWNER, OWNER, type StubLease, professorActor, stubConnections } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';
@@ -152,6 +152,9 @@ let sleeps: number[];
 let onSleep: ((signal: AbortSignal) => Promise<void> | void) | undefined;
 let logs: { level: string; message: string; fields: unknown }[];
 let service: SubmissionService;
+/** Leases the stubs know (ADR-0015 §5), and which of them are still live. */
+let leases: StubLease[];
+let live: Set<number>;
 
 const noResolver: PlaySessionResolver = {
   resolve: () => Promise.reject(new Error('a staff job never resolves play sessions')),
@@ -170,7 +173,7 @@ function build(over: { staffDelayMs?: number } = {}): SubmissionService {
     sessions,
     roster,
     sightings,
-    connections: stubConnections({ professors: () => professors, league: () => connection.league }),
+    connections: stubConnections({ professors: () => professors, league: () => connection.league, leases: () => leases.filter((l) => live.has(l.id)) }),
     gateway: () => noAttendance,
     staffGateway: (connectionId) => {
       jobGateways.push(connectionId);
@@ -185,6 +188,7 @@ function build(over: { staffDelayMs?: number } = {}): SubmissionService {
       clock = new Date(clock.getTime() + ms);
     },
     staffDelayMs: over.staffDelayMs ?? DELAY,
+    leases: { isLive: (leaseId) => live.has(leaseId), endLeasesForTournament: () => {} },
     log: { info: record('info'), warn: record('warn') },
   });
 }
@@ -205,10 +209,12 @@ beforeEach(() => {
     { id: 1, professorPlayerId: ORGANIZER, professorName: 'Olive Organizer', status: 'connected', ...HELD_BY_OWNER },
   ];
   jobGateways = [];
+  leases = [];
+  live = new Set();
   staffing = createStaffingService({
     db: database.db,
     roster,
-    connections: stubConnections({ professors: () => professors, league: () => connection.league }),
+    connections: stubConnections({ professors: () => professors, league: () => connection.league, leases: () => leases.filter((l) => live.has(l.id)) }),
     staffGateway: () => upstream,
     timeZone: TZ,
     now: () => clock,
@@ -938,5 +944,73 @@ describe('the professor a staff job runs as (#75)', () => {
     await service.idle();
     expect(service.get(L, submissionId).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
     expect(new Set(jobGateways)).toEqual(new Set([2]));
+  });
+});
+
+describe('a staff job under a lease (ADR-0015 §5)', () => {
+  const MISTY = professorActor(2, 'misty');
+  const lend = () => {
+    leases = [{ id: 7, connectionId: 1, tournamentId: T, lesseeUserId: MISTY.userId }];
+    live = new Set([7]);
+  };
+  const submissionRow = (submissionId: number) =>
+    database.sqlite.prepare('select started_by, professor_player_id, lease_id from submission where id = ?').get(submissionId);
+
+  it("runs as the organizer's connection, recording the lent professor and the lease", async () => {
+    lend();
+    await want('00123');
+    upstream.resetLog();
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+
+    expect(service.get(L, submissionId)).toMatchObject({ status: 'succeeded', startedBy: 'misty', leased: true });
+    expect(submissionRow(submissionId)).toEqual({ started_by: 'misty', professor_player_id: ORGANIZER, lease_id: 7 });
+    expect(jobGateways.at(-1)).toBe(1);
+  });
+
+  it('stops before the next write once the lease ends, settling what was already sent', async () => {
+    lend();
+    await want('00123');
+    await want('00456');
+    await want('00789');
+    upstream.onAssign = (_p, _r, n) => {
+      if (n === 1) live.delete(7);
+    };
+    upstream.resetLog();
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+
+    const view = service.get(L, submissionId);
+    expect(upstream.calls.filter((c) => c.startsWith('assign'))).toEqual(['assign 00123 judge']);
+    expect(view).toMatchObject({ error: 'lease_ended' });
+    expect(item(view, '00123')!.outcome).toBe('assigned');
+  });
+
+  it('sends nothing when the lease ended before the job started', async () => {
+    lend();
+    await want('00123');
+    upstream.onRead = () => live.delete(7);
+    upstream.resetLog();
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+
+    expect(upstream.writes).toEqual([]);
+    expect(service.get(L, submissionId)).toMatchObject({ error: 'lease_ended' });
+  });
+
+  it("runs the organizer's retry of a leased job as their own", async () => {
+    lend();
+    await want('00123');
+    upstream.onAssign = () => ({ status: 'refused', code: 'cannot_duplicate_participant' });
+    const { submissionId } = await service.applyStaff(L, DATE, { tournamentId: T, actor: MISTY });
+    await service.idle();
+    upstream.onAssign = undefined;
+
+    const { submissionId: retried } = await service.retry(L, submissionId, OWNER);
+    await service.idle();
+    expect(submissionRow(retried)).toMatchObject({ started_by: 'organizer', lease_id: null });
+
+    live.delete(7);
+    await expect(service.retry(L, submissionId, MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
   });
 });

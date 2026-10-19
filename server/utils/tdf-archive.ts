@@ -29,22 +29,28 @@ export function tdfArchiveHttpError(err: unknown): unknown {
 }
 
 /**
- * Which stored TDFs `actor` may reach (ADR-0015 §4): every file for the owner; for a professor, files they uploaded or
- * that belong to tournaments one of their own connections organizes.
+ * Which stored TDFs `actor` may list, download or delete (ADR-0015 §4, §5): every file for the owner; for a professor,
+ * files they uploaded or that belong to tournaments one of their own connections organizes, and for downloading, the
+ * results files of a tournament lent to them.
  */
-export function tdfAccess(leagueId: string, actor: Actor): (file: { id: number; createdBy: string }) => boolean {
+export function tdfAccess(leagueId: string, actor: Actor, use: 'list' | 'download' | 'delete' = 'list'): (file: { id: number; createdBy: string }) => boolean {
   if (actor.role === 'owner') return () => true;
   const own = usePokemon()
     .listActingConnections()
     .filter((c) => c.userId === actor.userId && c.professorPlayerId !== null)
     .map((c) => c.professorPlayerId!);
-  const organized = useTournamentResults().fileIdsOrganizedBy(leagueId, own);
-  return (file) => mayAccessTdf(actor, file, organized);
+  const results = useTournamentResults();
+  const reach = {
+    organized: results.fileIdsOrganizedBy(leagueId, own),
+    leased: results.fileIdsOfTournaments(leagueId, [...useLeases().leasedTournamentIdsOf(actor.userId)]),
+    results: results.resultFileIds(leagueId),
+  };
+  return (file) => mayAccessTdf(actor, file, reach, use);
 }
 
-/** 404 unless `actor` may reach stored file `fileId`: a file they may not see answers as one that doesn't exist. */
-export function assertTdfAccess(leagueId: string, actor: Actor, fileId: number): void {
+/** 404 unless `actor` may reach stored file `fileId` for `use`: a file they may not reach answers as one that doesn't exist. */
+export function assertTdfAccess(leagueId: string, actor: Actor, fileId: number, use: 'download' | 'delete'): void {
   const file = useTdfArchive().list(leagueId).find((f) => f.id === fileId);
-  if (!file || !tdfAccess(leagueId, actor)(file)) throw tdfArchiveHttpError(new TdfFileNotFoundError(fileId));
+  if (!file || !tdfAccess(leagueId, actor, use)(file)) throw tdfArchiveHttpError(new TdfFileNotFoundError(fileId));
 }
 

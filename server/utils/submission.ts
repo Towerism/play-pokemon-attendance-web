@@ -44,6 +44,10 @@ export function useSubmissions(): SubmissionService {
       tournaments: { ...useTournaments(), results: useTournamentResults() },
       tournamentGateway: connectionGateway,
       tournamentDelayMs: Number(useRuntimeConfig().tournament.delayMs) || 0,
+      leases: {
+        isLive: (leaseId) => useLeaseStore().isLive(leaseId),
+        endLeasesForTournament: (tournamentId, reason) => useLeases().endLeasesForTournament(tournamentId, reason),
+      },
       log: useLogger('submission'),
     });
   }

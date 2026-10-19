@@ -640,6 +640,42 @@ describe('who may upload results (ADR-0015 §4)', () => {
   });
 });
 
+describe('results under a lease (ADR-0015 §5)', () => {
+  const MISTY = professorActor(2, 'misty');
+  const lent = () => (upstream.state.leases = [{ id: 7, connectionId: OLIVE.id, tournamentId: GUID, lesseeUserId: MISTY.userId }]);
+
+  it("lets the lent professor preview, recheck and send the tournament's results as its organizer, naming the lease", async () => {
+    lent();
+    const p = await results.preview(L, DATE, GUID, { filename: 'cup.tdf', content: file() }, MISTY);
+    await results.recheck(L, DATE, GUID, p.uploadId, MISTY);
+    expect(results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: p.fingerprint ?? EMPTY }, MISTY)).toMatchObject({
+      professorPlayerId: ORGANIZER,
+      leaseId: 7,
+    });
+  });
+
+  it('lets the lent professor remove staff who played, under the lease', async () => {
+    lent();
+    setPeople(person('1234567', 'scorekeeper'));
+    const p = await results.preview(L, DATE, GUID, { filename: 'cup.tdf', content: file() }, MISTY);
+    expect(await results.checkRemovable(L, DATE, GUID, p.uploadId, ['1234567'] as PlayerId[], MISTY)).toMatchObject({ professorPlayerId: ORGANIZER, leaseId: 7 });
+  });
+
+  it("never lets the lent professor set the organizer's full name", async () => {
+    lent();
+    fullNames.clear();
+    const p = await results.preview(L, DATE, GUID, { filename: 'cup.tdf', content: file({ organizerElement: WRONG_ORGANIZER }) }, MISTY);
+    expect((await refusal(results.setOrganizerName(L, DATE, GUID, p.uploadId, 'Olive Organizer', MISTY))).code).toBe('not_your_connection');
+    expect(fullNames.get(ORGANIZER)).toBeUndefined();
+  });
+
+  it("names no lease for the organizer's own send", async () => {
+    lent();
+    const p = await preview(file());
+    expect(results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: p.fingerprint ?? EMPTY }, OWNER)).toMatchObject({ leaseId: null });
+  });
+});
+
 describe("the stored files of the tournaments a professor organizes (ADR-0015 §4)", () => {
   it('lists the files of results uploads whose organizer is one of the given professors', async () => {
     const p = await preview(file());
@@ -647,6 +683,15 @@ describe("the stored files of the tournaments a professor organizes (ADR-0015 §
     expect(results.fileIdsOrganizedBy(L, [OLIVE.professorPlayerId!])).toEqual(new Set([fileId]));
     expect(results.fileIdsOrganizedBy(L, ['0000222'])).toEqual(new Set());
     expect(results.fileIdsOrganizedBy(L, [])).toEqual(new Set());
+  });
+
+  it("lists the files of a tournament's results uploads, and every results file", async () => {
+    const p = await preview(file());
+    const fileId = uploadRow(p.uploadId).tdf_file_id!;
+    expect(results.fileIdsOfTournaments(L, [GUID])).toEqual(new Set([fileId]));
+    expect(results.fileIdsOfTournaments(L, ['other-guid'])).toEqual(new Set());
+    expect(results.fileIdsOfTournaments(L, [])).toEqual(new Set());
+    expect(results.resultFileIds(L)).toEqual(new Set([fileId]));
   });
 });
 

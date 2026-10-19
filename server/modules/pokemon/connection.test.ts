@@ -14,6 +14,7 @@ import {
   connectionAad,
   createPokemonConnectionService,
 } from './connection';
+import { type EndedLease, createLeaseStore } from './leases';
 import { PokemonUpstreamError } from './ports/errors';
 import type { League } from './ports/play-tools-gateway';
 import type { PtcOAuthClient, TokenGrant } from './ports/ptc-oauth';
@@ -60,6 +61,8 @@ let otherSeats: number;
 /** The player ID each professor's invite binds them to. */
 let bound: Map<number, string>;
 let reverifyCleared: number[];
+/** Leases the connection service ended, in the order their notices were handed over. */
+let ended: EndedLease[];
 
 /** Hydra as a fake: one rotating chain per account (by `sub`), tracking which refresh token belongs to whom. */
 class FakeOAuth implements PtcOAuthClient {
@@ -151,6 +154,7 @@ function build(): PokemonConnectionService {
       boundPlayerId: (id: number) => bound.get(id) ?? null,
       clearReverify: (id: number) => reverifyCleared.push(id),
     },
+    leases: { store: createLeaseStore({ db: database.db, now: () => clock }), ended: (rows: readonly EndedLease[]) => ended.push(...rows) },
     now: () => clock,
     log,
   });
@@ -218,6 +222,7 @@ beforeEach(() => {
   otherSeats = 0;
   bound = new Map();
   reverifyCleared = [];
+  ended = [];
   service = build();
 });
 afterEach(() => database.close());
@@ -1270,8 +1275,8 @@ describe('league membership (ADR-0015 §3)', () => {
 describe('actingConnection (the one place a professor becomes a connection for a write)', () => {
   it("answers the holder's connection", async () => {
     await leagueWithProfessors();
-    expect(service.actingConnection(MISTY, MISTY_ACCOUNT.playerId, { kind: 'own' })).toEqual({ connectionId: idOf(MISTY_ACCOUNT) });
-    expect(service.actingConnection(OWNER, ASH.playerId, { kind: 'own' })).toEqual({ connectionId: idOf(ASH) });
+    expect(service.actingConnection(MISTY, MISTY_ACCOUNT.playerId, { kind: 'own' })).toEqual({ connectionId: idOf(MISTY_ACCOUNT), leaseId: null });
+    expect(service.actingConnection(OWNER, ASH.playerId, { kind: 'own' })).toEqual({ connectionId: idOf(ASH), leaseId: null });
   });
 
   it("refuses anyone else, the owner included, naming the professor", async () => {
@@ -1508,5 +1513,118 @@ describe('invites, reset links and the seat budget (ADR-0015 §6, §8)', () => {
     await removal.revoke();
     expect(rows()).toHaveLength(1);
     expect(oauth.revoked).toEqual([]);
+  });
+});
+
+describe('tournament leases (ADR-0015 §5)', () => {
+  const DAY = 86_400_000;
+  const staff = (tournamentId: string) => ({ kind: 'tournament' as const, tournamentId, use: 'staff' as const });
+
+  /** A lease of `tournamentId` from `connectionId` to `lesseeUserId`, written as the lease service would. */
+  function lend(connectionId: number, tournamentId: string, lesseeUserId: number, endsAt = new Date(clock.getTime() + 7 * DAY)): number {
+    const r = database.sqlite
+      .prepare(
+        `insert into tournament_lease (league_id, connection_id, tournament_id, tournament_label, lessee_user_id, granted_by, granted_at, ends_at)
+         values (?, ?, ?, ?, ?, 'organizer', ?, ?) returning id`,
+      )
+      .get(L, connectionId, tournamentId, `${tournamentId} · 2026-11-07`, lesseeUserId, Math.floor(clock.getTime() / 1000), Math.floor(endsAt.getTime() / 1000)) as { id: number };
+    return r.id;
+  }
+  const leaseRows = () => database.sqlite.prepare('select id, tournament_id, ended_at, end_reason from tournament_lease order by id').all() as Record<string, unknown>[];
+
+  it("lets the lent professor act through the organizer's connection for that tournament only", async () => {
+    await leagueWithProfessors();
+    const leaseId = lend(idOf(ASH), 't1', MISTY.userId);
+
+    expect(service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toEqual({ connectionId: idOf(ASH), leaseId });
+    expect(service.actingConnection(MISTY, ASH.playerId, { kind: 'tournament', tournamentId: 't1', use: 'results' })).toEqual({ connectionId: idOf(ASH), leaseId });
+    expect(service.actingConnection(OWNER, ASH.playerId, staff('t1'))).toEqual({ connectionId: idOf(ASH), leaseId: null });
+    for (const [actor, scope] of [
+      [MISTY, { kind: 'own' }],
+      [MISTY, staff('t2')],
+      [GARY, staff('t1')],
+    ] as const) {
+      expect(() => service.actingConnection(actor, ASH.playerId, scope)).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+    }
+  });
+
+  it('stops honouring a lease once its end passes, or while the lent professor is not a league member', async () => {
+    await leagueWithProfessors();
+    lend(idOf(ASH), 't1', MISTY.userId, new Date(clock.getTime() + DAY));
+
+    database.sqlite.prepare("update league_membership set status = 'unknown' where connection_id = ?").run(idOf(MISTY_ACCOUNT));
+    expect(() => service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+    database.sqlite.prepare("update league_membership set status = 'member' where connection_id = ?").run(idOf(MISTY_ACCOUNT));
+    expect(() => service.actingConnection({ ...MISTY, reverifyRequired: true }, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'reverify_required' }));
+
+    advance(DAY);
+    expect(() => service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'not_your_connection' }));
+    expect(leaseRows()[0]).toMatchObject({ ended_at: null });
+  });
+
+  it("answers needs_reconnect to the lent professor when the organizer's connection needs one", async () => {
+    await leagueWithProfessors();
+    lend(idOf(ASH), 't1', MISTY.userId);
+    database.sqlite.prepare("update pokemon_connection set status = 'needs_reconnect' where id = ?").run(idOf(ASH));
+    expect(() => service.actingConnection(MISTY, ASH.playerId, staff('t1'))).toThrow(expect.objectContaining({ code: 'needs_reconnect' }));
+  });
+
+  it("ends a connection's leases when it is disconnected, handing over their notices, and they go with it", async () => {
+    await leagueWithProfessors();
+    const leaseId = lend(idOf(ASH), 't1', MISTY.userId);
+
+    await service.disconnect(L, OWNER, ASH.playerId);
+
+    expect(ended).toEqual([expect.objectContaining({ id: leaseId, reason: 'connection_gone', lesseeUserId: MISTY.userId })]);
+    expect(leaseRows()).toEqual([]);
+  });
+
+  it("ends the owner's leases on a connection its professor takes over, keeping them", async () => {
+    await connect(ASH);
+    const leaseId = lend(idOf(ASH), 't1', GARY.userId);
+
+    await connect(ASH, service, MISTY);
+
+    expect(ended).toEqual([expect.objectContaining({ id: leaseId, reason: 'connection_gone' })]);
+    expect(leaseRows()).toEqual([expect.objectContaining({ id: leaseId, end_reason: 'connection_gone' })]);
+  });
+
+  it("ends a professor's leases when a read finds their connection outside the league, and no others", async () => {
+    await leagueWithProfessors();
+    const theirs = lend(idOf(ASH), 't1', MISTY.userId);
+    lend(idOf(ASH), 't2', GARY.userId);
+    professors.get(MISTY_ACCOUNT.sub)!.leagues = [OTHER_STORE];
+
+    await connect(MISTY_ACCOUNT, service, MISTY);
+
+    expect(ended).toEqual([expect.objectContaining({ id: theirs, reason: 'lessee_outside' })]);
+    expect(leaseRows().map((r) => r.end_reason)).toEqual(['lessee_outside', null]);
+  });
+
+  it('ends nothing when a membership read fails', async () => {
+    await leagueWithProfessors();
+    lend(idOf(ASH), 't1', MISTY.userId);
+    professors.get(MISTY_ACCOUNT.sub)!.leagues = new Error('play-tools is down');
+
+    await connect(MISTY_ACCOUNT, service, MISTY);
+
+    expect(ended).toEqual([]);
+  });
+
+  it("ends a removed professor's leases both ways, handing over notices only after the removal", async () => {
+    await leagueWithProfessors();
+    const fromThem = lend(idOf(MISTY_ACCOUNT), 't2', OWNER.userId);
+    const toThem = lend(idOf(ASH), 't1', MISTY.userId);
+
+    const removal = service.prepareRemoval(MISTY.userId);
+    database.db.transaction(() => service.deleteConnectionsOf(MISTY.userId));
+    expect(ended).toEqual([]);
+    await removal.revoke();
+
+    expect(ended).toEqual([
+      expect.objectContaining({ id: fromThem, reason: 'connection_gone' }),
+      expect.objectContaining({ id: toThem, reason: 'lessee_removed' }),
+    ]);
+    expect(leaseRows()).toEqual([expect.objectContaining({ id: toThem, end_reason: 'lessee_removed' })]);
   });
 });

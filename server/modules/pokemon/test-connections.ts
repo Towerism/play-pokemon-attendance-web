@@ -12,13 +12,23 @@ export const OWNER: Actor = { userId: 1, username: 'organizer', role: 'owner' };
 /** A professor who signed in (ADR-0015 §1). */
 export const professorActor = (userId: number, username = `prof${userId}`): Actor => ({ userId, username, role: 'professor' });
 
+/** A live tournament lease, as a stub knows it (ADR-0015 §5). */
+export interface StubLease {
+  id: number;
+  connectionId: number;
+  tournamentId: string;
+  lesseeUserId: number;
+}
+
 /**
  * The connection lookups other modules use, over a stub list of connections, applying the pokemon module's holder
- * rules (tested there): only a connection the actor holds is theirs to write through.
+ * rules (tested there): only a connection the actor holds is theirs to write through, or for one tournament's staff or
+ * results, one lent to them by a live lease.
  */
 export function stubConnections(opts: {
   professors: () => readonly ActingConnection[];
   league: () => (UpstreamLeague & { canSubmit?: boolean }) | null;
+  leases?: () => readonly StubLease[];
 }): Pick<
   PokemonConnectionService,
   'league' | 'listActingConnections' | 'listReadableConnections' | 'actingConnection' | 'readingConnection' | 'access'
@@ -31,12 +41,16 @@ export function stubConnections(opts: {
     },
     listActingConnections: list,
     listReadableConnections: () => list().filter((c) => c.membership !== 'outside'),
-    actingConnection(actor, professorPlayerId) {
+    actingConnection(actor, professorPlayerId, scope) {
       const c = list().find((x) => x.professorPlayerId === professorPlayerId);
       if (!c) throw new ConnectionAccessError('organizer_not_connected', `Professor ${professorPlayerId} isn't connected.`, professorPlayerId);
-      if (c.userId !== actor.userId) throw new ConnectionAccessError('not_your_connection', `Only the user who connected them can.`, professorPlayerId);
+      const lease =
+        c.userId === actor.userId || scope.kind !== 'tournament'
+          ? undefined
+          : opts.leases?.().find((l) => l.connectionId === c.id && l.tournamentId === scope.tournamentId && l.lesseeUserId === actor.userId);
+      if (c.userId !== actor.userId && !lease) throw new ConnectionAccessError('not_your_connection', `Only ${c.professorName ?? professorPlayerId} can change this.`, professorPlayerId);
       if (c.status === 'needs_reconnect') throw new ConnectionAccessError('needs_reconnect', `Reconnect ${c.professorName ?? professorPlayerId} in Settings.`, professorPlayerId);
-      return { connectionId: c.id };
+      return { connectionId: c.id, leaseId: lease?.id ?? null };
     },
     readingConnection(_leagueId, actor) {
       const usable = list().filter((c) => c.membership === 'member' && c.status === 'connected');

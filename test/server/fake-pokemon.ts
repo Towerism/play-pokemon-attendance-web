@@ -81,6 +81,8 @@ export interface FakePokemon {
   holdCreates(): { arrived: Promise<void>; release(): void };
   /** Holds every TDF validation (after it is logged) until `release()`, to stop the app mid-send (#96). */
   holdValidates(): { arrived: Promise<void>; release(): void };
+  /** Holds every staff assign (after it is logged) until `release()`, to change things mid staff job (ADR-0015 §5). */
+  holdAssigns(): { arrived: Promise<void>; release(): void };
   /** Every TDF a validation received, decoded from its base64 payload, in order (test oracle only). */
   validatedFiles: string[];
   /** Ends a confirmed upload's processing: `completed` makes the tournament `complete`; `upload_failed` leaves it sanctioned. */
@@ -283,6 +285,7 @@ export async function startFakePokemon(): Promise<FakePokemon> {
   const hidden: FakeTournament[] = [];
   let createGate: { released: Promise<void>; arrive: () => void } | undefined;
   let validateGate: { released: Promise<void>; arrive: () => void } | undefined;
+  let assignGate: { released: Promise<void>; arrive: () => void } | undefined;
   const issued: string[] = [];
   const accounts: AccountState[] = [];
   const uploads: FakeUpload[] = [];
@@ -352,6 +355,20 @@ export async function startFakePokemon(): Promise<FakePokemon> {
         arrived,
         release: () => {
           validateGate = undefined;
+          release();
+        },
+      };
+    },
+    holdAssigns: () => {
+      let release!: () => void;
+      const released = new Promise<void>((r) => (release = r));
+      let arrive!: () => void;
+      const arrived = new Promise<void>((r) => (arrive = r));
+      assignGate = { released, arrive };
+      return {
+        arrived,
+        release: () => {
+          assignGate = undefined;
           release();
         },
       };
@@ -579,6 +596,10 @@ export async function startFakePokemon(): Promise<FakePokemon> {
           ? 'op.activity_record.cannot_duplicate_participant'
           : fake.refuseStaff.get(participant.player_id);
         if (fake.staffPostDelayMs) await new Promise((r) => setTimeout(r, fake.staffPostDelayMs));
+        if (assignGate) {
+          assignGate.arrive();
+          await assignGate.released;
+        }
         if (refusal) {
           const problem = typeof refusal === 'string' ? { code: refusal } : refusal;
           return json(res, 400, { code: 'op.generic.bad_request', message: 'Invalid request.', errors: { body: { 'participant.player_id': [problem] } } });
