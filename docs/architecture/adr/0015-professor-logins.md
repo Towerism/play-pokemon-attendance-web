@@ -9,7 +9,7 @@
   - [ADR-0009](0009-tournaments-as-their-organizer.md): the league is chosen from the owner's leagues, and a professor
     outside it is left out instead of blocking the choice.
   - [ADR-0013](0013-read-only-integrations-api.md): tokens carry scopes that are enforced per route, and the route
-    family gains a message outbox that Genie pulls and acknowledges (§7).
+    family gains the wire of a low-level Discord message channel, which Genie long-polls and answers (§7).
 - Builds on: ADR-0008 option 4, which deferred plural app users to their own design.
 
 ## Context
@@ -43,6 +43,16 @@ Reviewing the first draft, they added (2026-10-19):
 > belonging to the organizer of that tournament but only for that tournament specifically. the genie integration
 > should be generic enough to be able to easily support sending any kind of messages to a specific discord user
 > (identified by their player id, genie looks up the discord id, attendance does not need to know it).
+
+And then:
+
+> The discord message recipient can be chosen similar to searching for a player for a play session. If genie doesn't
+> have the discord id mapping, the user will receive an error message. lending a tournament goes both ways so a
+> professor can lend to the owner. this is to cover either scenario when someone has to call in sick. This way the
+> tournament doesn't have to be cancelled and re-sanctioned just to change the organizer id.
+
+> not a hint on how the discord message API is designed, but rather how it is used: the generic discord message API
+> is low-level, similar to inter-process communication.
 
 Facts this relies on:
 
@@ -81,10 +91,18 @@ For lending a tournament (§5):
 
 For messages to Discord (§7):
 
-- **An outbox Genie pulls and acknowledges (chosen).** Attendance queues a message for a player ID; Genie collects it,
-  looks up the Discord user and sends a direct message. Genie keeps pulling, as in its ADR-0008, and attendance never
-  needs Genie's address or credentials.
-- **Attendance calls Genie's API.** Messages arrive faster, but this is the push Genie ADR-0008 rejected.
+The organizer asked for a generic, low-level channel, "similar to inter-process communication": send a message to
+a player ID, get a result back. Features such as invites build on it, and the channel knows nothing about them.
+
+- **A channel Genie holds a long poll on (chosen).** Attendance sends a message to a player ID. Genie's waiting
+  request answers at once, Genie looks up the Discord user, sends the direct message and reports the result, which
+  reaches the sender within seconds. Genie keeps pulling, as in its ADR-0008, so attendance never needs Genie's
+  address or credentials.
+- **Attendance calls Genie's API.** As fast, but this is the push Genie ADR-0008 rejected.
+- **A plain outbox polled every 30 s or so (the second draft).** Simpler, but the sender only learns the result
+  later, and an error like "no Discord account linked" can't be shown when they click Send.
+- **Genie shares which player IDs it has linked, so attendance can refuse up front.** It tells attendance who is on
+  the store's Discord, and it puts a feature's concern (who is reachable) into the channel.
 - **An invite-only route that Genie calls (the first draft).** It fits invites only, and every new kind of message
   would need its own route and its own Genie command.
 
@@ -180,7 +198,7 @@ professor's user.
 | Submit attendance | as one of their own connections | as their own connection |
 | Undo or retry a submission | only if it ran as one of their connections | only if it ran as theirs |
 | Clear a play session (removes everyone's records) | ✓, as one of their connections | — |
-| Staff a tournament: add, re-role, remove, apply; Results (TDF upload) | tournaments they organize | tournaments they organize, or hold a lease on |
+| Staff a tournament: add, re-role, remove, apply; Results (TDF upload) | tournaments they organize, or hold a lease on | tournaments they organize, or hold a lease on |
 | Lend a tournament to a named professor, or end the lease (§5) | tournaments they organize | tournaments they organize |
 | Templates: create or edit; create, edit or cancel a tournament from one | only with one of their connections as organizer | only with their own connection as organizer |
 | Planned tournaments: skip, move, acknowledge (`PATCH /planned-tournaments/{id}`) | only if the template's organizer is one of theirs | only if the template's organizer is theirs |
@@ -254,8 +272,12 @@ An organizer can lend one or more of their tournaments to one named professor. W
 professor may staff the tournament and upload its results using the organizer's connection, for that tournament only.
 
 - **Who.** The user who holds the organizer's connection grants and ends leases. The owner does this only for
-  tournaments one of the owner's own connections organizes. The named professor must be a league member with the
-  `professor` role. The owner is never lent a tournament, because the owner acts only through their own connections.
+  tournaments one of the owner's own connections organizes. The named professor is any league member other than
+  the grantor, **the owner included**, so lending works both ways.
+  - This is the one exception to "the owner acts only through their own connections". The organizer decided it on
+    2026-10-19, to cover either side calling in sick without cancelling and re-sanctioning a tournament just to
+    change its organizer.
+  - It needs the organizer's own click. The owner can't lend themselves a professor's tournament.
 - **What a lease allows.** Every lease grants both uses below; `actingConnection` (§4) checks the call's `use`:
   - `staff`: the tournament's staff card: add, re-role, remove, apply, including its row in **Assign staff for all
     tournaments**;
@@ -302,8 +324,10 @@ professor may staff the tournament and upload its results using the organizer's 
 - **What people see.** The lent professor's card is editable and says "Lent to you by <organizer> until <date>". To
   everyone else it says "Only <organizer> or <lent professor> can change this". The organizer and the owner see
   every lease.
-- **Notice.** Granting and ending a lease each queue a message to the lent professor's player ID (§7), when Genie is
-  set up. A lease that ends because the lent professor was removed sends nothing: they have no connection left.
+- **Notice.** Granting and ending a lease each send a message to the lent professor's player ID through the Discord
+  channel (§7), without waiting. The lease shows the result ("Notice sent", or "No Discord account linked for
+  <name>; notice not sent"). When Genie isn't connected, no notice is sent and the lease says so. A lease that ends
+  because the lent professor was removed sends nothing: they have no connection left.
 - **Data.** `tournament_lease`, owned by the `pokemon` module beside `actingConnection`:
   - `connection_id` (ON DELETE CASCADE), `tournament_id` (the upstream GUID), a label for display, `lessee_user_id`;
   - `granted_by`, `granted_at`, `ends_at`, `ended_at`, `end_reason`;
@@ -313,18 +337,35 @@ professor may staff the tournament and upload its results using the organizer's 
 
 - **Minting.** The owner mints an invite in Settings → Professors. It takes an optional label (≤ 60 characters,
   display only) and an optional **player ID**, the invitee's Pokémon player ID.
+  - The player ID is chosen with a **recipient search** that works like This week's Find a known player: from 2
+    characters, debounced, over every known player and the staff list (`GET /players?q=`, `GET /staff?q=`), or by
+    typing an ID the league doesn't know yet.
+  - Each result shows the league's name for that person, and a **Player** tag when they are on the roster as a
+    player.
+  - Before **Send by Discord** to an ID tagged **Player**, or one the league doesn't know, the owner confirms in a
+    dialog that names the ID and what is known about it. Players include minors, and this is the only way the
+    Discord channel can reach one.
   - With a player ID, the invite is bound to it: the professor it creates can only connect that Pokémon account.
     Any other gets 409 `invite_player_mismatch`, and the fresh login is revoked.
-  - With a player ID, the owner can also choose **Send by Discord**. That queues an `invite` message to that player
-    ID (§7), and Genie sends it to the Discord user it has on file for that player. Before sending, Settings shows
-    the name the league knows for that ID and whether it is on the roster as a player, and the owner confirms.
+  - With a player ID, the owner can also choose **Send by Discord**. The invite is minted and sent through the
+    Discord channel (§7), and the request waits up to 10 seconds for Genie's result:
+    - `delivered` → 201, "Sent to <name> on Discord";
+    - `no_discord_user` → the invite is revoked, and 422 `no_discord_user`: "Genie has no Discord account linked for
+      <name> (<player ID>). Ask them to link it in Genie, or copy the link instead.";
+    - `dm_refused` → the invite is revoked, and 422 `dm_refused`: "<name> doesn't accept direct messages from
+      Genie.";
+    - no result yet → 202, "Sending…". The invite row shows the result when it comes, and a later refusal revokes
+      the invite then;
+    - Genie not connected (`available()` is false) → 503 `genie_unavailable`, and nothing is minted.
   - Otherwise the link is shown once, to copy and send any way the owner likes.
 - **Shape.** The secret is `ppa_inv_` plus 43 base64url characters (256 random bits). The link is
   `<site URL>/invite#<secret>`. Because the secret sits in the URL fragment, browsers never send it to the
   server or a proxy, so it stays out of access logs and `Referer` headers. The page reads it and posts it.
 - **Storage.** `app_invite` stores only the SHA-256 and a hint, looked up by a unique index, like integration
   tokens (ADR-0013). It also records the label, the bound player ID, who minted it, when, the expiry, and the user who
-  accepted it. A link queued for Discord exists in plain text only in Genie's pull response (§7).
+  accepted it. A link sent by Discord exists in plain text only in Genie's pull response (§7).
+  - Revoking or using an invite cancels its message if it is still pending, so it isn't handed out again. One Genie
+    already has may still arrive, but its link no longer works.
 - **Limits.**
   - An invite works once and expires after 72 hours. The owner can revoke it until it is used.
   - **One budget of 10** (`MAX_CONNECTIONS`, which today counts every connection): the owner's connections, plus
@@ -354,58 +395,105 @@ professor may staff the tournament and upload its results using the organizer's 
 
 ### 7. Messages to Discord through Genie
 
-Attendance can send a message to a person it knows only by player ID. Genie finds their Discord account in its own
-directory and sends the message to them as a direct message. Attendance never learns Discord IDs, and Genie needs no
-new command for each kind of message.
+A low-level channel between attendance and Genie, used the way processes use inter-process communication: attendance
+sends a message to a player ID and gets back a delivery result. Genie finds the Discord user for that player ID in
+its own directory and sends the direct message. The channel knows nothing about invites, leases or any other feature,
+so a new use needs no change to the channel or to Genie. Attendance never learns Discord IDs.
 
-- **The outbox.** A new `messaging` module owns `outbound_message`:
-  - `league_id`, `player_id` (text), `kind`, `text` (plain, ≤ 1,800 characters, so it fits a Discord message);
-  - an optional link (`link_label`, and `link_ciphertext`: the URL, sealed under AAD `outbound_message:<id>`,
-    because an invite link is a secret). It uses a **message vault** with its own key (`NUXT_MESSAGE_VAULT_KEY`, or
-    `/data/secrets/message-vault.key` generated once, mode 0600), built in `server/bootstrap/vaults.ts` and injected
-    into `messaging` only. Like the TDF vault (ADR-0012), it never shares the refresh-token key;
-  - `created_by`, `created_at`, `expires_at`;
-  - `status` (`pending`, `delivered`, `no_discord_user`, `dm_refused`, `undeliverable`, `expired`, `cancelled`),
-    `status_reason`, `attempts`, `next_attempt_at`, `delivered_at`;
-  - `invite_id`, for an invite or reset message. Revoking or using the invite cancels the message if it is still
-    pending, and deletes its link at once, so a dead link is never sent.
+**The contract.** Inside attendance, the new `messaging` module exports one port:
 
-  Other modules queue a message through `MessagingService.queue({ playerId, kind, text, link?, expiresAt })`, and never
-  read the table.
-- **Kinds today:** `invite`, `password_reset`, `lease_granted`, `lease_ended`. A new kind is a new text template in
-  attendance. Genie treats every kind the same way, so it needs no change for one. It may use `kind` for its own logs
-  and settings.
-- **Who gets messages.** Only professors and invitees: the player ID bound to an invite, or a professor's own
-  connection. No route takes message text. The only way to address an arbitrary player ID is the owner's bound
-  invite, and only with the invite template, after the confirm in §6 that names who the ID belongs to. So the outbox
-  can't be used to send players, who include minors, anything but an invite the owner chose to send. Text is written by attendance from fixed templates. Names and labels inside it are
-  plain text, with Discord mentions (`@…`, `<@…>`) removed.
-- **When there is no Genie.** Genie counts as set up when a token with `messages:deliver` has pulled in the last 24
-  hours. Otherwise **Send by Discord** isn't offered, and lease notices aren't queued.
-- **Genie's routes** (bearer-only, scope `messages:deliver`):
-  - `GET /api/integrations/v1/messages?limit=` (1–50, default 20) → `{ messages: [{ id, playerId, kind, text, link:
-    { label, url } | null, createdAt, expiresAt }] }`: pending, unexpired messages whose `next_attempt_at` has
-    passed, oldest first. A message stays
-    pending until Genie reports on it, so a lost response is fetched again, with the same link. 120 per 15 minutes
-    per token.
-  - `POST /api/integrations/v1/messages/{id}/result { status, reason? }` → 204. `status` is `delivered`,
-    `no_discord_user` (Genie has no Discord account for that player ID), `dm_refused` (the user doesn't accept direct
-    messages from the bot) or `failed`. The first three are final. `failed` leaves it pending but holds it back:
-    `next_attempt_at` is 1 minute later, doubling each time up to 1 hour. After 5 failures it becomes
-    `undeliverable`, so a short Discord outage doesn't use up the retries. Reporting on a message that is already final is a no-op 204.
-- **Delivery is at least once.** Genie skips a message ID it already sent, sends with mentions disabled, and never
-  posts or logs the link.
-- **Clean-up.** A final or expired message has its link ciphertext deleted at once. Rows are deleted 30 days after
-  they were created, because the text can hold names.
-- **What senders see.** The invite row and the lease show the message's status: "Sent by Discord", "No Discord
-  account linked for <player ID>", "Doesn't accept direct messages", or "Not delivered".
-- **Scopes (amends ADR-0013).** Integration tokens carry scopes chosen when they are minted: `integrations:read` (the
-  day route) and `messages:deliver`. Existing tokens keep `integrations:read` only. Each route checks its own scope; a
-  token that lacks it gets 403 `insufficient_scope`, with
-  `WWW-Authenticate: Bearer realm="integrations", error="insufficient_scope"`. The route family is still bearer-only,
-  and a token still counts nowhere else.
-- **Genie's side** is a companion decision for Genie's own ADR: poll the outbox (every 30 s, say), look up each player
-  ID in its directory, send the direct message, report the result.
+```ts
+interface DiscordChannel {
+  // Queues the message; resolves once Genie reports a result, or with 'pending' when waitMs passes first.
+  send(msg: {
+    playerId: string;
+    text: string;                            // plain, ≤ 1,800 characters
+    link?: { label: string; url: string };   // sealed at rest; may carry a secret
+    expiresAt: Date;
+    topic: string;                           // the caller's own name for it, e.g. 'invite'; never sent to Genie
+    ref?: string;                            // the caller's id, e.g. the invite id
+  }, opts: { waitMs: number; sender: string }): Promise<{ messageId: number; result: DeliveryResult | 'pending' }>;
+  // A result that arrives after send() stopped waiting is handed to the topic's handler.
+  onResult(topic: string, handler: (ref: string | undefined, result: DeliveryResult) => void): void;
+  cancel(messageId: number): void;           // a pending message is not handed out again after this
+  available(): boolean;                      // false when Genie hasn't polled in the last 2 minutes
+}
+type DeliveryResult =
+  | { status: 'delivered' }
+  | { status: 'no_discord_user' }            // Genie has no Discord account linked for that player ID
+  | { status: 'dm_refused' }                 // the user doesn't accept direct messages from the bot
+  | { status: 'undeliverable'; reason: string }
+  | { status: 'expired' };
+```
+
+- A caller checks `available()` before doing anything else, and tells the user when Genie isn't connected. `send`
+  also fails at once with `genie_unavailable` in that case, and the caller undoes its own work (an invite minted in
+  the same transaction is rolled back).
+- Callers own their wording, recipients and what a result means. The channel adds nothing to the text.
+
+**The wire** (bearer-only routes, scope `messages:deliver`; Genie keeps pulling, as in its ADR-0008):
+
+- `GET /api/integrations/v1/messages?wait=&limit=` is a long poll. It answers as soon as at least one message can be
+  handed out, or after `wait` seconds (at most 25) with none. **Handing a message out hides it for 60 seconds**
+  (`next_attempt_at`), so it doesn't wake or answer another poll while Genie is still sending it. With no result
+  by then, it is handed out again. The body is
+  `{ messages: [{ id, playerId, text, link: { label, url } | null, expiresAt }] }`, oldest first, `limit` 1–50
+  (default 20). Each token may hold one waiting request; a second one answers at once. Polls are limited to 120
+  per 15 minutes per token, and results to 600 per 15 minutes per token, counted apart, so reporting results never
+  uses up the polls.
+- `POST /api/integrations/v1/messages/{id}/result { status, reason? }` → 204, with `status` one of `delivered`,
+  `no_discord_user`, `dm_refused` or `failed`. The first three are final. A result for a message that is already
+  final is a no-op 204.
+- A message stays pending until Genie reports on it, so a lost response is handed out again, with the same link.
+  Delivery is at least once: Genie skips a message ID it already sent, and reports that message's result again.
+- `failed` holds the message back (`next_attempt_at` 1 minute later, doubling up to 1 hour). After 5 failures it is
+  `undeliverable`, so a short Discord outage doesn't use up the retries.
+- Genie sends the text, then the link, with mentions disabled, and never posts or logs either.
+
+**Storage.** `messaging` owns `outbound_message`, and no other module reads it:
+
+- `league_id`, `player_id` (text), `text`, `topic`, `ref`;
+- `link_label`, and `link_ciphertext`: the URL, sealed under AAD `outbound_message:<id>` by a **message vault** with
+  its own key (`NUXT_MESSAGE_VAULT_KEY`, or `/data/secrets/message-vault.key` generated once, mode 0600). It is built
+  in `server/bootstrap/vaults.ts` and injected into `messaging` only. Like the TDF vault (ADR-0012), it never shares
+  the refresh-token key;
+- `created_by`, `created_at`, `expires_at`;
+- `status` (`pending`, `delivered`, `no_discord_user`, `dm_refused`, `undeliverable`, `expired`, `cancelled`),
+  `status_reason`, `attempts`, `next_attempt_at`, `delivered_at`, `handled_at`.
+
+A final, expired or cancelled message has its link ciphertext deleted at once. Rows are deleted 30 days after they
+were created, because the text can hold names. A waiting long poll is woken in process when a message is queued.
+
+**Shutdown.** The image gives a graceful stop 8 seconds (`NITRO_SHUTDOWN_TIMEOUT`, §10 of the architecture doc). On
+the first shutdown signal, before submissions are stopped, every waiting poll answers `{ messages: [] }` at once,
+every `send` that is waiting resolves `'pending'`, and new polls get 503. Nothing is lost: pending messages are in the
+table, and Genie polls again once the app is back.
+
+**Late results are durable.** A result's status write and its topic handler run in one transaction. A handler that
+throws rolls the result back, so the POST answers 500, and Genie reports the result again. At boot, final messages
+whose handler hasn't run yet (`handled_at` null) are handed to their topic's handler, so a crash between the two
+can't leave, say, an invite live after its send was refused.
+
+**Who may be messaged.** The channel is internal: no route takes message text from a user. Each use decides its own
+recipients, and today there are two, both written from fixed templates, with Discord mentions (`@…`, `<@…>`) removed
+from names inside them:
+
+- **Invites and reset links** (§6, §8): the invitee's bound player ID, or the professor's own connection. A bound
+  invite is the only way to address an arbitrary player ID. Only the owner can do it, and only with the invite
+  wording, after the recipient search has shown who the ID is and tagged roster players.
+- **Lease notices** (§5): the lent professor's own connection. When the owner is lent a tournament, the notice goes
+  to the player ID of the owner's connection chosen in "Submit as", or else the lowest-numbered one.
+
+So the channel can't be used to send players, who include minors, anything but an invite the owner chose to send.
+
+**Scopes (amends ADR-0013).** Integration tokens carry scopes chosen when they are minted: `integrations:read` (the
+day route) and `messages:deliver`. Existing tokens keep `integrations:read` only. Each route checks its own scope; a
+token that lacks it gets 403 `insufficient_scope`, with
+`WWW-Authenticate: Bearer realm="integrations", error="insufficient_scope"`. The route family is still bearer-only, and
+a token still counts nowhere else.
+
+**Genie's side** is a companion decision for Genie's own ADR: keep a long poll open, look up each player ID in its
+directory, send the direct message, report the result.
 
 ### 8. Managing professors (owner)
 
@@ -454,8 +542,8 @@ new command for each kind of message.
 - **Module ownership:**
   - `accounts` owns `app_user` and `app_invite`, and exports the `Actor` type and the invite service.
   - `pokemon` owns `user_id`, `league_membership`, `tournament_lease` and `actingConnection`.
-  - The new `messaging` module owns `outbound_message`. `accounts` and `pokemon` queue through its service, and the
-    `integrations` module serves Genie's routes through it.
+  - The new `messaging` module owns `outbound_message` and the `DiscordChannel` port. `accounts` and `pokemon` send
+    through it, and the `integrations` module serves Genie's routes through it.
   - `submission`, `staffing` and `tournaments` take an `actor` and never read these modules' tables.
 - **Rollback:** as ADR-0008. Stop the container, restore the pre-upgrade backup, and pin the previous image.
 
@@ -470,7 +558,8 @@ new command for each kind of message.
 - (+) Undo and retry run as the professor who made the submission.
 - (+) An organizer who can't be at an event can lend it, and the lent professor staffs it and uploads its results
   without ever holding the organizer's Pokémon login.
-- (+) Any later feature can message a professor on Discord by adding a text template. Genie doesn't change.
+- (+) Any later feature can message a professor on Discord through one call, and get a delivery result back. Neither
+  the channel nor Genie changes.
 - (−) CLAUDE.md's key points and module rules must change with the implementation. They still say the league names
   the submitting professor, and that the league must be shared by every professor. They also say
   `/api/integrations/v1/*` is the only exception to the session rule, and the public `/api/invites/*` routes are a
@@ -481,7 +570,11 @@ new command for each kind of message.
   player ID and the membership gate limit what a copy is worth.
 - (−) Upstream, a lent professor's staff and results changes are the organizer's: play-tools records them under the
   organizer's account. Only History here says who really made them.
-- (−) Messages wait for Genie's next poll, so an invite can take up to the poll interval to arrive.
+- (+) A message reaches Discord in about a second, and its result comes straight back to the sender.
+- (−) Genie holds a request open at all times, one per token. It costs rate-limit headroom, and shutdown has to
+  answer it early to stay inside the 8-second stop.
+- (−) The owner can act through a professor's connection for a tournament that professor lent them. That is the one
+  place the owner's "own connections only" rule bends, and only by the organizer's choice.
 - (−) A third vault key (`message-vault.key`) joins the secrets to back up with `/data`. Losing it only loses
   undelivered links, which the owner mints again.
 - (−) Every write path gains an authorization check, and every route an access test. The test matrix grows to
