@@ -5,6 +5,9 @@ import type { PlayerInput } from '#shared/schemas/roster';
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
+// Clear session is the owner's alone (ADR-0015 §4).
+const { data: settings } = useSettings();
+const isOwner = computed(() => settings.value?.access.role === 'owner');
 
 const date = computed({
   get: () => sessionDateFromQuery(route.query.date),
@@ -173,7 +176,7 @@ async function removePlayer(player: SessionPlayer) {
     <StaffSection :date="date" @uploaded="refresh" />
 
     <!-- Only once a submission has resolved the date's play session (§4.4); nothing upstream is read to decide. -->
-    <section v-if="session?.playSessionId" class="space-y-2 rounded-md border border-error/40 p-4" aria-labelledby="danger-zone">
+    <section v-if="session?.playSessionId && isOwner" class="space-y-2 rounded-md border border-error/40 p-4" aria-labelledby="danger-zone">
       <h2 id="danger-zone" class="text-lg font-medium text-error">Danger zone</h2>
       <p class="text-sm text-muted">
         Clear session deletes every player's attendance in one play session in play-tools, including anyone entered there directly.

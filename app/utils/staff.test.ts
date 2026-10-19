@@ -258,6 +258,15 @@ describe('readOnlyNote (#75)', () => {
   const organizer = { playerId: BROCK_ID, name: 'Brock Harrison', connected: true, needsReconnect: false };
   const card = { editable: true, organizer };
 
+  it("says who alone may staff it when another user holds its organizer's connection (ADR-0015 §4)", () => {
+    expect(readOnlyNote(card, 'Only Brock Harrison (0000222) can change this')).toEqual({
+      text: 'Only Brock Harrison (0000222) can change this',
+      settings: false,
+      warning: false,
+    });
+    expect(readOnlyNote({ ...card, editable: false, missing: true, organizer: null }, 'Only Brock')).toMatchObject({ warning: true });
+  });
+
   it('says nothing for a card that can be staffed', () => {
     expect(readOnlyNote(card)).toBeNull();
   });

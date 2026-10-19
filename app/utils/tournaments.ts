@@ -153,9 +153,10 @@ const LOCAL_ACTIONS: ReadonlySet<RowAction> = new Set(['skip', 'unskip', 'downlo
 
 /**
  * Which buttons an Upcoming entry gets: the server's (`create`, `skip`, `unskip`, `retry_create`), then **Edit…**,
- * **Cancel…** and **Download TDF**. While its organizer can't act, only the local ones, with why.
+ * **Cancel…** and **Download TDF**. While its organizer can't act, only the local ones, with why; while another user holds
+ * the organizer's connection (`only`), only **Download TDF**.
  */
-export function rowActions(e: UpcomingEntry): { actions: RowAction[]; organizerNote: string | null; settings: boolean } {
+export function rowActions(e: UpcomingEntry, only: string | null = null): { actions: RowAction[]; organizerNote: string | null; settings: boolean } {
   const actions: RowAction[] = [...e.actions];
   const upstreamCancelled = e.upstreamStatus === 'cancelled';
   // A row skipped while its create may have landed is edited only once unskipped (#125).
@@ -163,6 +164,8 @@ export function rowActions(e: UpcomingEntry): { actions: RowAction[]; organizerN
   if (e.tournamentId && !['cancelled', 'creating', 'unknown'].includes(e.state) && !upstreamCancelled && e.upstreamStatus !== 'complete') actions.push('cancel');
   if (e.tdfAvailable) actions.push('download');
 
+  // Another user holds the organizer's connection (ADR-0015 §4): only the file, which reads nothing upstream, is theirs too.
+  if (only) return { actions: actions.filter((a) => a === 'download'), organizerNote: only, settings: false };
   const o = e.organizer;
   if (o && o.connected && !o.needsReconnect) return { actions, organizerNote: null, settings: false };
   const note = o?.needsReconnect

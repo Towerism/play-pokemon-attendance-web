@@ -2,7 +2,7 @@
 import { Thresholds } from '#shared/schemas/settings';
 
 const toast = useToast();
-const { data } = await useFetch('/api/settings', { key: 'settings' });
+const { data } = await useSettings();
 
 const state = reactive({ promoteMinSightings: 4, staleAfterSessions: 6 });
 watch(

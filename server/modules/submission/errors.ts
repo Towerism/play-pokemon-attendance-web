@@ -24,7 +24,9 @@ export type SubmissionErrorCode =
   /** Clear session: the typed date does not match the session's date. */
   | 'confirmation_mismatch'
   /** Clear session: the play session has no player records. */
-  | 'nothing_to_clear';
+  | 'nothing_to_clear'
+  /** Only the owner may do this, retrying an import included (ADR-0015 §4). */
+  | 'owner_only';
 
 export class SubmissionError extends Error {
   override name = 'SubmissionError';

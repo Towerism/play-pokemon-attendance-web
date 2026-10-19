@@ -3362,7 +3362,11 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       }
       if (isRemoval(row)) return retryStaffRemoval(row, actor);
       if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, actor, row.id);
-      if (isImport(row)) return beginImport(row.kind, leagueId, actor.username, row.id);
+      if (isImport(row)) {
+        // Imports are the owner's (ADR-0015 §4), and retry is a member route.
+        if (actor.role !== 'owner') throw new SubmissionError('owner_only', 'Only the owner of this app can run an import.');
+        return beginImport(row.kind, leagueId, actor.username, row.id);
+      }
       if (row.kind === 'tournament_edit') return retryTournamentEdit(row, actor);
       if (row.kind === 'tournament_cancel') return retryTournamentCancel(row, actor);
       if (row.kind === 'tournament_create') {

@@ -69,6 +69,7 @@ const STATUS: Record<SubmissionErrorCode, number> = {
   nothing_to_undo: 422,
   confirmation_mismatch: 422,
   nothing_to_clear: 422,
+  owner_only: 403,
 };
 
 /** Maps submission, staffing (a staff job's checks) and Pokémon errors to HTTP; `data.code` tells the UI what to show. */

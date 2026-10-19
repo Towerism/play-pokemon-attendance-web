@@ -15,9 +15,11 @@ const submissionId = ref<number | null>(null);
 
 const { latest, result } = useSubmissionEvents(submissionId);
 
-// Which professor the attendance goes in as (ADR-0008).
+// Who the attendance goes in as (ADR-0015 §4): the viewer's one connection that can submit, or the one they pick.
 const { data: connections } = await usePokemonConnection();
-const submitAs = computed(() => submitAsText(connections.value));
+const choice = computed(() => submitAsChoice(connections.value));
+const pickedAs = ref<string | undefined>();
+const submitAs = computed(() => (choice.value.kind === 'one' ? choice.value.playerId : choice.value.kind === 'several' ? pickedAs.value : undefined));
 
 const candidates = computed(() => resolution.value?.candidates ?? []);
 const selected = computed(() => candidates.value.find((c) => c.id === chosen.value));
@@ -49,7 +51,10 @@ async function start() {
   starting.value = true;
   try {
     const url: string = `/api/sessions/${props.date}/submissions`;
-    const started = await $fetch<{ submissionId: number }>(url, { method: 'POST', body: { playSessionId: selected.value.id } });
+    const started = await $fetch<{ submissionId: number }>(url, {
+      method: 'POST',
+      body: { playSessionId: selected.value.id, ...(submitAs.value && { professorPlayerId: submitAs.value }) },
+    });
     submissionId.value = started.submissionId;
   } catch (err) {
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not start the submission.') });
@@ -120,7 +125,13 @@ watch(result, (view) => {
           <p v-if="selected?.editableUntil" class="text-sm text-muted">
             play-tools accepts attendance for this session until {{ formatInstant(selected.editableUntil) }}.
           </p>
-          <p v-if="submitAs" class="text-sm" data-testid="submit-as">{{ submitAs }}</p>
+          <p v-if="choice.kind === 'one'" class="text-sm" data-testid="submit-as">{{ choice.text }}</p>
+          <UFormField v-else-if="choice.kind === 'several'" label="Submit as">
+            <USelect v-model="pickedAs" :items="choice.options" class="w-full" placeholder="Choose one of your Pokémon accounts" aria-label="Submit as" />
+          </UFormField>
+          <UAlert v-else color="warning" variant="subtle" icon="i-lucide-user-x" :title="choice.text" data-testid="submit-as">
+            <template #description><NuxtLink to="/settings" class="underline">Open Settings</NuxtLink></template>
+          </UAlert>
           <p class="text-xs text-muted">Times are in {{ resolution.timeZone }}. Players already in play-tools are not sent again.</p>
         </div>
       </template>
@@ -128,7 +139,7 @@ watch(result, (view) => {
       <template #footer>
         <div class="flex w-full justify-end gap-2">
           <UButton variant="ghost" color="neutral" @click="open = false">{{ submissionId ? 'Close' : 'Cancel' }}</UButton>
-          <UButton v-if="!submissionId" icon="i-lucide-send" :disabled="!selected || !selected.editable" :loading="starting" @click="start">
+          <UButton v-if="!submissionId" icon="i-lucide-send" :disabled="!selected || !selected.editable || !submitAs" :loading="starting" @click="start">
             Submit
           </UButton>
         </div>

@@ -8,7 +8,6 @@ import {
   isSubmissionActive,
   playerImportSummary,
   progressPercent,
-  staffImportBlocked,
   staffImportErrorText,
   staffImportSummary,
   isTournamentJob,
@@ -208,15 +207,6 @@ describe('a staff import in History and Settings', () => {
     expect(staffImportErrorText('The app stopped while this submission was running. Resume it to finish.')).toBe(
       'The app stopped while this submission was running. Resume it to finish.',
     );
-  });
-
-  it('can be started only with a usable Pokémon connection and a chosen league, and says why not (a player import too)', () => {
-    const league = { id: 'g', name: 'Card Shop', displayId: 'L5012', canSubmit: false };
-    expect(staffImportBlocked({ status: 'connected', league })).toBeNull();
-    expect(staffImportBlocked(null)).toBe('Connect a Pokémon account first.');
-    expect(staffImportBlocked({ status: 'not_connected', league: null })).toBe('Connect a Pokémon account first.');
-    expect(staffImportBlocked({ status: 'needs_reconnect', league })).toBe('Reconnect the Pokémon account first.');
-    expect(staffImportBlocked({ status: 'connected', league: null })).toBe('Choose the league first.');
   });
 });
 

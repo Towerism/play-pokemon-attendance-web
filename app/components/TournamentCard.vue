@@ -13,11 +13,15 @@ const emit = defineEmits<{ changed: []; edit: [id: string]; uploaded: [] }>();
 const headingId = useId();
 const tournament = computed(() => props.pair.tournament);
 const entry = computed(() => props.pair.entry);
-const note = computed(() => readOnlyNote(tournament.value));
+// Another user holds the organizer's connection: their card is read-only here (ADR-0015 §4).
+const { data: connections } = usePokemonConnection();
+const only = computed(() => onlyText(connections.value, tournament.value.organizer?.playerId));
+const note = computed(() => readOnlyNote(tournament.value, only.value));
+const staffed = computed(() => (only.value ? { ...tournament.value, editable: false } : tournament.value));
 const status = computed(() => (entry.value ? entryStatus(entry.value) : null));
 const withResults = computed(() => !tournament.value.missing && !tournament.value.unavailable);
 const menu = computed(() =>
-  cardEditable(props.pair)
+  cardEditable(props.pair, only.value)
     ? [[{ label: 'Edit…', icon: 'i-lucide-pencil', onSelect: () => emit('edit', String(entry.value?.plannedId ?? tournament.value.tournamentId)) }]]
     : [],
 );
@@ -43,7 +47,7 @@ const menu = computed(() =>
       <NuxtLink v-if="note.settings" to="/settings" class="underline">Open Settings</NuxtLink>
     </p>
 
-    <StaffCard :date="date" :tournament="tournament" :roles="roles" @changed="emit('changed')" />
+    <StaffCard :date="date" :tournament="staffed" :roles="roles" @changed="emit('changed')" />
     <TournamentResults
       v-if="withResults"
       :date="date"
@@ -51,6 +55,7 @@ const menu = computed(() =>
       :label="tournament.label"
       :display-id="entry?.displayId ?? null"
       :roles="roles"
+      :readonly="!!only"
       @uploaded="emit('uploaded')"
     />
   </section>

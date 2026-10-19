@@ -85,6 +85,10 @@ const undoOpen = ref(false);
 const undoing = ref(false);
 const candidates = computed(() => undoCandidates(submission.value?.items ?? []));
 const blocked = computed(() => (submission.value ? undoBlockedText(submission.value) : null));
+// Retry and Undo run as the professor the attempt ran as: only that connection's holder may start them (ADR-0015 §4).
+const { data: connections } = usePokemonConnection();
+const { data: settings } = useSettings();
+const locked = computed(() => (submission.value ? historyLock(connections.value, submission.value, settings.value?.access.role) : null));
 async function undo() {
   undoing.value = true;
   try {
@@ -137,7 +141,7 @@ async function retry() {
             {{ submissionStatus(submission.status, submission.kind).label }}
           </UBadge>
           <UButton
-            v-if="['partial', 'failed', 'interrupted'].includes(submission.status)"
+            v-if="['partial', 'failed', 'interrupted'].includes(submission.status) && !locked"
             icon="i-lucide-rotate-cw"
             :loading="retrying"
             @click="retry"
@@ -177,7 +181,10 @@ async function retry() {
       </UButton>
 
       <div v-if="!liveId && !isTournamentJob(submission.kind)" class="flex flex-wrap items-center gap-2">
-        <UButton v-if="submission.undoable" color="error" variant="soft" icon="i-lucide-undo-2" @click="undoOpen = true">
+        <p v-if="locked && (submission.undoable || ['partial', 'failed', 'interrupted'].includes(submission.status))" class="text-sm text-muted" data-testid="locked">
+          {{ locked }}
+        </p>
+        <UButton v-else-if="submission.undoable" color="error" variant="soft" icon="i-lucide-undo-2" @click="undoOpen = true">
           Remove players added by this submission
         </UButton>
         <p v-else-if="blocked" class="text-sm text-muted">{{ blocked }}</p>

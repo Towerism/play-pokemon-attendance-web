@@ -24,8 +24,8 @@ useTournamentTemplates();
 useAllTournamentTemplates();
 useTournamentScaffolds();
 useTournamentSchedules();
-const timeZone = computed(() => clock.value?.league.timeZone ?? null);
-const today = computed(() => clock.value?.league.today ?? null);
+const timeZone = computed(() => clock.value?.league?.timeZone ?? null);
+const today = computed(() => clock.value?.league?.today ?? null);
 const clockFailed = computed(() => !!clockError.value && !clock.value);
 
 const tabs = computed(() => tournamentsTabs(badgeCount(coverage.value)));

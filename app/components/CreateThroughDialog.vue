@@ -18,6 +18,9 @@ const preview = ref<CreateThroughPreview | null>(null);
 const previewedDate = ref<string | null>(null);
 let previewSeq = 0;
 const busy = ref(false);
+/** Rows another user's connection organizes: left out of the job, named (ADR-0015 §4). */
+const { data: connections } = usePokemonConnection();
+const leftOutByOwner = ref<string | null>(null);
 const error = ref<string | null>(null);
 const submissionId = ref<number | null>(null);
 const finished = ref(false);
@@ -55,11 +58,16 @@ async function create() {
   busy.value = true;
   error.value = null;
   try {
-    const res = await $fetch<{ submissionId: number }>(`/api/tournament-schedules/${props.schedule.id}/create-through`, {
+    const res = await $fetch<{ submissionId: number; refused?: { plannedTournamentId: number; professorPlayerId: string }[] }>(`/api/tournament-schedules/${props.schedule.id}/create-through`, {
       method: 'POST',
       body: { date: previewedDate.value, acknowledgeShortNotice: view.value.shortNotice > 0 },
     });
     submissionId.value = res.submissionId;
+    const labelOf = (plannedId: number) => {
+      const e = preview.value?.tournaments.find((x) => x.plannedId === plannedId);
+      return e ? `${e.name} · ${e.localDate}` : `planned tournament ${plannedId}`;
+    };
+    leftOutByOwner.value = refusedText(connections.value, res.refused ?? [], labelOf);
   } catch (err) {
     error.value = apiErrorMessage(err, 'Could not start creating.');
   } finally {
@@ -85,7 +93,10 @@ async function done(job: SubmissionView) {
 <template>
   <UModal v-model:open="open" title="Create through date" :description="`${schedule.scaffoldName} · ${ruleText(schedule.rule)}`" :dismissible="!submissionId || finished">
     <template #body>
-      <TournamentJobProgress v-if="submissionId" :submission-id="submissionId" @finished="done" />
+      <template v-if="submissionId">
+        <p v-if="leftOutByOwner" class="mb-2 text-sm text-warning" data-testid="left-out">{{ leftOutByOwner }}</p>
+        <TournamentJobProgress :submission-id="submissionId" @finished="done" />
+      </template>
       <div v-else class="space-y-3 text-sm">
         <form class="flex flex-wrap items-end gap-2" @submit.prevent="showPreview">
           <UFormField label="Create through"><UInput v-model="date" type="date" :max="addDays(today, 365)" /></UFormField>

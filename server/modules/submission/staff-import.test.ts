@@ -14,7 +14,7 @@ import { GROUP, ROLES, playing, staffer, tournament } from '../staffing/test-hel
 import { SubmissionError } from './errors';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, type SubmissionView, createSubmissionService } from './service';
-import { HELD_BY_OWNER, OWNER, stubConnections } from '../pokemon/test-connections';
+import { HELD_BY_OWNER, OWNER, professorActor, stubConnections } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';
@@ -662,6 +662,15 @@ describe('retry, crash and shutdown', () => {
   beforeEach(() => {
     upstream.add(tournament('t-1'), staffer('100', 'judge'));
     upstream.add(tournament('t-2'), staffer('200', 'judge'));
+  });
+
+  it("refuses a professor's retry of an import: imports are the owner's (ADR-0015 §4)", async () => {
+    upstream.onRead = (t) => {
+      if (t === 't-2') throw down();
+    };
+    const partial = await importStaff();
+    upstream.onRead = undefined;
+    await expect(service.retry(L, partial.id, professorActor(2, 'misty'))).rejects.toMatchObject({ code: 'owner_only' });
   });
 
   it('retries a partial import as a new attempt that reads everything again and duplicates nothing', async () => {

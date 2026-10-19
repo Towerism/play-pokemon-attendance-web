@@ -11,7 +11,9 @@ const emit = defineEmits<{ create: [retry: boolean]; edit: [id: string] }>();
 const headingId = useId();
 const status = computed(() => entryStatus(props.entry));
 const tag = computed(() => sanctionTag(props.entry, props.today));
-const decided = computed(() => rowActions(props.entry));
+// Another user holds the template organizer's connection: nothing here is the viewer's to change (ADR-0015 §4).
+const { data: connections } = usePokemonConnection();
+const decided = computed(() => rowActions(props.entry, onlyText(connections.value, props.entry.organizer?.playerId)));
 const label = computed(() => `${props.entry.name} · ${dayLabel(props.entry.localDate)}`);
 const menu = computed(() =>
   decided.value.actions.includes('edit') ? [[{ label: 'Edit…', icon: 'i-lucide-pencil', onSelect: () => emit('edit', String(props.entry.plannedId)) }]] : [],
@@ -34,7 +36,7 @@ const menu = computed(() =>
       </UDropdownMenu>
     </div>
     <p v-if="entry.state === 'creating'" class="text-sm text-muted">Being created in play-tools…</p>
-    <p v-if="decided.organizerNote" class="text-sm text-warning">
+    <p v-if="decided.organizerNote" class="text-sm" :class="decided.settings ? 'text-warning' : 'text-muted'">
       {{ decided.organizerNote }}
       <NuxtLink v-if="decided.settings" to="/settings" class="underline">Open Settings</NuxtLink>
     </p>
