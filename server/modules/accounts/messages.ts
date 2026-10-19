@@ -3,15 +3,13 @@
  * so these templates are the only words that reach Genie from here.
  */
 
+import { withoutMentions } from '../messaging/text';
+
 export interface MessageText {
   text: string;
   linkLabel: string;
 }
 
-/** Removes Discord mention syntax from a name placed in a text, so it can't ping anyone even if Genie's guard failed. */
-export function withoutMentions(name: string): string {
-  return name.replace(/<(?:@[!&]?|#)\d+>/g, '').replaceAll('@', '');
-}
 
 /** "Thu, Oct 22, 2:05 PM", in the league's time zone. */
 function until(at: Date, timeZone: string): string {

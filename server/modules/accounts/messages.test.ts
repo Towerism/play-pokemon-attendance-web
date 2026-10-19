@@ -1,16 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { inviteMessage, resetMessage, withoutMentions } from './messages';
+import { inviteMessage, resetMessage } from './messages';
 
 const EXPIRES = new Date('2026-10-22T19:05:00Z');
 const TZ = 'America/Chicago';
-
-describe('withoutMentions', () => {
-  it('removes Discord user, role and channel mentions and every @', () => {
-    expect(withoutMentions('Card <@123> Shop @everyone')).toBe('Card  Shop everyone');
-    expect(withoutMentions('<@!42><@&7><#9>Ash @here')).toBe('Ash here');
-    expect(withoutMentions('Card Shop')).toBe('Card Shop');
-  });
-});
 
 describe('inviteMessage', () => {
   it('names who invited them, the league and when the link stops working, in the league time zone', () => {
