@@ -99,10 +99,10 @@ describe('submission API', () => {
   });
 
   describe('POST /sessions/{date}/resolve', () => {
-    it('is 409 not_connected before a Pokémon account is connected', async () => {
+    it('is 409 league_not_selected before a Pokémon account has chosen the league: that check comes first', async () => {
       const res = await api(`/sessions/${TUESDAY}/resolve`, { method: 'POST', json: {} });
       expect(res.status).toBe(409);
-      expect((await res.json()).data).toEqual({ code: 'not_connected' });
+      expect((await res.json()).data).toEqual({ code: 'league_not_selected' });
     });
 
     it("lists the date's play sessions in the league timezone, labelled", async () => {
@@ -214,14 +214,13 @@ describe('submission API', () => {
       expect((await res.json()).data).toEqual({ code: 'submission_running' });
     });
 
-    it('is 409 league_not_selected when the account has several leagues and none is chosen', async () => {
+    it('keeps the league chosen across a disconnect and a reconnect, even once the account has several leagues (ADR-0015 §3)', async () => {
       fake.leagues.push({ guid: 'group-2', display_id: 'L7000', display_name: 'Game Den', canSubmit: true });
       try {
         await api(`/pokemon/connections/${FAKE_PLAYER_ID}`, { method: 'DELETE' });
         await connect(browser);
         const res = await api(`/sessions/${TUESDAY}/resolve`, { method: 'POST', json: {} });
-        expect(res.status).toBe(409);
-        expect((await res.json()).data).toEqual({ code: 'league_not_selected' });
+        expect(res.status).toBe(200);
       } finally {
         fake.leagues.pop();
       }

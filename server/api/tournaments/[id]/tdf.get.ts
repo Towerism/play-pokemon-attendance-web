@@ -11,7 +11,9 @@ export default defineEventHandler(async (event) => {
   const { id } = await getValidatedRouterParams(event, TournamentGuidParam.parse);
   const { fileId, filename, content } = (() => {
     try {
-      return useTournamentResults().download(leagueId, id);
+      const file = useTournamentResults().download(leagueId, id);
+      assertTdfAccess(leagueId, actor, file.fileId);
+      return file;
     } catch (err) {
       return resultsHttpError(err);
     }
