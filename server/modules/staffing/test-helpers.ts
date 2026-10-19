@@ -1,7 +1,7 @@
 /** Test-only stand-ins for the staffing module's upstream ports. Not imported by production code. */
 import type { PlayerId } from '../../../shared/types/ids';
 import type { ActingConnection } from '../pokemon/connection';
-import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-connections';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type {
   StaffAssignResult,

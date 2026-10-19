@@ -6,7 +6,7 @@ import type { Tournament } from '../pokemon/ports/play-tools-gateway';
 import type { DaySnapshot } from '../staffing/service';
 import { IntegrationError } from './errors';
 import { toAttendanceDay } from './day';
-import { HELD_BY_OWNER } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER } from '../pokemon/test-connections';
 
 const DATE = '2026-10-14' as SessionDate;
 const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected', ...HELD_BY_OWNER };

@@ -12,13 +12,13 @@ import { OLIVE, staffer, stubPlayTools, tournament } from '../staffing/test-help
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
 import { type StaffBatchView, batchStatus } from './staff-batch';
-import { HELD_BY_OWNER, OWNER } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';
 const DATE = '2026-10-14' as SessionDate;
 const DELAY = 1_000;
-const BROCK = { id: 2, professorPlayerId: '8888882', professorName: 'Brock Harrison', status: 'connected', ...HELD_BY_OWNER as const };
+const BROCK = { id: 2, professorPlayerId: '8888882', professorName: 'Brock Harrison', status: 'connected' as const, ...HELD_BY_OWNER };
 /** Olive's tournament, Brock's, and Olive's evening one, in start order. */
 const FIRST = 'tA';
 const SECOND = 'tB';

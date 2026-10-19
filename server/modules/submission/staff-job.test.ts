@@ -21,7 +21,7 @@ import { type StaffingService, createStaffingService } from '../staffing/service
 import { GROUP, ROLES, playing, staffer, tournament } from '../staffing/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, type SubmissionView, createSubmissionService } from './service';
-import { HELD_BY_OWNER, OWNER, stubConnections } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER, stubConnections } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';

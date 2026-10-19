@@ -5,7 +5,7 @@ import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { TournamentsError } from './errors';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, stubPlayTools, templateBody } from './test-helpers';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';

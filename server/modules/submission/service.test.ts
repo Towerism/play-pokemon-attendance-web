@@ -6,7 +6,7 @@ import { silentLogger } from '@towerism/selfhost-kit';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
 import type { ActingConnection, UpstreamLeague } from '../pokemon/connection';
-import { HELD_BY_OWNER, OWNER, professorActor, stubConnections } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER, professorActor, stubConnections } from '../pokemon/test-connections';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { AttendanceRecord, BulkResult, PlaySession } from '../pokemon/ports/play-tools-gateway';
 import { type RosterService, createRosterService } from '../roster/service';
@@ -1955,6 +1955,17 @@ describe('attendance as yourself (ADR-0015 §4)', () => {
     const started = await service.clear(L, TUESDAY, PS, OWNER, BROCK.professorPlayerId!);
     await service.idle();
     expect(service.get(L, started.submissionId).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
+  });
+
+  it("resolves a date as the caller's own member connection, else anyone's, after the league check", async () => {
+    professors = [{ ...ASH, status: 'needs_reconnect' }, MISTYS];
+    expect((await service.resolve(L, TUESDAY, OWNER)).candidates.map((c) => c.id)).toEqual([PS]);
+    expect(new Set(callsAs)).toEqual(new Set([MISTYS.id]));
+    callsAs = [];
+    await service.resolve(L, TUESDAY, MISTY);
+    expect(callsAs).toEqual([]); // cached: play sessions belong to the league
+    league = null;
+    expect((await refusal(service.resolve(L, TUESDAY, OWNER))).code).toBe('league_not_selected');
   });
 
   it("previews a clear as the owner's own member connection, else anyone's", async () => {

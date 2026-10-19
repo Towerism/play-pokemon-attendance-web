@@ -157,7 +157,7 @@ export interface ResultsDeps {
   connections: Pick<PokemonConnectionService, 'league' | 'listActingConnections' | 'actingConnection'>;
   gateway: (connectionId: number) => Pick<PlayToolsGateway, 'getTournament' | 'listTournamentParticipants' | 'listResultsUploads'>;
   /** The professor's full name on their connection (ADR-0011 decision 8). */
-  names: { fullNameOf(leagueId: string, playerId: string): string | null; saveFullName(leagueId: string, playerId: string, fullName: string): void };
+  names: { fullNameOf(leagueId: string, playerId: string): string | null; saveFullName(leagueId: string, playerId: string, fullName: string, actor: Actor): void };
   archive: Pick<TdfArchiveService, 'store' | 'read' | 'replace' | 'markKept'>;
   attendance: Pick<TdfImportService, 'preview' | 'view' | 'commit'>;
   roster: Pick<RosterService, 'getPlayers' | 'listPlayers'>;
@@ -528,7 +528,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       // Only the connection's own user sets its full name (ADR-0015 §2).
       assertMayActAs(deps.connections, actor, located.read.organizerPlayerId);
       assertUploadable(located);
-      deps.names.saveFullName(leagueId, located.read.organizerPlayerId, fullName);
+      deps.names.saveFullName(leagueId, located.read.organizerPlayerId, fullName, actor);
       return refresh(leagueId, row, located, by);
     },
 

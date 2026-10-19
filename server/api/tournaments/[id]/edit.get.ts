@@ -5,7 +5,7 @@ import { EditTargetParam } from '#shared/schemas/tournaments';
  * its guid), from its resolved settings or a fresh read as its organizer, with read-only fields and the reschedule window.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
+  const { leagueId } = await requireMember(event);
   const { id } = await getValidatedRouterParams(event, EditTargetParam.parse);
   return useTournaments().editForm(leagueId, id).catch(tournamentsHttpError);
 });

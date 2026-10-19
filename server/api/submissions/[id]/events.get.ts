@@ -6,7 +6,7 @@ import type { SubmissionEvent } from '../../../modules/submission/service';
  * `Last-Event-ID`, then streams live until the `finished` event, then ends.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
+  const { leagueId } = await requireMember(event);
   const { id } = await getValidatedRouterParams(event, SubmissionIdParam.parse);
   const submissions = useSubmissions();
   const lastId = Number(getRequestHeader(event, 'last-event-id')) || 0;

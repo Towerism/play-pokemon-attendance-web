@@ -2,29 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { SettingsBody, Thresholds } from './settings';
 
 describe('SettingsBody', () => {
-  it('takes the submitting professor together with their activity group, keeping leading zeros', () => {
-    expect(SettingsBody.parse({ professorPlayerId: '0012345', activityGroupId: ' 00000000-0000-4000-8000-000000000004 ' })).toEqual({
-      professorPlayerId: '0012345',
+  it("takes the league's activity group alone: the league names no professor (ADR-0015 §3)", () => {
+    expect(SettingsBody.parse({ activityGroupId: ' 00000000-0000-4000-8000-000000000004 ' })).toEqual({
       activityGroupId: '00000000-0000-4000-8000-000000000004',
     });
   });
 
   it.each([
-    ['empty', { professorPlayerId: '1', activityGroupId: '' }],
-    ['over 100 characters', { professorPlayerId: '1', activityGroupId: 'a'.repeat(101) }],
+    ['empty', { activityGroupId: '' }],
+    ['over 100 characters', { activityGroupId: 'a'.repeat(101) }],
+    ['a number', { activityGroupId: 4 }],
   ])('rejects an activity group id that is %s', (_l, body) => {
     expect(SettingsBody.safeParse(body).success).toBe(false);
   });
 
-  it.each([
-    ['the league without the professor', { activityGroupId: 'g' }],
-    ['the professor without the league', { professorPlayerId: '1' }],
-    ['a numeric professor', { professorPlayerId: 1, activityGroupId: 'g' }],
-    ['a professor that is not digits', { professorPlayerId: 'abc', activityGroupId: 'g' }],
-    ['a 13-digit professor', { professorPlayerId: '1234567890123', activityGroupId: 'g' }],
-    ['a null professor', { professorPlayerId: null, activityGroupId: 'g' }],
-  ])('rejects %s', (_l, body) => {
-    expect(SettingsBody.safeParse(body).success).toBe(false);
+  it('ignores a professor sent by an older page', () => {
+    expect(SettingsBody.parse({ professorPlayerId: '0012345', activityGroupId: 'g' })).toEqual({ activityGroupId: 'g' });
   });
 
   it('takes the curation thresholds', () => {
@@ -34,7 +27,7 @@ describe('SettingsBody', () => {
   });
 
   it('takes both at once', () => {
-    const body = { professorPlayerId: '1', activityGroupId: 'g', thresholds: { promoteMinSightings: 4, staleAfterSessions: 6 } };
+    const body = { activityGroupId: 'g', thresholds: { promoteMinSightings: 4, staleAfterSessions: 6 } };
     expect(SettingsBody.parse(body)).toEqual(body);
   });
 

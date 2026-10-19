@@ -6,7 +6,7 @@ import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import { TournamentsError } from './errors';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, GROUP, OLIVE, VENUE, series, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The tournaments module's side of creating in play-tools (#92, ADR-0010 decision 5): which planned rows a job may
 // take, what each would be created as or adopt, and what the rows become. The job itself is the submission module's.

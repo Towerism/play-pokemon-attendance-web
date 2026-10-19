@@ -15,7 +15,7 @@ import { GROUP, ROLES, playing, staffer, tournament } from '../staffing/test-hel
 import { SubmissionError } from './errors';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, type SubmissionView, createSubmissionService } from './service';
-import { HELD_BY_OWNER, OWNER, stubConnections } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER, stubConnections } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';
@@ -364,7 +364,7 @@ describe('starting a player import', () => {
 
   it.each([
     ['not_connected', [] as ActingConnection[]],
-    ['needs_reconnect', [{ id: 1, professorPlayerId: ORGANIZER, professorName: null, status: 'needs_reconnect', ...HELD_BY_OWNER as const }]],
+    ['needs_reconnect', [{ id: 1, professorPlayerId: ORGANIZER, professorName: null, status: 'needs_reconnect' as const, ...HELD_BY_OWNER }]],
   ])('is refused with %s before any call', async (code, connected) => {
     professors = connected;
 

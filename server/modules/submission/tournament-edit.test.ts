@@ -13,7 +13,7 @@ import { type TournamentsService, createTournamentsService } from '../tournament
 import { BROCK, VENUE, stubPlayTools, templateBody, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The `tournament_edit` job (#93, ADR-0010 decisions 8 and 11) on the submission rails: a fresh read before each
 // item, only the differing fields sent, one PATCH at a time and paced, a 5xx settled by one re-read and never resent.

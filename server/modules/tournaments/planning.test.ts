@@ -5,7 +5,7 @@ import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { TournamentsError } from './errors';
 import { type Template, type TournamentsService, createTournamentsService } from './service';
 import { stubPlayTools, templateBody } from './test-helpers';
-import { OWNER } from '../pokemon/test-helpers';
+import { OWNER } from '../pokemon/test-connections';
 
 // Planning on read and replanning after edits (ADR-0010 decision 4): the module against an in-memory database
 // with the real migrations, a stub play-tools, and a fixed clock.

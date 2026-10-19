@@ -1,9 +1,9 @@
-import { ProfessorQuery } from '#shared/schemas/pokemon';
-
-/** The leagues every connected professor shares (#75), as this professor names them; who was left out; and which one this league submits to when they are its submitting professor. */
+/**
+ * The leagues the owner may choose from (ADR-0015 §3): those of the owner's own connections, each read as that
+ * connection; which one is chosen; and the owner connections left out because they need a reconnect.
+ */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { professor } = await getValidatedQuery(event, ProfessorQuery.parse);
-  const { leagues, selectedId, excluded } = await usePokemon().listUpstreamLeagues(leagueId, professor).catch(pokemonHttpError);
+  const { leagueId, actor } = await requireOwner(event);
+  const { leagues, selectedId, excluded } = await usePokemon().listUpstreamLeagues(leagueId, actor).catch(pokemonHttpError);
   return { leagues: leagues.map(upstreamLeagueJson), selectedId, excluded };
 });

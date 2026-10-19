@@ -5,7 +5,7 @@ import { CoverageQuery } from '#shared/schemas/tournaments';
  * action. 200 even when play-tools can't be read (those periods are `unknown`); `?refresh=1` lists again.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
+  const { leagueId } = await requireMember(event);
   const { refresh } = await getValidatedQuery(event, CoverageQuery.parse);
   return useTournaments().requiredEvents.read(leagueId, { refresh }).catch(tournamentsHttpError);
 });

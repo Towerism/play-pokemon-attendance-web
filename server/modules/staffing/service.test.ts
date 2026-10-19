@@ -8,8 +8,7 @@ import { type RosterService, createRosterService } from '../roster/service';
 import { StaffingError } from './errors';
 import { type StaffingService, createStaffingService } from './service';
 import { OLIVE, playing, staffer, stubPlayTools, tournament } from './test-helpers';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
-import { HELD_BY_OWNER } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER, professorActor } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 

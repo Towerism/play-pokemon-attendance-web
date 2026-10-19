@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 import { mayAccessTdf } from './access';
 
 const MISTY = professorActor(2, 'misty');

@@ -5,9 +5,8 @@ import { ResultsOrganizerBody, ResultsUploadParams } from '#shared/schemas/resul
  * saved on their Pokémon connection, then the preview corrects the file and runs its checks again.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { date, tournamentId, uploadId } = await getValidatedRouterParams(event, ResultsUploadParams.parse);
   const { fullName } = await readValidatedBody(event, ResultsOrganizerBody.parse);
-  return useTournamentResults().setOrganizerName(leagueId, date, tournamentId, uploadId, fullName, user.username).catch(resultsHttpError);
+  return useTournamentResults().setOrganizerName(leagueId, date, tournamentId, uploadId, fullName, actor).catch(resultsHttpError);
 });

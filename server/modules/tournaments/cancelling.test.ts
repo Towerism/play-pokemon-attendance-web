@@ -11,7 +11,7 @@ import { createStaffingService } from '../staffing/service';
 import type { CancelItem } from './cancelling';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, OLIVE, VENUE, participants, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The tournaments module's side of Cancel… (#94, ADR-0010 decision 8): the confirm preview from a fresh read as the
 // organizer, the apply's refusals and typed confirmation, each job item's fresh read, and the local follow-ups. The job

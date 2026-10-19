@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionDate } from '../../../shared/types/ids';
 import { silentLogger } from '@towerism/selfhost-kit';
-import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-connections';
 import type { ActingConnection } from '../pokemon/connection';
 import { createIntegrationDayService } from './service';
 

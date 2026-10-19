@@ -21,8 +21,7 @@ import { tournamentResultUpload } from '../../db/schema';
 import { TournamentsError } from './errors';
 import { type ResultsDeps, type TournamentResults, createResultUploadReferrer, createTournamentResults } from './results';
 import { OLIVE, stubPlayTools, upstreamTournament } from './test-helpers';
-import { HELD_BY_OWNER } from '../pokemon/test-helpers';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER, professorActor } from '../pokemon/test-connections';
 
 // The tournaments module's side of a TDF results upload (#96, ADR-0011): the preview and its fixes, the full-name
 // prompt, recheck / Upload again…, Remove-from-staff's checks, the job's fresh check, following processing, and expiry.

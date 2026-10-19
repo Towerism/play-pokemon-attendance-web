@@ -7,11 +7,10 @@ import { ApplyStaffBody } from '#shared/schemas/staffing';
  * `/api/submissions/{id}/events`.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { date } = await getValidatedRouterParams(event, SessionDateParam.parse);
   const { tournamentId } = await readValidatedBody(event, ApplyStaffBody.parse);
-  const started = await useSubmissions().applyStaff(leagueId, date, { tournamentId, startedBy: user.username }).catch(submissionHttpError);
+  const started = await useSubmissions().applyStaff(leagueId, date, { tournamentId, actor }).catch(submissionHttpError);
   setResponseStatus(event, 202);
   return started;
 });

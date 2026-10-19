@@ -9,6 +9,17 @@ describe('StartSubmissionBody', () => {
   it.each([{}, { playSessionId: '' }, { playSessionId: 42 }, { playSessionId: 'x'.repeat(101) }])('rejects %j', (body) => {
     expect(StartSubmissionBody.safeParse(body).success).toBe(false);
   });
+
+  it('takes which of the caller’s connections to submit as, keeping leading zeros (ADR-0015 §4)', () => {
+    expect(StartSubmissionBody.parse({ playSessionId: 'ps-1', professorPlayerId: '0012345' })).toEqual({ playSessionId: 'ps-1', professorPlayerId: '0012345' });
+  });
+
+  it.each([{ professorPlayerId: 12345 }, { professorPlayerId: 'abc' }, { professorPlayerId: '1'.repeat(13) }, { professorPlayerId: null }])(
+    'rejects the professor %j',
+    (over) => {
+      expect(StartSubmissionBody.safeParse({ playSessionId: 'ps-1', ...over }).success).toBe(false);
+    },
+  );
 });
 
 describe('SubmissionIdParam', () => {
@@ -46,6 +57,11 @@ describe('ClearSessionBody', () => {
     { playSessionId: '', confirmDate: '2026-10-13' },
   ])('rejects %j', (body) => {
     expect(ClearSessionBody.safeParse(body).success).toBe(false);
+  });
+
+  it('takes which of the owner’s connections to clear as', () => {
+    expect(ClearSessionBody.parse({ playSessionId: 'ps-1', confirmDate: '2026-10-13', professorPlayerId: '0012345' }).professorPlayerId).toBe('0012345');
+    expect(ClearSessionBody.safeParse({ playSessionId: 'ps-1', confirmDate: '2026-10-13', professorPlayerId: 'x' }).success).toBe(false);
   });
 });
 

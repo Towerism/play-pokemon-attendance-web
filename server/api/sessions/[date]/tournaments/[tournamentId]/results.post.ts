@@ -7,8 +7,7 @@ import { TDF_MAX_BODY_BYTES } from '#shared/schemas/tdf';
  * play-tools. Answers the warnings, their fingerprint, and the attendance preview of the same file.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { date, tournamentId } = await getValidatedRouterParams(event, ResultsParams.parse);
 
   // Refuse oversized bodies before reading them into memory.
@@ -17,5 +16,5 @@ export default defineEventHandler(async (event) => {
   if (length > TDF_MAX_BODY_BYTES) throw createError({ statusCode: 413, message: 'The file is over 2 MB.' });
 
   const body = await readValidatedBody(event, ResultsPreviewBody.parse);
-  return useTournamentResults().preview(leagueId, date, tournamentId, { ...body, by: user.username }).catch(resultsHttpError);
+  return useTournamentResults().preview(leagueId, date, tournamentId, body, actor).catch(resultsHttpError);
 });

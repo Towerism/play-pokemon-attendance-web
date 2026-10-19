@@ -4,7 +4,7 @@ import { AlreadyRegularError } from '../../../../modules/sessions/service';
 
 /** Add a session player by hand: 201 when added, 200 when already listed, 409 for a regular. */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
+  const { leagueId } = await requireMember(event);
   const { date } = await getValidatedRouterParams(event, SessionDateParam.parse);
   const body = await readValidatedBody(event, PlayerInput.parse);
   try {

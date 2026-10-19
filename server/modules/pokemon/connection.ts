@@ -1,5 +1,5 @@
 import { type Logger, type StringVault, VaultError, silentLogger } from '@towerism/selfhost-kit';
-import { asc, count, eq, isNull } from 'drizzle-orm';
+import { asc, count, eq } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { leagueMembership, leagueUpstream, pokemonConnection } from '../../db/schema';
 import type { AccountsService, Actor } from '../accounts/service';
@@ -130,6 +130,8 @@ export interface PokemonConnectionService extends TokenProvider {
   listConnections(leagueId: string, viewer: Actor): ProfessorConnection[];
   /** Every connection, oldest first, for finding the one a job recorded. */
   listActingConnections(): ActingConnection[];
+  /** The full name for TDFs (ADR-0011 decision 8) of the connection with that player id; null when unset or none. */
+  fullNameOf(professorPlayerId: string): string | null;
   /** Connections not `outside`, oldest first: reads across professors (ADR-0015 §3). */
   listReadableConnections(): ActingConnection[];
   /**
@@ -601,6 +603,8 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
       const ms = memberships();
       return all().map((r) => acting(r, ms.get(r.id)));
     },
+
+    fullNameOf: (professorPlayerId) => loadByPlayer(professorPlayerId)?.professorFullName ?? null,
 
     listReadableConnections() {
       return service.listActingConnections().filter((c) => c.membership !== 'outside');

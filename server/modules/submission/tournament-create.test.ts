@@ -11,7 +11,7 @@ import { type TournamentsService, createTournamentsService } from '../tournament
 import { BROCK, GROUP, OLIVE, type StubTournament, stubPlayTools, templateBody, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The `tournament_create` job (#92, ADR-0010 decision 5) on the submission rails: adopt before create, one POST at a
 // time and paced, a 5xx never resent, the window checked again before each send, rows held while it runs.

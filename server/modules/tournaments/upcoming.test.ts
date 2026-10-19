@@ -6,7 +6,7 @@ import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import { TournamentsError } from './errors';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, GROUP, OLIVE, series, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
-import { HELD_BY_OWNER, OWNER } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER } from '../pokemon/test-connections';
 
 // What Upcoming and the form options read from play-tools, as each professor (ADR-0010 decisions 6 and 10).
 

@@ -1,7 +1,7 @@
 /** Test-only stand-ins and factories for the tournaments module. Not imported by production code. */
 import type { TemplateBody } from '../../../shared/schemas/tournaments';
 import type { ActingConnection } from '../pokemon/connection';
-import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-connections';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { Format, Series, Tournament, TournamentChanges, TournamentDetails, TournamentParticipant, Venue } from '../pokemon/ports/play-tools-gateway';
 

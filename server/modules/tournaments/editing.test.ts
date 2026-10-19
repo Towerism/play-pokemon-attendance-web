@@ -7,7 +7,7 @@ import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import type { TournamentDetails } from '../pokemon/ports/play-tools-gateway';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, OLIVE, VENUE, series, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The tournaments module's side of Edit… (#93, ADR-0010 decisions 8 and 11): the form, the preview across a
 // schedule, the local writes, and each job item's fresh read. The job itself is the submission module's.

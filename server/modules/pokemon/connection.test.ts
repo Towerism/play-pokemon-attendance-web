@@ -1337,6 +1337,16 @@ describe('listReadableConnections (reads across professors)', () => {
   });
 });
 
+describe('fullNameOf (the name written into a TDF whose organizer is replaced)', () => {
+  it("answers a connection's full name, or null when unset or nobody is connected with that player id", async () => {
+    await connect(ASH);
+    expect(service.fullNameOf(ASH.playerId)).toBeNull();
+    service.renameProfessor(L, OWNER, ASH.playerId, { fullName: 'Ash Ketchum' });
+    expect(service.fullNameOf(ASH.playerId)).toBe('Ash Ketchum');
+    expect(service.fullNameOf('999')).toBeNull();
+  });
+});
+
 describe('every AAD the token vault sees binds a row (the kit refuses an empty one)', () => {
   interface VaultCall {
     op: 'encrypt' | 'decrypt';

@@ -24,7 +24,7 @@ import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
 import { dateIn } from '../../../shared/time/local-time';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
-import { type PlaySessionResolver, leagueGroup } from './resolve';
+import { type PlaySessionResolver, type Resolution, leagueGroup } from './resolve';
 import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
 import { type StaffBatchRowStatus, type StaffBatchView, batchStatus } from './staff-batch';
 
@@ -210,6 +210,8 @@ export interface SubmissionService {
    * @throws SubmissionError, ConnectionAccessError, PokemonUpstreamError
    */
   retry(leagueId: string, submissionId: number, actor: Actor): Promise<{ submissionId: number }>;
+  /** The date's play sessions, read as the actor's own member connection, else anyone's (ADR-0015 §4). @throws SubmissionError, PokemonUpstreamError */
+  resolve(leagueId: string, date: SessionDate, actor: Actor): Promise<Resolution>;
   /** @throws SubmissionError `not_found` */
   get(leagueId: string, submissionId: number): SubmissionView;
   /** Newest first. */
@@ -3385,6 +3387,11 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         );
       }
       return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, actor.username, () => originalConnection(actor, row), row.id);
+    },
+
+    async resolve(leagueId, date, actor) {
+      leagueGroup(deps.connections, leagueId);
+      return deps.resolver.resolve(leagueId, date, deps.connections.readingConnection(leagueId, actor));
     },
 
     undo: async (leagueId, submissionId, actor) => beginUndo(leagueId, mustFind(leagueId, submissionId), actor, null),

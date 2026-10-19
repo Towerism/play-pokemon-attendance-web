@@ -21,7 +21,7 @@ import { type TournamentResults, createResultUploadReferrer, createTournamentRes
 import { OLIVE, stubPlayTools, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
-import { OWNER } from '../pokemon/test-helpers';
+import { OWNER } from '../pokemon/test-connections';
 
 // The `tdf_upload` job (#96, ADR-0011) and Remove from staff's removal-only staff job on the submission rails. The
 // send is `validateResults`: every refusal asserts it was never called, and the happy path that it was called once,

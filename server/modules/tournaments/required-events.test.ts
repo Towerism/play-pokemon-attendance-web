@@ -6,7 +6,7 @@ import type { ActingConnection } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, OLIVE, type StubTournament, series, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
-import { HELD_BY_OWNER, OWNER } from '../pokemon/test-helpers';
+import { HELD_BY_OWNER, OWNER } from '../pokemon/test-connections';
 
 // Gathering required-events coverage (ADR-0010 decision 12, #95): each connected professor's listing (cached 5
 // minutes), each tournament's series from its details (cached by guid), play-tools' series windows, planned rows.

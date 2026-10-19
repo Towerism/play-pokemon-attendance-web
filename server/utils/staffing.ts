@@ -27,6 +27,7 @@ const STATUS: Record<StaffingErrorCode, number> = {
   nothing_to_apply: 422,
   organizer_not_connected: 409,
   needs_reconnect: 409,
+  not_your_connection: 403,
 };
 
 /**

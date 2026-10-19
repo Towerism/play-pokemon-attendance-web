@@ -14,7 +14,7 @@ import { type TournamentsService, createTournamentsService } from '../tournament
 import { OLIVE, VENUE, participants, stubPlayTools, templateBody, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
-import { OWNER, professorActor } from '../pokemon/test-helpers';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The `tournament_cancel` job (#94, ADR-0010 decision 8) on the submission rails: the apply's fresh read and typed
 // confirmation, a fresh read again before the one PATCH, a 5xx settled by one re-read and never resent, then the planned
