@@ -13,10 +13,20 @@ import { type CreateLoggerOptions, type Logger, createLogger, createRedactor, se
 import { SECRETS } from '../bootstrap/app-env';
 
 /**
- * Added to the kit's base keys: a TDF's birthdates and body (ADR-0012) and the env names of the three
- * secrets, with and without `NUXT_`.
+ * Added to the kit's base keys: a TDF's birthdates and body (ADR-0012), an invite's link and secret (ADR-0015 §6), and
+ * the env names of the four secrets, with and without `NUXT_`.
  */
-export const ATTENDANCE_LOG_KEYS: readonly string[] = ['birthdate', 'dateOfBirth', 'dob', 'content', 'payload', ...secretKeyNames(SECRETS)];
+export const ATTENDANCE_LOG_KEYS: readonly string[] = [
+  'birthdate',
+  'dateOfBirth',
+  'dob',
+  'content',
+  'payload',
+  'inviteUrl',
+  'inviteSecret',
+  'link',
+  ...secretKeyNames(SECRETS),
+];
 
 /** Exported for the redaction contract test. Build loggers with `createAppLogger`, never from this directly. */
 export const redactor = createRedactor({ extraKeys: ATTENDANCE_LOG_KEYS });

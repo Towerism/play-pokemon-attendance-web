@@ -65,12 +65,17 @@ describe("attendance's log keys", () => {
       'dob',
       'content',
       'payload',
+      'inviteUrl',
+      'inviteSecret',
+      'link',
       'NUXT_SESSION_PASSWORD',
       'SESSION_PASSWORD',
       'NUXT_TOKEN_VAULT_KEY',
       'TOKEN_VAULT_KEY',
       'NUXT_TDF_VAULT_KEY',
       'TDF_VAULT_KEY',
+      'NUXT_MESSAGE_VAULT_KEY',
+      'MESSAGE_VAULT_KEY',
     ]);
   });
 

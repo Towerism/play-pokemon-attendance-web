@@ -10,14 +10,20 @@
 import { type SecretSpec, aes256Key, sessionPassword } from '@towerism/selfhost-kit';
 
 /** In startup-log order. Secrets live in `secrets/` next to the database. */
-export const SECRETS: readonly [SecretSpec, SecretSpec, SecretSpec] = [
+export const SECRETS: readonly [SecretSpec, SecretSpec, SecretSpec, SecretSpec] = [
   sessionPassword(),
   aes256Key({ env: 'NUXT_TOKEN_VAULT_KEY', file: 'token-vault.key', label: 'Token vault key' }),
   // The TDF archive's own key (ADR-0012): losing it loses the archive, not the Pokémon login.
   aes256Key({ env: 'NUXT_TDF_VAULT_KEY', file: 'tdf-vault.key', label: 'TDF vault key' }),
+  // The Discord channel's own key (ADR-0015 §7): losing it loses only undelivered links, which the owner mints again.
+  aes256Key({ env: 'NUXT_MESSAGE_VAULT_KEY', file: 'message-vault.key', label: 'Message vault key' }),
 ];
 
-/** Optional tuning for `runtimeConfig.authRateLimit` and `integrationRateLimit` (tests change them; never in the template). */
+/**
+ * Optional tuning for the rate limits (`authRateLimit`, `integrationRateLimit`, `inviteRateLimit`,
+ * `messagePollRateLimit`, `messageResultRateLimit`) and how long Send by Discord waits (`messaging.sendWaitMs`).
+ * Tests change them; never in the template.
+ */
 export const POSITIVE_INTEGER_VARS: readonly string[] = [
   'NUXT_AUTH_RATE_LIMIT_LOGIN_MAX',
   'NUXT_AUTH_RATE_LIMIT_LOGIN_WINDOW_MS',
@@ -25,6 +31,13 @@ export const POSITIVE_INTEGER_VARS: readonly string[] = [
   'NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS',
   'NUXT_INTEGRATION_RATE_LIMIT_MAX',
   'NUXT_INTEGRATION_RATE_LIMIT_WINDOW_MS',
+  'NUXT_INVITE_RATE_LIMIT_MAX',
+  'NUXT_INVITE_RATE_LIMIT_WINDOW_MS',
+  'NUXT_MESSAGE_POLL_RATE_LIMIT_MAX',
+  'NUXT_MESSAGE_POLL_RATE_LIMIT_WINDOW_MS',
+  'NUXT_MESSAGE_RESULT_RATE_LIMIT_MAX',
+  'NUXT_MESSAGE_RESULT_RATE_LIMIT_WINDOW_MS',
+  'NUXT_MESSAGING_SEND_WAIT_MS',
 ];
 
 /** What the launcher passes to the kit's `prepareRuntimeEnv`. */
