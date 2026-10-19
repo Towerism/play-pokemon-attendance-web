@@ -62,6 +62,15 @@ const {
   retry: false,
 });
 const cards = computed(() => (staff.value ? tournamentCards(staff.value, upcomingError.value ? null : (upcomingDay.value ?? null)) : { cards: [], planned: [] }));
+// The date's tournaments the viewer organizes and can still lend, for **Lend…** (ADR-0015 §5).
+const { data: myConnections } = usePokemonConnection();
+const lendable = computed(() =>
+  cards.value.cards
+    .map((c) => c.tournament)
+    .filter((t) => !t.missing && !t.unavailable && t.editable && !(t as WithLease<typeof t>).lease)
+    .filter((t) => myConnections.value?.connections.some((c) => c.mine && c.professorPlayerId === t.organizer?.playerId))
+    .map((t) => ({ tournamentId: t.tournamentId, label: t.label, startsAt: t.startsAt })),
+);
 const timeZone = computed(() => staff.value?.timeZone ?? upcomingDay.value?.timeZone ?? null);
 const today = computed(() => (timeZone.value ? todayIn(timeZone.value, new Date()) : null));
 
@@ -160,6 +169,7 @@ watch(rolesError, (err) => {
         :date="date"
         :pair="pair"
         :roles="roles"
+        :lendable="lendable"
         @changed="refresh()"
         @edit="(id) => (editing = id)"
         @uploaded="uploaded"

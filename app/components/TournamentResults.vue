@@ -7,8 +7,19 @@ import type { StaffRole } from '~/utils/staff';
  * the latest upload, a dropzone while play-tools takes an upload, **Upload again…**, and **Download TDF** once the app
  * holds the file. Read in the browser only and never retried on its own.
  */
-/** `readonly`: another user holds the organizer's connection (ADR-0015 §4); only Download TDF stays. */
-const props = defineProps<{ date: string; tournamentId: string; label: string; displayId: string | null; roles?: readonly StaffRole[]; readonly?: boolean }>();
+/**
+ * `readonly`: another user holds the organizer's connection (ADR-0015 §4); only Download TDF stays. `lentBy`: the
+ * organizer who lent the tournament to the viewer (§5), who alone may set their full name for TDFs.
+ */
+const props = defineProps<{
+  date: string;
+  tournamentId: string;
+  label: string;
+  displayId: string | null;
+  roles?: readonly StaffRole[];
+  readonly?: boolean;
+  lentBy?: string | null;
+}>();
 /** An upload job ended: the date's attendance may have been imported. */
 const emit = defineEmits<{ uploaded: [] }>();
 const toast = useToast();
@@ -160,6 +171,7 @@ async function closed() {
       :preview="dialog.preview"
       :roles="roles"
       :again="dialog.again"
+      :lent-by="lentBy"
       @finished="uploaded"
       @close="closed"
     />

@@ -8,7 +8,16 @@ import type { StaffRole } from '~/utils/staff';
  * play-tools' validation before the confirm, and the confirm carries the fingerprint of exactly the warnings shown.
  * `again`: opened by **Upload again…**, so sending gives Pokémon support another copy.
  */
-const props = defineProps<{ date: string; tournamentId: string; label: string; preview: ResultsPreview; roles?: readonly StaffRole[]; again?: boolean }>();
+const props = defineProps<{
+  date: string;
+  tournamentId: string;
+  label: string;
+  preview: ResultsPreview;
+  roles?: readonly StaffRole[];
+  again?: boolean;
+  /** The organizer who lent the tournament to the viewer: only they set their full name for TDFs (ADR-0015 §2, §5). */
+  lentBy?: string | null;
+}>();
 /** `finished`: the upload job ended (Results and the session's attendance may have changed). */
 const emit = defineEmits<{ close: []; finished: [] }>();
 const toast = useToast();
@@ -129,7 +138,8 @@ function done(view: SubmissionView) {
       <div v-else class="space-y-4 text-sm">
         <p class="break-words text-muted">{{ current.file.filename }} · {{ players(current.file.playerCount) }}</p>
 
-        <form v-if="current.needsOrganizerFullName" class="space-y-2" @submit.prevent="saveName">
+        <p v-if="current.needsOrganizerFullName && lentBy" class="text-warning">Ask {{ lentBy }} to set their full name for TDFs in Settings.</p>
+        <form v-else-if="current.needsOrganizerFullName" class="space-y-2" @submit.prevent="saveName">
           <UFormField :label="`${current.needsOrganizerFullName.playToolsName ?? current.needsOrganizerFullName.playerId}’s full name, as it should appear in the TDF`" required>
             <UInput v-model="fullName" maxlength="100" required autocomplete="off" class="w-full" />
           </UFormField>
