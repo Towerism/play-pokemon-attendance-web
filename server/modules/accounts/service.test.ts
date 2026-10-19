@@ -168,7 +168,7 @@ describe('the actor behind a session', () => {
   });
 });
 
-/** A professor row as #202's invites will make them; same password as the owner. */
+/** A professor row as an invite makes them; same password as the owner. */
 function addProfessor(username: string, opts: { removed?: boolean } = {}): number {
   const row = database.sqlite
     .prepare(`insert into app_user (username, password_hash, role, removed_at, created_at) values (?, 'hashed:correct horse', 'professor', ?, 1) returning id`)

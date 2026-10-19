@@ -50,14 +50,18 @@ Module rules (enforce, don't erode):
 - `server/api/*` handlers are thin: one access guard from `server/utils/access.ts` (`requireMember`; `requireOwner`
   for owner-only routes; `requireActor` only for the waiting-room routes), validate with shared Zod schemas, call a
   module service with the actor, map errors. `test/unit/route-guards.test.ts` holds every route to its guard. The
-  exceptions are the public auth routes and `server/api/integrations/v1/*`, which takes only an integration bearer
-  token (`requireIntegrationToken`, ADR-0013); no other route may accept one.
+  exceptions are the public auth routes, the public invite routes (`server/api/invites/*`, rate-limited per client
+  before the body is read, ADR-0015 §6), and `server/api/integrations/v1/*`, which takes only an integration bearer
+  token with the route's scope (`requireIntegrationToken(event, scope)`, ADR-0013, ADR-0015 §7); no other route may
+  accept one.
 - No code but the pokemon module's `actingConnection` turns a professor into a connection for a write to play-tools.
 - `server/modules/*` are plain TS — no h3 or Nuxt imports.
 - From `@towerism/selfhost-kit` (ADR-0014), modules take only the plain helpers on the ESLint allowlist, never
   `/nitro`; loggers, request ids, secrets and vaults are
   wired outside `server/modules` (`server/utils`, `server/plugins`, `server/bootstrap`) and injected. `app/` and `shared/` never import the kit.
 - Modules talk only through each other's exported services, never each other's tables.
+- `server/modules/messaging` (the Discord channel Genie long-polls, ADR-0015 §7) knows no feature: callers own their
+  words, recipients and what a result means, from fixed templates. No route takes message text.
 - Only `server/modules/pokemon/adapters/*` may call `*.pokemon.com`. Upstream payload
   shapes never leak past the `PlayToolsGateway` / `TokenProvider` ports.
 - `player_id` is TEXT everywhere.
@@ -112,6 +116,9 @@ High-value areas:
   `tokenCount` stay visible. Log through `useLogger` / an injected `Logger`, never `console`.
 - Secrets come from env (`NUXT_TOKEN_VAULT_KEY`, `NUXT_SESSION_PASSWORD`, …) or, when
   unset, from files generated once in `/data/secrets/` (mode 0600). Never the DB or repo.
+- Invite and reset-link secrets (ADR-0015 §6) are stored only as a SHA-256, never logged, and returned once. A link
+  waiting for Genie is sealed by the message vault (`NUXT_MESSAGE_VAULT_KEY` / `/data/secrets/message-vault.key`),
+  which only `server/modules/messaging` gets.
 - Never persist TDF birthdates, and keep raw TDF files **only** in the encrypted TDF archive (ADR-0012,
   `server/modules/tdf-archive`): gzip, then AES-256-GCM with its own key (`NUXT_TDF_VAULT_KEY` /
   `/data/secrets/tdf-vault.key`), decrypted only in memory, no temp files. Only that module touches `tdf_file`
