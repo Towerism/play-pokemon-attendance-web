@@ -2,7 +2,7 @@ import type { H3Event } from 'h3';
 import { parseBearer } from '../modules/integrations/bearer';
 import { IntegrationError, type IntegrationErrorCode } from '../modules/integrations/errors';
 import { type IntegrationDayService, createIntegrationDayService } from '../modules/integrations/service';
-import { type AuthenticatedToken, type IntegrationTokenService, createIntegrationTokenService } from '../modules/integrations/tokens';
+import { type AuthenticatedToken, type IntegrationScope, type IntegrationTokenService, createIntegrationTokenService } from '../modules/integrations/tokens';
 
 let tokens: IntegrationTokenService | undefined;
 let days: IntegrationDayService | undefined;
@@ -25,17 +25,25 @@ export function useIntegrationDays(): IntegrationDayService {
 }
 
 /**
- * Authenticates an integrations request by its bearer token alone (a session cookie never counts), then applies
- * the per-token limit before anything is read. Every refusal of the token is the same 401, so a caller can't tell
- * a missing token from an unknown or revoked one.
+ * Authenticates an integrations request by its bearer token alone (a session cookie never counts), checks the route's
+ * scope (ADR-0015 §7), then applies the route's per-token limit before anything is read. Every refusal of the token is
+ * the same 401, so a caller can't tell a missing token from an unknown or revoked one.
  */
-export function requireIntegrationToken(event: H3Event): AuthenticatedToken {
+export function requireIntegrationToken(
+  event: H3Event,
+  scope: IntegrationScope,
+  limit: 'integration' | 'messagePoll' | 'messageResult' = 'integration',
+): AuthenticatedToken {
   const token = useIntegrationTokens().authenticate(parseBearer(getRequestHeader(event, 'authorization')) ?? undefined);
   if (!token) {
     setResponseHeader(event, 'WWW-Authenticate', 'Bearer realm="integrations", error="invalid_token"');
     throw createError({ statusCode: 401, message: 'A valid integration token is required.', data: { code: 'invalid_token' } });
   }
-  const hit = useRateLimits().integration.hit(`token:${token.id}`);
+  if (!token.scopes.includes(scope)) {
+    setResponseHeader(event, 'WWW-Authenticate', 'Bearer realm="integrations", error="insufficient_scope"');
+    throw createError({ statusCode: 403, message: `This integration token may not do this: it needs the ${scope} scope.`, data: { code: 'insufficient_scope' } });
+  }
+  const hit = useRateLimits()[limit].hit(`token:${token.id}`);
   if (!hit.allowed) {
     setResponseHeader(event, 'Retry-After', hit.retryAfterSeconds);
     throw createError({
