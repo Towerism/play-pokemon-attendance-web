@@ -1175,7 +1175,8 @@ records). As built (`runImport` in `server/modules/submission/service.ts`, share
   tournament was read, `partial` when some were, `failed` when none were. A 401 (`forbidden`) or `needs_reconnect`
   on a read stops that professor's remaining reads (`professor_failed`); a professor failing counts like a tournament
   failing (`partial`, or `failed` with the last code as its `error` when nothing was read). Anything else stops the
-  import `failed`.
+  import `failed`. A tournament 401 stays `forbidden` in both imports; only the player import's session reads record a
+  401 as `login_rejected` (below).
 - **The row:** `play_session_id = ''`, `play_session_label = 'Staff import'`, and `session_date` the day it started
   in the league `TZ`. It is never undoable. Retry and Resume read everything again, which is harmless (rows are
   unique), and boot recovery and shutdown work as for every job.
@@ -1201,8 +1202,11 @@ Players and This week. It differs only in what it seeds and in those session rea
   unreadable or refused (403) is `session_failed`, naming its local date. Two things make the job emit one `sessions_failed`
   event, whose message ends with the code. One is the sessions not being listed: the league's connection isn't usable,
   or any of the three listings still fails after the retries. The other is a 401 or `needs_reconnect` stopping the
-  session reads. The import goes
-  on, and the final status counts it like a professor failing. Reads are unpaced, as for tournaments.
+  session reads. The import goes on, and the final status counts it like a professor failing. A 401 on the session
+  listing or a session read is recorded on `sessions_failed` as `login_rejected`, because play-tools rejected the
+  submitting professor's token and a reconnect fixes it. The connection's status is left alone (`needs_reconnect`
+  still means only a rejected refresh token), and the warning log keeps `upstreamCode: 'forbidden'` and the status.
+  The card and History then say "Reconnect them in Settings". Reads are unpaced, as for tournaments.
 - **Seeding** goes through `RosterService.ensurePlayers` into the league the job started in: a `player` row named as
   play-tools shows them (only when the app can't name them yet) and a `player_membership` row with the defaults. It
   records **no sighting** (a tournament isn't a league session, and any sighting date counts as one, ADR-0005), and
