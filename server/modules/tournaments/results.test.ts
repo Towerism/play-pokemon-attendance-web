@@ -684,5 +684,14 @@ describe("the stored files of the tournaments a professor organizes (ADR-0015 §
     expect(results.fileIdsOrganizedBy(L, ['0000222'])).toEqual(new Set());
     expect(results.fileIdsOrganizedBy(L, [])).toEqual(new Set());
   });
+
+  it("lists the files of a tournament's results uploads, and every results file", async () => {
+    const p = await preview(file());
+    const fileId = uploadRow(p.uploadId).tdf_file_id!;
+    expect(results.fileIdsOfTournaments(L, [GUID])).toEqual(new Set([fileId]));
+    expect(results.fileIdsOfTournaments(L, ['other-guid'])).toEqual(new Set());
+    expect(results.fileIdsOfTournaments(L, [])).toEqual(new Set());
+    expect(results.resultFileIds(L)).toEqual(new Set([fileId]));
+  });
 });
 

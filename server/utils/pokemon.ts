@@ -34,6 +34,8 @@ export function usePokemon(): PokemonConnectionService {
         seatsUsed: () => useInvites().seatsUsed(),
         boundPlayerId: (id) => useInvites().boundPlayerId(id),
       },
+      // Leases end inside the connection service's own transactions; their notices are sent after (ADR-0015 §5).
+      leases: { store: useLeaseStore(), ended: (rows) => useLeases().notifyEnded(rows) },
       log: useLogger('pokemon'),
     });
   }

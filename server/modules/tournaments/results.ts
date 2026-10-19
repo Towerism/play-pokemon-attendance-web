@@ -154,6 +154,10 @@ export interface TournamentResults {
   tdfAvailable(leagueId: string, tournamentIds: readonly string[]): Set<string>;
   /** The stored files of results uploads for tournaments these professors organize (ADR-0015 §4), from local rows only. */
   fileIdsOrganizedBy(leagueId: string, organizerPlayerIds: readonly string[]): Set<number>;
+  /** The stored files of these tournaments' results uploads (a lent professor's downloads, ADR-0015 §5). Local rows only. */
+  fileIdsOfTournaments(leagueId: string, tournamentIds: readonly string[]): Set<number>;
+  /** Every stored file that belongs to a results upload. */
+  resultFileIds(leagueId: string): Set<number>;
 }
 
 export interface ResultsDeps {
@@ -781,6 +785,21 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
         .from(tournamentResultUpload)
         .where(and(eq(tournamentResultUpload.leagueId, leagueId), inArray(tournamentResultUpload.professorPlayerId, [...organizerPlayerIds])))
         .all();
+      return new Set(rows.flatMap((r) => (r.fileId === null ? [] : [r.fileId])));
+    },
+
+    fileIdsOfTournaments(leagueId, tournamentIds) {
+      if (tournamentIds.length === 0) return new Set();
+      const rows = db
+        .select({ fileId: tournamentResultUpload.tdfFileId })
+        .from(tournamentResultUpload)
+        .where(and(eq(tournamentResultUpload.leagueId, leagueId), inArray(tournamentResultUpload.tournamentId, [...tournamentIds])))
+        .all();
+      return new Set(rows.flatMap((r) => (r.fileId === null ? [] : [r.fileId])));
+    },
+
+    resultFileIds(leagueId) {
+      const rows = db.select({ fileId: tournamentResultUpload.tdfFileId }).from(tournamentResultUpload).where(eq(tournamentResultUpload.leagueId, leagueId)).all();
       return new Set(rows.flatMap((r) => (r.fileId === null ? [] : [r.fileId])));
     },
   };

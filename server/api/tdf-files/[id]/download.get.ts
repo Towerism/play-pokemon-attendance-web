@@ -11,7 +11,7 @@ export default defineEventHandler(async (event) => {
   const { id } = await getValidatedRouterParams(event, TdfFileIdParam.parse);
   const { filename, content } = (() => {
     try {
-      assertTdfAccess(leagueId, actor, id);
+      assertTdfAccess(leagueId, actor, id, 'download');
       return useTdfArchive().read(leagueId, id);
     } catch (err) {
       throw tdfArchiveHttpError(err);
