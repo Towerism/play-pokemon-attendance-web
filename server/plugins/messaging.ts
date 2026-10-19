@@ -1,3 +1,5 @@
+import { shutdownSignals } from '../bootstrap/shutdown-signals';
+
 /**
  * The Discord channel at boot and shutdown (ADR-0015 §7).
  *
@@ -14,7 +16,6 @@ export default defineNitroPlugin((nitroApp) => {
   const replayed = messaging.replayUnhandled();
   if (replayed > 0) useLogger('messaging').info(`Handed ${replayed} delivery result(s) recorded before a restart to their senders.`, { replayed });
 
-  const signals = (process.env.NITRO_SHUTDOWN_SIGNALS || 'SIGTERM SIGINT').split(' ').filter(Boolean);
-  for (const signal of signals) process.once(signal, () => messaging.drain());
+  for (const signal of shutdownSignals(process.env)) process.once(signal, () => messaging.drain());
   nitroApp.hooks.hook('close', () => messaging.drain());
 });

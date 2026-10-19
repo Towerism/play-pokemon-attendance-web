@@ -46,8 +46,12 @@ test('a signed-in browser opening an invite link is told to log out, without ask
   await page.goto(`/invite#${secret}`);
 
   await expect(page.getByText("You're signed in as organizer. Log out to use this link.")).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Log out' })).toBeVisible();
   expect(checks).toEqual([]);
+
+  // Logging out here still lets them use the link, though the secret already left the address bar.
+  await page.getByRole('button', { name: 'Log out' }).click();
+  await expect(page.getByLabel('Username')).toBeVisible();
+  expect(checks).toHaveLength(1);
 });
 
 test('a link that no longer works says so', async ({ browser, app, connected }) => {

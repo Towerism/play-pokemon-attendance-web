@@ -118,7 +118,6 @@ interface SendWaiter {
 interface PollWaiter {
   leagueId: string;
   tokenId: number;
-  limit: number;
   /** Tries to hand out messages; answers and returns true when it got any. */
   wake(): boolean;
   /** Ends the wait with nothing. */
@@ -318,7 +317,6 @@ export function createMessagingService(deps: MessagingDeps): MessagingService {
         const waiter: PollWaiter = {
           leagueId,
           tokenId,
-          limit,
           wake() {
             const got = handOut(leagueId, limit);
             if (got.length === 0) return false;

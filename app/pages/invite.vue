@@ -25,9 +25,12 @@ const failure = ref<string | null>(null);
 
 onMounted(async () => {
   secret.value = secretFromHash(window.location.hash);
-  // The secret leaves the address bar and the history entry at once.
+  // The secret leaves the address bar and the history entry at once; it is kept in memory for the check below.
   window.history.replaceState(window.history.state, '', '/invite');
-  if (loggedIn.value) return;
+  if (!loggedIn.value) await checkLink();
+});
+
+async function checkLink() {
   if (!secret.value) {
     invalid.value = true;
     return;
@@ -37,7 +40,7 @@ onMounted(async () => {
   } catch {
     invalid.value = true;
   }
-});
+}
 
 const mismatch = computed(() => state.confirm !== '' && state.confirm !== state.password);
 
@@ -70,6 +73,7 @@ async function accept() {
 async function logOut() {
   await $fetch('/api/auth/logout', { method: 'POST' });
   await clear();
+  await checkLink();
 }
 </script>
 
