@@ -896,6 +896,7 @@ describe('what a staff job reads and writes back (#47)', () => {
         tournamentId: 't-1',
         label: 'League Challenge · 26-10-1',
         professor: { connectionId: 1, playerId: '9999991', name: 'Olive Organizer' },
+        leaseId: null,
       });
       expect(upstream.state.calls).toContain(`listTournaments ${new Date('2026-10-14T05:00:00Z').toISOString()}`);
     });
@@ -1057,6 +1058,7 @@ describe('acting on a tournament as its organizer (#75)', () => {
       tournamentId: 'brocks',
       label: 'Brock Cup',
       professor: { connectionId: 2, playerId: '0000222', name: 'Brock Harrison' },
+      leaseId: null,
     });
   });
 
@@ -1289,6 +1291,28 @@ describe('who may change a tournament\'s staff (ADR-0015 §4)', () => {
   it('never lets the owner delete a pending assignment whose organizer another user holds', async () => {
     const { assignment } = await add(MISTY, 'mistys');
     await expect(staffing.removeAssignment(L, WED, assignment.id, OWNER)).rejects.toMatchObject({ code: 'not_your_connection' });
+  });
+
+  it("lets a professor staff the owner's tournament while it is lent to them, through the organizer's connection", async () => {
+    upstream.state.leases = [{ id: 7, connectionId: 1, tournamentId: 'olives', lesseeUserId: MISTY.userId }];
+    const { assignment } = await add(MISTY, 'olives');
+
+    await staffing.changeRole(L, WED, assignment.id, 'scorekeeper', MISTY);
+    expect(await staffing.prepareApply(L, WED, 'olives', MISTY)).toMatchObject({ professor: { connectionId: 1, playerId: '9999991' }, leaseId: 7 });
+    await staffing.removeAssignment(L, WED, assignment.id, MISTY);
+    expect(stored()).toEqual({ n: 0 });
+  });
+
+  it('gives a lease no reach beyond its own tournament', async () => {
+    upstream.state.tournaments = [...upstream.state.tournaments, tournament('pickles')];
+    upstream.state.leases = [{ id: 7, connectionId: 1, tournamentId: 'pickles', lesseeUserId: MISTY.userId }];
+    await expect(add(MISTY, 'olives')).rejects.toMatchObject({ code: 'not_your_connection' });
+  });
+
+  it("starts the organizer's own staff job under no lease", async () => {
+    upstream.state.leases = [{ id: 7, connectionId: 1, tournamentId: 'olives', lesseeUserId: MISTY.userId }];
+    await add(OWNER, 'olives');
+    expect(await staffing.prepareApply(L, WED, 'olives', OWNER)).toMatchObject({ leaseId: null });
   });
 
   it("doesn't read tournaments as a connection outside the league", async () => {
