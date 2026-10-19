@@ -4,7 +4,7 @@
 - Date: 2026-10-13
 - Amends: architecture §7 ("every handler calls `requireUserSession`") and the CLAUDE.md module rule saying the same,
   for one route family: `/api/integrations/v1/*`
-- Amended by: [ADR-0015](0015-professor-logins.md) (proposed, #199): tokens carry scopes checked per route, and `POST /api/integrations/v1/invites` (scope `invites:create`) mints professor invites for Genie to send
+- Amended by: [ADR-0015](0015-professor-logins.md) (proposed, #199): tokens carry scopes checked per route, and a message outbox (scope `messages:deliver`) lets Genie send professors Discord direct messages addressed by player ID
 - Companion: [Tournament Genie ADR-0008](https://github.com/Towerism/discord-pokemon-tournament-genie/blob/main/docs/architecture/adr/0008-attendance-integration.md)
   (accepted), which fixes the contract and pulls on the organizer's click
 - Builds on: [ADR-0007](0007-staff-assignment.md) (staff assignments are desired state),
