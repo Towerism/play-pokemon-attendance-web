@@ -3,7 +3,7 @@ import { type SQL, and, asc, eq, gt, inArray, isNull, lte } from 'drizzle-orm';
 import { dateIn, localDay } from '../../../shared/time/local-time';
 import type { SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
-import type { LEASE_END_REASONS, LEASE_NOTICE_STATES} from '../../db/schema';
+import type { LEASE_END_REASONS, LEASE_NOTICE_STATES } from '../../db/schema';
 import { pokemonConnection, tournamentLease } from '../../db/schema';
 import type { Actor } from '../accounts/service';
 import type { DeliveryResult, DiscordChannel } from '../messaging/channel';

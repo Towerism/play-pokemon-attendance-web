@@ -46,7 +46,7 @@ const sql = (q: string, ...params: unknown[]) => database.sqlite.prepare(q).run(
 const all = (q: string, ...params: unknown[]) => database.sqlite.prepare(q).all(...params) as Record<string, unknown>[];
 const playerOf: Record<number, string> = { [OAK]: '0099999', [OAK_TWO]: '0088888', [MISTY_CONN]: '0011111', [BROCK_CONN]: '0022222', [GARY_CONN]: '0033333' };
 
-function tournament(id: string, overrides: Partial<TournamentDetails> = {}): TournamentDetails {
+function tournament(id: string, overrides: Partial<Omit<TournamentDetails, 'organizerPlayerId'>> & { organizerPlayerId?: string } = {}): TournamentDetails {
   return {
     id,
     name: 'League Cup',
@@ -57,7 +57,7 @@ function tournament(id: string, overrides: Partial<TournamentDetails> = {}): Tou
     status: 'sanctioned',
     applicationState: 'sanctioned',
     editableUntil: null,
-    organizerPlayerId: '0099999',
+    organizerPlayerId: '0099999' as TournamentDetails['organizerPlayerId'],
     organizerName: 'Samuel Oak',
     activityState: 'pending',
     category: 'tcg_std',
@@ -70,7 +70,7 @@ function tournament(id: string, overrides: Partial<TournamentDetails> = {}): Tou
     details: null,
     eventWebsite: null,
     ...overrides,
-  };
+  } as TournamentDetails;
 }
 
 function seed() {
