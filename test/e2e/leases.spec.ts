@@ -1,6 +1,6 @@
 import { tomTdf } from '../../shared/tdf/__fixtures__/tom';
 import { localInstant } from '../../shared/time/local-time';
-import { fakeRecord, fakeTournament } from '../server/fake-pokemon';
+import { type FakePokemon, fakeRecord, fakeTournament } from '../server/fake-pokemon';
 import { type Api, STAFF_ID, addProfessor, connectAccount, expect, leagueDay, shareSession, test } from './fixtures';
 
 // Tournament leases (ADR-0015 §5; architecture §8): the owner lends tournaments from This week, the lent professor's
@@ -15,7 +15,7 @@ const T1 = 'bbbbbbbb-0000-4000-8000-000000000001';
 const T2 = 'bbbbbbbb-0000-4000-8000-000000000002';
 
 /** Two of the owner's tournaments on `date`, at 18:00 and 19:00 in the league's time zone. */
-function twoTournaments(fake: { tournaments: unknown[]; tournamentRecords: Map<string, unknown[]> }, date: string) {
+function twoTournaments(fake: FakePokemon, date: string) {
   for (const [guid, time, name] of [
     [T1, '18:00', 'Olive Cup'],
     [T2, '19:00', 'Olive Challenge'],
@@ -28,7 +28,7 @@ function twoTournaments(fake: { tournaments: unknown[]; tournamentRecords: Map<s
 }
 
 /** A member professor connected in Card Shop. */
-async function member(app: Parameters<typeof addProfessor>[0], fake: { addAccount: (a: { playerId: string; name: string; leagues: unknown[] }) => { code: string } }, username: string, playerId: string) {
+async function member(app: Parameters<typeof addProfessor>[0], fake: FakePokemon, username: string, playerId: string) {
   const api = await addProfessor(app, username);
   expect((await connectAccount(api, fake.addAccount({ playerId, name: username, leagues: [CARD_SHOP] }).code)).status).toBe(200);
   return api;
