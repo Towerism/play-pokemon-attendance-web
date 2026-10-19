@@ -25,6 +25,11 @@ export interface Actor {
   userId: number;
   username: string;
   role: Role;
+  /**
+   * A professor who accepted a password reset link and hasn't completed a Pokémon connect since (ADR-0015 §8): held to
+   * the waiting room, and `actingConnection` refuses them. Absent means false.
+   */
+  reverifyRequired?: boolean;
 }
 
 export class SetupClosedError extends Error {
@@ -50,6 +55,8 @@ export interface AccountsService {
   authenticate(input: { username: string; password: string }): Promise<AppUser | null>;
   /** The actor for a session's user id; `null` when the user is gone or removed. */
   actor(userId: number): Actor | null;
+  /** A successful Pokémon connect proved the professor's login after a reset (ADR-0015 §8). */
+  clearReverify(userId: number): void;
 }
 
 export function createAccountsService(deps: {
@@ -101,8 +108,16 @@ export function createAccountsService(deps: {
     },
 
     actor(userId) {
-      const row = db.select({ username: appUser.username, role: appUser.role, removedAt: appUser.removedAt }).from(appUser).where(eq(appUser.id, userId)).get();
-      return row && !row.removedAt ? { userId, username: row.username, role: row.role } : null;
+      const row = db
+        .select({ username: appUser.username, role: appUser.role, removedAt: appUser.removedAt, reverifyRequiredAt: appUser.reverifyRequiredAt })
+        .from(appUser)
+        .where(eq(appUser.id, userId))
+        .get();
+      return row && !row.removedAt ? { userId, username: row.username, role: row.role, reverifyRequired: row.reverifyRequiredAt !== null } : null;
+    },
+
+    clearReverify(userId) {
+      db.update(appUser).set({ reverifyRequiredAt: null }).where(eq(appUser.id, userId)).run();
     },
   };
 }
