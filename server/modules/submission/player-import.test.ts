@@ -726,6 +726,9 @@ describe('reading play sessions', () => {
 
     expect(league.calls).toEqual([`sessions ${GROUP} complete`]);
     expect(rejected.playerImport).toMatchObject({ sessionsError: 'login_rejected' });
+    expect(logs).toContainEqual(
+      expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ code: 'login_rejected', upstreamCode: 'forbidden', status: 401 }) }),
+    );
 
     league.calls = [];
     league.onList = () => {
