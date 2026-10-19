@@ -136,6 +136,7 @@ describe('staffing API', () => {
             assignments: [],
             upstreamOnly: [{ playerId: '00555', name: 'Jo Judge', role: 'judge' }],
             players: [{ playerId: '00888' }],
+            lease: null,
           },
         ],
         unread: [],
