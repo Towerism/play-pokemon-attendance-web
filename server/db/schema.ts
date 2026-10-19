@@ -323,6 +323,12 @@ export const submission = sqliteTable(
      * job runs (#96). No FK across modules.
      */
     resultsUploadId: integer('results_upload_id'),
+    /**
+     * The tournament lease (`tournament_lease`) a `staff` or `tdf_upload` job ran under (ADR-0015 §5): `started_by` is
+     * the lent professor, and the professor it ran as is the organizer. No FK: the lease may be deleted with its
+     * connection, and History reads names from this row.
+     */
+    leaseId: integer('lease_id'),
   },
   (t) => [index('submission_league_date_idx').on(t.leagueId, t.sessionDate)],
 );
@@ -572,6 +578,52 @@ export const leagueMembership = sqliteTable('league_membership', {
   /** The last successful read; null until one, and again after a connect or a league change resets it. */
   checkedAt: integer('checked_at', { mode: 'timestamp' }),
 });
+
+/** Why a tournament lease ended (ADR-0015 §5). */
+export const LEASE_END_REASONS = ['expired', 'ended', 'given_back', 'lessee_removed', 'lessee_outside', 'connection_gone', 'tournament_cancelled'] as const;
+
+/** What became of a lease's grant notice through the Discord channel, or why none was sent. */
+export const LEASE_NOTICE_STATES = ['sending', 'delivered', 'no_discord_user', 'dm_refused', 'undeliverable', 'expired', 'genie_unavailable', 'no_recipient'] as const;
+
+/**
+ * A tournament lent to one named league member (ADR-0015 §5): while it is live (`ended_at` null and `ends_at` ahead),
+ * they may staff the tournament and upload its results through the organizer's connection. Owned by the pokemon module.
+ * Ended rows are kept, except that a connection's leases go with it.
+ */
+export const tournamentLease = sqliteTable(
+  'tournament_lease',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** The organizer's connection, through which the lent professor acts. */
+    connectionId: integer('connection_id')
+      .notNull()
+      .references(() => pokemonConnection.id, { onDelete: 'cascade' }),
+    /** Upstream tournament GUID. */
+    tournamentId: text('tournament_id').notNull(),
+    /** `<name> · <local start date>`, for display. */
+    tournamentLabel: text('tournament_label').notNull(),
+    lesseeUserId: integer('lessee_user_id')
+      .notNull()
+      .references(() => appUser.id),
+    /** The grantor's username. */
+    grantedBy: text('granted_by').notNull(),
+    grantedAt: integer('granted_at', { mode: 'timestamp' }).notNull(),
+    endsAt: integer('ends_at', { mode: 'timestamp' }).notNull(),
+    endedAt: integer('ended_at', { mode: 'timestamp' }),
+    endReason: text('end_reason', { enum: LEASE_END_REASONS }),
+    /** The grant notice's `outbound_message` id. No FK: that table belongs to the messaging module. */
+    noticeMessageId: integer('notice_message_id'),
+    noticeDelivery: text('notice_delivery', { enum: LEASE_NOTICE_STATES }),
+  },
+  (t) => [
+    uniqueIndex('tournament_lease_live_idx').on(t.tournamentId).where(sql`${t.endedAt} is null`),
+    index('tournament_lease_lessee_idx').on(t.lesseeUserId),
+    index('tournament_lease_connection_idx').on(t.connectionId),
+  ],
+);
 
 /**
  * Staff the organizer wants on a tournament (ADR-0007): desired state, applied

@@ -155,6 +155,13 @@
       "when": 1792434330679,
       "tag": "0021_invites_and_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1792438743270,
+      "tag": "0022_tournament_leases",
+      "breakpoints": true
     }
   ]
 }
