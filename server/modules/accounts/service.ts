@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { count, eq } from 'drizzle-orm';
+import { asc, count, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../../db/client';
 import { appUser } from '../../db/schema';
 import { setupCodeMatches } from '@towerism/selfhost-kit';
@@ -57,6 +57,8 @@ export interface AccountsService {
   actor(userId: number): Actor | null;
   /** A successful Pokémon connect proved the professor's login after a reset (ADR-0015 §8). */
   clearReverify(userId: number): void;
+  /** Every user who isn't removed, oldest first: who a tournament lease can name (ADR-0015 §5). */
+  activeActors(): Actor[];
 }
 
 export function createAccountsService(deps: {
@@ -118,6 +120,16 @@ export function createAccountsService(deps: {
 
     clearReverify(userId) {
       db.update(appUser).set({ reverifyRequiredAt: null }).where(eq(appUser.id, userId)).run();
+    },
+
+    activeActors() {
+      return db
+        .select({ userId: appUser.id, username: appUser.username, role: appUser.role, reverifyRequiredAt: appUser.reverifyRequiredAt })
+        .from(appUser)
+        .where(isNull(appUser.removedAt))
+        .orderBy(asc(appUser.id))
+        .all()
+        .map(({ reverifyRequiredAt, ...a }) => ({ ...a, reverifyRequired: reverifyRequiredAt !== null }));
     },
   };
 }
