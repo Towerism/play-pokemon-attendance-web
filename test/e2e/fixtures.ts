@@ -1,4 +1,6 @@
 import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import { type BrowserContext, type Page, test as base, expect } from '@playwright/test';
 import { type FakePlaySession, type FakePokemon, startFakePokemon } from '../server/fake-pokemon';
@@ -238,3 +240,28 @@ export async function finishedStatus(api: Api, id: number): Promise<string> {
     .toBe(false);
   return status;
 }
+
+/**
+ * A professor as #202's invites will make them (ADR-0015 §1), added straight to the database with the owner's
+ * password, and signed in. Returns their API client; `shareSession` puts the browser on it.
+ */
+export async function addProfessor(app: TestServer, username: string): Promise<Api> {
+  const db = new Database(join(app.dataDir, 'app.db'));
+  try {
+    db.pragma('busy_timeout = 5000');
+    db.prepare(`insert into app_user (username, password_hash, role, created_at) select ?, password_hash, 'professor', 1 from app_user where role = 'owner'`).run(username);
+  } finally {
+    db.close();
+  }
+  const api = client(app.url);
+  expect((await api.request('/api/auth/login', { method: 'POST', json: { username, password: OWNER.password } })).status, `log in as ${username}`).toBe(200);
+  return api;
+}
+
+/** Paste-back connect over the API as `api`, logging into the fake account with `code`. */
+export async function connectAccount(api: Api, code: string) {
+  const start = await api.request('/api/pokemon/connect/start', { method: 'POST', json: {} });
+  const state = new URL(((await start.json()) as { authorizeUrl: string }).authorizeUrl).searchParams.get('state')!;
+  return api.request('/api/pokemon/connect/complete', { method: 'POST', json: { url: loggedInUrl(state, code) } });
+}
+
