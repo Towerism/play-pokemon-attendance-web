@@ -659,6 +659,7 @@ erDiagram
     text role "owner|professor (ADR-0015); exactly one owner"
     datetime removed_at "null while active; a removed user can't sign in"
     datetime reverify_required_at "set by a reset link; cleared by a Pokémon connect for their own player ID"
+    datetime last_sign_in_at "shown to the owner in Settings → Professors"
     datetime created_at
   }
   APP_INVITE {
@@ -667,7 +668,7 @@ erDiagram
     text secret_hash "SHA-256 hex; unique; the secret is never stored (ADR-0015)"
     text secret_hint "ppa_inv_… + last 4 characters"
     text label "optional, display only (e.g. a Discord name)"
-    text created_by "username, or integration:<token label>"
+    text created_by "the owner's username"
     datetime created_at
     datetime expires_at "created_at + 72 h"
     datetime revoked_at
@@ -731,9 +732,11 @@ erDiagram
   }
   LEAGUE_UPSTREAM {
     text league_id PK
-    text activity_group_id "chosen by the owner from their own connections' leagues (ADR-0015)"
+    int connection_id FK "the submitting professor; dropped by ADR-0015 (M10)"
+    text activity_group_id "chosen by the owner from their own connections' leagues (ADR-0015, M10)"
     text activity_group_name
     text activity_group_display_id "e.g. L5012"
+    bool activity_group_can_submit "criteria.play_sessions.create_attendance; moves to LEAGUE_MEMBERSHIP in M10"
   }
   CURATION_SETTINGS {
     text league_id PK "no row: defaults 4 and 6"
@@ -745,7 +748,7 @@ erDiagram
     text league_id FK
     date session_date
     text tournament_id "upstream tournament guid (M8)"
-    text tournament_label "name · display_id" "e.g. 'Open play · TCG · Tue 6:00 PM'"
+    text tournament_label "name · display_id, e.g. 'Open play · TCG · Tue 6:00 PM'"
     text player_id FK
     text role "upstream role code, stored as text"
     text state "pending|assigned|failed|removing"
@@ -1456,14 +1459,14 @@ sequenceDiagram
   participant G as Tournament Genie
   actor P as Professor
   participant PTC as access.pokemon.com
-  G->>A: GET /api/integrations/v1/messages?wait=25 (long poll; Bearer, messages:deliver)
+  G->>A: GET /api/integrations/v1/messages?wait=25 (long poll, Bearer, messages:deliver)
   O->>A: recipient search → pick a player
   O->>A: POST /api/professors/invites {label, playerId, send: discord}
-  A->>A: app_invite bound to playerId; DiscordChannel.send (link sealed), wait ≤ 10 s
+  A->>A: app_invite bound to playerId, DiscordChannel.send (link sealed), wait ≤ 10 s
   A-->>G: the long poll answers: [{id, playerId, text, link: {label, url: <site URL>/invite#ppa_inv_…}}]
   G->>G: look up playerId in its directory → Discord user
   alt a Discord user is linked
-    G->>P: direct message (mentions disabled; never posted, never logged)
+    G->>P: direct message (mentions disabled, never posted, never logged)
     G->>A: POST /api/integrations/v1/messages/{id}/result {status: delivered}
     A-->>O: 201 "Sent to <name> on Discord"
   else none linked
@@ -1473,8 +1476,8 @@ sequenceDiagram
   P->>A: open /invite (the secret stays in the fragment) → POST /api/invites/check
   P->>A: POST /api/invites/accept {secret, username, password}
   A-->>P: professor created and signed in → Settings
-  P->>PTC: connect (PKCE, §4.1); must be the bound playerId
-  A->>A: connection.user_id = professor; read activity groups → league_membership
+  P->>PTC: connect (PKCE, §4.1), must be the bound playerId
+  A->>A: connection.user_id = professor, read activity groups → league_membership
   alt the league's group is listed
     A-->>P: member: the league's pages open
   else not listed
@@ -1494,7 +1497,7 @@ For example, `POST /sessions/{date}/tdf` lives in
   nowhere else; [ADR-0013](adr/0013-read-only-integrations-api.md));
 - with ADR-0015 (M10), gets its caller from `server/utils/access.ts` instead of `requireLeague`:
   `requireActor` (the user row, read on every request; removed → 401), `requireMember` (403 `not_a_member` for a
-  professor whose connection isn't confirmed in the league) or `requireOwner` (403 `owner_only`). The public invite
+  professor whose connection isn't confirmed in the league) or `requireOwner` (403 `owner_only`). The other refusals (`reverify_required`, `site_url_not_set`, `invite_player_mismatch`, `connection_held`, `one_connection_only`) are listed in ADR-0015 §2, §3, §6 and §8. The public invite
   routes and `/api/integrations/v1/*` are the exceptions;
 - validates its input with `getValidatedRouterParams`, `readValidatedBody` or `getValidatedQuery` and the shared Zod schemas.
 
@@ -1507,7 +1510,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | --------------------------------------------------------- | ----------------------------------------------------------- |
 | `POST /auth/login` · `POST /auth/logout`                  | App login (organizer accounts). On the client, `useUserSession()` from `nuxt-auth-utils` replaces a `/me` endpoint. |
 | `POST /invites/check` · `POST /invites/accept` (ADR-0015, M10) | Public, 5 per 15 min per client. `check { secret }` → `{ label, leagueName, expiresAt }`; `accept { secret, username, password }` → 201, a new professor, signed in (a reset link takes no username and sets that professor's password). 404 `invite_invalid` for an unknown, expired, used or revoked invite alike; 409 `already_signed_in` |
-| `GET /professors` · `POST /professors/invites` · `POST /professors/{userId}/reset-link` (both take `send: copy | discord`; an invite takes an optional `playerId`, picked with a recipient search over `/players` and `/staff` ; a Discord send waits up to 10 s for Genie's result: 201 delivered, 422 `no_discord_user` / `dm_refused` (the invite is revoked), 202 still sending, 503 `genie_unavailable`) · `DELETE /professors/invites/{id}` · `DELETE /professors/{userId}` (ADR-0015, M10) | Owner only. Professors with their connection, membership, last sign-in and any connection taken over from the owner, plus outstanding invites. Minting returns the link once (409 `invite_limit` once the owner's connections, active professors and open invites reach 10). Removing a professor revokes and deletes their connection |
+| `GET /professors` · `POST /professors/invites` · `POST /professors/{userId}/reset-link` (both take `send: copy \| discord`; an invite takes an optional `playerId`, picked with a recipient search over `/players` and `/staff`; a Discord send waits up to 10 s for Genie's result: 201 delivered, 422 `no_discord_user` / `dm_refused` (the invite is revoked), 202 still sending, 503 `genie_unavailable`) · `DELETE /professors/invites/{id}` · `DELETE /professors/{userId}` (ADR-0015, M10) | Owner only. Professors with their connection, membership, last sign-in and any connection taken over from the owner, plus outstanding invites. Minting returns the link once (409 `invite_limit` once the owner's connections, active professors and open invites reach 10). Removing a professor revokes and deletes their connection |
 | `GET /integrations/v1/messages?wait=&limit=` · `POST /integrations/v1/messages/{id}/result` (ADR-0015, M10) | **Bearer token with `messages:deliver` only.** The Discord channel's wire: a long poll (`wait` ≤ 25 s, one waiting request per token) that answers as soon as a message can be handed out, then hides that message for 60 s while Genie sends it; on shutdown it answers at once with none; `[{ id, playerId, text, link: { label, url } \| null, expiresAt }]` oldest first (`limit` 1–50, default 20; polls 120 and results 600 per 15 min per token, counted apart). The channel knows no features: no kind or topic is sent. `result { status: delivered \| no_discord_user \| dm_refused \| failed, reason? }` → 204; the first three are final, `failed` retries up to 5 times. 403 `insufficient_scope` |
 | `POST /tournament-leases` · `DELETE /tournament-leases/{id}` · `GET /tournament-leases` (ADR-0015, M10) | Lend tournaments `{ tournamentIds, lesseeUserId, endsAt? }` → 201, all or none (each refusal named: `not_your_tournament`, `already_leased`, `unknown_tournament`); only the organizer's own user, to any other league member, the owner included (sick cover both ways). `DELETE` ends a lease (the organizer) or gives it back (the lent professor). `GET` lists live leases the caller granted or holds (the owner: all) |
 | `GET /players?filter=promote\|stale\|all&q=&limit=`       | Players with `metrics` (null when never seen), `timesSubmitted`, `promotionCandidate` and `stale`, plus the league's `thresholds`. `q` matches part of a name (any case) or of a Player ID. `all` by name, `promote` most seen first, `stale` longest absent first, except that a player whose ID is exactly `q` comes first. `limit` (1–100) caps the list after that; without it every match is returned |
@@ -1592,7 +1595,7 @@ Client patterns:
 | Threat                                                 | Control                                                                                                                                |
 | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Theft of a refresh token (acts as that professor in play-tools; one per connected professor, ADR-0008) | AES-256-GCM at rest, each token bound to its own row (AAD `pokemon_connection:<id>`), so a ciphertext moved to another row doesn't open. The key is never stored in the DB: it comes from `NUXT_TOKEN_VAULT_KEY` if that is set, otherwise from `/data/secrets/token-vault.key`, generated on first boot with mode 0600. Litestream replicas and copies of `app.db` stay unreadable without the key. The token is never sent to the browser or logged. Disconnect revokes it at Hydra (`/oauth2/revoke`) and deletes the ciphertext. Trade-offs are in [ADR-0006](adr/0006-docker-on-unraid.md). |
-| Unauthorized use of the app                            | `nuxt-auth-utils`: scrypt-hashed passwords (`hashPassword`), with WebAuthn/passkeys available later. Sealed httpOnly, SameSite=Lax cookies (`NUXT_SESSION_PASSWORD`, or a generated `/data/secrets/session-password`). Cookies are `Secure` when served over HTTPS. `requireUserSession` in every handler. Login (10) and first-run setup (5) are rate-limited per client per 15 minutes by a small in-memory limiter (the kit's fixed-window limiter and its `enforceRateLimit` guard; the limiters are built once at boot by `server/bootstrap/rate-limits.ts`, so a limit the kit refuses fails startup naming its variables), checked before the body is read, so a refused attempt costs no scrypt work: `429` with `Retry-After`. The client is the TCP peer; `X-Forwarded-For` is believed only from a trusted proxy (`NUXT_TRUSTED_PROXIES`, default loopback plus Docker's `172.16.0.0/12` pool, so Caddy on the same Unraid box works), and then its rightmost untrusted entry, the one the proxy appended, is the client. A direct LAN client can't dodge the limit by forging the header. Plain HTTP is for the LAN only. Remote access goes through an HTTPS reverse proxy or Tailscale. |
+| Unauthorized use of the app                            | `nuxt-auth-utils`: scrypt-hashed passwords (`hashPassword`), with WebAuthn/passkeys available later. Sealed httpOnly, SameSite=Lax cookies (`NUXT_SESSION_PASSWORD`, or a generated `/data/secrets/session-password`). Cookies are `Secure` when served over HTTPS. `requireUserSession` in every handler (except `/api/integrations/v1/*`, and with ADR-0015 the public `/api/invites/*`). Login (10) and first-run setup (5) are rate-limited per client per 15 minutes by a small in-memory limiter (the kit's fixed-window limiter and its `enforceRateLimit` guard; the limiters are built once at boot by `server/bootstrap/rate-limits.ts`, so a limit the kit refuses fails startup naming its variables), checked before the body is read, so a refused attempt costs no scrypt work: `429` with `Retry-After`. The client is the TCP peer; `X-Forwarded-For` is believed only from a trusted proxy (`NUXT_TRUSTED_PROXIES`, default loopback plus Docker's `172.16.0.0/12` pool, so Caddy on the same Unraid box works), and then its rightmost untrusted entry, the one the proxy appended, is the client. A direct LAN client can't dodge the limit by forging the header. Plain HTTP is for the LAN only. Remote access goes through an HTTPS reverse proxy or Tailscale. |
 | Hijacking first-run setup on the LAN                   | The organizer account can only be created while no users exist, and only with a one-time setup code printed to the container log on boot (generated and compared in constant time by `@towerism/selfhost-kit`) |
 | CSRF on state-changing routes                          | SameSite=Lax plus required `Content-Type: application/json` (`server/middleware/json-only.ts`, the kit's `jsonOnly`: an `/api` POST/PUT/PATCH/DELETE whose body isn't JSON gets 415). The TDF upload is JSON too (the file's text in the body), so the same guard covers it and no CSRF token module is needed. |
 | Missing security headers                               | The CSP and header set come from `@towerism/selfhost-kit` (`contentSecurityPolicy`, `securityHeaders`). `nuxt-security` nonces the HTML shell's inline scripts; `server/plugins/security-headers.ts` (the kit's `securityHeadersPlugin`) sends the same headers on every response, JSON errors included (`server/error.ts`, the kit's `jsonErrorHandler`). CSP `default-src 'self'`, `script-src 'self'` + nonce (no `unsafe-inline`/`unsafe-eval`; browser code takes Zod from `shared/zod.ts`, which runs it jitless so it never probes `Function`, enforced by ESLint), `frame-ancestors 'none'`; `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, COOP/CORP `same-origin`, no CORS and no COEP. HSTS (180 days) and `upgrade-insecure-requests` only when `NUXT_PUBLIC_SITE_URL` is https: HSTS covers every port on the host, and over plain HTTP the upgrade would break the app. `/api` POST/PUT/PATCH/DELETE bodies over 2 MiB get `413`, and one sent without a `Content-Length` (chunked) gets `411`, before it is read (`server/middleware/body-size.ts`, the kit's `bodySizeLimit`), except the TDF preview, which has its own limit. nuxt-security's XSS validator, CORS handler and rate limiter are off: Zod validates bodies, and TDF uploads contain XML. |
@@ -1603,7 +1606,7 @@ Client patterns:
 | OAuth `state` / code injection on connect              | `state` + PKCE verifier stored server-side and bound to the app user's session, with a 10-min TTL and single use                       |
 | Minors' PII                                            | Outside the TDF archive only name and player ID are stored. Tournament records' `year_of_birth` (S6) is dropped in the adapter, and TDF birthdates never reach a column, log or API response. Until M9 raw TDFs are not retained. |
 | Theft of the TDF archive (M9, ADR-0012; holds minors' birthdates) | Each file is AES-256-GCM encrypted with a key of its own (`NUXT_TDF_VAULT_KEY` or `/data/secrets/tdf-vault.key`, 0600), never in the database, so a copy of `app.db` or a Litestream replica opens nothing. **The recommended appdata backup holds `secrets/` with `app.db`, so it can open the archive**, and must be kept somewhere only the organizer can read (#101). AAD binds each ciphertext to its league and SHA-256. It is decrypted only in memory, with no temp files. Download needs a session and is `no-store` and audited. `content`/`payload` are redacted from logs. A compromise of the running container, or of `app.db` and `secrets/` together (an appdata backup is such a pair), exposes it. |
-| Theft or misuse of an integration token (#115, ADR-0013) | Read-only and scoped to `/api/integrations/v1/*` (no other route takes it, and that route takes nothing else); 256 random bits, stored only as a SHA-256 with a 4-character hint, shown once; revoked by deleting it; every refusal is the same 401; 30 reads per 15 minutes per token, refused before any play-tools call; one audit log line per read (token id and label, never the secret; `authorization` is redacted). A stolen token reads tournament and staff names and player IDs until revoked, and over plain HTTP it crosses the LAN in clear: remote access goes through HTTPS or Tailscale, as for the app |
+| Theft or misuse of an integration token (#115, ADR-0013) | Read-only and scoped to `/api/integrations/v1/*` (no other route takes it, and that route takes nothing else); 256 random bits, stored only as a SHA-256 with a 4-character hint, shown once; revoked by deleting it; every refusal is the same 401; 30 reads per 15 minutes per token, refused before any play-tools call; one audit log line per read (token id and label, never the secret; `authorization` is redacted). A stolen token reads tournament and staff names and player IDs until revoked, and over plain HTTP it crosses the LAN in clear: remote access goes through HTTPS or Tailscale, as for the app. With ADR-0015 (M10), each token carries its own scopes. A stolen `messages:deliver` token receives undelivered invite links (bound to a player ID where set, single use, 72 h, and useless without a Pokémon login in the league), and can report false results: a false `no_discord_user` revokes an invite, a false `delivered` tells the owner a message arrived when it didn't. Revoking the token stops both |
 | Dead names from play-tools (M8)                        | Upstream names only seed an unknown player and never overwrite a local name; the organizer can rename anyone; the app shows the local name and never stores the upstream one beside it (ADR-0007 decision 13) |
 | Supply chain                                           | Lockfile, `pnpm audit` in CI, and Renovate (`renovate.json`, #126): actions pinned by digest, npm updates wait 3 days, vulnerability alerts labelled `security`, and Node (`.node-version` + Dockerfile images) and pnpm (`packageManager` + Dockerfile) each move in one PR. The kit group (npm version + reusable-workflow SHAs) has no wait and automerges patches and minors as `fix(deps)` (kit ADR-0005); nothing else automerges. Automerge rests on the `main` ruleset (PR required; required checks `Lint, typecheck, test`, `E2E (Playwright)`, `Image (smoke test, publish) / image`; no bypass), so renaming a CI job means updating the ruleset, and on `test/unit/kit-pins.test.ts`, which fails a half-moved kit bump |
 
@@ -1733,8 +1736,8 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M6 Metrics and curation       | Views, Players page tabs, thresholds, regulars "present" ticks. Built.                                        |
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 | M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47), the Players → Staff tab (#50), the This week Staff card with `StaffSearch` (#49) and the staff import (#48) and staff batches for every tournament on a date (#76) are built ([ADR-0007](adr/0007-staff-assignment.md), #41). Accepted |
-| M10 Professor logins          | [ADR-0015](adr/0015-professor-logins.md) (accepted, #199). To be split into issues: roles and the access guards; connection ownership and `actingConnection` across submission, staffing and tournaments (attendance as yourself, undo and retry as the submission's professor); league membership and the waiting room; invites, the accept page and reset links; tournament leases; the Discord channel, integration scopes and Genie's routes, with Genie's companion change; the read-only and lent states in the UI |
 | M9 Tournaments                | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine (built, #86; a start a DST change skips or repeats is refused, with the zone helpers moved to `shared/time`) and the parser's new fields; the `tournaments` module (built, #91: templates, scaffolds, schedules and planned tournaments, planned on read, with the live form options and Upcoming); create, edit (reschedule included) and cancel jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload; its server side built, #96: preview and fixes, Remove from staff, the `tdf_upload` job); the encrypted TDF archive (built, #88: `tdf-archive` module, `TDF_FILE`, the TDF key, download and delete, M3 import moved onto it and `tdf_upload_player` dropped). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md), [ADR-0012](adr/0012-encrypted-tdf-archive.md) |
+| M10 Professor logins          | [ADR-0015](adr/0015-professor-logins.md) (accepted, #199). To be split into issues: roles and the access guards; connection ownership and `actingConnection` across submission, staffing and tournaments (attendance as yourself, undo and retry as the submission's professor); league membership and the waiting room; invites, the accept page and reset links; tournament leases; the Discord channel, integration scopes and Genie's routes, with Genie's companion change; the read-only and lent states in the UI |
 
 ## 14. Architecture Decision Records
 

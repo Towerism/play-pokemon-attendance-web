@@ -492,6 +492,11 @@ token that lacks it gets 403 `insufficient_scope`, with
 `WWW-Authenticate: Bearer realm="integrations", error="insufficient_scope"`. The route family is still bearer-only, and
 a token still counts nowhere else.
 
+**A stolen `messages:deliver` token** receives undelivered invite links, and can report false results: a false
+`no_discord_user` revokes an invite, and a false `delivered` tells the owner a message arrived when it didn't. A link
+it takes is still bound to its player ID where set, single use and 72 hours long, and is no use without a Pokémon
+login in the league. Revoking the token stops both.
+
 **Genie's side** is a companion decision for Genie's own ADR: keep a long poll open, look up each player ID in its
 directory, send the direct message, report the result.
 
@@ -530,7 +535,7 @@ directory, send the direct message, report the result.
     keep-alive after boot checks every row whose `checked_at` is null;
   - `league_upstream` rebuilt without `connection_id`;
   - `app_invite` (with `for_user_id` for reset links and `for_player_id` for a bound invite);
-  - `app_user.reverify_required_at` (§8);
+  - `app_user.reverify_required_at` (§8) and `last_sign_in_at`, which Settings → Professors shows;
   - `tournament_lease` (§5);
   - `outbound_message` (§7);
   - `submission.lease_id`, set on a staff or results job started under a lease;
