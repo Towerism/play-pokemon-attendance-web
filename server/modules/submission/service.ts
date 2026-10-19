@@ -1589,7 +1589,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           failed += 1;
           sessionsLeft -= sessionList.length - i - 1;
           total -= sessionList.length - i - 1;
-          sessionsFailed(`Stopped reading the league's play sessions`, err.code);
+          sessionsFailed(`Stopped reading the league's play sessions`, err);
           break;
         }
         // Gone, unreadable, refused (403), or still down after 3 tries: this session only.
@@ -1651,16 +1651,22 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         return { groupId, gateway, list };
       } catch (err) {
         if (!(err instanceof PokemonUpstreamError || err instanceof SubmissionError)) throw err;
-        sessionsFailed(`Could not list the league's play sessions`, err.code);
+        sessionsFailed(`Could not list the league's play sessions`, err);
         return null;
       }
     }
 
-    /** The league's sessions could not be listed, or a read stopped the rest: the import goes on without them. */
-    function sessionsFailed(what: string, code: string): void {
+    /**
+     * The league's sessions could not be listed, or a read stopped the rest: the import goes on without them. A 401
+     * here is play-tools rejecting the submitting professor's token, recorded as `login_rejected` (#195); the
+     * connection's status is left alone, and tournament 401s stay `forbidden`.
+     */
+    function sessionsFailed(what: string, err: PokemonUpstreamError | SubmissionError): void {
+      const status = err instanceof PokemonUpstreamError ? err.details.status : undefined;
+      const code = err.code === 'forbidden' && status === 401 ? 'login_rejected' : err.code;
       sessionsStopped = true;
       lastFailure = code;
-      log.warn(`${label} #${row.id}: ${what}: ${code}`, { submissionId: row.id, code });
+      log.warn(`${label} #${row.id}: ${what}: ${code}`, { submissionId: row.id, code, upstreamCode: err.code, status });
       emit(row, 'sessions_failed', sessionsFailedMessage(what, code), done + failed, total);
     }
   }

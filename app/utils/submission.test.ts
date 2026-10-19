@@ -280,6 +280,9 @@ describe('a player import in History and Settings', () => {
     expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'needs_reconnect' })).toBe(
       'Read 2 of 2 tournaments · 3 players found · Play sessions not read: the submitting professor needs reconnecting',
     );
+    expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'login_rejected' })).toContain(
+      "Play sessions not read: play-tools rejected the submitting professor's login. Reconnect them in Settings",
+    );
     expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'forbidden' })).toContain("Play sessions not read: play-tools refused to show this league's play sessions");
     expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'not_connected' })).toContain("Play sessions not read: the league's Pokémon account isn't connected");
     expect(playerImportSummary({ ...tournamentsOnly, sessionsError: 'unavailable' })).toContain('Play sessions not read: play-tools could not be reached');
@@ -293,6 +296,9 @@ describe('a player import in History and Settings', () => {
   it("explains why a player import read nothing, without blaming tournaments, and leaves the staff import's words alone", () => {
     expect(playerImportErrorText('not_found')).toBe('Nothing could be read.');
     expect(playerImportErrorText('unexpected_shape')).toBe('Nothing could be read.');
+    expect(playerImportErrorText('forbidden')).toBe('play-tools refused the request. Check which Pokémon account is connected.');
+    expect(playerImportErrorText('login_rejected')).toBe("play-tools rejected the submitting professor's login. Reconnect them in Settings, then retry.");
+    expect(staffImportErrorText('forbidden')).toBe('play-tools refused to show these tournaments. Check which Pokémon account is connected.');
     expect(playerImportErrorText('needs_reconnect')).toBe(staffImportErrorText('needs_reconnect'));
     expect(playerImportErrorText('Something else.')).toBe('Something else.');
     expect(staffImportErrorText('not_found')).toBe('No tournament could be read.');

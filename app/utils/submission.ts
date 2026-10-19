@@ -159,6 +159,7 @@ export function playerImportSummary(r: PlayerImportResult): string {
 
 /** Why a player import read none of the league's play sessions (#195), by the code on its `sessions_failed` event. */
 const SESSIONS_ERRORS: Record<string, string> = {
+  login_rejected: "play-tools rejected the submitting professor's login. Reconnect them in Settings",
   forbidden: "play-tools refused to show this league's play sessions",
   needs_reconnect: 'the submitting professor needs reconnecting',
   not_connected: "the league's Pokémon account isn't connected",
@@ -188,7 +189,15 @@ export function staffImportErrorText(error: string): string {
   return STAFF_IMPORT_ERRORS[error] ?? error;
 }
 
-/** Why a player import read nothing: it reads play sessions too (#195), so a missing one isn't always a tournament. */
+/** Why a player import read nothing: it reads play sessions too (#195), so the words never blame tournaments alone. */
+const PLAYER_IMPORT_ERRORS: Record<string, string> = {
+  not_found: 'Nothing could be read.',
+  unexpected_shape: 'Nothing could be read.',
+  forbidden: 'play-tools refused the request. Check which Pokémon account is connected.',
+  login_rejected: "play-tools rejected the submitting professor's login. Reconnect them in Settings, then retry.",
+};
+
+/** Why a player import stopped: its own words where the staff import's would mislead, else the staff import's. */
 export function playerImportErrorText(error: string): string {
-  return error === 'not_found' || error === 'unexpected_shape' ? 'Nothing could be read.' : staffImportErrorText(error);
+  return PLAYER_IMPORT_ERRORS[error] ?? staffImportErrorText(error);
 }

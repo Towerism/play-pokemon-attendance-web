@@ -717,6 +717,32 @@ describe('reading play sessions', () => {
     expect(service.get(L, submissionId).playerImport).toMatchObject({ tournamentsRead: 1, sessionsError: 'league_not_selected' });
   });
 
+  it('records a 401 on the listing as a rejected login, listing no other status, and a 403 as forbidden', async () => {
+    league.onList = (status) => {
+      if (status === 'complete') throw refused(401);
+    };
+
+    const rejected = await importPlayers();
+
+    expect(league.calls).toEqual([`sessions ${GROUP} complete`]);
+    expect(rejected.playerImport).toMatchObject({ sessionsError: 'login_rejected' });
+
+    league.calls = [];
+    league.onList = () => {
+      throw refused(403);
+    };
+    expect((await importPlayers()).playerImport).toMatchObject({ sessionsError: 'forbidden' });
+  });
+
+  it('ends failed as a rejected login when a league with no tournaments gets a 401 on its sessions', async () => {
+    upstream.tournaments = [];
+    league.onList = () => {
+      throw refused(401);
+    };
+
+    expect(await importPlayers()).toMatchObject({ status: 'failed', error: 'login_rejected' });
+  });
+
   it('ends failed with the sessions code when nothing at all could be read', async () => {
     upstream.tournaments = [];
     connection = { ...connection, status: 'needs_reconnect' };
@@ -784,7 +810,10 @@ describe('reading play sessions', () => {
     const last = service.events(L, view.id).at(-1)!;
     expect(last).toMatchObject({ type: 'finished', total: 4, done: 4 });
     expect(view).toMatchObject({ status: 'partial', error: null });
-    expect(view.playerImport).toMatchObject({ sessionsTotal: 5, sessionsRead: 2, sessionsFailed: 0, sessionsError: 'forbidden' });
+    expect(view.playerImport).toMatchObject({ sessionsTotal: 5, sessionsRead: 2, sessionsFailed: 0, sessionsError: 'login_rejected' });
+    expect(logs).toContainEqual(
+      expect.objectContaining({ level: 'warn', fields: expect.objectContaining({ code: 'login_rejected', upstreamCode: 'forbidden', status: 401 }) }),
+    );
     expect(Object.keys(leaguePlayers()).sort()).toEqual(['0000100', '0000201', '0000202']);
   });
 
@@ -992,6 +1021,8 @@ describe('importing from every connected professor', () => {
     expect(upstream.calls).toEqual(['leagues', 'list', 'read olives']);
     expect(brock.calls).toContain('read brocks');
     expect(events(view.id)).toContain('professor_failed');
+    // Only the session reads record a 401 as a rejected login (#195).
+    expect(service.events(L, view.id).find((e) => e.type === 'professor_failed')?.message).toMatch(/: forbidden\.$/);
     expect(view.status).toBe('partial');
     expect(Object.keys(leaguePlayers())).toEqual(['0000200']);
   });
