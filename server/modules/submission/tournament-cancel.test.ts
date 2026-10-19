@@ -78,6 +78,9 @@ function playTools(connectionId: number) {
   };
 }
 
+/** Tournaments whose leases a cancel ended (ADR-0015 §5). */
+let leaseEndings: { tournamentId: string; reason: string }[] = [];
+
 function build(over: { tournamentDelayMs?: number } = {}): SubmissionService {
   return createSubmissionService({
     db: database.db,
@@ -101,6 +104,7 @@ function build(over: { tournamentDelayMs?: number } = {}): SubmissionService {
       onSleep?.();
     },
     log: { warn: (message, meta) => logged.push({ message, meta }), info: (message, meta) => logged.push({ message, meta }) },
+    leases: { isLive: () => true, endLeasesForTournament: (tournamentId, reason) => leaseEndings.push({ tournamentId, reason }) },
     ...(over.tournamentDelayMs !== undefined && { tournamentDelayMs: over.tournamentDelayMs }),
   });
 }
@@ -226,6 +230,21 @@ describe("dropping coverage's cached listings (#95)", () => {
 });
 
 describe('the tournament_cancel job', () => {
+  beforeEach(() => {
+    leaseEndings = [];
+  });
+
+  it("ends the tournament's lease once play-tools has it cancelled", async () => {
+    await cancel(created());
+    expect(leaseEndings).toEqual([{ tournamentId: GUID, reason: 'tournament_cancelled' }]);
+  });
+
+  it("leaves the tournament's lease live when the cancel fails", async () => {
+    onCancel = () => ({ fail: new PokemonUpstreamError('unavailable', 'play-tools answered 500') });
+    await cancel(created());
+    expect(leaseEndings).toEqual([]);
+  });
+
   it('sends one cancel as the organizer, then cancels the planned row and drops or tombstones its staff', async () => {
     const id = created();
 

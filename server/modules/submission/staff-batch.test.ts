@@ -59,6 +59,7 @@ function build(): SubmissionService {
       clock = new Date(clock.getTime() + ms);
     },
     staffDelayMs: DELAY,
+    leases: { isLive: (leaseId) => stub.state.leases.some((l) => l.id === leaseId), endLeasesForTournament: () => {} },
   });
 }
 
@@ -432,6 +433,22 @@ describe('a batch across organizers (ADR-0015 §4)', () => {
     expect(stub.state.writes.some((w) => w.as === BROCK.id)).toBe(false);
     // Refused before the batch started: its turn never came, so nothing read it fresh.
     expect(stub.state.calls).not.toContain(`getTournament ${SECOND}`);
+  });
+
+  it("runs the row of a tournament lent to the caller, as its organizer's connection", async () => {
+    stub.state.leases = [{ id: 9, connectionId: BROCK.id, tournamentId: SECOND, lesseeUserId: OWNER.userId }];
+    database.sqlite.prepare("insert or ignore into player (player_id, display_name, first_seen_at) values ('00999', 'Staffer', 0)").run();
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, created_by, created_at)
+         values (?, ?, ?, 'VGC Cup', '00999', 'judge', 'brock', 0)`,
+      )
+      .run(L, DATE, SECOND);
+
+    const view = await runAll([SECOND]);
+
+    expect(view.rows.map((r) => [r.tournamentId, r.status, r.refusal?.code ?? null])).toEqual([[SECOND, 'succeeded', null]]);
+    expect(stub.state.writes.every((w) => w.as === BROCK.id)).toBe(true);
   });
 
   it("refuses a batch with no tournament the caller may act on, starting nothing", async () => {

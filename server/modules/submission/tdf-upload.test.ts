@@ -21,7 +21,7 @@ import { type TournamentResults, createResultUploadReferrer, createTournamentRes
 import { OLIVE, stubPlayTools, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
-import { OWNER } from '../pokemon/test-connections';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The `tdf_upload` job (#96, ADR-0011) and Remove from staff's removal-only staff job on the submission rails. The
 // send is `validateResults`: every refusal asserts it was never called, and the happy path that it was called once,
@@ -65,6 +65,8 @@ let onSend: ((what: 'validate' | 'confirm' | 'unassign', n: number) => unknown) 
 /** Runs before each tournament read, numbered from 1. */
 let onRead: ((n: number) => unknown) | undefined;
 let readCount: number;
+/** Which tournament leases are still live (ADR-0015 §5). */
+let live: Set<number>;
 
 const noResolver: PlaySessionResolver = { resolve: () => Promise.reject(new Error('never')), find: () => Promise.reject(new Error('never')) };
 const noAttendance = {
@@ -146,6 +148,7 @@ function build(): SubmissionService {
       if (signal.aborted) throw signal.reason;
       clock = new Date(clock.getTime() + ms);
     },
+    leases: { isLive: (leaseId) => live.has(leaseId), endLeasesForTournament: () => {} },
     log: silentLogger,
   });
 }
@@ -173,6 +176,7 @@ beforeEach(() => {
   onSend = undefined;
   onRead = undefined;
   readCount = 0;
+  live = new Set();
   archive = createTdfArchiveService({
     db: database.db,
     vault: tdfVault(randomBytes(32).toString('base64')),
@@ -572,5 +576,52 @@ describe('Remove from staff: a removal-only staff job', () => {
     expect(service.get(L, submissionId)).toMatchObject({ kind: 'staff', retryOf: first.submissionId, items: [expect.objectContaining({ playerId: '1234567', outcome: 'removed' })] });
     expect(sends('unassign')).toHaveLength(2);
     expect((await refusal(service.retry(L, submissionId, OWNER))).code).toBe('nothing_to_retry');
+  });
+});
+
+describe('the send under a lease (ADR-0015 §5)', () => {
+  const MISTY = professorActor(2, 'misty');
+  const lend = () => {
+    upstream.state.leases = [{ id: 7, connectionId: OLIVE.id, tournamentId: GUID, lesseeUserId: MISTY.userId }];
+    live = new Set([7]);
+  };
+  async function uploadAsMisty(beforeJob?: () => void) {
+    const p = await results.preview(L, DATE, GUID, { filename: 'cup.tdf', content: file() }, MISTY);
+    beforeJob?.();
+    const { submissionId } = await service.uploadResults(L, {
+      date: DATE,
+      tournamentId: GUID,
+      uploadId: p.uploadId,
+      body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! },
+      actor: MISTY,
+    });
+    await service.idle();
+    return service.get(L, submissionId);
+  }
+
+  it("sends as the organizer's connection, recording the lent professor and the lease", async () => {
+    lend();
+    const job = await uploadAsMisty();
+    expect(job).toMatchObject({ startedBy: 'misty', leased: true, professor: { playerId: ORGANIZER } });
+    expect(sends('validate')).toEqual([expect.objectContaining({ as: OLIVE.id })]);
+  });
+
+  it('sends nothing when the lease ends before the validate', async () => {
+    lend();
+    const job = await uploadAsMisty(() => {
+      onRead = () => live.delete(7);
+    });
+    expect(job.tournamentItems[0]).toMatchObject({ outcome: 'failed', errorCode: 'lease_ended' });
+    expect(sends('validate')).toEqual([]);
+  });
+
+  it('always finishes the confirm once play-tools validated the file', async () => {
+    lend();
+    onSend = (what) => {
+      if (what === 'validate') live.delete(7);
+    };
+    const job = await uploadAsMisty();
+    expect(sends('confirm')).toHaveLength(1);
+    expect(job.tournamentItems[0]).toMatchObject({ outcome: 'processing' });
   });
 });
