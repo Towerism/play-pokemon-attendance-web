@@ -89,9 +89,9 @@ export const outboundMessage = sqliteTable(
     playerId: text('player_id').notNull(),
     /** Plain text, at most 1,800 characters. */
     text: text('text').notNull(),
-    /** The sending feature's own name (e.g. `invite`); never sent to Genie. */
+    /** The sending feature's own name; never sent to Genie. */
     topic: text('topic').notNull(),
-    /** The sender's id for it, e.g. the invite id. */
+    /** The sender's own id for it. */
     ref: text('ref'),
     linkLabel: text('link_label'),
     /** The link's URL, sealed under AAD `outbound_message:<id>`. */
