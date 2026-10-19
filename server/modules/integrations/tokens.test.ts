@@ -40,11 +40,20 @@ describe('create', () => {
       createdBy: 'organizer',
       createdAt: '2026-10-13T12:00:00.000Z',
       lastUsedAt: null,
+      scopes: ['integrations:read'],
     });
     const [row] = rows();
-    expect(row).toMatchObject({ token_hash: sha256(secret), token_hint: token.hint, scope: 'integrations:read', league_id: L });
+    expect(row).toMatchObject({ token_hash: sha256(secret), token_hint: token.hint, scopes: 'integrations:read', league_id: L });
     expect(JSON.stringify(rows())).not.toContain(secret);
     expect(tokens.list(L)).toEqual([token]);
+  });
+
+  it('carries the scopes it was minted with, each once, in a fixed order (ADR-0015 §7)', () => {
+    const { token, secret } = tokens.create(L, 'Genie', 'organizer', ['messages:deliver', 'integrations:read', 'messages:deliver']);
+    expect(token.scopes).toEqual(['integrations:read', 'messages:deliver']);
+    expect(rows()[0]).toMatchObject({ scopes: 'integrations:read messages:deliver' });
+    expect(tokens.authenticate(secret)).toMatchObject({ scopes: ['integrations:read', 'messages:deliver'] });
+    expect(tokens.create(L, 'Deliver only', 'organizer', ['messages:deliver']).token.scopes).toEqual(['messages:deliver']);
   });
 
   it('makes a different secret every time', () => {
@@ -74,7 +83,7 @@ describe('list', () => {
 describe('authenticate', () => {
   it('names the token a live secret belongs to', () => {
     const { token, secret } = tokens.create(L, 'Genie', 'organizer');
-    expect(tokens.authenticate(secret)).toEqual({ id: token.id, leagueId: L, label: 'Genie' });
+    expect(tokens.authenticate(secret)).toEqual({ id: token.id, leagueId: L, label: 'Genie', scopes: ['integrations:read'] });
   });
 
   it.each([

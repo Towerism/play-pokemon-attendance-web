@@ -8,6 +8,14 @@ import { IntegrationError } from './errors';
 export const MAX_TOKENS_PER_LEAGUE = 10;
 const PREFIX = 'ppa_int_';
 
+/** What a token may do (ADR-0013, amended by ADR-0015 §7): read the day, and/or deliver the Discord channel's messages. */
+export const INTEGRATION_SCOPES = ['integrations:read', 'messages:deliver'] as const;
+export type IntegrationScope = (typeof INTEGRATION_SCOPES)[number];
+
+/** Each scope once, in `INTEGRATION_SCOPES` order. */
+const normalized = (scopes: readonly IntegrationScope[]): IntegrationScope[] => INTEGRATION_SCOPES.filter((s) => scopes.includes(s));
+const parsed = (stored: string): IntegrationScope[] => normalized(stored.split(' ') as IntegrationScope[]);
+
 /** A token as the organizer sees it: never its secret or hash. */
 export interface IntegrationTokenView {
   id: number;
@@ -19,6 +27,7 @@ export interface IntegrationTokenView {
   createdAt: string;
   /** ISO; null until a call authenticates with it. */
   lastUsedAt: string | null;
+  scopes: IntegrationScope[];
 }
 
 /** Who a live secret belongs to. */
@@ -26,15 +35,16 @@ export interface AuthenticatedToken {
   id: number;
   leagueId: string;
   label: string;
+  scopes: IntegrationScope[];
 }
 
 export interface IntegrationTokenService {
   /**
-   * Mints a token. The secret (`ppa_int_` + 43 base64url characters, 256 random bits) is returned here only;
+   * Mints a token with `scopes` (default `integrations:read`). The secret (`ppa_int_` + 43 base64url characters, 256 random bits) is returned here only;
    * the database keeps its SHA-256.
    * @throws IntegrationError `token_limit`
    */
-  create(leagueId: string, label: string, by: string): { token: IntegrationTokenView; secret: string };
+  create(leagueId: string, label: string, by: string, scopes?: readonly IntegrationScope[]): { token: IntegrationTokenView; secret: string };
   /** The league's tokens, newest first. */
   list(leagueId: string): IntegrationTokenView[];
   /** Deletes the token, so its secret stops working at once. @throws IntegrationError `not_found` */
@@ -66,10 +76,11 @@ export function createIntegrationTokenService(deps: IntegrationTokenDeps): Integ
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
     lastUsedAt: r.lastUsedAt?.toISOString() ?? null,
+    scopes: parsed(r.scopes),
   });
 
   return {
-    create(leagueId, label, by) {
+    create(leagueId, label, by, scopes = ['integrations:read']) {
       const secret = PREFIX + randomBytes(32).toString('base64url');
       return db.transaction(() => {
         const held = db.select({ n: count() }).from(integrationToken).where(eq(integrationToken.leagueId, leagueId)).get()!.n;
@@ -83,6 +94,7 @@ export function createIntegrationTokenService(deps: IntegrationTokenDeps): Integ
             label,
             tokenHash: digest(secret),
             tokenHint: `${PREFIX}…${secret.slice(-4)}`,
+            scopes: normalized(scopes).join(' '),
             createdBy: by,
             createdAt: now(),
           })
@@ -114,7 +126,7 @@ export function createIntegrationTokenService(deps: IntegrationTokenDeps): Integ
     authenticate(secret) {
       if (!secret) return null;
       const row = db.select().from(integrationToken).where(eq(integrationToken.tokenHash, digest(secret))).get();
-      return row ? { id: row.id, leagueId: row.leagueId, label: row.label } : null;
+      return row ? { id: row.id, leagueId: row.leagueId, label: row.label, scopes: parsed(row.scopes) } : null;
     },
 
     markUsed(id) {
