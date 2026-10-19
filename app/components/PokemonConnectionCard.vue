@@ -8,9 +8,11 @@ const { data: settings } = await useSettings();
 // The owner sees every connection and picks the league; a professor sees and manages only their own (ADR-0015 §2, §8).
 const isOwner = computed(() => settings.value?.access.role === 'owner');
 const league = computed(() => data.value?.league ?? null);
-const waiting = computed(() => waitingText(settings.value?.access.waiting ?? null, league.value?.displayName ?? null));
 const connections = computed(() => (data.value?.connections ?? []).filter((c) => isOwner.value || c.mine));
 const mine = computed(() => connections.value.filter((c) => c.mine));
+const waiting = computed(() =>
+  waitingText(settings.value?.access.waiting ?? null, league.value?.displayName ?? null, mine.value[0] ? professorLabel(mine.value[0]) : null),
+);
 const formatDate = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : '—');
 const badge = (c: ProfessorConnectionJson) =>
   c.status === 'connected' ? { label: 'Connected', color: 'success' as const } : { label: 'Needs reconnect', color: 'warning' as const };

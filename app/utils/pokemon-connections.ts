@@ -27,8 +27,8 @@ export interface ConnectionsResponse {
   league: LeagueJson | null;
 }
 
-/** Why a professor sees only Settings (ADR-0015 §3); null for a league member. */
-export type WaitingReason = null | 'no_connection' | 'outside' | 'unknown';
+/** Why a professor sees only Settings (ADR-0015 §3, §8); null for a league member. */
+export type WaitingReason = null | 'no_connection' | 'outside' | 'unknown' | 'reverify_required';
 
 type Maybe<T> = T | null | undefined;
 
@@ -113,8 +113,12 @@ export function refusedText(
   return `Left out: ${parts.join('; ')}.`;
 }
 
-/** Why a professor sees only Settings (ADR-0015 §3). */
-export function waitingText(waiting: WaitingReason, leagueName: string | null): string | null {
+/**
+ * Why a professor sees only Settings (ADR-0015 §3). After a password reset (§8) they log in to Pokémon as their own
+ * account, `ownLabel`, to prove it's them; with no connection that is the first connect.
+ */
+export function waitingText(waiting: WaitingReason, leagueName: string | null, ownLabel: string | null = null): string | null {
+  if (waiting === 'reverify_required') return ownLabel ? `Log in to Pokémon as ${ownLabel} to confirm it's you.` : 'Connect your Pokémon account to use the league.';
   if (waiting === 'no_connection') return 'Connect your Pokémon account to use the league.';
   if (waiting === 'outside') return `Your Pokémon account isn't in ${leagueName ?? 'the league'} in play-tools.`;
   if (waiting === 'unknown') return 'Checking your Pokémon account’s league…';

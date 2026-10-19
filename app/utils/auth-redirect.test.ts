@@ -49,3 +49,14 @@ describe('waitingRedirect (ADR-0015 §3: a professor not yet in the league sees 
     expect(waitingRedirect('/login', { member: false })).toBeUndefined();
   });
 });
+
+describe('the invite page (ADR-0015 §6)', () => {
+  it('is outside the login wall, and a signed-in browser stays on it to be told to log out', () => {
+    expect(authRedirect({ path: '/invite', fullPath: '/invite' }, false)).toBeUndefined();
+    expect(authRedirect({ path: '/invite', fullPath: '/invite' }, true)).toBeUndefined();
+  });
+
+  it('is never sent to Settings by the waiting room', () => {
+    expect(waitingRedirect('/invite', { member: false })).toBeUndefined();
+  });
+});
