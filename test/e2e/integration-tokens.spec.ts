@@ -40,3 +40,20 @@ test('a new integration token is shown once, then only by its hint, and can be r
   await expect(card.getByText('No integration tokens yet.')).toBeVisible();
   expect((await (await api.request('/api/integrations/tokens')).json()).tokens).toEqual([]);
 });
+
+test('a token gets the scopes chosen for it, and needs at least one', async ({ page, api }) => {
+  void api;
+  await page.goto('/settings');
+  const card = page.getByRole('region', { name: 'Integrations' });
+  await card.getByLabel('Token name').fill('Genie');
+  const read = card.getByRole('checkbox', { name: "Read the day's tournaments" });
+  const deliver = card.getByRole('checkbox', { name: 'Deliver messages to Discord' });
+  await expect(read).toBeChecked();
+  await read.uncheck();
+  await expect(card.getByRole('button', { name: 'Create token' })).toBeDisabled();
+
+  await deliver.check();
+  await card.getByRole('button', { name: 'Create token' }).click();
+  await page.getByRole('dialog', { name: 'Integration token created' }).getByRole('button', { name: 'Done' }).click();
+  await expect(card.getByRole('listitem').filter({ hasText: 'Genie' })).toContainText('Deliver messages to Discord');
+});

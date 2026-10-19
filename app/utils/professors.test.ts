@@ -116,8 +116,8 @@ describe('Send by Discord', () => {
 
   it("is disabled for a reset of a professor with no connection", () => {
     expect(resetDiscordDisabled({ username: 'misty', connection: null })).toBe('misty has no Pokémon account connected.');
-    expect(resetDiscordDisabled({ username: 'misty', connection: { playerId: null, name: null } })).toBe('misty has no Pokémon account connected.');
-    expect(resetDiscordDisabled({ username: 'misty', connection: { playerId: '0000333', name: null } })).toBeNull();
+    expect(resetDiscordDisabled({ username: 'misty', connection: { playerId: null } })).toBe('misty has no Pokémon account connected.');
+    expect(resetDiscordDisabled({ username: 'misty', connection: { playerId: '0000333' } })).toBeNull();
   });
 });
 

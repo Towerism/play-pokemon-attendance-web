@@ -1,14 +1,26 @@
 <script setup lang="ts">
 import { CreateIntegrationTokenBody } from '#shared/schemas/integrations';
 
-// Tokens another app reads this league's days with (#115, ADR-0013): Tournament Genie's import. A token's secret
-// is shown once, in the dialog after it is made, and dropped from the page when the dialog closes.
+// Tokens other apps use (#115, ADR-0013, ADR-0015 §7): Tournament Genie reads the day's tournaments and delivers the
+// Discord channel's messages. A token's secret is shown once, in the dialog after it is made, and dropped from the page
+// when the dialog closes.
 
 const toast = useToast();
 const { data, refresh } = await useFetch('/api/integrations/tokens', { key: 'integration-tokens' });
 const tokens = computed(() => data.value?.tokens ?? []);
 
-const state = reactive({ label: '' });
+const SCOPES = [
+  { value: 'integrations:read', label: "Read the day's tournaments" },
+  { value: 'messages:deliver', label: 'Deliver messages to Discord' },
+] as const;
+type Scope = (typeof SCOPES)[number]['value'];
+const scopeLabel = (s: string) => SCOPES.find((x) => x.value === s)?.label ?? s;
+
+const state = reactive({ label: '', scopes: ['integrations:read'] as Scope[] });
+const noScope = computed(() => state.scopes.length === 0);
+function toggleScope(scope: Scope, on: boolean | 'indeterminate') {
+  state.scopes = on === true ? [...new Set([...state.scopes, scope])] : state.scopes.filter((s) => s !== scope);
+}
 const creating = ref(false);
 /** The new token's secret while its dialog is open; null otherwise. */
 const secret = ref<string | null>(null);
@@ -27,6 +39,7 @@ async function create() {
     const result = await $fetch('/api/integrations/tokens', { method: 'POST', body: CreateIntegrationTokenBody.parse(state) });
     secret.value = result.secret;
     state.label = '';
+    state.scopes = ['integrations:read'];
     await refresh();
   } catch (err) {
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not create the token.') });
@@ -63,7 +76,8 @@ async function revoke(token: { id: number; label: string }) {
     <template #header>
       <h2 id="integrations-heading" class="font-semibold">Integrations</h2>
       <p class="text-sm text-muted">
-        Tokens that let another app, such as Tournament Genie, read each day's tournaments and staff. They can only read, and only that.
+        Tokens that let another app, such as Tournament Genie, read each day's tournaments and staff, or deliver this app's
+        invites as Discord messages. Each token does only what it was made for.
       </p>
     </template>
 
@@ -74,6 +88,7 @@ async function revoke(token: { id: number; label: string }) {
           <div>
             <p class="font-medium">{{ t.label }}</p>
             <p class="font-mono text-muted">{{ t.hint }}</p>
+            <p class="text-muted">{{ t.scopes.map(scopeLabel).join(' · ') }}</p>
             <p class="text-muted">
               Created {{ formatDate(t.createdAt) }} by {{ t.createdBy }} ·
               {{ t.lastUsedAt ? `Last used ${formatDate(t.lastUsedAt)}` : 'Never used' }}
@@ -87,7 +102,17 @@ async function revoke(token: { id: number; label: string }) {
         <UFormField name="label" label="Token name" class="min-w-48 flex-1">
           <UInput v-model="state.label" placeholder="Tournament Genie" maxlength="60" class="w-full" />
         </UFormField>
-        <UButton type="submit" :loading="creating">Create token</UButton>
+        <fieldset class="flex flex-wrap gap-4">
+          <legend class="sr-only">What the token may do</legend>
+          <UCheckbox
+            v-for="s in SCOPES"
+            :key="s.value"
+            :label="s.label"
+            :model-value="state.scopes.includes(s.value)"
+            @update:model-value="toggleScope(s.value, $event)"
+          />
+        </fieldset>
+        <UButton type="submit" :loading="creating" :disabled="noScope">Create token</UButton>
       </UForm>
     </div>
 
