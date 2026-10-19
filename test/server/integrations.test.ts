@@ -317,12 +317,25 @@ describe('integrations API (#115)', () => {
         createdBy: 'organizer',
         createdAt: expect.any(String),
         lastUsedAt: null,
+        scopes: ['integrations:read'],
       });
 
       const list = await api('/integrations/tokens');
       expect(list.status).toBe(200);
       expect(list.headers.get('cache-control')).toBe('no-store');
       expect(list.json()).toEqual({ tokens: [token] });
+    });
+
+    it('mints a token with the scopes asked for (ADR-0015 §7), and refuses none or an unknown one', async () => {
+      await start();
+      const both = await browser.request('/api/integrations/tokens', { method: 'POST', json: { label: 'Genie', scopes: ['messages:deliver', 'integrations:read'] } });
+      expect(both.status).toBe(201);
+      const minted = (await both.json()) as { token: { scopes: string[] }; secret: string };
+      secrets.push(minted.secret);
+      expect(minted.token.scopes).toEqual(['integrations:read', 'messages:deliver']);
+      for (const scopes of [[], ['admin']]) {
+        expect((await browser.request('/api/integrations/tokens', { method: 'POST', json: { label: 'Genie', scopes } })).status).toBe(400);
+      }
     });
 
     it.each([

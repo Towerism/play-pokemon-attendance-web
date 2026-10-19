@@ -22,3 +22,9 @@ export function authRateLimit(route: 'login' | 'setup'): RateLimitOptions {
   const { auth, trusted } = useRateLimits();
   return { limiter: auth[route], trusted };
 }
+
+/** The same, for the public invite routes (ADR-0015 §6): each route has its own limiter. */
+export function inviteRateLimit(route: 'check' | 'accept'): RateLimitOptions {
+  const { invite, trusted } = useRateLimits();
+  return { limiter: invite[route], trusted };
+}

@@ -9,6 +9,6 @@ describe('hourly tasks', () => {
     };
 
     expect(config.nitro.experimental?.tasks).toBe(true);
-    expect(config.nitro.scheduledTasks).toEqual({ '0 * * * *': ['pokemon:keepalive', 'tdf:expire'] });
+    expect(config.nitro.scheduledTasks).toEqual({ '0 * * * *': ['pokemon:keepalive', 'tdf:expire', 'messaging:expire'] });
   });
 });

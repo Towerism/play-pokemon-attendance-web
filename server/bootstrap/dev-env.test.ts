@@ -50,9 +50,11 @@ describe('prepareDevEnv', () => {
 
     expect(env.NUXT_TOKEN_VAULT_KEY).toMatch(AES_256_KEY);
     expect(env.NUXT_TDF_VAULT_KEY).toMatch(AES_256_KEY);
+    expect(env.NUXT_MESSAGE_VAULT_KEY).toMatch(AES_256_KEY);
     expect(env.NUXT_SESSION_PASSWORD!.length).toBeGreaterThanOrEqual(32);
     expect(readSecret('token-vault.key')).toBe(env.NUXT_TOKEN_VAULT_KEY);
     expect(readSecret('tdf-vault.key')).toBe(env.NUXT_TDF_VAULT_KEY);
+    expect(readSecret('message-vault.key')).toBe(env.NUXT_MESSAGE_VAULT_KEY);
     expect(readSecret('session-password')).toBe(env.NUXT_SESSION_PASSWORD);
   });
 
@@ -69,6 +71,7 @@ describe('prepareDevEnv', () => {
       'session-password': randomBytes(32).toString('base64url'),
       'token-vault.key': randomBytes(32).toString('base64'),
       'tdf-vault.key': randomBytes(32).toString('base64'),
+      'message-vault.key': randomBytes(32).toString('base64'),
     };
     data.cleanup();
     data = existingInstallSecrets(values);
@@ -81,6 +84,7 @@ describe('prepareDevEnv', () => {
     expect(env.NUXT_SESSION_PASSWORD).toBe(values['session-password']);
     expect(env.NUXT_TOKEN_VAULT_KEY).toBe(values['token-vault.key']);
     expect(env.NUXT_TDF_VAULT_KEY).toBe(values['tdf-vault.key']);
+    expect(env.NUXT_MESSAGE_VAULT_KEY).toBe(values['message-vault.key']);
     expect(fileStates()).toEqual(before);
   });
 
@@ -133,9 +137,10 @@ describe('prepareDevEnv', () => {
       ['info', `Session password: generated into ${join(data.secretsDir, 'session-password')}`],
       ['info', `Token vault key: generated into ${join(data.secretsDir, 'token-vault.key')}`],
       ['info', `TDF vault key: generated into ${join(data.secretsDir, 'tdf-vault.key')}`],
+      ['info', `Message vault key: generated into ${join(data.secretsDir, 'message-vault.key')}`],
     ]);
     const logged = JSON.stringify(logger.lines);
-    for (const name of ['NUXT_SESSION_PASSWORD', 'NUXT_TOKEN_VAULT_KEY', 'NUXT_TDF_VAULT_KEY']) {
+    for (const name of ['NUXT_SESSION_PASSWORD', 'NUXT_TOKEN_VAULT_KEY', 'NUXT_TDF_VAULT_KEY', 'NUXT_MESSAGE_VAULT_KEY']) {
       expect(logged).not.toContain(env[name]);
     }
   });

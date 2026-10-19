@@ -1,9 +1,9 @@
 import { fakeRecord, fakeTournament } from '../server/fake-pokemon';
 import { STAFF_ID, TUESDAY, addProfessor, addSessionPlayer, connectAccount, expect, finishedStatus, playSession, shareSession, startSubmission, test } from './fixtures';
 
-// What a professor sees (ADR-0015 §3, §4, §8; architecture §8). No professor can be invited until #202, so each journey
-// adds one straight to the database. The server refuses every action these pages hide; these journeys check that the
-// pages don't offer them, and say why.
+// What a professor sees (ADR-0015 §3, §4, §8; architecture §8). Inviting is tested in invites.spec.ts, so these journeys
+// add each professor straight to the database. The server refuses every action these pages hide; these journeys check
+// that the pages don't offer them, and say why.
 
 const CARD_SHOP = { guid: 'group-1', display_id: 'L5012', display_name: 'Card Shop', canSubmit: true };
 const MISTY_ID = '0000333';

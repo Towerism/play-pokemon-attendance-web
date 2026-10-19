@@ -51,6 +51,7 @@ export default defineNuxtConfig({
     // Filled from env or /data/secrets/ by server/bootstrap/launcher.ts (under `nuxt dev`, by server/bootstrap/dev-env.ts).
     tokenVaultKey: '',
     tdfVaultKey: '',
+    messageVaultKey: '',
     // Empty means the real Pokémon hosts. Only test doubles set these
     // (NUXT_POKEMON_ACCESS_URL / NUXT_POKEMON_API_URL); see test/server/fake-pokemon.ts.
     pokemon: { accessUrl: '', apiUrl: '' },
@@ -73,6 +74,15 @@ export default defineNuxtConfig({
     // Per-token limit on integrations day reads (#115, ADR-0013): each reads play-tools live, so a misbehaving
     // client can't turn into heavy upstream traffic. NUXT_INTEGRATION_RATE_LIMIT_*: optional, not in the template.
     integrationRateLimit: { max: 30, windowMs: 900_000 },
+    // Per client, on each public invite route (ADR-0015 §6), checked before the body is read. NUXT_INVITE_RATE_LIMIT_*.
+    inviteRateLimit: { max: 5, windowMs: 900_000 },
+    // Per integration token, Genie's long polls and its delivery results, counted apart so reporting results never
+    // uses up the polls (ADR-0015 §7). NUXT_MESSAGE_POLL_RATE_LIMIT_*, NUXT_MESSAGE_RESULT_RATE_LIMIT_*.
+    messagePollRateLimit: { max: 120, windowMs: 900_000 },
+    messageResultRateLimit: { max: 600, windowMs: 900_000 },
+    // How long Send by Discord waits for Genie's result before answering "Sending…". NUXT_MESSAGING_SEND_WAIT_MS:
+    // tests only, not in the template.
+    messaging: { sendWaitMs: 10_000 },
     // Peers whose X-Forwarded-For is believed (NUXT_TRUSTED_PROXIES): loopback and
     // Docker's bridge pool cover Caddy on the same Unraid box. Blank = this default.
     trustedProxies: DEFAULT_TRUSTED_PROXIES,
@@ -94,7 +104,7 @@ export default defineNuxtConfig({
     // asyncContext: the request id reaches every log record a request causes,
     // module and job logs included (architecture §10).
     experimental: { tasks: true, asyncContext: true },
-    scheduledTasks: { '0 * * * *': ['pokemon:keepalive', 'tdf:expire'] },
+    scheduledTasks: { '0 * * * *': ['pokemon:keepalive', 'tdf:expire', 'messaging:expire'] },
   },
 
   typescript: {

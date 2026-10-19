@@ -5,8 +5,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { FAKE_PLAYER_ID, type FakePokemon, type FakePlaySession, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, startServer } from './harness';
 
-// Who may call what (ADR-0015 §3 and §4), driven over HTTP against the real server and the Pokémon fake. No professor
-// can be invited until #202, so these tests add professor rows to the database directly, with the owner's password.
+// Who may call what (ADR-0015 §3, §4 and §8), driven over HTTP against the real server and the Pokémon fake. Inviting is
+// tested in invites.test.ts, so these tests add professor rows to the database directly, with the owner's password.
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
 const TUESDAY = '2026-10-13';
@@ -43,6 +43,11 @@ const ACTOR = new Set([
   'pokemon/connections/[playerId].delete.ts',
 ]);
 const OWNER_ONLY = new Set([
+  'professors/index.get.ts',
+  'professors/invites/index.post.ts',
+  'professors/invites/[id].delete.ts',
+  'professors/[userId]/reset-link.post.ts',
+  'professors/[userId].delete.ts',
   'leagues/upstream.get.ts',
   'settings.put.ts',
   'staff/import.post.ts',
@@ -61,6 +66,7 @@ const PARAMS: Record<string, string> = {
   uploadId: '1',
   tournamentId: '00000000-0000-4000-8000-000000000001',
   periodStart: '2026-10-01',
+  userId: '2',
 };
 
 interface Route {
@@ -76,7 +82,7 @@ function routes(dir = API): Route[] {
     if (statSync(full).isDirectory()) return routes(full);
     const file = relative(API, full).split(sep).join('/');
     const m = /^(.*?)(?:\.(get|post|put|patch|delete))?\.ts$/.exec(file);
-    if (!m || file.endsWith('.test.ts') || file.startsWith('auth/') || file.startsWith('integrations/v1/') || file.includes('[...]') || file === 'index.ts') return [];
+    if (!m || file.endsWith('.test.ts') || file.startsWith('auth/') || file.startsWith('invites/') || file.startsWith('integrations/v1/') || file.includes('[...]') || file === 'index.ts') return [];
     const path = `/api/${m[1]!.replace(/\/index$/, '').replace(/^index$/, '')}`.replace(/\[(\w+)\]/g, (_s, p: string) => {
       if (p === 'id' && file.startsWith('tournaments/[id]')) return PARAMS.tournamentId!;
       return PARAMS[p] ?? '1';
@@ -105,7 +111,7 @@ describe('access to the league (ADR-0015)', () => {
   let owner: Browser;
   let db: Database.Database;
 
-  /** A professor row as #202's invites will make it, signed in with the owner's password. */
+  /** A professor row as an invite makes it, signed in with the owner's password. */
   async function professor(username: string, opts: { removed?: boolean } = {}): Promise<Browser> {
     db.prepare(
       `insert into app_user (username, password_hash, role, created_at) select ?, password_hash, 'professor', 1 from app_user where role = 'owner'`,
@@ -165,6 +171,18 @@ describe('access to the league (ADR-0015)', () => {
       expect(res.status).toBe(403);
       expect(await codeOf(res)).toBe(r.guard === 'owner' ? 'owner_only' : 'not_a_member');
     });
+
+    it.each(ALL.filter((r) => r.guard === 'member').map(asCase))(
+      '%s is 403 reverify_required for a member professor who accepted a reset link and has not connected since',
+      async (_l, r) => {
+        await connect(owner);
+        const misty = await member('misty', '0000333');
+        db.prepare("update app_user set reverify_required_at = 1 where username = 'misty'").run();
+        const res = await send(misty, r);
+        expect(res.status).toBe(403);
+        expect(await codeOf(res)).toBe('reverify_required');
+      },
+    );
 
     it.each(ALL.filter((r) => r.guard === 'owner').map(asCase))('%s is 403 owner_only for a member professor', async (_l, r) => {
       await connect(owner);

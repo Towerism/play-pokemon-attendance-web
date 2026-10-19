@@ -19,6 +19,11 @@ export const appUser = sqliteTable(
     /** Set when the owner removes a professor: they can't sign in, and their next request is refused. */
     removedAt: integer('removed_at', { mode: 'timestamp' }),
     lastSignInAt: integer('last_sign_in_at', { mode: 'timestamp' }),
+    /**
+     * Set when a professor accepts a password reset link (ADR-0015 §8). Until their next successful Pokémon connect they
+     * are held to the waiting room, because a reset link can travel through Discord.
+     */
+    reverifyRequiredAt: integer('reverify_required_at', { mode: 'timestamp' }),
     createdAt: integer('created_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -34,6 +39,78 @@ export const league = sqliteTable('league', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
 });
+
+/**
+ * A one-time link the owner mints (ADR-0015 §6, §8): an invite creates a professor; with `for_user_id` set it is a
+ * password reset link for that professor. Owned by the accounts module. Only the secret's SHA-256 is kept.
+ */
+export const appInvite = sqliteTable('app_invite', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  leagueId: text('league_id')
+    .notNull()
+    .references(() => league.id),
+  /** Lowercase hex SHA-256 of the secret, which is never stored. */
+  secretHash: text('secret_hash').notNull().unique(),
+  /** `ppa_inv_…` plus the secret's last 4 characters. */
+  secretHint: text('secret_hint').notNull(),
+  /** Display only, e.g. the invitee's Discord name. */
+  label: text('label'),
+  /** The only Pokémon account the professor this invite creates may connect. */
+  forPlayerId: text('for_player_id'),
+  /** Set for a password reset link: the professor whose password it sets. */
+  forUserId: integer('for_user_id').references(() => appUser.id),
+  /** The owner's username. */
+  createdBy: text('created_by').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  revokedAt: integer('revoked_at', { mode: 'timestamp' }),
+  acceptedAt: integer('accepted_at', { mode: 'timestamp' }),
+  /** The professor it created, or the one it reset. */
+  acceptedUserId: integer('accepted_user_id').references(() => appUser.id),
+  /** Its Discord message in the messaging module's table, when sent by Discord. No foreign key: that table isn't ours. */
+  messageId: integer('message_id'),
+  /** What Genie reported, for Settings → Professors; null for a copied link. */
+  delivery: text('delivery', { enum: ['sending', 'delivered', 'no_discord_user', 'dm_refused', 'undeliverable', 'expired'] }),
+});
+
+/**
+ * A direct message for Tournament Genie to deliver on Discord (ADR-0015 §7). Owned by the messaging module, which no
+ * other module reads. The link is sealed by the message vault and deleted once the message is final, expired or
+ * cancelled; rows are deleted 30 days after they were created, because the text can hold names.
+ */
+export const outboundMessage = sqliteTable(
+  'outbound_message',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    /** Who it is for: Genie finds the Discord user for this player ID. */
+    playerId: text('player_id').notNull(),
+    /** Plain text, at most 1,800 characters. */
+    text: text('text').notNull(),
+    /** The sending feature's own name; never sent to Genie. */
+    topic: text('topic').notNull(),
+    /** The sender's own id for it. */
+    ref: text('ref'),
+    linkLabel: text('link_label'),
+    /** The link's URL, sealed under AAD `outbound_message:<id>`. */
+    linkCiphertext: blob('link_ciphertext', { mode: 'buffer' }),
+    status: text('status', { enum: ['pending', 'delivered', 'no_discord_user', 'dm_refused', 'undeliverable', 'expired', 'cancelled'] }).notNull(),
+    statusReason: text('status_reason'),
+    /** Failures Genie reported; the 5th makes the message undeliverable. */
+    attempts: integer('attempts').notNull().default(0),
+    /** When it may be handed out next: after a hand-out (60 s) or a failure (backoff). */
+    nextAttemptAt: integer('next_attempt_at', { mode: 'timestamp' }).notNull(),
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+    deliveredAt: integer('delivered_at', { mode: 'timestamp' }),
+    /** When the sender's topic handler ran for its final result; a final row with this null is replayed at boot. */
+    handledAt: integer('handled_at', { mode: 'timestamp' }),
+  },
+  (t) => [index('outbound_message_due_idx').on(t.leagueId, t.status, t.nextAttemptAt), index('outbound_message_created_idx').on(t.createdAt)],
+);
 
 /** Every player ID that ever entered the system (architecture §5). Names belong to the player, not the league. */
 export const player = sqliteTable('player', {
@@ -588,8 +665,8 @@ export const integrationToken = sqliteTable(
     tokenHash: text('token_hash').notNull().unique(),
     /** `ppa_int_…` plus the secret's last 4 characters, to tell tokens apart. */
     tokenHint: text('token_hint').notNull(),
-    /** The only scope in v1: read the integrations API. */
-    scope: text('scope').notNull().default('integrations:read'),
+    /** Space-separated: `integrations:read` (the day route) and/or `messages:deliver` (the Discord channel; ADR-0015 §7). */
+    scopes: text('scopes').notNull().default('integrations:read'),
     /** Organizer username. */
     createdBy: text('created_by').notNull(),
     createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),

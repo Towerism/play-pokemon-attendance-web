@@ -160,6 +160,11 @@ describe('waitingText (Settings for a professor not yet in the league)', () => {
     expect(waitingText('unknown', 'Card Shop')).toBe('Checking your Pokémon account’s league…');
     expect(waitingText(null, null)).toBeNull();
   });
+
+  it('asks a professor who accepted a reset link to log in to Pokémon as their own account again', () => {
+    expect(waitingText('reverify_required', 'Card Shop', 'Misty (0000333)')).toBe("Log in to Pokémon as Misty (0000333) to confirm it's you.");
+    expect(waitingText('reverify_required', 'Card Shop', null)).toBe('Connect your Pokémon account to use the league.');
+  });
 });
 
 describe('importsBlocked (staff and player imports)', () => {

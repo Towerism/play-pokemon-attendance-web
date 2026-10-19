@@ -28,7 +28,12 @@ export function usePokemon(): PokemonConnectionService {
       oauth: createPtcOAuthClient({ baseUrl: config.pokemon.accessUrl }),
       gateway: (tokens, connectionId) =>
         createPlayToolsHttpAdapter({ tokens, connectionId, baseUrl: config.pokemon.apiUrl, log: useLogger('pokemon') }),
-      accounts: useAccounts(),
+      accounts: {
+        actor: (id) => useAccounts().actor(id),
+        clearReverify: (id) => useAccounts().clearReverify(id),
+        seatsUsed: () => useInvites().seatsUsed(),
+        boundPlayerId: (id) => useInvites().boundPlayerId(id),
+      },
       log: useLogger('pokemon'),
     });
   }
@@ -70,6 +75,7 @@ const CONNECT_STATUS: Record<ConnectErrorCode, number> = {
   connection_limit: 409,
   connection_held: 409,
   one_connection_only: 409,
+  invite_player_mismatch: 409,
   profile_unavailable: 502,
   upstream_unavailable: 502,
 };
@@ -78,6 +84,7 @@ const ACCESS_STATUS: Record<ConnectionAccessCode, number> = {
   organizer_not_connected: 409,
   needs_reconnect: 409,
   not_your_connection: 403,
+  reverify_required: 403,
 };
 
 /** Maps pokemon-module errors to HTTP; `data.code` tells the UI what to show. Anything else is rethrown. */

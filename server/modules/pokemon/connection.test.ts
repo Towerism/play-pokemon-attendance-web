@@ -55,6 +55,11 @@ let leaguesInFlight: number;
 let mostLeaguesInFlight: number;
 let service: PokemonConnectionService;
 let log: { warn: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+/** Seats taken besides the owner's connections: active professors and open invites (the accounts module counts them). */
+let otherSeats: number;
+/** The player ID each professor's invite binds them to. */
+let bound: Map<number, string>;
+let reverifyCleared: number[];
 
 /** Hydra as a fake: one rotating chain per account (by `sub`), tracking which refresh token belongs to whom. */
 class FakeOAuth implements PtcOAuthClient {
@@ -140,7 +145,12 @@ function build(): PokemonConnectionService {
         },
       };
     },
-    accounts: { actor: (id: number) => ACTORS.get(id) ?? null },
+    accounts: {
+      actor: (id: number) => ACTORS.get(id) ?? null,
+      seatsUsed: () => service.ownerConnectionCount() + otherSeats,
+      boundPlayerId: (id: number) => bound.get(id) ?? null,
+      clearReverify: (id: number) => reverifyCleared.push(id),
+    },
     now: () => clock,
     log,
   });
@@ -205,6 +215,9 @@ beforeEach(() => {
   leaguesInFlight = 0;
   mostLeaguesInFlight = 0;
   log = { warn: vi.fn(), info: vi.fn() };
+  otherSeats = 0;
+  bound = new Map();
+  reverifyCleared = [];
   service = build();
 });
 afterEach(() => database.close());
@@ -1400,5 +1413,100 @@ describe('every AAD the token vault sees binds a row (the kit refuses an empty o
     expect(calls.filter((c) => c.aad === L && !c.threw)).not.toEqual([]); // the carried-over row under the league id
     expect(calls.filter((c) => c.aad.startsWith('pokemon_connection:') && c.threw)).not.toEqual([]);
     expect(calls.filter((c) => c.op === 'encrypt').map((c) => c.aad)).not.toContain(L);
+  });
+});
+
+describe('invites, reset links and the seat budget (ADR-0015 §6, §8)', () => {
+  it("refuses an owner connect that would add a connection once 10 seats are used, but never a reconnect or a professor's connect", async () => {
+    await connect(ASH);
+    otherSeats = 9;
+
+    const err = await rejection(connect(BROCK));
+    expect(err).toMatchObject({ code: 'connection_limit', message: expect.stringContaining('professors and open invites') });
+    expect(rowOf(BROCK.playerId)).toBeUndefined();
+    expect(oauth.revoked).toEqual([expect.stringMatching(/^ory_rt_/)]);
+
+    await expect(connect(ASH)).resolves.toMatchObject({ outcome: 'reconnected' });
+    professors.set(MISTY_ACCOUNT.sub, { ...MISTY_ACCOUNT });
+    await expect(connect(MISTY_ACCOUNT, service, MISTY)).resolves.toMatchObject({ outcome: 'added' });
+  });
+
+  it("refuses a bound professor any Pokémon account but the invite's, before anything else, revoking the fresh login", async () => {
+    await leagueWithProfessors();
+    bound.set(GARY.userId, GARY_ACCOUNT.playerId);
+    const before = rows().length;
+
+    const err = await rejection(connect(MISTY_ACCOUNT, service, GARY));
+    expect(err).toMatchObject({ name: 'ConnectError', code: 'invite_player_mismatch' });
+    expect(rows()).toHaveLength(before);
+    expect(oauth.revoked).toHaveLength(1);
+
+    await expect(connect(GARY_ACCOUNT, service, GARY)).resolves.toMatchObject({ outcome: 'added' });
+  });
+
+  it('holds a professor who must prove their login after a reset, and refuses their connection for writes', async () => {
+    await leagueWithProfessors();
+    const resetMisty: Actor = { ...MISTY, reverifyRequired: true };
+
+    expect(service.access(resetMisty)).toEqual({ member: false, waiting: 'reverify_required' });
+    expect(() => service.actingConnection(resetMisty, MISTY_ACCOUNT.playerId, { kind: 'own' })).toThrow(
+      expect.objectContaining({ name: 'ConnectionAccessError', code: 'reverify_required', professorPlayerId: MISTY_ACCOUNT.playerId }),
+    );
+  });
+
+  it('clears the reset proof on a successful connect, and not on a refused one', async () => {
+    await leagueWithProfessors();
+    const resetMisty: Actor = { ...MISTY, reverifyRequired: true };
+
+    await rejection(connect(GARY_ACCOUNT, service, resetMisty));
+    expect(reverifyCleared).toEqual([]);
+    await connect(MISTY_ACCOUNT, service, resetMisty);
+    expect(reverifyCleared).toEqual([MISTY.userId]);
+  });
+
+  it("counts the owner's connections only", async () => {
+    await leagueWithProfessors();
+    await connect(BROCK);
+    expect(service.ownerConnectionCount()).toBe(2);
+  });
+
+  it("names a professor's connection, for Settings → Professors and for Discord", async () => {
+    await connect(ASH);
+    await connect(ASH, service, MISTY);
+
+    expect(service.connectionOf(MISTY.userId)).toEqual({
+      playerId: ASH.playerId,
+      name: null,
+      status: 'connected',
+      membership: 'member',
+      claimedAt: clock,
+    });
+    expect(service.recipientOf(MISTY.userId)).toBe(ASH.playerId);
+    expect(service.connectionOf(GARY.userId)).toBeNull();
+    expect(service.recipientOf(GARY.userId)).toBeNull();
+  });
+
+  it("removes a professor's connection and its membership at once, then revokes its login at Pokémon", async () => {
+    await leagueWithProfessors();
+    const id = idOf(MISTY_ACCOUNT);
+    const removal = service.prepareRemoval(MISTY.userId);
+
+    service.deleteConnectionsOf(MISTY.userId);
+
+    expect(rowOf(MISTY_ACCOUNT.playerId)).toBeUndefined();
+    expect(database.sqlite.prepare('select * from league_membership where connection_id = ?').get(id)).toBeUndefined();
+    expect(oauth.revoked).toEqual([]);
+    await removal.revoke();
+    expect(oauth.revoked).toEqual(['ory_rt_2']);
+    await expect(service.getAccessToken(id)).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('removes nothing for a user with no connection, and revoking then does nothing', async () => {
+    await connect(ASH);
+    const removal = service.prepareRemoval(GARY.userId);
+    service.deleteConnectionsOf(GARY.userId);
+    await removal.revoke();
+    expect(rows()).toHaveLength(1);
+    expect(oauth.revoked).toEqual([]);
   });
 });

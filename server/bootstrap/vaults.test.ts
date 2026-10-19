@@ -2,13 +2,14 @@ import { randomBytes } from 'node:crypto';
 import { VaultError } from '@towerism/selfhost-kit';
 import { describeVaultContract } from '@towerism/selfhost-kit/testing';
 import { describe, expect, it } from 'vitest';
-import { tdfVault, tokenCipher, tokenVault } from './vaults';
+import { messageCipher, messageVault, tdfVault, tokenCipher, tokenVault } from './vaults';
 
 const key = () => randomBytes(32).toString('base64');
 
 // The kit's contract, against the vaults exactly as attendance builds them (kit ADR-0008).
 describeVaultContract('token', () => tokenCipher(key()));
 describeVaultContract('TDF', () => tdfVault(key()));
+describeVaultContract('message', () => messageCipher(key()));
 
 describe("attendance's vaults", () => {
   it('the token vault round-trips a refresh token, bound to its row', () => {
@@ -24,11 +25,21 @@ describe("attendance's vaults", () => {
     expect(tokenCipher(k).open(blob, 'pokemon_connection:1').toString('utf8')).toBe('Pokémon 🃏');
   });
 
+  it('the message vault round-trips a link, bound to its message, and opens nothing sealed by the token vault', () => {
+    const k = key();
+    const vault = messageVault(k);
+    const blob = vault.encrypt('https://league.example/invite#ppa_inv_x', 'outbound_message:7');
+    expect(vault.decrypt(blob, 'outbound_message:7')).toBe('https://league.example/invite#ppa_inv_x');
+    expect(() => vault.decrypt(blob, 'outbound_message:8')).toThrow(VaultError);
+    expect(() => vault.decrypt(tokenVault(key()).encrypt('x', 'outbound_message:7'), 'outbound_message:7')).toThrow(VaultError);
+  });
+
   it('each vault names itself in its messages', () => {
     const bad = randomBytes(16).toString('base64');
     expect(() => tokenCipher(bad)).toThrow('The token vault key must be 32 bytes, base64-encoded.');
     expect(() => tokenVault(bad)).toThrow('The token vault key must be 32 bytes, base64-encoded.');
     expect(() => tdfVault(bad)).toThrow('The TDF vault key must be 32 bytes, base64-encoded.');
+    expect(() => messageVault(bad)).toThrow('The message vault key must be 32 bytes, base64-encoded.');
   });
 
   it('every vault refuses an empty AAD, so a row is always bound', () => {

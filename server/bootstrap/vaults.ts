@@ -2,8 +2,9 @@
  * Attendance's configuration of the kit's vault (ADR-0003, ADR-0012, ADR-0014, A4): AES-256-GCM, blob v1, one key
  * per purpose. The cipher comes from `@towerism/selfhost-kit`; this module only names each vault, so its messages
  * read "The token vault key…" / "The stored TDF data…" as they always have. Configuration only: the keys reach it
- * from runtime config through `server/utils/pokemon.ts` (token) and `server/utils/tdf-archive.ts` (TDF), and the
- * vaults are injected into the modules. Tests build the same vaults from here.
+ * from runtime config through `server/utils/pokemon.ts` (token), `server/utils/tdf-archive.ts` (TDF) and
+ * `server/utils/messaging.ts` (message), and the vaults are injected into the modules. Tests build the same vaults
+ * from here.
  *
  * Every caller binds a blob to its row with a non-empty AAD: the kit refuses an empty one.
  */
@@ -22,4 +23,14 @@ export function tokenVault(key: string): StringVault {
 /** The TDF archive (`NUXT_TDF_VAULT_KEY` or `secrets/tdf-vault.key`). AAD `tdf_file:<league>:<sha256>`. */
 export function tdfVault(key: string): Vault {
   return createVault({ key, label: 'TDF' });
+}
+
+/** The Discord channel's links (`NUXT_MESSAGE_VAULT_KEY` or `secrets/message-vault.key`; ADR-0015 §7). */
+export function messageCipher(key: string): Vault {
+  return createVault({ key, label: 'message' });
+}
+
+/** Invite and reset links waiting for Genie, as UTF-8 strings. AAD `outbound_message:<id>`. Injected into `messaging` only. */
+export function messageVault(key: string): StringVault {
+  return stringVault(messageCipher(key));
 }

@@ -18,11 +18,20 @@ export async function requireActor(event: H3Event): Promise<Actor> {
 
 /**
  * A league member and their league (v1: the single seeded league): the owner, or a professor whose Pokémon account is
- * confirmed in the league's activity group (ADR-0015 §3). Anyone else gets 403 `not_a_member`.
+ * confirmed in the league's activity group (ADR-0015 §3). Anyone else gets 403 `not_a_member`, or `reverify_required` for a
+ * professor who accepted a password reset link and hasn't completed a Pokémon connect since (§8).
  */
 export async function requireMember(event: H3Event): Promise<{ leagueId: string; actor: Actor }> {
   const actor = await requireActor(event);
-  if (!usePokemon().access(actor).member) {
+  const { member, waiting } = usePokemon().access(actor);
+  if (waiting === 'reverify_required') {
+    throw createError({
+      statusCode: 403,
+      message: "Log in to Pokémon again in Settings to confirm it's you after your password reset.",
+      data: { code: 'reverify_required' },
+    });
+  }
+  if (!member) {
     throw createError({
       statusCode: 403,
       message: "Your Pokémon account isn't confirmed in this league yet. Open Settings to connect it.",

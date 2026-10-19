@@ -6,16 +6,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InvalidConfigError, InvalidSecretError, prepareRuntimeEnv, resolveSecret } from '@towerism/selfhost-kit';
 import { POSITIVE_INTEGER_VARS, RUNTIME_ENV, SECRETS } from './app-env';
 
-const [SESSION_PASSWORD, TOKEN_VAULT_KEY, TDF_VAULT_KEY] = SECRETS;
+const [SESSION_PASSWORD, TOKEN_VAULT_KEY, TDF_VAULT_KEY, MESSAGE_VAULT_KEY] = SECRETS;
 
 /**
  * Attendance's configuration of the kit's secrets and runtime env (the launcher passes `RUNTIME_ENV`).
  * The kit's own tests cover the mechanics; these pin what an existing install depends on.
  *
- * An install that has already booted: `secrets/` holds today's three files (`value\n`, 0600, dir 0700).
- * Loading it must change nothing on disk, or every session, stored refresh token and TDF would be lost.
+ * An install that has already booted: `secrets/` holds today's four files (`value\n`, 0600, dir 0700).
+ * Loading it must change nothing on disk, or every session, stored refresh token, TDF and waiting link would be lost.
  */
-type SecretFile = 'session-password' | 'token-vault.key' | 'tdf-vault.key';
+type SecretFile = 'session-password' | 'token-vault.key' | 'tdf-vault.key' | 'message-vault.key';
 const PAST = new Date('2020-01-01T00:00:00Z');
 
 let install: TempSecretsDir;
@@ -25,6 +25,7 @@ beforeEach(() => {
     'session-password': randomBytes(32).toString('base64url'),
     'token-vault.key': randomBytes(32).toString('base64'),
     'tdf-vault.key': randomBytes(32).toString('base64'),
+    'message-vault.key': randomBytes(32).toString('base64'),
   };
   install = existingInstallSecrets(values);
   age(install.secretsDir);
@@ -64,18 +65,20 @@ const prepare = (extra: Record<string, string> = {}) =>
   prepareRuntimeEnv({ NUXT_DATABASE_PATH: install.databasePath, ...extra }, RUNTIME_ENV);
 
 describe('an existing install', () => {
-  it('loads its three secrets from their files, with the same values', () => {
+  it('loads its four secrets from their files, with the same values', () => {
     const { env } = prepare();
 
     expect(env.NUXT_SESSION_PASSWORD).toBe(values['session-password']);
     expect(env.NUXT_TOKEN_VAULT_KEY).toBe(values['token-vault.key']);
     expect(env.NUXT_TDF_VAULT_KEY).toBe(values['tdf-vault.key']);
+    expect(env.NUXT_MESSAGE_VAULT_KEY).toBe(values['message-vault.key']);
   });
 
   it.each([
     ['session-password', SESSION_PASSWORD],
     ['token-vault.key', TOKEN_VAULT_KEY],
     ['tdf-vault.key', TDF_VAULT_KEY],
+    ['message-vault.key', MESSAGE_VAULT_KEY],
   ] as const)('resolves %s with source "file"', (file, spec) => {
     expect(resolveSecret(spec, { env: {}, dir: install.secretsDir })).toEqual({ value: values[file], source: 'file' });
   });
@@ -88,6 +91,7 @@ describe('an existing install', () => {
       `Session password: loaded from ${join(dir, 'session-password')}`,
       `Token vault key: loaded from ${join(dir, 'token-vault.key')}`,
       `TDF vault key: loaded from ${join(dir, 'tdf-vault.key')}`,
+      `Message vault key: loaded from ${join(dir, 'message-vault.key')}`,
     ]);
     for (const value of Object.values(values)) expect(log.join('\n')).not.toContain(value);
   });
@@ -100,6 +104,7 @@ describe('an existing install', () => {
     expect(snapshot(install.secretsDir)).toEqual(before);
     expect(before.dir.mode).toBe(0o700);
     expect(before.files.map((f) => [f.name, f.mode])).toEqual([
+      ['message-vault.key', 0o600],
       ['session-password', 0o600],
       ['tdf-vault.key', 0o600],
       ['token-vault.key', 0o600],
@@ -125,6 +130,7 @@ describe('an existing install', () => {
       NUXT_SESSION_PASSWORD: randomBytes(32).toString('base64url'),
       NUXT_TOKEN_VAULT_KEY: randomBytes(32).toString('base64'),
       NUXT_TDF_VAULT_KEY: randomBytes(32).toString('base64'),
+      NUXT_MESSAGE_VAULT_KEY: randomBytes(32).toString('base64'),
     };
 
     const { env, log } = prepare(overrides);
@@ -134,6 +140,7 @@ describe('an existing install', () => {
       'Session password: from NUXT_SESSION_PASSWORD',
       'Token vault key: from NUXT_TOKEN_VAULT_KEY',
       'TDF vault key: from NUXT_TDF_VAULT_KEY',
+      'Message vault key: from NUXT_MESSAGE_VAULT_KEY',
     ]);
     expect(snapshot(install.secretsDir)).toEqual(before);
   });
@@ -142,6 +149,7 @@ describe('an existing install', () => {
     ['session-password', 'short', 'must be at least 32 characters'],
     ['token-vault.key', 'not-a-key', 'must be 32 bytes, base64-encoded'],
     ['tdf-vault.key', 'not-a-key', 'must be 32 bytes, base64-encoded'],
+    ['message-vault.key', 'not-a-key', 'must be 32 bytes, base64-encoded'],
   ])('fails startup on a malformed %s with the same message, regenerating nothing', (file, bad, problem) => {
     const path = join(install.secretsDir, file);
     writeFileSync(path, `${bad}\n`);
@@ -158,6 +166,37 @@ describe('an existing install', () => {
   });
 });
 
+describe('an install upgraded from the release before the Discord channel (three secrets)', () => {
+  let upgraded: TempSecretsDir;
+  let three: Record<string, string>;
+  beforeEach(() => {
+    three = {
+      'session-password': randomBytes(32).toString('base64url'),
+      'token-vault.key': randomBytes(32).toString('base64'),
+      'tdf-vault.key': randomBytes(32).toString('base64'),
+    };
+    upgraded = existingInstallSecrets(three);
+    age(upgraded.secretsDir);
+  });
+  afterEach(() => upgraded.cleanup());
+
+  it('generates the message vault key once, owner-only, and leaves the other three as they were', () => {
+    const before = snapshot(upgraded.secretsDir).files;
+
+    const { env, log } = prepareRuntimeEnv({ NUXT_DATABASE_PATH: upgraded.databasePath }, RUNTIME_ENV);
+
+    expect(log.at(-1)).toBe(`Message vault key: generated into ${join(upgraded.secretsDir, 'message-vault.key')}`);
+    const after = snapshot(upgraded.secretsDir).files;
+    expect(after.filter((f) => f.name !== 'message-vault.key')).toEqual(before);
+    const key = after.find((f) => f.name === 'message-vault.key')!;
+    expect(key.mode).toBe(0o600);
+    expect(key.content).toBe(`${env.NUXT_MESSAGE_VAULT_KEY}\n`);
+
+    const again = prepareRuntimeEnv({ NUXT_DATABASE_PATH: upgraded.databasePath }, RUNTIME_ENV);
+    expect(again.env.NUXT_MESSAGE_VAULT_KEY).toBe(env.NUXT_MESSAGE_VAULT_KEY);
+  });
+});
+
 describe('a first boot (empty data folder)', () => {
   let fresh: TempSecretsDir;
   beforeEach(() => {
@@ -165,7 +204,7 @@ describe('a first boot (empty data folder)', () => {
   });
   afterEach(() => fresh.cleanup());
 
-  it('generates the three secret files, owner-only, and says so in order', () => {
+  it('generates the four secret files, owner-only, and says so in order', () => {
     const { env, log } = prepareRuntimeEnv({ NUXT_DATABASE_PATH: fresh.databasePath }, RUNTIME_ENV);
 
     const dir = fresh.secretsDir;
@@ -173,6 +212,7 @@ describe('a first boot (empty data folder)', () => {
       `Session password: generated into ${join(dir, 'session-password')}`,
       `Token vault key: generated into ${join(dir, 'token-vault.key')}`,
       `TDF vault key: generated into ${join(dir, 'tdf-vault.key')}`,
+      `Message vault key: generated into ${join(dir, 'message-vault.key')}`,
     ]);
     expect(statSync(dir).mode & 0o777).toBe(0o700);
     for (const spec of SECRETS) {
@@ -190,6 +230,7 @@ describe("attendance's secret specs", () => {
       ['NUXT_SESSION_PASSWORD', 'session-password', 'Session password'],
       ['NUXT_TOKEN_VAULT_KEY', 'token-vault.key', 'Token vault key'],
       ['NUXT_TDF_VAULT_KEY', 'tdf-vault.key', 'TDF vault key'],
+      ['NUXT_MESSAGE_VAULT_KEY', 'message-vault.key', 'Message vault key'],
     ]);
   });
 
@@ -207,6 +248,7 @@ describe("attendance's secret specs", () => {
   describe.each([
     ['token', TOKEN_VAULT_KEY],
     ['TDF', TDF_VAULT_KEY],
+    ['message', MESSAGE_VAULT_KEY],
   ])('the %s vault key', (_label, spec) => {
     it.each([
       ['16 bytes', randomBytes(16).toString('base64')],
@@ -235,6 +277,13 @@ describe('auth rate-limit tuning', () => {
       'NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS',
       'NUXT_INTEGRATION_RATE_LIMIT_MAX',
       'NUXT_INTEGRATION_RATE_LIMIT_WINDOW_MS',
+      'NUXT_INVITE_RATE_LIMIT_MAX',
+      'NUXT_INVITE_RATE_LIMIT_WINDOW_MS',
+      'NUXT_MESSAGE_POLL_RATE_LIMIT_MAX',
+      'NUXT_MESSAGE_POLL_RATE_LIMIT_WINDOW_MS',
+      'NUXT_MESSAGE_RESULT_RATE_LIMIT_MAX',
+      'NUXT_MESSAGE_RESULT_RATE_LIMIT_WINDOW_MS',
+      'NUXT_MESSAGING_SEND_WAIT_MS',
     ]);
   });
 

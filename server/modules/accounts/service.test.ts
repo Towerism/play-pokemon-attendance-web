@@ -48,7 +48,7 @@ describe('first-run setup', () => {
   it('makes the setup account the owner', async () => {
     const user = await accounts.setup(owner);
 
-    expect(accounts.actor(user.id)).toEqual({ userId: user.id, username: 'organizer', role: 'owner' });
+    expect(accounts.actor(user.id)).toEqual({ userId: user.id, username: 'organizer', role: 'owner', reverifyRequired: false });
   });
 
   it('stores only the password hash', async () => {
@@ -144,8 +144,17 @@ describe('the actor behind a session', () => {
     const { id } = await accounts.setup(owner);
     const prof = addProfessor('misty');
 
-    expect(accounts.actor(id)).toEqual({ userId: id, username: 'organizer', role: 'owner' });
-    expect(accounts.actor(prof)).toEqual({ userId: prof, username: 'misty', role: 'professor' });
+    expect(accounts.actor(id)).toEqual({ userId: id, username: 'organizer', role: 'owner', reverifyRequired: false });
+    expect(accounts.actor(prof)).toEqual({ userId: prof, username: 'misty', role: 'professor', reverifyRequired: false });
+  });
+
+  it('says when a professor must prove their Pokémon login after a password reset, until it is cleared', () => {
+    const prof = addProfessor('misty');
+    database.sqlite.prepare('update app_user set reverify_required_at = 1 where id = ?').run(prof);
+
+    expect(accounts.actor(prof)).toMatchObject({ reverifyRequired: true });
+    accounts.clearReverify(prof);
+    expect(accounts.actor(prof)).toMatchObject({ reverifyRequired: false });
   });
 
   it('is null for a removed user, whatever their session says', () => {
@@ -159,7 +168,7 @@ describe('the actor behind a session', () => {
   });
 });
 
-/** A professor row as #202's invites will make them; same password as the owner. */
+/** A professor row as an invite makes them; same password as the owner. */
 function addProfessor(username: string, opts: { removed?: boolean } = {}): number {
   const row = database.sqlite
     .prepare(`insert into app_user (username, password_hash, role, removed_at, created_at) values (?, 'hashed:correct horse', 'professor', ?, 1) returning id`)
