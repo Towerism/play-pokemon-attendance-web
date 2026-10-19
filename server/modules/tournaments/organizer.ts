@@ -21,7 +21,8 @@ export function assertMayActAs(
   try {
     connections.actingConnection(actor, organizerPlayerId, { kind: 'own' });
   } catch (err) {
-    if (!(err instanceof ConnectionAccessError)) throw err;
+    // A professor who must prove their login after a reset (ADR-0015 §8) gets the pokemon module's own refusal.
+    if (!(err instanceof ConnectionAccessError) || err.code === 'reverify_required') throw err;
     if (opts.local && err.code === 'needs_reconnect') return;
     if (opts.ownerCleanup && err.code === 'organizer_not_connected' && actor.role === 'owner') return;
     const name = connections.listActingConnections().find((c) => c.professorPlayerId === organizerPlayerId)?.professorName ?? `Professor ${organizerPlayerId}`;

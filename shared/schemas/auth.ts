@@ -1,6 +1,6 @@
 import { z } from '../zod';
 
-const username = z
+export const username = z
   .string()
   .trim()
   .toLowerCase()
@@ -9,12 +9,15 @@ const username = z
   .regex(/^[a-z0-9._-]+$/, 'Letters, digits, dots, dashes and underscores only');
 
 // Upper bound keeps scrypt from hashing megabytes.
-const PASSWORD_MAX = 256;
+export const PASSWORD_MAX = 256;
+
+/** Setup's password rule, shared with accepting an invite or reset link (ADR-0015 §6). */
+export const password = z.string().min(8, 'At least 8 characters').max(PASSWORD_MAX);
 
 export const SetupBody = z.object({
   setupCode: z.string().trim().min(1, 'Enter the setup code from the container log').max(64),
   username,
-  password: z.string().min(8, 'At least 8 characters').max(PASSWORD_MAX),
+  password,
 });
 export type SetupBody = z.infer<typeof SetupBody>;
 

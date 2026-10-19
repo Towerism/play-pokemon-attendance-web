@@ -7,8 +7,13 @@ import { describe, expect, it } from 'vitest';
 
 const API = join(process.cwd(), 'server', 'api');
 
-/** Routes that take no session guard: the public auth routes, the JSON 404 catch-all, and the bearer-only integrations. */
+/**
+ * Routes that take no session guard: the public auth routes, the public invite routes (rate-limited, ADR-0015 §6), the
+ * JSON 404 catch-all, and the bearer-only integrations.
+ */
 const UNGUARDED = new Set([
+  'invites/check.post.ts',
+  'invites/accept.post.ts',
   'auth/login.post.ts',
   'auth/logout.post.ts',
   'auth/setup.get.ts',
@@ -32,8 +37,13 @@ const ACTOR = new Set([
   'pokemon/connections/[playerId].delete.ts',
 ]);
 
-/** Owner only (ADR-0015 §4): the league picker, thresholds, imports, integration tokens, and clearing a session. */
+/** Owner only (ADR-0015 §4, §8): the league picker, thresholds, imports, integration tokens, clearing a session, professors. */
 const OWNER = new Set([
+  'professors/index.get.ts',
+  'professors/invites/index.post.ts',
+  'professors/invites/[id].delete.ts',
+  'professors/[userId]/reset-link.post.ts',
+  'professors/[userId].delete.ts',
   'leagues/upstream.get.ts',
   'settings.put.ts',
   'staff/import.post.ts',
