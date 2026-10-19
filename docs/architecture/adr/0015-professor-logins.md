@@ -333,6 +333,18 @@ professor may staff the tournament and upload its results using the organizer's 
   - `granted_by`, `granted_at`, `ends_at`, `ended_at`, `end_reason`;
   - a partial unique index on `tournament_id` while `ended_at` is null.
 
+- **As built (#203, 2026-10-19).** Four details were settled in the issue's spec:
+  - The connection's leases go with it (`ON DELETE CASCADE`), so a `connection_gone` row survives only a claim.
+    History doesn't need the lease row: a leased job's `submission` row holds who started it and whose connection it
+    ran as, and `lease_id` (no foreign key) only marks it leased. Every grant and ending is also an audit log line.
+  - The "Submit as" choice isn't stored on the server, so the owner's notice goes to their lowest-numbered connection
+    that is `member` and connected, else their lowest-numbered one.
+  - Every member must see "Only <organizer> or <lent professor> can change this", so the staff day and Upcoming
+    answers carry each tournament's live lease (the lent person's name and the end), read on every request after the
+    listing cache. `GET /api/tournament-leases` stays limited to the caller's leases (the owner: all).
+  - A lent professor may download, not list or delete, the leased tournament's results files while the lease lasts,
+    and nobody but the organizer deletes a results file, even one a lent professor uploaded.
+
 ### 6. Invites
 
 - **Minting.** The owner mints an invite in Settings → Professors. It takes an optional label (≤ 60 characters,
