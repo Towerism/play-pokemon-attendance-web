@@ -21,6 +21,7 @@ import { type TournamentResults, createResultUploadReferrer, createTournamentRes
 import { OLIVE, stubPlayTools, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
+import { OWNER } from '../pokemon/test-helpers';
 
 // The `tdf_upload` job (#96, ADR-0011) and Remove from staff's removal-only staff job on the submission rails. The
 // send is `validateResults`: every refusal asserts it was never called, and the happy path that it was called once,
@@ -203,7 +204,7 @@ beforeEach(() => {
 });
 afterEach(() => database.close());
 
-const preview = (content = file(), guid = GUID) => results.preview(L, DATE, guid, { filename: 'cup.tdf', content, by: 'organizer' });
+const preview = (content = file(), guid = GUID) => results.preview(L, DATE, guid, { filename: 'cup.tdf', content }, OWNER);
 async function upload(opts: { content?: string; importAttendance?: boolean; guid?: string; beforeJob?: () => void } = {}) {
   const p = await preview(opts.content, opts.guid);
   opts.beforeJob?.();
@@ -212,7 +213,7 @@ async function upload(opts: { content?: string; importAttendance?: boolean; guid
     tournamentId: opts.guid ?? GUID,
     uploadId: p.uploadId,
     body: { importAttendance: opts.importAttendance ?? true, acknowledgedWarnings: p.fingerprint! },
-    startedBy: 'organizer',
+    actor: OWNER,
   });
   await service.idle();
   return { p, submissionId, job: service.get(L, submissionId) };
@@ -254,7 +255,7 @@ describe('the send', () => {
     setPeople(GUID, person('1234567', 'judge'));
     const p = await preview();
     const err = await refusal(
-      service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: 'a'.repeat(64) }, startedBy: 'o' }),
+      service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: 'a'.repeat(64) }, actor: OWNER }),
     );
     expect(err.code).toBe('warnings_not_acknowledged');
     expect(service.list(L)).toEqual([]);
@@ -265,7 +266,7 @@ describe('the send', () => {
     const p = await preview();
     database.sqlite.prepare('insert into submission_lock (league_id, submission_id, expires_at) values (?, 999, ?)').run(L, clock.getTime() + 600_000);
     await expect(
-      service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! }, startedBy: 'o' }),
+      service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! }, actor: OWNER }),
     ).rejects.toMatchObject({ code: 'submission_running' });
     expect(uploadRow(p.uploadId).state).toBe('previewed');
   });
@@ -289,7 +290,7 @@ describe('the send', () => {
   it('stops before the send when the organizer must reconnect', async () => {
     const p = await preview();
     upstream.state.professors[0] = { ...upstream.state.professors[0]!, status: 'needs_reconnect' };
-    await service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! }, startedBy: 'o' });
+    await service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! }, actor: OWNER });
     await service.idle();
     expect(sent).toEqual([]);
     expect(uploadRow(p.uploadId)).toMatchObject({ state: 'failed', error_code: 'needs_reconnect' });
@@ -361,7 +362,7 @@ describe('the send', () => {
   it('ends partial when the attendance import fails after a confirmed send', async () => {
     const p = await preview();
     database.sqlite.prepare('delete from tdf_upload').run();
-    await service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! }, startedBy: 'o' });
+    await service.uploadResults(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! }, actor: OWNER });
     await service.idle();
     const job = service.list(L)[0]!;
     expect(job.status).toBe('partial');
@@ -386,7 +387,7 @@ describe('the send', () => {
 describe('never sent again on its own', () => {
   it('refuses History’s retry or resume: Upload again… only', async () => {
     const { submissionId } = await upload();
-    expect((await refusal(service.retry(L, submissionId, 'o'))).code).toBe('use_upload_again');
+    expect((await refusal(service.retry(L, submissionId, OWNER))).code).toBe('use_upload_again');
   });
 
   async function crashAt(where: 'read' | 'validate' | 'confirm') {
@@ -418,7 +419,7 @@ describe('never sent again on its own', () => {
       tournamentId: GUID,
       uploadId: p.uploadId,
       body: { importAttendance: true, acknowledgedWarnings: p.fingerprint! },
-      startedBy: 'o',
+      actor: OWNER,
     });
     await arrival;
     // A new process on the same database boots while the old one hangs.
@@ -436,7 +437,7 @@ describe('never sent again on its own', () => {
     expect(r.job).toMatchObject({ status: 'interrupted', tournamentItems: [expect.objectContaining({ outcome: 'skipped' })] });
     expect(r.upload).toMatchObject({ state: 'failed', error_code: 'interrupted' });
     expect(r.sentOnBoot).toBe(0);
-    expect((await refusal(r.booted.retry(L, r.submissionId, 'o'))).code).toBe('use_upload_again');
+    expect((await refusal(r.booted.retry(L, r.submissionId, OWNER))).code).toBe('use_upload_again');
   });
 
   it('after validate went out: validate_unknown, never validated again', async () => {
@@ -463,7 +464,7 @@ describe('never sent again on its own', () => {
       tournamentId: GUID,
       uploadId: p.uploadId,
       body: { importAttendance: false, acknowledgedWarnings: p.fingerprint! },
-      startedBy: 'o',
+      actor: OWNER,
     });
     await arrival;
     // The validate answered with errors and the upload recorded it; the process died before the item did.
@@ -503,7 +504,7 @@ describe('Remove from staff: a removal-only staff job', () => {
   async function removing(playerIds: string[], beforeJob?: () => void) {
     const p = await preview();
     beforeJob?.();
-    const { submissionId } = await service.removeResultsStaff(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, playerIds: playerIds as PlayerId[], startedBy: 'organizer' });
+    const { submissionId } = await service.removeResultsStaff(L, { date: DATE, tournamentId: GUID, uploadId: p.uploadId, playerIds: playerIds as PlayerId[], actor: OWNER });
     await service.idle();
     return { p, submissionId, job: service.get(L, submissionId) };
   }
@@ -539,7 +540,7 @@ describe('Remove from staff: a removal-only staff job', () => {
     setPeople(GUID, person('1234567', 'judge'));
     const p = await preview();
     setPeople(GUID);
-    await expect(results.checkRemovable(L, DATE, GUID, p.uploadId, ['1234567'] as PlayerId[])).rejects.toMatchObject({ code: 'not_removable' });
+    await expect(results.checkRemovable(L, DATE, GUID, p.uploadId, ['1234567'] as PlayerId[], OWNER)).rejects.toMatchObject({ code: 'not_removable' });
     expect(sends('unassign')).toEqual([]);
   });
 
@@ -566,10 +567,10 @@ describe('Remove from staff: a removal-only staff job', () => {
     expect(first.job.items[0]).toMatchObject({ outcome: 'failed' });
 
     onSend = undefined;
-    const { submissionId } = await service.retry(L, first.submissionId, 'organizer');
+    const { submissionId } = await service.retry(L, first.submissionId, OWNER);
     await service.idle();
     expect(service.get(L, submissionId)).toMatchObject({ kind: 'staff', retryOf: first.submissionId, items: [expect.objectContaining({ playerId: '1234567', outcome: 'removed' })] });
     expect(sends('unassign')).toHaveLength(2);
-    expect((await refusal(service.retry(L, submissionId, 'organizer'))).code).toBe('nothing_to_retry');
+    expect((await refusal(service.retry(L, submissionId, OWNER))).code).toBe('nothing_to_retry');
   });
 });

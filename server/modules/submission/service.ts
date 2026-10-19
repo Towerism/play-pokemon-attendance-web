@@ -4,24 +4,27 @@ import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { staffBatch, staffBatchItem, submission, submissionEvent, submissionItem, submissionLock, submissionTournamentItem } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
-import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
+import type { Actor } from '../accounts/service';
+import { type ActingConnection, ConnectionAccessError, type PokemonConnectionService } from '../pokemon/connection';
 import { type PokemonErrorCode, PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { BulkResult, PlayToolsGateway, Tournament, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
 import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
+import { StaffingError } from '../staffing/errors';
 import { TournamentsError } from '../tournaments/errors';
+import { assertMayActAs } from '../tournaments/organizer';
 import type { ApplyBody, CancelBody, EditTarget } from '../../../shared/schemas/tournaments';
 import type { CancelItem, CancelRead, TournamentCancelling } from '../tournaments/cancelling';
 import type { EditItem, ItemRead, TournamentEditing } from '../tournaments/editing';
-import type { CreatePlan, TournamentCreation, TournamentsService } from '../tournaments/service';
+import type { CreatePlan, CreateRefusal, TournamentCreation, TournamentsService } from '../tournaments/service';
 import type { ConfirmPlan, RemovalPlan, TournamentResults, UploadState } from '../tournaments/results';
 import type { ResultsConfirmBody } from '../../../shared/schemas/results';
 import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
 import { dateIn } from '../../../shared/time/local-time';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
-import { type PlaySessionResolver, submissionTarget } from './resolve';
+import { type PlaySessionResolver, leagueGroup } from './resolve';
 import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
 import { type StaffBatchRowStatus, type StaffBatchView, batchStatus } from './staff-batch';
 
@@ -194,60 +197,66 @@ export interface ClearPreview {
 export interface SubmissionService {
   /**
    * Checks the play session belongs to the date and is still editable, takes
-   * the league's lock, and starts the job in the background.
-   * @throws SubmissionError, PokemonUpstreamError
+   * the league's lock, and starts the job in the background, as one of the
+   * actor's own connections that can submit (ADR-0015 §4): the one named, or
+   * their only one.
+   * @throws SubmissionError (`submit_as_required`, `cannot_submit` …), ConnectionAccessError, PokemonUpstreamError
    */
-  start(leagueId: string, date: SessionDate, input: { playSessionId: string; startedBy: string }): Promise<{ submissionId: number }>;
+  start(leagueId: string, date: SessionDate, input: { playSessionId: string; actor: Actor; professorPlayerId?: string }): Promise<{ submissionId: number }>;
   /**
    * Retry (after `partial`/`failed`) or resume (after `interrupted`): a new
-   * attempt for the same play session that plans again from upstream.
-   * @throws SubmissionError, PokemonUpstreamError
+   * attempt for the same play session that plans again from upstream, as the
+   * professor the attempt ran as, who must be the actor's (ADR-0015 §4).
+   * @throws SubmissionError, ConnectionAccessError, PokemonUpstreamError
    */
-  retry(leagueId: string, submissionId: number, startedBy: string): Promise<{ submissionId: number }>;
+  retry(leagueId: string, submissionId: number, actor: Actor): Promise<{ submissionId: number }>;
   /** @throws SubmissionError `not_found` */
   get(leagueId: string, submissionId: number): SubmissionView;
   /** Newest first. */
   list(leagueId: string, filter?: { date?: SessionDate }): SubmissionSummary[];
   /**
    * Removes the records submission `submissionId` added, as a new `undo`
-   * attempt that runs in the background.
-   * @throws SubmissionError, PokemonUpstreamError
+   * attempt that runs in the background, as the professor the submission ran
+   * as, who must be the actor's (ADR-0015 §4).
+   * @throws SubmissionError, ConnectionAccessError, PokemonUpstreamError
    */
-  undo(leagueId: string, submissionId: number, startedBy: string): Promise<{ submissionId: number }>;
-  /** What `clear` would delete; changes nothing. @throws SubmissionError, PokemonUpstreamError */
-  previewClear(leagueId: string, date: SessionDate, playSessionId: string): Promise<ClearPreview>;
+  undo(leagueId: string, submissionId: number, actor: Actor): Promise<{ submissionId: number }>;
+  /** What `clear` would delete; changes nothing. Read as the actor's own member connection, else anyone's. @throws SubmissionError, PokemonUpstreamError */
+  previewClear(leagueId: string, date: SessionDate, playSessionId: string, actor: Actor): Promise<ClearPreview>;
   /**
    * Clear session (danger zone): deletes every player record in the play
-   * session, never a staff record, as a new `clear` attempt in the background.
-   * @throws SubmissionError, PokemonUpstreamError
+   * session, never a staff record, as a new `clear` attempt in the background,
+   * as one of the actor's connections that can submit, chosen as `start` does.
+   * @throws SubmissionError, ConnectionAccessError, PokemonUpstreamError
    */
-  clear(leagueId: string, date: SessionDate, playSessionId: string, startedBy: string): Promise<{ submissionId: number }>;
+  clear(leagueId: string, date: SessionDate, playSessionId: string, actor: Actor, professorPlayerId?: string): Promise<{ submissionId: number }>;
   /**
    * Applies one of the date's tournaments' staff assignments to play-tools
    * (ADR-0007), as a new `staff` job in the background.
    * @throws StaffingError, SubmissionError, PokemonUpstreamError
    */
-  applyStaff(leagueId: string, date: SessionDate, input: { tournamentId: string; startedBy: string }): Promise<{ submissionId: number }>;
+  applyStaff(leagueId: string, date: SessionDate, input: { tournamentId: string; actor: Actor }): Promise<{ submissionId: number }>;
   /**
    * Import staff from play-tools (ADR-0007 decision 5): reads every tournament
    * the account organizes, in any league, into the staff list, as a new
    * read-only `staff_import` job in the background.
    * @throws SubmissionError, PokemonUpstreamError
    */
-  importStaff(leagueId: string, startedBy: string): Promise<{ submissionId: number }>;
+  importStaff(leagueId: string, actor: Actor): Promise<{ submissionId: number }>;
   /**
    * Import players from play-tools (#35): reads the same tournaments as
    * `importStaff` and adds the players they list to the league, as a new
    * read-only `player_import` job in the background. Records no sightings.
    * @throws SubmissionError, PokemonUpstreamError
    */
-  importPlayers(leagueId: string, startedBy: string): Promise<{ submissionId: number }>;
+  importPlayers(leagueId: string, actor: Actor): Promise<{ submissionId: number }>;
   /**
    * Starts a staff batch (#76): the tournaments' staff jobs one after another, in the order given, each as its
    * organizer, holding the league's lease throughout. A tournament refused at its turn is not started; the rest go on.
-   * @throws SubmissionError `submission_running`, `shutting_down`
+   * A tournament whose organizer another user holds is refused before the batch starts (ADR-0015 §4).
+   * @throws SubmissionError `submission_running`, `shutting_down`; StaffingError `not_your_connection` when no tournament is the actor's
    */
-  applyStaffAll(leagueId: string, date: SessionDate, input: { tournamentIds: readonly string[]; startedBy: string }): Promise<{ batchId: number }>;
+  applyStaffAll(leagueId: string, date: SessionDate, input: { tournamentIds: readonly string[]; actor: Actor }): Promise<{ batchId: number }>;
   /** @throws SubmissionError `not_found` for another league's batch or none */
   staffBatch(leagueId: string, batchId: number): StaffBatchView;
   /** The date's latest running staff batch, if any. */
@@ -259,19 +268,22 @@ export interface SubmissionService {
    */
   createTournaments(
     leagueId: string,
-    input: { plannedIds: readonly number[]; acknowledgeShortNotice: boolean; retryUnknown: boolean; startedBy: string },
-  ): Promise<{ submissionId: number }>;
+    input: { plannedIds: readonly number[]; acknowledgeShortNotice: boolean; retryUnknown: boolean; actor: Actor },
+  ): Promise<{ submissionId: number; refused: CreateRefusal[] }>;
   /**
    * **Create through date…**: the same job for every row a schedule plans through `date`, as its preview lists them.
    * @throws TournamentsError (also `too_many_tournaments`, `nothing_to_create`), SubmissionError
    */
-  createThrough(leagueId: string, input: { scheduleId: number; date: string; acknowledgeShortNotice: boolean; startedBy: string }): Promise<{ submissionId: number }>;
+  createThrough(
+    leagueId: string,
+    input: { scheduleId: number; date: string; acknowledgeShortNotice: boolean; actor: Actor },
+  ): Promise<{ submissionId: number; refused: CreateRefusal[] }>;
   /**
    * **Edit…** (ADR-0010 decisions 8 and 11): the local changes, and a `tournament_edit` job for the tournaments in
    * play-tools, in one transaction. No job (`submissionId: null`) when only planned rows change.
    * @throws TournamentsError (the edit's refusals), SubmissionError `submission_running`, `shutting_down`
    */
-  editTournaments(leagueId: string, input: { target: EditTarget; body: ApplyBody; startedBy: string }): Promise<{ submissionId: number | null; updatedLocally: number }>;
+  editTournaments(leagueId: string, input: { target: EditTarget; body: ApplyBody; actor: Actor }): Promise<{ submissionId: number | null; updatedLocally: number }>;
   /**
    * **Cancel…** (ADR-0010 decision 8): a `tournament_cancel` job for one tournament, confirmed from a fresh read. One
    * play-tools already cancelled is only cancelled locally, with no job (`submissionId: null`).
@@ -279,7 +291,7 @@ export interface SubmissionService {
    */
   cancelTournament(
     leagueId: string,
-    input: { target: EditTarget; body: CancelBody; startedBy: string },
+    input: { target: EditTarget; body: CancelBody; actor: Actor },
   ): Promise<{ submissionId: number } | { submissionId: null; outcome: 'already_cancelled' }>;
   /**
    * **Upload results** (ADR-0011 decision 4): the confirm's checks, then a `tdf_upload` job that validates (the send)
@@ -288,7 +300,7 @@ export interface SubmissionService {
    */
   uploadResults(
     leagueId: string,
-    input: { date: SessionDate; tournamentId: string; uploadId: number; body: ResultsConfirmBody; startedBy: string },
+    input: { date: SessionDate; tournamentId: string; uploadId: number; body: ResultsConfirmBody; actor: Actor },
   ): Promise<{ submissionId: number }>;
   /**
    * **Remove from staff** (ADR-0007 update, #101): the server's checks, then a staff job that only removes those
@@ -297,7 +309,7 @@ export interface SubmissionService {
    */
   removeResultsStaff(
     leagueId: string,
-    input: { date: SessionDate; tournamentId: string; uploadId: number; playerIds: readonly PlayerId[]; startedBy: string },
+    input: { date: SessionDate; tournamentId: string; uploadId: number; playerIds: readonly PlayerId[]; actor: Actor },
   ): Promise<{ submissionId: number }>;
   /** A `tdf_upload` job's processing, followed on this read (ADR-0011 Update #96); a no-op for other jobs. */
   followResults(leagueId: string, submissionId: number): Promise<void>;
@@ -320,8 +332,9 @@ export interface SubmissionDeps {
   sessions: Pick<SessionsService, 'getSession' | 'recordSubmission' | 'removePlayer' | 'resetAfterClear'>;
   roster: Pick<RosterService, 'ensurePlayers' | 'getPlayers'>;
   sightings: Pick<SightingsService, 'record' | 'retract'>;
-  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
-  gateway: (leagueId: string) => Pick<PlayToolsGateway, 'listAttendance' | 'addAttendanceBulk' | 'removeAttendance'>;
+  connections: Pick<PokemonConnectionService, 'league' | 'listActingConnections' | 'listReadableConnections' | 'actingConnection' | 'readingConnection'>;
+  /** Attendance calls as one professor's connection: the one a job runs as (ADR-0015 §4). */
+  gateway: (connectionId: number) => Pick<PlayToolsGateway, 'listAttendance' | 'addAttendanceBulk' | 'removeAttendance'>;
   /** The tournament calls staff jobs and imports make (ADR-0007), as one professor's connection (#75). */
   staffGateway: (
     connectionId: number | null,
@@ -340,7 +353,10 @@ export interface SubmissionDeps {
   tournamentGateway?: (
     connectionId: number,
   ) => Pick<PlayToolsGateway, 'createTournament' | 'editTournament' | 'cancelTournament' | 'getTournament' | 'validateResults' | 'confirmResults'>;
-  staffing: Pick<StaffingService, 'prepareApply' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff' | 'forgetPlayed'>;
+  staffing: Pick<
+    StaffingService,
+    'prepareApply' | 'organizersOn' | 'assignmentsFor' | 'recordApplied' | 'recordFailed' | 'forgetRemoved' | 'recordUpstreamStaff' | 'forgetPlayed'
+  >;
   resolver: PlaySessionResolver;
   /** Planned tournaments, for `tournament_create` jobs (#92); only those jobs need it. */
   tournaments?: {
@@ -615,10 +631,44 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     };
   }
 
-  /** The league's submitting professor, stamped on each new attendance attempt (ADR-0008). */
-  function professorOf(leagueId: string) {
-    const p = deps.connections.getStatus(leagueId).professor;
-    return { professorPlayerId: p?.playerId ?? null, professorName: p?.name ?? null };
+  /** The professor an attempt runs as, as it records them. */
+  const professorOf = (c: ActingConnection) => ({ professorPlayerId: c.professorPlayerId, professorName: c.professorName });
+
+  const connectionName = (c: Pick<ActingConnection, 'professorName' | 'professorPlayerId'>) => c.professorName ?? `Professor ${c.professorPlayerId}`;
+
+  /**
+   * The connection an attendance attempt (submit, clear) runs as (ADR-0015 §4): one the actor holds that is a member
+   * allowed to record attendance. The one named; otherwise their only such one.
+   * @throws SubmissionError `cannot_submit`, `submit_as_required`; ConnectionAccessError; PokemonUpstreamError
+   */
+  function submitter(actor: Actor, professorPlayerId?: string): ActingConnection {
+    const mine = deps.connections.listActingConnections().filter((c) => c.userId === actor.userId);
+    if (professorPlayerId !== undefined) {
+      const { connectionId } = deps.connections.actingConnection(actor, professorPlayerId, { kind: 'own' });
+      const c = mine.find((x) => x.id === connectionId)!;
+      if (!c.canSubmit) throw new SubmissionError('cannot_submit', `${connectionName(c)}'s Pokémon account may not record attendance for this league.`);
+      return c;
+    }
+    if (mine.length === 0) throw new PokemonUpstreamError('not_connected', 'Connect your Pokémon account in Settings first.');
+    const able = mine.filter((c) => c.canSubmit);
+    if (able.length === 0) throw new SubmissionError('cannot_submit', 'None of your Pokémon accounts can record attendance for this league.');
+    if (able.length > 1) throw new SubmissionError('submit_as_required', 'Choose which of your Pokémon accounts to submit as.');
+    const only = able[0]!;
+    if (only.status === 'needs_reconnect') throw new PokemonUpstreamError('needs_reconnect', `Reconnect ${connectionName(only)} in Settings.`);
+    return only;
+  }
+
+  /**
+   * The connection an undo or a retry runs as: the professor the attempt ran as, and only when the actor holds that
+   * connection (ADR-0015 §4). An attempt from before professors were recorded can't be redone or undone.
+   * @throws ConnectionAccessError
+   */
+  function originalConnection(actor: Actor, row: Pick<Row, 'professorPlayerId'>): ActingConnection {
+    if (row.professorPlayerId === null) {
+      throw new ConnectionAccessError('not_your_connection', 'This attempt has no recorded professor, so it can be neither retried nor undone.', '');
+    }
+    const { connectionId } = deps.connections.actingConnection(actor, row.professorPlayerId, { kind: 'own' });
+    return deps.connections.listActingConnections().find((c) => c.id === connectionId)!;
   }
 
   /**
@@ -710,9 +760,10 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   async function run(row: Row): Promise<void> {
     const { leagueId } = row;
     const date = row.sessionDate as SessionDate;
-    const groupId = submissionTarget(deps.connections, leagueId);
-    const gateway = deps.gateway(leagueId);
-    const listAttendance = () => gateway.listAttendance(groupId, row.playSessionId);
+    const groupId = leagueGroup(deps.connections, leagueId);
+    // Each call goes through the connection the attempt recorded; once it is gone, the job stops (ADR-0015 §4).
+    const gateway = () => deps.gateway(stampedConnection(row));
+    const listAttendance = () => gateway().listAttendance(groupId, row.playSessionId);
     setStatus(row, 'running');
 
     // 1. Plan
@@ -766,7 +817,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         let result: BulkResult;
         try {
           lastBulkAt = now().getTime();
-          result = await gateway.addAttendanceBulk(groupId, row.playSessionId, pending);
+          result = await gateway().addAttendanceBulk(groupId, row.playSessionId, pending);
         } catch (err) {
           if (!(err instanceof PokemonUpstreamError) || !err.retryable) throw err;
           const timedOut = err.code === 'unavailable';
@@ -857,7 +908,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
    * final re-read decides). Shared by undo and clear.
    */
   async function removeAll(row: Row, groupId: string, targets: readonly RemovalTarget[], done: number, total: number): Promise<void> {
-    const gateway = deps.gateway(row.leagueId);
+    const gateway = () => deps.gateway(stampedConnection(row));
     let lastDeleteAt: number | undefined;
     /** Keeps deletes at least `undoDelayMs` apart, or longer when play-tools asks; stops on shutdown. */
     async function pace(atLeastMs = 0): Promise<void> {
@@ -874,7 +925,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         await pace();
         try {
           lastDeleteAt = now().getTime();
-          const result = await gateway.removeAttendance(groupId, row.playSessionId, recordId);
+          const result = await gateway().removeAttendance(groupId, row.playSessionId, recordId);
           return { outcome: result === 'removed' ? 'removed' : 'already_removed' };
         } catch (err) {
           if (!(err instanceof PokemonUpstreamError) || !err.retryable) throw err;
@@ -882,7 +933,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           emit(row, 'retrying', `${err.message} Trying that record again.`, done, total);
           await pace(err.details.retryAfterMs);
           if (err.code === 'unavailable') {
-            const listed = await gateway.listAttendance(groupId, row.playSessionId);
+            const listed = await gateway().listAttendance(groupId, row.playSessionId);
             if (!listed.some((r) => r.recordId === recordId)) return { outcome: 'removed' };
           }
         }
@@ -906,7 +957,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
    * final with what they mean locally, and returns the job's status.
    */
   async function reconcileRemoval(row: Row, groupId: string, recordsOf: ReadonlyMap<string, readonly string[]>, total: number) {
-    const still = new Set((await deps.gateway(row.leagueId).listAttendance(groupId, row.playSessionId)).map((r) => r.recordId));
+    const still = new Set((await deps.gateway(stampedConnection(row)).listAttendance(groupId, row.playSessionId)).map((r) => r.recordId));
     for (const [playerId, recordIds] of recordsOf) {
       if (recordIds.some((r) => still.has(r))) {
         db.update(submissionItem)
@@ -928,8 +979,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   /** Undo: delete each targeted record play-tools still has, then re-read to see what is gone. */
   async function runUndo(row: Row): Promise<void> {
-    const groupId = submissionTarget(deps.connections, row.leagueId);
-    const gateway = deps.gateway(row.leagueId);
+    const groupId = leagueGroup(deps.connections, row.leagueId);
+    const gateway = deps.gateway(stampedConnection(row));
     setStatus(row, 'running');
 
     const items = db.select().from(submissionItem).where(eq(submissionItem.submissionId, row.id)).all();
@@ -965,12 +1016,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
    * re-read. A clear that removed everyone resets the date's draft.
    */
   async function runClear(row: Row): Promise<void> {
-    const groupId = submissionTarget(deps.connections, row.leagueId);
+    const groupId = leagueGroup(deps.connections, row.leagueId);
     setStatus(row, 'running');
 
     const recordsOf = new Map<string, string[]>();
     const names = new Map<string, string>();
-    for (const r of await deps.gateway(row.leagueId).listAttendance(groupId, row.playSessionId)) {
+    for (const r of await deps.gateway(stampedConnection(row)).listAttendance(groupId, row.playSessionId)) {
       if (!r.isPlayer) continue;
       recordsOf.set(r.playerId, [...(recordsOf.get(r.playerId) ?? []), r.recordId]);
       if (r.name && !names.has(r.playerId)) names.set(r.playerId, r.name);
@@ -1486,7 +1537,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     // today: play-tools still lists tournaments from leagues an account has left, but refuses their records (#67).
     const plan: { conn: ActingConnection; gateway: ReturnType<SubmissionDeps['staffGateway']>; t: Tournament }[] = [];
     let leftOut = 0;
-    for (const conn of deps.connections.listActingConnections()) {
+    for (const conn of deps.connections.listReadableConnections()) {
       if (conn.status === 'needs_reconnect') {
         professorFailed(conn, 'needs_reconnect');
         continue;
@@ -1667,7 +1718,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return {
       action: at.action ?? 'create',
       sentAt: at.sentAt?.toISOString() ?? null,
-      league: { displayId: deps.connections.getStatus(leagueId).league?.displayId ?? null },
+      league: { displayId: deps.connections.league(leagueId)?.displayId ?? null },
       tournament: { displayId: at.displayId ?? null, name: at.name, date: at.date },
       professor: professorAs(at.connectionId),
       status: err?.details.status ?? null,
@@ -1886,18 +1937,23 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       plannedIds: readonly number[];
       acknowledgeShortNotice: boolean;
       retryUnknown: boolean;
-      startedBy: string;
+      actor: Actor;
       label?: string;
       through?: { scheduleId: number; date: string };
       /** A retry: rows short notice now must have been in the original job. */
       wasShortNotice?: ReadonlySet<number>;
     },
     retryOf: number | null,
-  ): Promise<{ submissionId: number }> {
+  ): Promise<{ submissionId: number; refused: CreateRefusal[] }> {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     assertUnlocked(leagueId);
     const t = creation();
-    const targets = t.prepare(leagueId, input.plannedIds, { retryUnknown: input.retryUnknown, acknowledgeShortNotice: input.acknowledgeShortNotice });
+    const { targets, refused } = t.prepare(
+      leagueId,
+      input.plannedIds,
+      { retryUnknown: input.retryUnknown, acknowledgeShortNotice: input.acknowledgeShortNotice },
+      input.actor,
+    );
     if (input.wasShortNotice) {
       const newly = targets.filter((x) => x.shortNotice && !input.wasShortNotice!.has(x.plannedId)).map((x) => x.plannedId);
       if (newly.length > 0) {
@@ -1916,7 +1972,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           sessionDate: dateIn(now(), timeZone),
           playSessionId: '',
           playSessionLabel: input.label ?? `Create ${targets.length} ${targets.length === 1 ? 'tournament' : 'tournaments'}`,
-          startedBy: input.startedBy,
+          startedBy: input.actor.username,
           professorPlayerId: only?.playerId ?? null,
           professorName: only?.name ?? null,
           startedAt: now(),
@@ -1948,7 +2004,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       return created;
     });
     launch(row);
-    return { submissionId: row.id };
+    return { submissionId: row.id, refused };
   }
 
   function editing(): TournamentEditing {
@@ -2011,30 +2067,34 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   /** **Edit…**: the local writes, and a job for what is in play-tools, together (ADR-0010 decision 11). */
-  async function beginTournamentEdit(leagueId: string, input: { target: EditTarget; body: ApplyBody; startedBy: string }) {
+  async function beginTournamentEdit(leagueId: string, input: { target: EditTarget; body: ApplyBody; actor: Actor }) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     const e = editing();
-    const plan = await e.prepare(leagueId, input.target, input.body);
-    if (plan.items.length === 0) return { submissionId: null, updatedLocally: db.transaction(() => e.applyLocal(leagueId, plan, input.startedBy)) };
+    const startedBy = input.actor.username;
+    const plan = await e.prepare(leagueId, input.target, input.body, input.actor);
+    if (plan.items.length === 0) return { submissionId: null, updatedLocally: db.transaction(() => e.applyLocal(leagueId, plan, startedBy)) };
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     const { row, updatedLocally } = insertEditJob(leagueId, {
       label: plan.label,
       items: plan.items,
-      startedBy: input.startedBy,
+      startedBy,
       retryOf: null,
-      local: () => e.applyLocal(leagueId, plan, input.startedBy),
+      local: () => e.applyLocal(leagueId, plan, startedBy),
     });
     launch(row);
     return { submissionId: row.id, updatedLocally };
   }
 
   /** Retry of an edit job: the items it didn't get through, with the same changes; each re-reads first. */
-  function retryTournamentEdit(row: Row, startedBy: string): { submissionId: number } {
+  function retryTournamentEdit(row: Row, actor: Actor): { submissionId: number } {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     const e = editing();
+    const startedBy = actor.username;
     const open = tournamentItems(row.id).filter((i) => i.outcome !== 'edited' && i.outcome !== 'already_applied');
     if (open.length === 0) throw new TournamentsError('nothing_to_edit', 'Every tournament of this job has the edit.');
     const items = open.map(editItemOf);
+    // A retry is a new start by whoever clicks it, checked again (ADR-0015 §4).
+    for (const i of items) assertMayActAs(deps.connections, actor, i.professorPlayerId);
     const newly = items.filter((i) => !i.shortNotice && i.changes.localDate !== undefined && e.isShortNotice(i.changes.localDate));
     if (newly.length > 0) {
       throw new TournamentsError('short_notice_not_acknowledged', 'The new date is now less than 7 days away. Edit it again to acknowledge it.', {
@@ -2243,12 +2303,13 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
    * **Cancel…** (ADR-0010 decision 8): fresh reads and the typed confirmation, then a job. One play-tools already
    * cancelled is cancelled locally with no job, under the same lease check, and logged, since History won't show it.
    */
-  async function beginTournamentCancel(leagueId: string, input: { target: EditTarget; body: CancelBody; startedBy: string }) {
+  async function beginTournamentCancel(leagueId: string, input: { target: EditTarget; body: CancelBody; actor: Actor }) {
     const shuttingDown = () => new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     if (stop.signal.aborted) throw shuttingDown();
     assertUnlocked(leagueId);
     const c = cancelling();
-    const plan = await c.prepare(leagueId, input.target, input.body);
+    const startedBy = input.actor.username;
+    const plan = await c.prepare(leagueId, input.target, input.body, input.actor);
     if (stop.signal.aborted) throw shuttingDown();
     if (plan.kind === 'already_cancelled') {
       const { dropped, removed } = db.transaction(() => {
@@ -2256,7 +2317,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         return c.recordCancelled(leagueId, plan.item);
       });
       log.info(`${plan.item.label} was already cancelled in play-tools: cancelled here too`, {
-        by: input.startedBy,
+        by: startedBy,
         tournamentId: plan.item.tournamentId,
         plannedTournamentId: plan.item.plannedId,
         dropped,
@@ -2264,17 +2325,19 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       });
       return { submissionId: null, outcome: 'already_cancelled' as const };
     }
-    const row = insertCancelJob(leagueId, { item: plan.item, startedBy: input.startedBy, retryOf: null });
+    const row = insertCancelJob(leagueId, { item: plan.item, startedBy, retryOf: null });
     launch(row);
     return { submissionId: row.id };
   }
 
   /** Retry of a cancel job: its item again, confirmed or not as it was; the job re-reads first. */
-  function retryTournamentCancel(row: Row, startedBy: string): { submissionId: number } {
+  function retryTournamentCancel(row: Row, actor: Actor): { submissionId: number } {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     const open = tournamentItems(row.id).find((i) => i.outcome !== 'cancelled' && i.outcome !== 'already_cancelled');
     if (!open) throw new TournamentsError('nothing_to_cancel', 'play-tools already has this tournament cancelled.');
-    const created = insertCancelJob(row.leagueId, { item: cancelItemOf(open), startedBy, retryOf: row.id });
+    const item = cancelItemOf(open);
+    assertMayActAs(deps.connections, actor, item.professorPlayerId);
+    const created = insertCancelJob(row.leagueId, { item, startedBy: actor.username, retryOf: row.id });
     launch(created);
     return { submissionId: created.id };
   }
@@ -2423,11 +2486,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
    */
   async function beginTdfUpload(
     leagueId: string,
-    input: { date: SessionDate; tournamentId: string; uploadId: number; body: ResultsConfirmBody; startedBy: string },
+    input: { date: SessionDate; tournamentId: string; uploadId: number; body: ResultsConfirmBody; actor: Actor },
   ): Promise<{ submissionId: number }> {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     const r = results();
-    const plan: ConfirmPlan = r.prepareConfirm(leagueId, input.date, input.tournamentId, input.uploadId, input.body);
+    const startedBy = input.actor.username;
+    const plan: ConfirmPlan = r.prepareConfirm(leagueId, input.date, input.tournamentId, input.uploadId, input.body, input.actor);
     const organizer = deps.connections.listActingConnections().find((c) => c.professorPlayerId === plan.professorPlayerId);
     const row = db.transaction(() => {
       const created = db
@@ -2437,7 +2501,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           sessionDate: plan.date,
           playSessionId: '',
           playSessionLabel: `Upload results ${plan.label}`,
-          startedBy: input.startedBy,
+          startedBy,
           professorPlayerId: plan.professorPlayerId,
           professorName: organizer?.professorName ?? null,
           startedAt: now(),
@@ -2449,7 +2513,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         .returning()
         .get();
       acquireLock(leagueId, created.id);
-      if (!r.markSending(plan.uploadId, { by: input.startedBy, fingerprint: input.body.acknowledgedWarnings, submissionId: created.id })) {
+      if (!r.markSending(plan.uploadId, { by: startedBy, fingerprint: input.body.acknowledgedWarnings, submissionId: created.id })) {
         throw new TournamentsError('upload_not_open', 'This upload was already sent or closed. Use Upload again….', { state: r.peek(plan.uploadId)?.state ?? null });
       }
       db.insert(submissionTournamentItem)
@@ -2674,7 +2738,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   /** A History retry of a removal job: the checks again for its players not removed yet, then a new removal job. */
-  async function retryStaffRemoval(row: Row, startedBy: string): Promise<{ submissionId: number }> {
+  async function retryStaffRemoval(row: Row, actor: Actor): Promise<{ submissionId: number }> {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     const left = db
       .select({ playerId: submissionItem.playerId, outcome: submissionItem.outcome })
@@ -2685,8 +2749,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .map((i) => i.playerId as PlayerId);
     if (left.length === 0) throw new TournamentsError('nothing_to_retry', 'Everyone this job named is off the staff already.');
     assertUnlocked(row.leagueId);
-    const plan = await results().checkRemovable(row.leagueId, row.sessionDate as SessionDate, row.playSessionId, row.resultsUploadId!, left);
-    const created = insertRemovalJob(row.leagueId, { plan, startedBy, retryOf: row.id });
+    const plan = await results().checkRemovable(row.leagueId, row.sessionDate as SessionDate, row.playSessionId, row.resultsUploadId!, left, actor);
+    const created = insertRemovalJob(row.leagueId, { plan, startedBy: actor.username, retryOf: row.id });
     launch(created);
     return { submissionId: created.id };
   }
@@ -2881,9 +2945,12 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     running.add(job);
   }
 
-  async function begin(leagueId: string, date: SessionDate, playSessionId: string, startedBy: string, retryOf: number | null) {
+  /** `connection` picks who the attempt runs as, after the league check, so its refusals come in a fixed order. */
+  async function begin(leagueId: string, date: SessionDate, playSessionId: string, startedBy: string, connection: () => ActingConnection, retryOf: number | null) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
-    const candidate = await deps.resolver.find(leagueId, date, playSessionId);
+    leagueGroup(deps.connections, leagueId);
+    const as = connection();
+    const candidate = await deps.resolver.find(leagueId, date, playSessionId, as.id);
     if (!candidate.editable) {
       throw new SubmissionError(
         'edit_window_closed',
@@ -2904,7 +2971,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: candidate.id,
           playSessionLabel: candidate.label,
           startedBy,
-          ...professorOf(leagueId),
+          ...professorOf(as),
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -2937,15 +3004,17 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       .filter((i) => i.recordId !== null && !undone.has(i.recordId));
   }
 
-  async function beginUndo(leagueId: string, target: Row, startedBy: string, retryOf: number | null): Promise<{ submissionId: number }> {
+  async function beginUndo(leagueId: string, target: Row, actor: Actor, retryOf: number | null): Promise<{ submissionId: number }> {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     if (target.kind !== 'submit' || ACTIVE.includes(target.status)) {
       throw new SubmissionError('not_undoable', 'Only a finished submission can be undone.');
     }
     const targets = undoTargets(target);
     if (targets.length === 0) throw new SubmissionError('nothing_to_undo', 'This submission added nobody that is still to remove.');
+    // Undo removes what one professor added, as that professor (ADR-0015 §4).
+    const as = originalConnection(actor, target);
     const date = target.sessionDate as SessionDate;
-    const candidate = await deps.resolver.find(leagueId, date, target.playSessionId);
+    const candidate = await deps.resolver.find(leagueId, date, target.playSessionId, as.id);
     if (!candidate.editable) {
       throw new SubmissionError(
         'edit_window_closed',
@@ -2961,8 +3030,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           sessionDate: target.sessionDate,
           playSessionId: target.playSessionId,
           playSessionLabel: target.playSessionLabel,
-          startedBy,
-          ...professorOf(leagueId),
+          startedBy: actor.username,
+          ...professorOf(as),
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -2981,18 +3050,20 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     return { submissionId: row.id };
   }
 
-  async function beginClear(leagueId: string, date: SessionDate, playSessionId: string, startedBy: string, retryOf: number | null) {
+  async function beginClear(leagueId: string, date: SessionDate, playSessionId: string, startedBy: string, connection: () => ActingConnection, retryOf: number | null) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     assertUnlocked(leagueId);
-    const candidate = await deps.resolver.find(leagueId, date, playSessionId);
+    leagueGroup(deps.connections, leagueId);
+    const as = connection();
+    const candidate = await deps.resolver.find(leagueId, date, playSessionId, as.id);
     if (!candidate.editable) {
       throw new SubmissionError(
         'edit_window_closed',
         `play-tools stopped accepting attendance for this session on ${candidate.editableUntil?.toISOString()}.`,
       );
     }
-    const groupId = submissionTarget(deps.connections, leagueId);
-    const listed = await deps.gateway(leagueId).listAttendance(groupId, candidate.id);
+    const groupId = leagueGroup(deps.connections, leagueId);
+    const listed = await deps.gateway(as.id).listAttendance(groupId, candidate.id);
     if (!listed.some((r) => r.isPlayer)) throw new SubmissionError('nothing_to_clear', 'play-tools has no players in this session.');
 
     const row = db.transaction(() => {
@@ -3004,7 +3075,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           playSessionId: candidate.id,
           playSessionLabel: candidate.label,
           startedBy,
-          ...professorOf(leagueId),
+          ...professorOf(as),
           startedAt: now(),
           status: 'planned',
           retryOf,
@@ -3020,13 +3091,13 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   }
 
   /** Starts a staff job for one of the date's tournaments, after the staffing module's checks (read fresh). */
-  async function beginStaff(leagueId: string, date: SessionDate, tournamentId: string, startedBy: string, retryOf: number | null) {
+  async function beginStaff(leagueId: string, date: SessionDate, tournamentId: string, actor: Actor, retryOf: number | null) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     assertUnlocked(leagueId);
-    const target = await deps.staffing.prepareApply(leagueId, date, tournamentId);
+    const target = await deps.staffing.prepareApply(leagueId, date, tournamentId, actor);
 
     const row = db.transaction(() => {
-      const created = insertStaffJob(leagueId, date, target, startedBy, retryOf);
+      const created = insertStaffJob(leagueId, date, target, actor.username, retryOf);
       acquireLock(leagueId, created.id);
       return created;
     });
@@ -3084,7 +3155,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
    * Runs a batch's tournaments one at a time. The lease passes from the batch to each job and back, never
    * freed in between. On shutdown it starts nothing more and leaves the batch for boot recovery.
    */
-  async function runBatch(batch: typeof staffBatch.$inferSelect, items: readonly { position: number; tournamentId: string }[]) {
+  async function runBatch(batch: typeof staffBatch.$inferSelect, items: readonly { position: number; tournamentId: string }[], actor: Actor) {
     const { leagueId, id: batchId } = batch;
     const date = batch.sessionDate as SessionDate;
     const holder = { leagueId, id: batchHolder(batchId) };
@@ -3094,7 +3165,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       renewLock(holder);
       let target: StaffTarget;
       try {
-        target = await deps.staffing.prepareApply(leagueId, date, item.tournamentId);
+        target = await deps.staffing.prepareApply(leagueId, date, item.tournamentId, actor);
       } catch (err) {
         const code = (err as { code?: unknown }).code;
         setBatchItem(batchId, item.position, {
@@ -3122,9 +3193,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     log.info(`Staff batch #${batchId} ${batchStatus(ended)}`, { batchId });
   }
 
-  function launchBatch(batch: typeof staffBatch.$inferSelect, items: readonly { position: number; tournamentId: string }[]): void {
+  function launchBatch(batch: typeof staffBatch.$inferSelect, items: readonly { position: number; tournamentId: string }[], actor: Actor): void {
     log.info(`Staff batch #${batch.id} started for ${batch.sessionDate}`, { batchId: batch.id, date: batch.sessionDate });
-    const job = runBatch(batch, items)
+    const job = runBatch(batch, items, actor)
       .catch((err: unknown) => {
         log.warn(`Staff batch #${batch.id} failed: ${(err as Error).message}`, { batchId: batch.id });
         db.update(staffBatch).set({ status: 'failed', finishedAt: now() }).where(eq(staffBatch.id, batch.id)).run();
@@ -3145,25 +3216,55 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   /** Staff batches need the league chosen in Settings; their tournaments are the league's. */
   function assertLeagueChosen(leagueId: string): void {
-    if (!deps.connections.getStatus(leagueId).league) {
-      throw new SubmissionError('league_not_selected', 'Choose the league to submit to in Settings.');
+    leagueGroup(deps.connections, leagueId);
+  }
+
+  /** Why a batch row whose organizer another user holds is refused before the batch starts (ADR-0015 §4); null when it may run. */
+  function refusedAtStart(actor: Actor, organizerPlayerId: string | undefined): { code: string; message: string } | null {
+    if (organizerPlayerId === undefined) return null; // nobody's listing had it: its turn reads it fresh
+    try {
+      deps.connections.actingConnection(actor, organizerPlayerId, { kind: 'own' });
+      return null;
+    } catch (err) {
+      if (!(err instanceof ConnectionAccessError) || err.code !== 'not_your_connection') return null; // its turn refuses it, as before
+      const c = deps.connections.listActingConnections().find((x) => x.professorPlayerId === organizerPlayerId);
+      return { code: 'not_your_connection', message: `Only ${c ? connectionName(c) : `Professor ${organizerPlayerId}`} can change this tournament's staff.` };
     }
   }
 
-  async function beginStaffBatch(leagueId: string, date: SessionDate, tournamentIds: readonly string[], startedBy: string) {
+  async function beginStaffBatch(leagueId: string, date: SessionDate, tournamentIds: readonly string[], actor: Actor) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
     assertLeagueChosen(leagueId);
-    const items = tournamentIds.map((tournamentId, position) => ({ position, tournamentId }));
+    assertUnlocked(leagueId);
+    const organizers = await deps.staffing.organizersOn(leagueId, date);
+    const all = tournamentIds.map((tournamentId, position) => ({ position, tournamentId, refusal: refusedAtStart(actor, organizers.get(tournamentId)) }));
+    if (all.every((i) => i.refusal)) {
+      throw new StaffingError('not_your_connection', all[0]?.refusal?.message ?? 'None of these tournaments is yours to staff.', {
+        professorPlayerId: organizers.get(all[0]?.tournamentId ?? '') ?? '',
+      });
+    }
+    const items = all.filter((i) => !i.refusal).map(({ position, tournamentId }) => ({ position, tournamentId }));
     const batch = db.transaction(() => {
       assertUnlocked(leagueId);
-      const created = db.insert(staffBatch).values({ leagueId, sessionDate: date, startedBy, startedAt: now(), status: 'running' }).returning().get();
-      for (const item of items) {
-        db.insert(staffBatchItem).values({ batchId: created.id, ...item, tournamentLabel: item.tournamentId }).run();
+      const created = db
+        .insert(staffBatch)
+        .values({ leagueId, sessionDate: date, startedBy: actor.username, startedAt: now(), status: 'running' })
+        .returning()
+        .get();
+      for (const { refusal, ...item } of all) {
+        db.insert(staffBatchItem)
+          .values({
+            batchId: created.id,
+            ...item,
+            tournamentLabel: item.tournamentId,
+            ...(refusal && { status: 'not_started' as const, refusalCode: refusal.code, refusalMessage: refusal.message }),
+          })
+          .run();
       }
       acquireLock(leagueId, batchHolder(created.id));
       return created;
     });
-    launchBatch(batch, items);
+    launchBatch(batch, items, actor);
     return { batchId: batch.id };
   }
 
@@ -3206,15 +3307,13 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   async function beginImport(kind: ImportKind, leagueId: string, startedBy: string, retryOf: number | null) {
     if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
-    // Every connected professor is read (#75): it needs one who can be, and the league chosen.
-    const conns = deps.connections.listActingConnections();
+    // Every connected professor in the league is read (#75, ADR-0015 §3): it needs one who can be, and the league chosen.
+    const conns = deps.connections.listReadableConnections();
     if (conns.length === 0) throw new PokemonUpstreamError('not_connected', 'No Pokémon account is connected. Connect one in Settings.');
     if (conns.every((c) => c.status === 'needs_reconnect')) {
       throw new PokemonUpstreamError('needs_reconnect', 'Every connected Pokémon account needs a reconnect. Reconnect one in Settings.');
     }
-    if (!deps.connections.getStatus(leagueId).league) {
-      throw new SubmissionError('league_not_selected', 'Choose the league to submit to in Settings.');
-    }
+    leagueGroup(deps.connections, leagueId);
     const row = db.transaction(() => {
       const created = db
         .insert(submission)
@@ -3244,23 +3343,26 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   // --- the service -----------------------------------------------------------
 
   const service: SubmissionService = {
-    start: (leagueId, date, input) => begin(leagueId, date, input.playSessionId, input.startedBy, null),
+    start: (leagueId, date, input) =>
+      begin(leagueId, date, input.playSessionId, input.actor.username, () => submitter(input.actor, input.professorPlayerId), null),
 
-    async retry(leagueId, submissionId, startedBy) {
+    async retry(leagueId, submissionId, actor) {
       const row = mustFind(leagueId, submissionId);
       if (ACTIVE.includes(row.status)) {
         throw new SubmissionError('submission_running', 'This submission is still running. Wait for it to finish.');
       }
-      if (row.kind === 'undo') return beginUndo(leagueId, mustFind(leagueId, row.undoOf!), startedBy, row.id);
-      if (row.kind === 'clear') return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
+      if (row.kind === 'undo') return beginUndo(leagueId, mustFind(leagueId, row.undoOf!), actor, row.id);
+      if (row.kind === 'clear') {
+        return beginClear(leagueId, row.sessionDate as SessionDate, row.playSessionId, actor.username, () => originalConnection(actor, row), row.id);
+      }
       if (row.kind === 'tdf_upload') {
         throw new TournamentsError('use_upload_again', 'A results upload is never sent again on its own. Use Upload again… to check the file and send it.');
       }
-      if (isRemoval(row)) return retryStaffRemoval(row, startedBy);
-      if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
-      if (isImport(row)) return beginImport(row.kind, leagueId, startedBy, row.id);
-      if (row.kind === 'tournament_edit') return retryTournamentEdit(row, startedBy);
-      if (row.kind === 'tournament_cancel') return retryTournamentCancel(row, startedBy);
+      if (isRemoval(row)) return retryStaffRemoval(row, actor);
+      if (row.kind === 'staff') return beginStaff(leagueId, row.sessionDate as SessionDate, row.playSessionId, actor, row.id);
+      if (isImport(row)) return beginImport(row.kind, leagueId, actor.username, row.id);
+      if (row.kind === 'tournament_edit') return retryTournamentEdit(row, actor);
+      if (row.kind === 'tournament_cancel') return retryTournamentCancel(row, actor);
       if (row.kind === 'tournament_create') {
         const items = tournamentItems(row.id);
         const plannedIds = creation().retryable(
@@ -3274,7 +3376,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
             plannedIds,
             acknowledgeShortNotice: true,
             retryUnknown: false,
-            startedBy,
+            actor,
             label: row.playSessionLabel,
             ...(row.throughScheduleId !== null && row.throughDate !== null && { through: { scheduleId: row.throughScheduleId, date: row.throughDate } }),
             wasShortNotice: new Set(items.filter((i) => i.shortNotice).map((i) => i.plannedTournamentId!)),
@@ -3282,15 +3384,16 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           row.id,
         );
       }
-      return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, startedBy, row.id);
+      return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, actor.username, () => originalConnection(actor, row), row.id);
     },
 
-    undo: async (leagueId, submissionId, startedBy) => beginUndo(leagueId, mustFind(leagueId, submissionId), startedBy, null),
+    undo: async (leagueId, submissionId, actor) => beginUndo(leagueId, mustFind(leagueId, submissionId), actor, null),
 
-    async previewClear(leagueId, date, playSessionId) {
-      const candidate = await deps.resolver.find(leagueId, date, playSessionId);
-      const groupId = submissionTarget(deps.connections, leagueId);
-      const listed = await deps.gateway(leagueId).listAttendance(groupId, candidate.id);
+    async previewClear(leagueId, date, playSessionId, actor) {
+      const groupId = leagueGroup(deps.connections, leagueId);
+      const readAs = deps.connections.readingConnection(leagueId, actor);
+      const candidate = await deps.resolver.find(leagueId, date, playSessionId, readAs);
+      const listed = await deps.gateway(readAs).listAttendance(groupId, candidate.id);
       const ours = ourRecordIds({ leagueId, playSessionId: candidate.id });
       const players = new Map<PlayerId, { playerId: PlayerId; name: string; addedByApp: boolean }>();
       for (const r of listed.filter((x) => x.isPlayer)) {
@@ -3307,15 +3410,16 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       };
     },
 
-    clear: async (leagueId, date, playSessionId, startedBy) => beginClear(leagueId, date, playSessionId, startedBy, null),
+    clear: async (leagueId, date, playSessionId, actor, professorPlayerId) =>
+      beginClear(leagueId, date, playSessionId, actor.username, () => submitter(actor, professorPlayerId), null),
 
-    applyStaff: async (leagueId, date, input) => beginStaff(leagueId, date, input.tournamentId, input.startedBy, null),
+    applyStaff: async (leagueId, date, input) => beginStaff(leagueId, date, input.tournamentId, input.actor, null),
 
-    importStaff: async (leagueId, startedBy) => beginImport('staff_import', leagueId, startedBy, null),
+    importStaff: async (leagueId, actor) => beginImport('staff_import', leagueId, actor.username, null),
 
-    importPlayers: async (leagueId, startedBy) => beginImport('player_import', leagueId, startedBy, null),
+    importPlayers: async (leagueId, actor) => beginImport('player_import', leagueId, actor.username, null),
 
-    applyStaffAll: async (leagueId, date, input) => beginStaffBatch(leagueId, date, input.tournamentIds, input.startedBy),
+    applyStaffAll: async (leagueId, date, input) => beginStaffBatch(leagueId, date, input.tournamentIds, input.actor),
 
     createTournaments: async (leagueId, input) => beginTournamentCreate(leagueId, input, null),
 
@@ -3335,7 +3439,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           plannedIds: preview.tournaments.map((e) => e.plannedId!),
           acknowledgeShortNotice: input.acknowledgeShortNotice,
           retryUnknown: false,
-          startedBy: input.startedBy,
+          actor: input.actor,
           label: `Create ${preview.scaffoldName} through ${input.date}`,
           through: { scheduleId: input.scheduleId, date: input.date },
         },
@@ -3352,9 +3456,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     async removeResultsStaff(leagueId, input) {
       if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
       assertUnlocked(leagueId);
-      const plan = await results().checkRemovable(leagueId, input.date, input.tournamentId, input.uploadId, input.playerIds);
+      const plan = await results().checkRemovable(leagueId, input.date, input.tournamentId, input.uploadId, input.playerIds, input.actor);
       if (stop.signal.aborted) throw new SubmissionError('shutting_down', 'The app is restarting. Try again in a moment.');
-      const row = insertRemovalJob(leagueId, { plan, startedBy: input.startedBy, retryOf: null });
+      const row = insertRemovalJob(leagueId, { plan, startedBy: input.actor.username, retryOf: null });
       launch(row);
       return { submissionId: row.id };
     },

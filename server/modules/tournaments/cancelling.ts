@@ -3,6 +3,7 @@ import type { CancelBody, EditTarget } from '../../../shared/schemas/tournaments
 import { dateIn } from '../../../shared/time/local-time';
 import type { Db } from '../../db/client';
 import { plannedTournament, tournamentTemplate } from '../../db/schema';
+import type { Actor } from '../accounts/service';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { TournamentDetails } from '../pokemon/ports/play-tools-gateway';
@@ -10,7 +11,7 @@ import type { StaffingService } from '../staffing/service';
 import { cancellability, confirmationFor, participantCounts } from './cancel';
 import { type LocalDate, addDays, timeIn } from './dates';
 import { TournamentsError } from './errors';
-import { type OrganizerRead, organizerReads } from './organizer';
+import { type OrganizerRead, assertMayActAs, organizerReads } from './organizer';
 import { heldSkipped } from './plan';
 import type { TournamentsGateway } from './service';
 
@@ -60,8 +61,9 @@ export type CancelRead =
 export interface TournamentCancelling {
   /** @throws TournamentsError `not_found`, `not_in_play_tools`, `not_editable`, `organizer_not_connected`, `needs_reconnect`, `league_not_selected`; PokemonUpstreamError */
   preview(leagueId: string, target: EditTarget): Promise<CancelPreview>;
-  /** The preview again, then the apply's refusals. Reads only. @throws the preview's, `confirmation_mismatch`, `tournament_locked` */
-  prepare(leagueId: string, target: EditTarget, body: CancelBody): Promise<CancelPlan>;
+  /** The preview again, then the apply's refusals. Reads only. @throws the preview's, `not_your_connection`, `confirmation_mismatch`, `tournament_locked` */
+  /** The tournament must be `actor`'s to change (ADR-0015 §4). */
+  prepare(leagueId: string, target: EditTarget, body: CancelBody, actor: Actor): Promise<CancelPlan>;
   /** Fresh read and checks. @throws PokemonUpstreamError `not_connected`, `needs_reconnect`, or the read's own: the job stops */
   readItem(leagueId: string, item: CancelItem): Promise<CancelRead>;
   /** play-tools has it cancelled: the planned row is `cancelled`, its staff dropped or tombstoned. One transaction. */
@@ -71,7 +73,7 @@ export interface TournamentCancelling {
 
 export interface CancellingContext {
   db: Db;
-  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
+  connections: Pick<PokemonConnectionService, 'league' | 'listActingConnections' | 'actingConnection'>;
   gateway: (connectionId: number) => Pick<TournamentsGateway, 'getTournament' | 'listTournamentParticipants'>;
   staffing?: Pick<StaffingService, 'cancelTournament'>;
   timeZone: string;
@@ -88,7 +90,7 @@ export function createCancelling(ctx: CancellingContext): TournamentCancelling {
 
   /** The tournament behind `{id}`, read fresh as its organizer, with the row that links it. */
   async function locate(leagueId: string, target: EditTarget): Promise<OrganizerRead & { row: PlannedRow | null }> {
-    const group = ctx.connections.getStatus(leagueId).league?.id;
+    const group = ctx.connections.league(leagueId)?.id;
     if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
     const row =
       target.kind === 'planned'
@@ -149,8 +151,9 @@ export function createCancelling(ctx: CancellingContext): TournamentCancelling {
   return {
     preview,
 
-    async prepare(leagueId, target, body) {
+    async prepare(leagueId, target, body, actor) {
       const p = await preview(leagueId, target);
+      assertMayActAs(ctx.connections, actor, p.organizer.playerId);
       // The typed confirmation comes first: even the already-cancelled path writes locally.
       if (p.confirmRequired && body.confirmation !== p.confirmWith) {
         throw new TournamentsError('confirmation_mismatch', `Type ${p.confirmWith} exactly to confirm cancelling this tournament.`, { required: true });

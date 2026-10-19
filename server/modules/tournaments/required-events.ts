@@ -48,7 +48,7 @@ export interface ListedTournament {
 }
 
 export interface RequiredEventsDeps {
-  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
+  connections: Pick<PokemonConnectionService, 'league' | 'listReadableConnections'>;
   gateway: (connectionId: number) => Pick<TournamentsGateway, 'getTournament'>;
   /** The listing cache Upcoming shares (#98). */
   listings: ListingCache;
@@ -124,8 +124,9 @@ export function createRequiredEvents(deps: RequiredEventsDeps): RequiredEvents {
       const now = deps.now();
       const today = dateIn(now, deps.timeZone) as LocalDate;
       const requirements = deps.requirements.active(leagueId);
-      const conns = deps.connections.listActingConnections();
-      const group = conns.length === 0 ? null : (deps.connections.getStatus(leagueId).league?.id ?? null);
+      // Reads across professors leave out connections outside the league (ADR-0015 §3).
+      const conns = deps.connections.listReadableConnections();
+      const group = conns.length === 0 ? null : (deps.connections.league(leagueId)?.id ?? null);
       const upstream = conns.length === 0 ? 'not_connected' : group === null ? 'league_not_selected' : 'read';
       const base = { timeZone: deps.timeZone, today, country: COVERAGE_COUNTRY, upstream } as const;
       if (requirements.length === 0) return { ...base, unread: [], seriesUnavailable: false, requirements: [] };

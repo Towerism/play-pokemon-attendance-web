@@ -1,3 +1,4 @@
+import type { Actor } from '../accounts/service';
 import { and, desc, eq, inArray, isNotNull, lt } from 'drizzle-orm';
 import type { ResultsConfirmBody } from '../../../shared/schemas/results';
 import { correctTdf } from '../../../shared/tdf/correct';
@@ -15,7 +16,7 @@ import type { TdfImportService, TdfPreview } from '../sessions/tdf-import';
 import { TdfFileNotFoundError } from '../tdf-archive/errors';
 import type { TdfArchiveService, TdfFileReferrer } from '../tdf-archive/service';
 import { TournamentsError } from './errors';
-import { type OrganizerRead, organizerReads } from './organizer';
+import { type OrganizerRead, assertMayActAs, organizerReads } from './organizer';
 import { type ResultsCorrections, type ResultsWarning, fingerprinted, normalName, resultsWarnings, uploadability } from './results-checks';
 
 export type { ResultsWarning } from './results-checks';
@@ -112,15 +113,15 @@ export interface TournamentResults {
    * Parses, checks and stores a dropped TDF for a card's tournament (reads only: nothing is sent).
    * @throws TdfError, TournamentsError (`not_found`, `results_not_accepted`, `results_already_uploaded`, `league_not_selected`), PokemonUpstreamError
    */
-  preview(leagueId: string, date: SessionDate, tournamentId: string, file: { filename: string; content: string; by: string }): Promise<ResultsPreview>;
+  preview(leagueId: string, date: SessionDate, tournamentId: string, file: { filename: string; content: string }, actor: Actor): Promise<ResultsPreview>;
   /** Saves the organizer's full name on their connection, then corrects the file. @throws `organizer_name_not_needed` and the preview's */
-  setOrganizerName(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, fullName: string, by: string): Promise<ResultsPreview>;
+  setOrganizerName(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, fullName: string, actor: Actor): Promise<ResultsPreview>;
   /** The checks again from the archived file (ADR-0011 Update #96): in place for an open preview, else a new attempt. */
-  recheck(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, by: string): Promise<ResultsPreview>;
+  recheck(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, actor: Actor): Promise<ResultsPreview>;
   /** Remove from staff's checks (#101): each id in the file, on staff, not the organizer. @throws `not_removable` */
-  checkRemovable(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, playerIds: readonly PlayerId[]): Promise<RemovalPlan>;
+  checkRemovable(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, playerIds: readonly PlayerId[], actor: Actor): Promise<RemovalPlan>;
   /** The confirm's local checks. @throws `not_found`, `upload_not_open`, `organizer_full_name_required`, `warnings_not_acknowledged` */
-  prepareConfirm(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, body: ResultsConfirmBody): ConfirmPlan;
+  prepareConfirm(leagueId: string, date: SessionDate, tournamentId: string, uploadId: number, body: ResultsConfirmBody, actor: Actor): ConfirmPlan;
   /** In the job's insert transaction: `previewed` → `sending`, with who acknowledged what. False when it wasn't open. */
   markSending(uploadId: number, ack: { by: string; fingerprint: string; submissionId: number }): boolean;
   /** @throws PokemonUpstreamError `not_connected`, `needs_reconnect`, or the read's own: the job stops with it */
@@ -147,11 +148,13 @@ export interface TournamentResults {
   download(leagueId: string, tournamentId: string): { fileId: number; filename: string; content: string };
   /** The tournaments among these that **Download TDF** would serve a file for, from local rows only. */
   tdfAvailable(leagueId: string, tournamentIds: readonly string[]): Set<string>;
+  /** The stored files of results uploads for tournaments these professors organize (ADR-0015 §4), from local rows only. */
+  fileIdsOrganizedBy(leagueId: string, organizerPlayerIds: readonly string[]): Set<number>;
 }
 
 export interface ResultsDeps {
   db: Db;
-  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
+  connections: Pick<PokemonConnectionService, 'league' | 'listActingConnections' | 'actingConnection'>;
   gateway: (connectionId: number) => Pick<PlayToolsGateway, 'getTournament' | 'listTournamentParticipants' | 'listResultsUploads'>;
   /** The professor's full name on their connection (ADR-0011 decision 8). */
   names: { fullNameOf(leagueId: string, playerId: string): string | null; saveFullName(leagueId: string, playerId: string, fullName: string): void };
@@ -240,7 +243,7 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
 
   /** The card's tournament, read fresh as its organizer (ADR-0011 Update #96), with everyone it lists. */
   async function locate(leagueId: string, date: string, tournamentId: string): Promise<Located> {
-    const group = deps.connections.getStatus(leagueId).league?.id;
+    const group = deps.connections.league(leagueId)?.id;
     if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
     let found: OrganizerRead;
     try {
@@ -476,9 +479,11 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
   }
 
   return {
-    async preview(leagueId, date, tournamentId, { filename, content, by }) {
+    async preview(leagueId, date, tournamentId, { filename, content }, actor) {
+      const by = actor.username;
       parseTdf(content);
       const located = await locate(leagueId, date, tournamentId);
+      assertMayActAs(deps.connections, actor, located.read.organizerPlayerId);
       assertUploadable(located);
       const attendance = deps.attendance.preview(leagueId, date, { filename, content, by });
       const { fileId, sha256 } = archive.store(leagueId, { filename, content, by });
@@ -513,21 +518,26 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       return { ...refresh(leagueId, row, located, by), attendance };
     },
 
-    async setOrganizerName(leagueId, date, tournamentId, uploadId, fullName, by) {
+    async setOrganizerName(leagueId, date, tournamentId, uploadId, fullName, actor) {
+      const by = actor.username;
       const row = find(leagueId, date, tournamentId, uploadId);
       if (row.state !== 'previewed' || row.pendingOrganizer === null) {
         throw new TournamentsError('organizer_name_not_needed', "This upload isn't waiting for the organizer's full name.");
       }
       const located = await locate(leagueId, date, tournamentId);
+      // Only the connection's own user sets its full name (ADR-0015 §2).
+      assertMayActAs(deps.connections, actor, located.read.organizerPlayerId);
       assertUploadable(located);
       deps.names.saveFullName(leagueId, located.read.organizerPlayerId, fullName);
       return refresh(leagueId, row, located, by);
     },
 
-    async recheck(leagueId, date, tournamentId, uploadId, by) {
+    async recheck(leagueId, date, tournamentId, uploadId, actor) {
+      const by = actor.username;
       const row = find(leagueId, date, tournamentId, uploadId);
       if (row.tdfFileId === null) throw new TournamentsError('tdf_file_deleted', 'The file for this upload was deleted. Drop it again.');
       const located = await locate(leagueId, date, tournamentId);
+      assertMayActAs(deps.connections, actor, located.read.organizerPlayerId);
       assertUploadable(located);
       if (row.state === 'previewed') return refresh(leagueId, row, located, by);
       const open = openFor(leagueId, tournamentId, row.sha256);
@@ -556,11 +566,12 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       return refresh(leagueId, attempt, located, by);
     },
 
-    async checkRemovable(leagueId, date, tournamentId, uploadId, playerIds) {
+    async checkRemovable(leagueId, date, tournamentId, uploadId, playerIds, actor) {
       const row = find(leagueId, date, tournamentId, uploadId);
       if (row.tdfFileId === null) throw new TournamentsError('tdf_file_deleted', 'The file for this upload was deleted. Drop it again.');
       const inFile = new Set<string>(parseTdf(archive.read(leagueId, row.tdfFileId).content).players.map((p) => p.playerId));
       const { read, organizer, participants } = await locate(leagueId, date, tournamentId);
+      assertMayActAs(deps.connections, actor, read.organizerPlayerId);
       const failures: { playerId: string; reason: 'not_in_file' | 'not_staff' | 'organizer' }[] = [];
       for (const id of playerIds) {
         if (!inFile.has(id)) failures.push({ playerId: id, reason: 'not_in_file' });
@@ -578,8 +589,10 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
       };
     },
 
-    prepareConfirm(leagueId, date, tournamentId, uploadId, body) {
+    prepareConfirm(leagueId, date, tournamentId, uploadId, body, actor) {
       const row = find(leagueId, date, tournamentId, uploadId);
+      // Who may send it; a login that needs a reconnect stops the job before the send, as any job does.
+      assertMayActAs(deps.connections, actor, row.professorPlayerId!, { local: true });
       if (row.state !== 'previewed') throw new TournamentsError('upload_not_open', 'This upload was already sent or closed. Use Upload again….', { state: row.state });
       if (row.pendingOrganizer !== null) {
         throw new TournamentsError('organizer_full_name_required', "Enter the organizer's full name first: the file's organizer will be replaced.");
@@ -754,5 +767,15 @@ export function createTournamentResults(deps: ResultsDeps): TournamentResults {
     },
 
     tdfAvailable: (leagueId, tournamentIds) => tdfAvailableIn(db, leagueId, tournamentIds),
+
+    fileIdsOrganizedBy(leagueId, organizerPlayerIds) {
+      if (organizerPlayerIds.length === 0) return new Set();
+      const rows = db
+        .select({ fileId: tournamentResultUpload.tdfFileId })
+        .from(tournamentResultUpload)
+        .where(and(eq(tournamentResultUpload.leagueId, leagueId), inArray(tournamentResultUpload.professorPlayerId, [...organizerPlayerIds])))
+        .all();
+      return new Set(rows.flatMap((r) => (r.fileId === null ? [] : [r.fileId])));
+    },
   };
 }

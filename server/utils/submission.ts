@@ -57,7 +57,8 @@ export async function stopSubmissions(): Promise<void> {
 
 const STATUS: Record<SubmissionErrorCode, number> = {
   league_not_selected: 409,
-  cannot_submit: 403,
+  cannot_submit: 409,
+  submit_as_required: 409,
   unknown_play_session: 422,
   edit_window_closed: 422,
   nothing_to_submit: 422,

@@ -52,6 +52,7 @@ export function useTournaments(): TournamentsService {
 
 const STATUS: Record<TournamentsErrorCode, number> = {
   not_found: 404,
+  not_your_connection: 403,
   connection_not_found: 404,
   contact_required: 400,
   invalid_range: 400,

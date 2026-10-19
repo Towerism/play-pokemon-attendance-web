@@ -5,6 +5,7 @@ import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { TournamentsError } from './errors';
 import { type Template, type TournamentsService, createTournamentsService } from './service';
 import { stubPlayTools, templateBody } from './test-helpers';
+import { OWNER } from '../pokemon/test-helpers';
 
 // Planning on read and replanning after edits (ADR-0010 decision 4): the module against an in-memory database
 // with the real migrations, a stub play-tools, and a fixed clock.
@@ -25,7 +26,7 @@ beforeEach(() => {
   migrateDatabase(database.db, MIGRATIONS_DIR);
   upstream = stubPlayTools();
   service = createTournamentsService({ db: database.db, connections: upstream.connections, gateway: upstream.gateway, timeZone: TZ, now: () => NOON_WED });
-  template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '18:00' }));
+  template = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, startTime: '18:00' }), OWNER);
 });
 afterEach(() => database.close());
 
@@ -142,7 +143,7 @@ describe('replanning after an edit', () => {
     const { schedule } = weekly();
     await read();
     const [first] = rows();
-    service.updatePlanned(L, first!.id, { skipped: true });
+    service.updatePlanned(L, first!.id, { skipped: true }, OWNER);
     service.updateSchedule(L, schedule.id, { horizonWeeks: 2 });
     expect(rows().find((r) => r.id === first!.id)?.state).toBe('skipped');
   });
@@ -151,7 +152,7 @@ describe('replanning after an edit', () => {
     const { scaffold } = weekly({ horizonWeeks: 2, slots: [{ startTime: '12:00' }] });
     await read();
     const [own, moved, held] = rows();
-    service.updatePlanned(L, own!.id, { startTime: '19:30' });
+    service.updatePlanned(L, own!.id, { startTime: '19:30' }, OWNER);
     setState(held!.id, 'creating');
     service.updateScaffold(L, scaffold.id, { slots: [{ templateId: template.id, dayOffset: 0, startTime: '13:00' }] });
     const after = new Map(rows().map((r) => [r.id, r.start_time]));
@@ -216,7 +217,7 @@ describe('one-off planned tournaments', () => {
     });
 
     it('stores exactly the details given and the type, and shows them on the entry', () => {
-      const premier = service.createTemplate(L, templateBody({ name: 'League Challenge {month}', type: { kind: 'premier', seriesMatch: 'League Challenge' } }));
+      const premier = service.createTemplate(L, templateBody({ name: 'League Challenge {month}', type: { kind: 'premier', seriesMatch: 'League Challenge' } }), OWNER);
       const planned = service.createPlanned(L, {
         templateId: premier.id,
         localDate: '2026-10-24',
@@ -239,7 +240,7 @@ describe('one-off planned tournaments', () => {
 
     it('keeps what it changed when the template is edited later, and follows the template for the rest', async () => {
       const planned = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24', overrides: { name: 'Halloween Cup' } });
-      service.updateTemplate(L, template.id, { name: 'Friday Night Cup', category: 'tcg_exp' });
+      service.updateTemplate(L, template.id, { name: 'Friday Night Cup', category: 'tcg_exp' }, OWNER);
       const entry = (await read()).tournaments.find((e) => e.plannedId === planned.plannedId)!;
       expect(entry).toMatchObject({ name: 'Halloween Cup', category: 'tcg_exp' });
     });
@@ -253,14 +254,14 @@ describe('one-off planned tournaments', () => {
     });
 
     it('takes a cleared contact when the other one stays', () => {
-      const phoned = service.createTemplate(L, templateBody({ name: 'Phoned', contactPhone: '555-0100' }));
+      const phoned = service.createTemplate(L, templateBody({ name: 'Phoned', contactPhone: '555-0100' }), OWNER);
       expect(service.createPlanned(L, { templateId: phoned.id, localDate: '2026-10-24', overrides: { contactEmail: null } }).state).toBe('planned');
     });
   });
 
   it('refuses an unknown or archived template', async () => {
     await refusal(() => service.createPlanned(L, { templateId: 9999, localDate: '2026-10-24' }), 'unknown_template');
-    service.archiveTemplate(L, template.id);
+    service.archiveTemplate(L, template.id, OWNER);
     await refusal(() => service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' }), 'template_archived');
   });
 });
@@ -268,21 +269,21 @@ describe('one-off planned tournaments', () => {
 describe('changing a planned tournament', () => {
   it('skips and unskips, with no upstream call', () => {
     const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
-    expect(service.updatePlanned(L, plannedId!, { skipped: true }).planned.state).toBe('skipped');
-    expect(service.updatePlanned(L, plannedId!, { skipped: false }).planned.state).toBe('planned');
+    expect(service.updatePlanned(L, plannedId!, { skipped: true }, OWNER).planned.state).toBe('skipped');
+    expect(service.updatePlanned(L, plannedId!, { skipped: false }, OWNER).planned.state).toBe('planned');
     expect(upstream.state.calls).toEqual([]);
   });
 
   it('skips a failed row', () => {
     const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
     setState(plannedId!, 'failed');
-    expect(service.updatePlanned(L, plannedId!, { skipped: true }).planned.state).toBe('skipped');
+    expect(service.updatePlanned(L, plannedId!, { skipped: true }, OWNER).planned.state).toBe('skipped');
   });
 
   it.each(['creating', 'created', 'cancelled'])('refuses any change to a %s row', async (state) => {
     const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
     setState(plannedId!, state);
-    const err = await refusal(() => service.updatePlanned(L, plannedId!, { skipped: true }), 'not_editable');
+    const err = await refusal(() => service.updatePlanned(L, plannedId!, { skipped: true }, OWNER), 'not_editable');
     expect(err.details).toEqual({ state });
   });
 
@@ -307,7 +308,7 @@ describe('changing a planned tournament', () => {
 
     it('skips it, keeping when the create was sent, with nothing sent upstream', () => {
       const id = unknownRow();
-      const { planned } = service.updatePlanned(L, id, { skipped: true });
+      const { planned } = service.updatePlanned(L, id, { skipped: true }, OWNER);
       expect(planned).toMatchObject({ state: 'skipped', skippedWhileUnknown: true, lastAttemptAt: SENT.toISOString(), actions: ['unskip'] });
       expect(raw(id)).toMatchObject({ state: 'skipped', skipped_while_unknown: 1, error_code: 'gateway_timeout' });
       expect(upstream.state.calls).toEqual([]);
@@ -322,46 +323,46 @@ describe('changing a planned tournament', () => {
     ])('refuses %s while it is unknown', async (_, patch) => {
       const id = unknownRow();
       const before = raw(id);
-      const err = await refusal(() => service.updatePlanned(L, id, patch), 'not_editable');
+      const err = await refusal(() => service.updatePlanned(L, id, patch, OWNER), 'not_editable');
       expect(err.details).toEqual({ state: 'unknown' });
       expect(raw(id)).toEqual(before);
     });
 
     it('unskips it back to unknown, keeping when the create was sent', () => {
       const id = unknownRow();
-      service.updatePlanned(L, id, { skipped: true });
-      const { planned } = service.updatePlanned(L, id, { skipped: false });
+      service.updatePlanned(L, id, { skipped: true }, OWNER);
+      const { planned } = service.updatePlanned(L, id, { skipped: false }, OWNER);
       expect(planned).toMatchObject({ state: 'unknown', skippedWhileUnknown: false, lastAttemptAt: SENT.toISOString() });
       expect(raw(id).skipped_while_unknown).toBe(0);
     });
 
     it('unskips it to created once it has been linked to the tournament that landed', () => {
       const id = unknownRow();
-      service.updatePlanned(L, id, { skipped: true });
+      service.updatePlanned(L, id, { skipped: true }, OWNER);
       link(id);
-      const { planned } = service.updatePlanned(L, id, { skipped: false });
+      const { planned } = service.updatePlanned(L, id, { skipped: false }, OWNER);
       expect(planned).toMatchObject({ state: 'created', tournamentId: 'g-landed', skippedWhileUnknown: false });
     });
 
     it('takes a repeated skip as a no-op, and refuses any move while skipped, linked or not', async () => {
       const id = unknownRow();
-      service.updatePlanned(L, id, { skipped: true });
+      service.updatePlanned(L, id, { skipped: true }, OWNER);
       const before = raw(id);
-      expect(service.updatePlanned(L, id, { skipped: true }).planned.state).toBe('skipped');
+      expect(service.updatePlanned(L, id, { skipped: true }, OWNER).planned.state).toBe('skipped');
       expect(raw(id)).toEqual(before);
       for (const patch of [{ localDate: '2026-10-25' }, { startTime: '13:00' }, { seriesId: 'custom' }]) {
-        const err = await refusal(() => service.updatePlanned(L, id, patch), 'not_editable');
+        const err = await refusal(() => service.updatePlanned(L, id, patch, OWNER), 'not_editable');
         expect(err.details).toEqual({ state: 'skipped', skippedWhileUnknown: true });
       }
       link(id);
-      await refusal(() => service.updatePlanned(L, id, { startTime: '13:00' }), 'not_editable');
+      await refusal(() => service.updatePlanned(L, id, { startTime: '13:00' }, OWNER), 'not_editable');
       expect(raw(id)).toMatchObject({ state: 'skipped', tournament_id: 'g-landed' });
     });
 
     it('leaves ordinary rows as they were: skipping sets no flag, unskipping gives planned', () => {
       const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
-      expect(service.updatePlanned(L, plannedId!, { skipped: true }).planned).toMatchObject({ state: 'skipped', skippedWhileUnknown: false });
-      expect(service.updatePlanned(L, plannedId!, { skipped: false }).planned.state).toBe('planned');
+      expect(service.updatePlanned(L, plannedId!, { skipped: true }, OWNER).planned).toMatchObject({ state: 'skipped', skippedWhileUnknown: false });
+      expect(service.updatePlanned(L, plannedId!, { skipped: false }, OWNER).planned.state).toBe('planned');
     });
 
     it('is kept by a schedule edit it no longer fits, and its date isn’t planned again', async () => {
@@ -369,8 +370,8 @@ describe('changing a planned tournament', () => {
       await read();
       const [oct13, oct20] = rows();
       database.sqlite.prepare("update planned_tournament set state = 'unknown', last_attempt_at = 1 where id in (?, ?)").run(oct13!.id, oct20!.id);
-      service.updatePlanned(L, oct13!.id, { skipped: true });
-      service.updatePlanned(L, oct20!.id, { skipped: true });
+      service.updatePlanned(L, oct13!.id, { skipped: true }, OWNER);
+      service.updatePlanned(L, oct20!.id, { skipped: true }, OWNER);
       link(oct20!.id);
 
       service.updateSchedule(L, schedule.id, { rule: { kind: 'weekly', weekday: 4, every: 1 } });
@@ -387,27 +388,27 @@ describe('changing a planned tournament', () => {
   it('moves the date and time, warning when another row of the template is already there', () => {
     const a = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
     const b = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-31', startTime: '13:00' });
-    const moved = service.updatePlanned(L, b.plannedId!, { localDate: '2026-10-24', startTime: '18:00' });
+    const moved = service.updatePlanned(L, b.plannedId!, { localDate: '2026-10-24', startTime: '18:00' }, OWNER);
     expect(moved).toEqual({ planned: expect.objectContaining({ localDate: '2026-10-24', startTime: '18:00' }), warnings: ['another_planned_at_time'] });
-    expect(service.updatePlanned(L, a.plannedId!, { localDate: '2026-10-25' }).warnings).toEqual([]);
+    expect(service.updatePlanned(L, a.plannedId!, { localDate: '2026-10-25' }, OWNER).warnings).toEqual([]);
   });
 
   it('refuses a move out of the window', async () => {
     const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
-    await refusal(() => service.updatePlanned(L, plannedId!, { localDate: '2026-09-14' }), 'date_too_far_past');
+    await refusal(() => service.updatePlanned(L, plannedId!, { localDate: '2026-09-14' }, OWNER), 'date_too_far_past');
   });
 
   it('sets and clears the series pick', () => {
     const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
-    service.updatePlanned(L, plannedId!, { seriesId: 'custom' });
+    service.updatePlanned(L, plannedId!, { seriesId: 'custom' }, OWNER);
     const pick = () => database.sqlite.prepare('select series_override s from planned_tournament where id = ?').get(plannedId) as { s: string | null };
     expect(pick().s).toBe('custom');
-    service.updatePlanned(L, plannedId!, { seriesId: null });
+    service.updatePlanned(L, plannedId!, { seriesId: null }, OWNER);
     expect(pick().s).toBeNull();
   });
 
   it('is not_found for another league’s row', async () => {
     const { plannedId } = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-24' });
-    await refusal(() => service.updatePlanned('other', plannedId!, { skipped: true }), 'not_found');
+    await refusal(() => service.updatePlanned('other', plannedId!, { skipped: true }, OWNER), 'not_found');
   });
 });
