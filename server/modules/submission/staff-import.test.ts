@@ -125,8 +125,17 @@ const noResolver: PlaySessionResolver = {
   resolve: () => Promise.reject(new Error('an import never resolves play sessions')),
   find: () => Promise.reject(new Error('an import never resolves play sessions')),
 };
+/** Every call a staff import made to the league's play sessions: there must be none (#195). */
+let sessionCalls: string[];
 const noAttendance = {
-  listAttendance: () => Promise.reject(new Error('an import never reads attendance')),
+  listPlaySessions: () => {
+    sessionCalls.push('sessions');
+    return Promise.resolve([]);
+  },
+  listAttendance: () => {
+    sessionCalls.push('attendance');
+    return Promise.reject(new Error('an import never reads attendance'));
+  },
   addAttendanceBulk: () => Promise.reject(new Error('an import never adds attendance')),
   removeAttendance: () => Promise.reject(new Error('an import never removes attendance')),
 };
@@ -155,6 +164,7 @@ function build(): SubmissionService {
 }
 
 beforeEach(() => {
+  sessionCalls = [];
   database = openDatabase(':memory:');
   migrateDatabase(database.db, MIGRATIONS_DIR);
   roster = createRosterService({ db: database.db });
@@ -224,6 +234,16 @@ describe('importing staff from play-tools (ADR-0007 decision 5)', () => {
       { tournament_id: 't-1', player_id: '100', role: 'judge', source: 'upstream' },
       { tournament_id: 't-2', player_id: '200', role: 'scorekeeper', source: 'upstream' },
     ]);
+  });
+
+  it("never lists or reads the league's play sessions", async () => {
+    upstream.add(tournament('t-1'), staffer('100', 'judge', 'Dawn Berlitz'));
+
+    const view = await importStaff();
+
+    expect(view.status).toBe('succeeded');
+    expect(sessionCalls).toEqual([]);
+    expect(service.events(L, view.id).map((e) => e.type)).not.toContain('sessions_planned');
   });
 
   it('has one item per staffer however many tournaments they staffed, and none for the organizer or players', async () => {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { SubmissionView } from '../../server/modules/submission/service';
 
-// Import players from play-tools (#35): a read-only job that adds the players
-// every tournament the account organizes lists to the league.
+// Import players from play-tools (#35): a read-only job that adds to the league
+// the players every tournament the account organizes lists, and those of the
+// league's past play sessions (#195).
 const toast = useToast();
 const { data: connection } = await usePokemonConnection();
 const { data: history } = await useFetch('/api/submissions', { key: 'submissions-all' });
@@ -39,7 +40,7 @@ async function start() {
 
 const progress = computed(() => {
   if (!latest.value) return 'Starting…';
-  return latest.value.total > 0 ? `Read ${latest.value.done} of ${latest.value.total} tournaments` : latest.value.message;
+  return latest.value.total > 0 ? `Read ${latest.value.done} of ${latest.value.total} tournaments and play sessions` : latest.value.message;
 });
 const newCount = computed(() => shown.value?.playerImport?.newPlayers.length ?? 0);
 </script>
@@ -49,8 +50,8 @@ const newCount = computed(() => shown.value?.playerImport?.newPlayers.length ?? 
     <template #header>
       <h2 id="player-list-heading" class="font-semibold">Player list</h2>
       <p class="text-sm text-muted">
-        Reads every tournament your Pokémon account organizes, in any league, and adds the players it finds to this league, so you can find
-        them in Players. It only reads from play-tools, doesn't count as attendance, and running it again is harmless.
+        Reads every tournament your Pokémon account organizes, in any league, and this league's past play sessions, and adds the players it
+        finds to this league, so you can find them in Players. It only reads from play-tools, doesn't count as attendance, and running it again is harmless.
       </p>
     </template>
 
@@ -74,7 +75,7 @@ const newCount = computed(() => shown.value?.playerImport?.newPlayers.length ?? 
             </UBadge>
             {{ playerImportSummary(shown.playerImport) }}
           </p>
-          <p v-if="shown.error" class="text-sm text-error">{{ staffImportErrorText(shown.error) }}</p>
+          <p v-if="shown.error" class="text-sm text-error">{{ playerImportErrorText(shown.error) }}</p>
           <details v-if="newCount" class="text-sm">
             <summary class="cursor-pointer text-muted">Show the {{ newCount }} new {{ newCount === 1 ? 'player' : 'players' }}</summary>
             <ul class="mt-1 list-disc space-y-0.5 pl-5">

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type FakePokemon, type FakeRecord, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
+import { type FakePlaySession, type FakePokemon, type FakeRecord, fakeRecord, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, startServer } from './harness';
 
 const OWNER = { username: 'organizer', password: 'correct horse' };
@@ -33,6 +33,19 @@ async function connect(browser: Browser) {
 
 /** Calls play-tools' tournament API: the listing and each tournament's records. */
 const tournamentCalls = () => fake.requests.filter((r) => /\/services\/core\/(activities|tournaments?\/)/.test(r.path));
+/** Calls play-tools' play session API: the listings and each session's attendance (#195). */
+const sessionCalls = () => fake.requests.filter((r) => /\/play_sessions\//.test(r.path));
+
+/** A past play session in the S3 wire shape. */
+const pastSession = (guid: string, startDate: string, status: FakePlaySession['status'] = 'complete'): FakePlaySession => ({
+  guid,
+  type: 'open_play',
+  status,
+  start_date: startDate,
+  end_date: null,
+  final_modifiable_datetime: null,
+  products: ['tcg'],
+});
 
 /** A player record carrying what play-tools also sends (S6) and the app must never keep. */
 function playerRecord(playerId: string, first: string, last: string): FakeRecord {
@@ -60,6 +73,10 @@ interface ImportView {
     tournamentsTotal: number;
     tournamentsRead: number;
     tournamentsFailed: number;
+    sessionsTotal: number;
+    sessionsRead: number;
+    sessionsFailed: number;
+    sessionsError: string | null;
     playersFound: number;
     newPlayers: { playerId: string; name: string }[];
   };
@@ -108,6 +125,11 @@ describe('player import API (POST /players/import)', () => {
       ['elsewhere', [fakeRecord(ORGANIZER, { role: 'organizer' }), playerRecord('00444', 'Far', 'Away')]],
       ['cup', [fakeRecord(ORGANIZER, { role: 'organizer' }), playerRecord('00888', 'Pat', 'Player'), playerRecord('00999', 'Quinn', 'Quick')]],
     ]);
+    fake.playSessions = [pastSession('last-week', '2026-10-07T23:00:00Z'), pastSession('tonight', '2026-10-13T23:00:00Z', 'active')];
+    fake.records = new Map([
+      ['last-week', [fakeRecord(ORGANIZER, { role: 'organizer', first: 'Olive', last: 'Organizer' }), playerRecord('00777', 'Riley', 'Regular')]],
+      ['tonight', [playerRecord('00888', 'Pat', 'Player')]],
+    ]);
     server = await startServer({ env: { ...fake.env, ...ENV } });
     browser = await login(server);
   });
@@ -144,14 +166,30 @@ describe('player import API (POST /players/import)', () => {
         tournamentsTotal: 2,
         tournamentsRead: 2,
         tournamentsFailed: 0,
-        playersFound: 2,
+        sessionsTotal: 2,
+        sessionsRead: 2,
+        sessionsFailed: 0,
+        sessionsError: null,
+        playersFound: 3,
         newPlayers: [
           { playerId: '00888', name: 'Pat Player' },
           { playerId: '00999', name: 'Quinn Quick' },
+          { playerId: '00777', name: 'Riley Regular' },
         ],
       });
       expect(tournamentCalls().filter((r) => r.path.includes('/tournaments/elsewhere'))).toEqual([]);
       expect(tournamentCalls().every((r) => r.method === 'GET')).toBe(true);
+    });
+
+    it("reads the league's past play sessions with GETs only, in the league's own activity group", async () => {
+      await imported();
+
+      const calls = sessionCalls();
+      expect(calls.filter((r) => r.path.endsWith('/records/')).map((r) => r.path)).toEqual([
+        '/services/core/activity_groups/group-1/play_sessions/last-week/records/',
+        '/services/core/activity_groups/group-1/play_sessions/tonight/records/',
+      ]);
+      expect(calls.every((r) => r.method === 'GET' && r.path.startsWith('/services/core/activity_groups/group-1/'))).toBe(true);
     });
 
     it('lets the player search find a player the app did not know before', async () => {
@@ -170,7 +208,7 @@ describe('player import API (POST /players/import)', () => {
 
       const body = await (await api(`/submissions/${submissionId}`)).text();
       expect(body).not.toMatch(/1987|NZ|masters|year_of_birth|match_results|place/);
-      expect(server.logs()).not.toMatch(/Pat Player|Quinn|Olive/);
+      expect(server.logs()).not.toMatch(/Pat Player|Quinn|Olive|Riley|Regular/);
     });
 
     it('never replaces a name the organizer gave: a re-import keeps a rename', async () => {

@@ -46,6 +46,7 @@ const noResolver: PlaySessionResolver = {
   find: () => Promise.reject(new Error('never')),
 };
 const noAttendance = {
+  listPlaySessions: () => Promise.reject(new Error('this job never lists play sessions')),
   listAttendance: () => Promise.reject(new Error('never')),
   addAttendanceBulk: () => Promise.reject(new Error('never')),
   removeAttendance: () => Promise.reject(new Error('never')),

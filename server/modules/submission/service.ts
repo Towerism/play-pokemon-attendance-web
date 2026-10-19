@@ -1,12 +1,12 @@
 import { and, desc, eq, gt, inArray, ne } from 'drizzle-orm';
 import { type Logger, silentLogger } from '@towerism/selfhost-kit';
-import type { PlayerId, SessionDate } from '../../../shared/types/ids';
+import { type PlayerId, type SessionDate, toPlayerId } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { staffBatch, staffBatchItem, submission, submissionEvent, submissionItem, submissionLock, submissionTournamentItem } from '../../db/schema';
 import type { SightingsService } from '../metrics/sightings';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { type PokemonErrorCode, PokemonUpstreamError } from '../pokemon/ports/errors';
-import type { BulkResult, PlayToolsGateway, Tournament, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
+import type { AttendanceRecord, BulkResult, PlaySession, PlaySessionStatus, PlayToolsGateway, Tournament, TournamentParticipant } from '../pokemon/ports/play-tools-gateway';
 import type { RosterService } from '../roster/service';
 import type { SessionStatus, SessionsService } from '../sessions/service';
 import type { StaffAssignmentRecord, StaffingService } from '../staffing/service';
@@ -21,7 +21,7 @@ import { SubmissionError } from './errors';
 import { forgetAttendance } from './forget';
 import { dateIn } from '../../../shared/time/local-time';
 import { type DesiredPlayer, type Plan, planSubmission } from './plan';
-import { type PlaySessionResolver, submissionTarget } from './resolve';
+import { type PlaySessionResolver, connectedLeague, submissionTarget } from './resolve';
 import { type StafferDecision, classifyStaffer, refusalMessage } from './staff-plan';
 import { type StaffBatchRowStatus, type StaffBatchView, batchStatus } from './staff-batch';
 
@@ -144,6 +144,12 @@ export interface PlayerImportResult {
   tournamentsTotal: number;
   tournamentsRead: number;
   tournamentsFailed: number;
+  /** The league's past play sessions planned, read and given up on (#195); 0 for imports from before. */
+  sessionsTotal: number;
+  sessionsRead: number;
+  sessionsFailed: number;
+  /** The code on the `sessions_failed` event: why the sessions were not listed, or stopped; null when they weren't. */
+  sessionsError: string | null;
   /** Distinct players, one item each. */
   playersFound: number;
   /** Players the league didn't know before, by their local name, then id. */
@@ -166,6 +172,14 @@ export type SubmissionEventType =
   | 'tournament_failed'
   /** A staff import could not read one professor's tournaments and went on with the other professors (#75). */
   | 'professor_failed'
+  /** A player import listed the league's past play sessions; `total` is how many (#195). */
+  | 'sessions_planned'
+  /** A player import read one play session's attendance (#195). */
+  | 'session_read'
+  /** A player import gave up on one play session and went on with the rest (#195). */
+  | 'session_failed'
+  /** A player import could not list the league's play sessions, or stopped reading them (#195). */
+  | 'sessions_failed'
   /** A tournament job dealt with one tournament (#92). */
   | 'tournament_sent';
 
@@ -321,7 +335,7 @@ export interface SubmissionDeps {
   roster: Pick<RosterService, 'ensurePlayers' | 'getPlayers'>;
   sightings: Pick<SightingsService, 'record' | 'retract'>;
   connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
-  gateway: (leagueId: string) => Pick<PlayToolsGateway, 'listAttendance' | 'addAttendanceBulk' | 'removeAttendance'>;
+  gateway: (leagueId: string) => Pick<PlayToolsGateway, 'listPlaySessions' | 'listAttendance' | 'addAttendanceBulk' | 'removeAttendance'>;
   /** The tournament calls staff jobs and imports make (ADR-0007), as one professor's connection (#75). */
   staffGateway: (
     connectionId: number | null,
@@ -410,6 +424,22 @@ function skipsTournament(err: PokemonUpstreamError): boolean {
 type ImportKind = 'staff_import' | 'player_import';
 const IMPORT_KINDS: readonly SubmissionKind[] = ['staff_import', 'player_import'];
 const isImport = (row: { kind: SubmissionKind }): row is { kind: ImportKind } => IMPORT_KINDS.includes(row.kind);
+/** Whether a player id read from play-tools is digits only, as every id the app stores must be. */
+function isPlayerId(raw: string): boolean {
+  try {
+    toPlayerId(raw);
+    return true;
+  } catch {
+    return false;
+  }
+}
+/** A `sessions_failed` event's message ends with its code, which the result reads back (#195; events carry no code column). */
+const sessionsFailedMessage = (what: string, code: string) => `${what}: ${code}.`;
+const sessionsFailedCode = (message: string | undefined) => message?.match(/: ([a-z_]+)\.$/)?.[1] ?? null;
+/** A player import reads the league's play sessions from this instant to its own start (#195): all of their history. */
+const SESSIONS_FROM = new Date('2000-01-01T00:00:00Z');
+/** Listed one at a time: `listPlaySessions` stops at the first status that lists any. */
+const SESSION_STATUSES: readonly PlaySessionStatus[] = ['complete', 'active', 'pending'];
 /** An import's `play_session_label`; it has no play session or tournament of its own. */
 const IMPORT_LABEL: Record<ImportKind, string> = { staff_import: 'Staff import', player_import: 'Player import' };
 
@@ -1448,6 +1478,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     let failed = 0;
     let professorsFailed = 0;
     let lastFailure: string | null = null;
+    let sessionsStopped = false;
 
     /** One read, tried at most `IMPORT_TRIES` times after a 429 or a 5xx; waits only when play-tools asks; stops on shutdown. */
     async function read<T>(call: () => Promise<T>, what: string): Promise<T> {
@@ -1503,9 +1534,13 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         professorFailed(conn, err.code);
       }
     }
-    total = plan.length;
+    // The league's past play sessions (#195), listed before anything is read so the total counts them too.
+    const sessions = row.kind === 'player_import' ? await listSessions() : null;
+    let sessionsLeft = sessions?.list.length ?? 0;
+    total = plan.length + sessionsLeft;
     const why = leftOut ? `; ${leftOut} left out (leagues this account is no longer in)` : '';
-    emit(row, 'planned', `${total} tournaments to read${why}.`, 0, total);
+    const andSessions = sessionsLeft ? ` and ${sessionsLeft} play sessions` : '';
+    emit(row, 'planned', `${plan.length} tournaments${andSessions} to read${why}.`, 0, total);
 
     /** Everyone found so far: once new to the league, a player stays `new_player` for the whole import. */
     const found = new Map<PlayerId, 'found' | 'new_player'>();
@@ -1541,10 +1576,90 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
       done += 1;
       emit(row, 'tournament_read', `Read ${done} of ${total} tournaments.`, done + failed, total);
     }
-    const status = failed === 0 && professorsFailed === 0 ? 'succeeded' : done > 0 ? 'partial' : 'failed';
+    const tournamentsRead = done;
+
+    for (const [i, s] of (sessions?.list ?? []).entries()) {
+      let records: AttendanceRecord[];
+      try {
+        records = await read(() => sessions!.gateway.listAttendance(sessions!.groupId, s.id), 'that play session');
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        if (!(err.retryable || skipsTournament(err))) {
+          // The submitting professor's login itself (a 401, needs_reconnect): no other session can be read either.
+          failed += 1;
+          sessionsLeft -= sessions!.list.length - i - 1;
+          total -= sessions!.list.length - i - 1;
+          sessionsFailed(`Stopped reading the league's play sessions`, err.code);
+          break;
+        }
+        // Gone, unreadable, refused (403), or still down after 3 tries: this session only.
+        failed += 1;
+        lastFailure = err.code;
+        log.warn(`${label} #${row.id} could not read play session ${s.id}: ${err.code}`, {
+          submissionId: row.id,
+          sessionId: s.id,
+          code: err.code,
+          status: err.details.status,
+        });
+        emit(row, 'session_failed', `Could not read the play session on ${dateIn(s.startsAt, timeZone)}: ${err.code}.`, done + failed, total);
+        continue;
+      }
+      const players = records.filter((r) => r.isPlayer);
+      // The adapter passes attendance ids through unchecked, and the submission diff needs it to (#195).
+      const valid = players.filter((r) => isPlayerId(r.playerId));
+      if (valid.length < players.length) {
+        const skipped = players.length - valid.length;
+        log.warn(`${label} #${row.id} skipped ${skipped} records in play session ${s.id} whose player id isn't digits`, {
+          submissionId: row.id,
+          sessionId: s.id,
+          skipped,
+        });
+      }
+      db.transaction(() => seedPlayers(row, valid, found));
+      done += 1;
+      emit(row, 'session_read', `Read ${done} of ${total} tournaments and play sessions.`, done + failed, total);
+    }
+
+    const status = failed === 0 && professorsFailed === 0 && !sessionsStopped ? 'succeeded' : done > 0 ? 'partial' : 'failed';
     setStatus(row, status, status === 'failed' ? lastFailure : null);
     const who = row.kind === 'staff_import' ? 'staff' : found.size === 1 ? 'player' : 'players';
-    emit(row, 'finished', `${label} ${status}: read ${done} of ${total} tournaments, found ${found.size} ${who}.`, done + failed, total);
+    const sessionsTotal = sessions?.list.length ?? 0;
+    const counts = sessionsTotal
+      ? `read ${tournamentsRead} of ${total - sessionsLeft} tournaments and ${done - tournamentsRead} of ${sessionsLeft} play sessions`
+      : `read ${done} of ${total} tournaments`;
+    emit(row, 'finished', `${label} ${status}: ${counts}, found ${found.size} ${who}.`, done + failed, total);
+
+    /**
+     * The league's play sessions that started before this import, every status, oldest first, as the league's
+     * submitting professor in its activity group (ADR-0008). Reading needs no right to record attendance.
+     */
+    async function listSessions() {
+      try {
+        const groupId = connectedLeague(deps.connections, row.leagueId).id;
+        const gateway = deps.gateway(row.leagueId);
+        const range = { from: SESSIONS_FROM, to: row.startedAt };
+        const listed = new Map<string, PlaySession>();
+        // One status failing reads none of them: the totals never describe half a listing.
+        for (const status of SESSION_STATUSES) {
+          for (const s of await read(() => gateway.listPlaySessions(groupId, range, [status]), 'the play sessions')) listed.set(s.id, s);
+        }
+        const list = [...listed.values()].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+        emit(row, 'sessions_planned', `${list.length} play sessions to read.`, 0, list.length);
+        return { groupId, gateway, list };
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError || err instanceof SubmissionError)) throw err;
+        sessionsFailed(`Could not list the league's play sessions`, err.code);
+        return null;
+      }
+    }
+
+    /** The league's sessions could not be listed, or a read stopped the rest: the import goes on without them. */
+    function sessionsFailed(what: string, code: string): void {
+      sessionsStopped = true;
+      lastFailure = code;
+      log.warn(`${label} #${row.id}: ${what}: ${code}`, { submissionId: row.id, code });
+      emit(row, 'sessions_failed', sessionsFailedMessage(what, code), done + failed, total);
+    }
   }
 
   /**
@@ -1586,10 +1701,15 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
     participants: readonly TournamentParticipant[],
     found: Map<PlayerId, 'found' | 'new_player'>,
   ): void {
-    const players = participants.filter((p) => !p.isStaff);
+    seedPlayers(row, participants.filter((p) => !p.isStaff), found);
+  }
+
+  /** Adds players to the league and records each as an item: shared by tournaments and play sessions (#195). */
+  function seedPlayers(row: Row, players: readonly { playerId: PlayerId; name: string }[], found: Map<PlayerId, 'found' | 'new_player'>): void {
     const ids = [...new Set(players.map((p) => p.playerId))];
     const known = new Set(deps.roster.getPlayers(row.leagueId, ids).map((p) => p.playerId));
-    deps.roster.ensurePlayers(row.leagueId, players.map((p) => ({ playerId: p.playerId, name: p.name })));    for (const playerId of ids) {
+    deps.roster.ensurePlayers(row.leagueId, players.map((p) => ({ playerId: p.playerId, name: p.name })));
+    for (const playerId of ids) {
       found.set(playerId, !known.has(playerId) || found.get(playerId) === 'new_player' ? 'new_player' : 'found');
     }
     setItems(ids.map((playerId) => ({ submissionId: row.id, playerId, origin: 'upstream' as const, outcome: found.get(playerId)! })));
@@ -1620,8 +1740,23 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
   /** A player import's result: its progress, and the players its items hold. */
   function playerImportResult(row: Row, items: readonly { playerId: string; outcome: ItemOutcome }[], names: Map<PlayerId, string>): PlayerImportResult {
-    const { staffersFound, ...rest } = staffImportResult(row, items, names);
-    return { ...rest, playersFound: staffersFound };
+    const { staffersFound, tournamentsTotal, ...rest } = staffImportResult(row, items, names);
+    const events = db
+      .select({ type: submissionEvent.type, total: submissionEvent.total, message: submissionEvent.message })
+      .from(submissionEvent)
+      .where(and(eq(submissionEvent.submissionId, row.id), inArray(submissionEvent.type, ['sessions_planned', 'session_read', 'session_failed', 'sessions_failed'])))
+      .all();
+    // `planned` counts tournaments and sessions together; imports from before #195 have no `sessions_planned`.
+    const sessionsTotal = events.find((e) => e.type === 'sessions_planned')?.total ?? 0;
+    return {
+      ...rest,
+      tournamentsTotal: tournamentsTotal - sessionsTotal,
+      sessionsTotal,
+      sessionsRead: events.filter((e) => e.type === 'session_read').length,
+      sessionsFailed: events.filter((e) => e.type === 'session_failed').length,
+      sessionsError: sessionsFailedCode(events.find((e) => e.type === 'sessions_failed')?.message),
+      playersFound: staffersFound,
+    };
   }
 
   // --- tournament jobs (#92) -------------------------------------------------
