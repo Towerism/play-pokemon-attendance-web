@@ -6,12 +6,20 @@ type Limit = { max: unknown; windowMs: unknown };
 export interface RateLimitConfig {
   authRateLimit: { login: Limit; setup: Limit };
   integrationRateLimit: Limit;
+  /** Per client, applied to each public invite route on its own (ADR-0015 §6). */
+  inviteRateLimit: Limit;
+  /** Per integration token: Genie's message polls, and its results, counted apart (ADR-0015 §7). */
+  messagePollRateLimit: Limit;
+  messageResultRateLimit: Limit;
   trustedProxies?: unknown;
 }
 
 export interface RateLimits {
   auth: Record<'login' | 'setup', FixedWindowLimiter>;
   integration: FixedWindowLimiter;
+  invite: Record<'check' | 'accept', FixedWindowLimiter>;
+  messagePoll: FixedWindowLimiter;
+  messageResult: FixedWindowLimiter;
   trusted: TrustedProxies;
 }
 
@@ -28,15 +36,23 @@ export function buildRateLimits(config: RateLimitConfig): RateLimits {
   return {
     auth: {
       // The auth limits reach the limiter as configured (a cast, not Number(): a JSON override's string such as
-      // '{"max":"5"}' must keep failing, as since A1); the integration limit is coerced, as before.
+      // '{"max":"5"}' must keep failing, as since A1); the integration, invite and message limits are coerced.
       login: limiter('NUXT_AUTH_RATE_LIMIT_LOGIN', login as { max: number; windowMs: number }),
       setup: limiter('NUXT_AUTH_RATE_LIMIT_SETUP', setup as { max: number; windowMs: number }),
     },
-    integration: limiter('NUXT_INTEGRATION_RATE_LIMIT', { max: Number(integration.max), windowMs: Number(integration.windowMs) }),
+    integration: limiter('NUXT_INTEGRATION_RATE_LIMIT', coerced(integration)),
+    invite: {
+      check: limiter('NUXT_INVITE_RATE_LIMIT', coerced(config.inviteRateLimit)),
+      accept: limiter('NUXT_INVITE_RATE_LIMIT', coerced(config.inviteRateLimit)),
+    },
+    messagePoll: limiter('NUXT_MESSAGE_POLL_RATE_LIMIT', coerced(config.messagePollRateLimit)),
+    messageResult: limiter('NUXT_MESSAGE_RESULT_RATE_LIMIT', coerced(config.messageResultRateLimit)),
     // Its own error already starts with NUXT_TRUSTED_PROXIES and the bad entry.
     trusted: parseTrustedProxies(String(config.trustedProxies ?? '')),
   };
 }
+
+const coerced = (l: Limit) => ({ max: Number(l.max), windowMs: Number(l.windowMs) });
 
 function limiter(prefix: string, options: { max: number; windowMs: number }): FixedWindowLimiter {
   try {

@@ -7,6 +7,9 @@ function config(overrides: Partial<RateLimitConfig> = {}): RateLimitConfig {
   return {
     authRateLimit: { login: { max: 10, windowMs: 900_000 }, setup: { max: 5, windowMs: 900_000 } },
     integrationRateLimit: { max: 30, windowMs: 900_000 },
+    inviteRateLimit: { max: 5, windowMs: 900_000 },
+    messagePollRateLimit: { max: 120, windowMs: 900_000 },
+    messageResultRateLimit: { max: 600, windowMs: 900_000 },
     trustedProxies: DEFAULT_TRUSTED_PROXIES,
     ...overrides,
   };
@@ -21,6 +24,9 @@ function allowed(limiter: { hit(key: string): { allowed: boolean } }, cap = 100)
 const LOGIN = 'NUXT_AUTH_RATE_LIMIT_LOGIN_MAX / NUXT_AUTH_RATE_LIMIT_LOGIN_WINDOW_MS';
 const SETUP = 'NUXT_AUTH_RATE_LIMIT_SETUP_MAX / NUXT_AUTH_RATE_LIMIT_SETUP_WINDOW_MS';
 const INTEGRATION = 'NUXT_INTEGRATION_RATE_LIMIT_MAX / NUXT_INTEGRATION_RATE_LIMIT_WINDOW_MS';
+const INVITE = 'NUXT_INVITE_RATE_LIMIT_MAX / NUXT_INVITE_RATE_LIMIT_WINDOW_MS';
+const POLL = 'NUXT_MESSAGE_POLL_RATE_LIMIT_MAX / NUXT_MESSAGE_POLL_RATE_LIMIT_WINDOW_MS';
+const RESULT = 'NUXT_MESSAGE_RESULT_RATE_LIMIT_MAX / NUXT_MESSAGE_RESULT_RATE_LIMIT_WINDOW_MS';
 
 function thrown(fn: () => unknown): Error {
   try {
@@ -37,6 +43,23 @@ describe('buildRateLimits with valid settings', () => {
     expect(allowed(limits.auth.login)).toBe(10);
     expect(allowed(limits.auth.setup)).toBe(5);
     expect(allowed(limits.integration)).toBe(30);
+  });
+
+  it('builds one invite limiter per route, and the message poll and result limiters, counted apart', () => {
+    const limits = buildRateLimits(config());
+    expect(allowed(limits.invite.check)).toBe(5);
+    expect(allowed(limits.invite.accept)).toBe(5);
+    expect(allowed(limits.messagePoll, 1000)).toBe(120);
+    expect(allowed(limits.messageResult, 1000)).toBe(600);
+  });
+
+  it('coerces numeric strings for the invite and message limits, as the env gives them', () => {
+    const limits = buildRateLimits(
+      config({ inviteRateLimit: { max: '2', windowMs: '1000' }, messagePollRateLimit: { max: '3', windowMs: '1000' }, messageResultRateLimit: { max: '4', windowMs: '1000' } }),
+    );
+    expect(allowed(limits.invite.check)).toBe(2);
+    expect(allowed(limits.messagePoll)).toBe(3);
+    expect(allowed(limits.messageResult)).toBe(4);
   });
 
   it('coerces numeric strings for the integration limit, as before', () => {
@@ -87,6 +110,15 @@ describe('buildRateLimits with a setting the limiter refuses', () => {
     const err = thrown(() => buildRateLimits(config({ integrationRateLimit: { max, windowMs: 900_000 } })));
     expect(err.message).toMatch(new RegExp(`^Invalid rate limit \\(${INTEGRATION}, or their NITRO_ or JSON-object override\\): `));
     expect(err.cause).toBeInstanceOf(RangeError);
+  });
+
+  it.each([
+    ['invite', INVITE, 'inviteRateLimit'],
+    ['message poll', POLL, 'messagePollRateLimit'],
+    ['message result', RESULT, 'messageResultRateLimit'],
+  ] as const)('names the %s variables', (_name, vars, key) => {
+    const err = thrown(() => buildRateLimits(config({ [key]: { max: 0, windowMs: 900_000 } })));
+    expect(err.message).toMatch(new RegExp(`^Invalid rate limit \\(${vars}, or their NITRO_ or JSON-object override\\): `));
   });
 
   it("rethrows the trusted-proxy parser's own error, which already names the variable", () => {
