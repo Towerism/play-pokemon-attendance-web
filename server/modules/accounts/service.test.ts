@@ -11,6 +11,7 @@ import {
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const CODE = 'ABCD-EFGH';
+const NOW = new Date('2026-10-19T12:00:00Z');
 
 /** Reversible stand-in for scrypt; async like the real one. */
 const fakeHasher = (): PasswordHasher => ({
@@ -26,7 +27,7 @@ beforeEach(() => {
   database = openDatabase(':memory:');
   migrateDatabase(database.db, MIGRATIONS_DIR);
   hasher = fakeHasher();
-  accounts = createAccountsService({ db: database.db, hasher, setupCode: CODE });
+  accounts = createAccountsService({ db: database.db, hasher, setupCode: CODE, now: () => NOW });
 });
 afterEach(() => database.close());
 
@@ -42,6 +43,12 @@ describe('first-run setup', () => {
 
     expect(user).toEqual({ id: expect.any(Number), username: 'organizer' });
     expect(accounts.needsSetup()).toBe(false);
+  });
+
+  it('makes the setup account the owner', async () => {
+    const user = await accounts.setup(owner);
+
+    expect(accounts.actor(user.id)).toEqual({ userId: user.id, username: 'organizer', role: 'owner' });
   });
 
   it('stores only the password hash', async () => {
@@ -103,4 +110,59 @@ describe('authenticate', () => {
     expect(await accounts.authenticate({ username: 'nobody', password: 'correct horse' })).toBeNull();
     expect(hasher.verify).toHaveBeenCalledTimes(1);
   });
+
+  it('records when the user signed in', async () => {
+    await accounts.authenticate({ username: 'organizer', password: 'correct horse' });
+
+    expect(database.sqlite.prepare('select last_sign_in_at from app_user').get()).toEqual({ last_sign_in_at: NOW.getTime() / 1000 });
+  });
+
+  it('records nothing for a wrong password', async () => {
+    await accounts.authenticate({ username: 'organizer', password: 'wrong' });
+
+    expect(database.sqlite.prepare('select last_sign_in_at from app_user').get()).toEqual({ last_sign_in_at: null });
+  });
+
+  it('refuses a removed user exactly as a wrong password, after the same hashing work', async () => {
+    addProfessor('misty', { removed: true });
+    vi.mocked(hasher.verify).mockClear();
+
+    expect(await accounts.authenticate({ username: 'misty', password: 'correct horse' })).toBeNull();
+    expect(hasher.verify).toHaveBeenCalledTimes(1);
+    expect(database.sqlite.prepare(`select last_sign_in_at from app_user where username = 'misty'`).get()).toEqual({ last_sign_in_at: null });
+  });
+
+  it('signs in an active professor', async () => {
+    const id = addProfessor('misty');
+
+    expect(await accounts.authenticate({ username: 'misty', password: 'correct horse' })).toEqual({ id, username: 'misty' });
+  });
 });
+
+describe('the actor behind a session', () => {
+  it('reads the role from the database', async () => {
+    const { id } = await accounts.setup(owner);
+    const prof = addProfessor('misty');
+
+    expect(accounts.actor(id)).toEqual({ userId: id, username: 'organizer', role: 'owner' });
+    expect(accounts.actor(prof)).toEqual({ userId: prof, username: 'misty', role: 'professor' });
+  });
+
+  it('is null for a removed user, whatever their session says', () => {
+    const prof = addProfessor('misty', { removed: true });
+
+    expect(accounts.actor(prof)).toBeNull();
+  });
+
+  it('is null for a user id that does not exist', () => {
+    expect(accounts.actor(42)).toBeNull();
+  });
+});
+
+/** A professor row as #202's invites will make them; same password as the owner. */
+function addProfessor(username: string, opts: { removed?: boolean } = {}): number {
+  const row = database.sqlite
+    .prepare(`insert into app_user (username, password_hash, role, removed_at, created_at) values (?, 'hashed:correct horse', 'professor', ?, 1) returning id`)
+    .get(username, opts.removed ? 1 : null) as { id: number };
+  return row.id;
+}

@@ -16,8 +16,8 @@ export function useTournamentResults(): TournamentResults {
     connections: usePokemon(),
     gateway: connectionGateway,
     names: {
-      fullNameOf: (leagueId, playerId) => usePokemon().listConnections(leagueId).find((c) => c.professorPlayerId === playerId)?.professorFullName ?? null,
-      saveFullName: (leagueId, playerId, fullName) => void usePokemon().renameProfessor(leagueId, playerId, { fullName }),
+      fullNameOf: (_leagueId, playerId) => usePokemon().fullNameOf(playerId),
+      saveFullName: (leagueId, playerId, fullName, actor) => void usePokemon().renameProfessor(leagueId, actor, playerId, { fullName }),
     },
     archive: useTdfArchive(),
     attendance: useTdfImports(),
@@ -52,6 +52,7 @@ export function useTournaments(): TournamentsService {
 
 const STATUS: Record<TournamentsErrorCode, number> = {
   not_found: 404,
+  not_your_connection: 403,
   connection_not_found: 404,
   contact_required: 400,
   invalid_range: 400,

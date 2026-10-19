@@ -12,12 +12,13 @@ import { OLIVE, staffer, stubPlayTools, tournament } from '../staffing/test-help
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
 import { type StaffBatchView, batchStatus } from './staff-batch';
+import { HELD_BY_OWNER, OWNER } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const TZ = 'America/Chicago';
 const DATE = '2026-10-14' as SessionDate;
 const DELAY = 1_000;
-const BROCK = { id: 2, professorPlayerId: '8888882', professorName: 'Brock Harrison', status: 'connected' as const };
+const BROCK = { id: 2, professorPlayerId: '8888882', professorName: 'Brock Harrison', status: 'connected' as const, ...HELD_BY_OWNER };
 /** Olive's tournament, Brock's, and Olive's evening one, in start order. */
 const FIRST = 'tA';
 const SECOND = 'tB';
@@ -89,7 +90,7 @@ afterEach(() => database.close());
 
 /** The organizer wants `playerId` on `tournamentId`. */
 async function want(tournamentId: string, playerId: string, role = 'judge'): Promise<void> {
-  await staffing.addAssignment(L, DATE, { tournamentId, playerId: playerId as PlayerId, role, name: `Staffer ${playerId}` }, 'organizer');
+  await staffing.addAssignment(L, DATE, { tournamentId, playerId: playerId as PlayerId, role, name: `Staffer ${playerId}` }, OWNER);
 }
 
 /** Wants one staffer on each tournament given, then forgets the calls that setting up made. */
@@ -101,7 +102,7 @@ async function wantOnEach(...tournamentIds: string[]): Promise<void> {
 }
 
 async function runAll(tournamentIds: string[]): Promise<StaffBatchView> {
-  const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds, startedBy: 'organizer' });
+  const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds, actor: OWNER });
   await service.idle();
   return service.staffBatch(L, batchId);
 }
@@ -196,28 +197,28 @@ describe('assigning staff for every tournament on a date', () => {
   it('holds the league’s lease from the first job to the last, refusing any other job in between', async () => {
     await wantOnEach(FIRST, SECOND);
     const second = gate((call) => call.startsWith('listTournaments') && stub.state.writes.length === 1);
-    const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], startedBy: 'organizer' });
+    const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], actor: OWNER });
     await second.reached;
 
     expect(rowsOf(service.staffBatch(L, batchId))).toEqual([
       { tournamentId: FIRST, status: 'succeeded' },
       { tournamentId: SECOND, status: 'waiting' },
     ]);
-    expect(await code(service.applyStaff(L, DATE, { tournamentId: FIRST, startedBy: 'organizer' }))).toBe('submission_running');
-    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [FIRST], startedBy: 'organizer' }))).toBe('submission_running');
-    expect(await code(service.importStaff(L, 'organizer'))).toBe('submission_running');
+    expect(await code(service.applyStaff(L, DATE, { tournamentId: FIRST, actor: OWNER }))).toBe('submission_running');
+    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [FIRST], actor: OWNER }))).toBe('submission_running');
+    expect(await code(service.importStaff(L, OWNER))).toBe('submission_running');
 
     second.open();
     await service.idle();
     expect(service.staffBatch(L, batchId).status).toBe('succeeded');
-    await expect(service.applyStaff(L, DATE, { tournamentId: FIRST, startedBy: 'organizer' })).resolves.toBeTruthy();
+    await expect(service.applyStaff(L, DATE, { tournamentId: FIRST, actor: OWNER })).resolves.toBeTruthy();
     await service.idle();
   });
 
   it('shows the running tournament with its job and progress, and the rest waiting', async () => {
     await wantOnEach(FIRST, SECOND);
     const write = gate((call) => call.startsWith('assignStaff'));
-    const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], startedBy: 'organizer' });
+    const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], actor: OWNER });
     await write.reached;
 
     const view = service.staffBatch(L, batchId);
@@ -315,10 +316,10 @@ describe('starting a batch', () => {
   it('refuses while another job holds the league’s lease, creating nothing', async () => {
     await wantOnEach(FIRST, SECOND);
     const write = gate((call) => call.startsWith('assignStaff'));
-    await service.applyStaff(L, DATE, { tournamentId: FIRST, startedBy: 'organizer' });
+    await service.applyStaff(L, DATE, { tournamentId: FIRST, actor: OWNER });
     await write.reached;
 
-    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [SECOND], startedBy: 'organizer' }))).toBe('submission_running');
+    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [SECOND], actor: OWNER }))).toBe('submission_running');
     expect(service.runningStaffBatch(L, DATE)).toBeNull();
 
     write.open();
@@ -330,7 +331,7 @@ describe('starting a batch', () => {
     const view = await runAll([FIRST]);
     stub.state.connection = { ...stub.state.connection, league: null };
 
-    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [FIRST], startedBy: 'organizer' }))).toBe('league_not_selected');
+    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [FIRST], actor: OWNER }))).toBe('league_not_selected');
     expect(() => service.staffBatch(L, view.id)).toThrow(expect.objectContaining({ code: 'league_not_selected' }));
     expect(() => service.runningStaffBatch(L, DATE)).toThrow(expect.objectContaining({ code: 'league_not_selected' }));
     expect(staffJobs()).toHaveLength(1);
@@ -339,7 +340,7 @@ describe('starting a batch', () => {
   it('refuses once shutting down', async () => {
     await service.shutdown();
 
-    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [FIRST], startedBy: 'organizer' }))).toBe('shutting_down');
+    expect(await code(service.applyStaffAll(L, DATE, { tournamentIds: [FIRST], actor: OWNER }))).toBe('shutting_down');
   });
 
   it("answers not_found for another league's batch or one that doesn't exist", async () => {
@@ -355,7 +356,7 @@ describe('shutdown and boot recovery', () => {
   it('starts no further tournament once shutting down, and the next boot marks the batch and the rest interrupted', async () => {
     await wantOnEach(FIRST, SECOND);
     const write = gate((call) => call.startsWith('assignStaff'));
-    const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], startedBy: 'organizer' });
+    const { batchId } = await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], actor: OWNER });
     await write.reached;
 
     const stopping = service.shutdown();
@@ -369,7 +370,7 @@ describe('shutdown and boot recovery', () => {
     expect(view.status).toBe('interrupted');
     expect(view.finishedAt).not.toBeNull();
     expect(view.rows[1]).toMatchObject({ tournamentId: SECOND, status: 'interrupted' });
-    await expect(next.applyStaffAll(L, DATE, { tournamentIds: [SECOND], startedBy: 'organizer' })).resolves.toBeTruthy();
+    await expect(next.applyStaffAll(L, DATE, { tournamentIds: [SECOND], actor: OWNER })).resolves.toBeTruthy();
     await next.idle();
   });
 });
@@ -378,7 +379,7 @@ describe('shutdown between a tournament’s checks and its job', () => {
   it('starts no job once shutdown begins while the next tournament is being checked', async () => {
     await wantOnEach(FIRST, SECOND);
     const check = gate((call) => call.startsWith('getTournament') && stub.state.writes.length === 1);
-    await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], startedBy: 'organizer' });
+    await service.applyStaffAll(L, DATE, { tournamentIds: [FIRST, SECOND], actor: OWNER });
     await check.reached;
 
     const stopping = service.shutdown();
@@ -402,5 +403,39 @@ describe('a batch’s status', () => {
     [['not_started'], 'failed'],
   ] as const)('rolls %j up to %s', (rows, status) => {
     expect(batchStatus(rows)).toBe(status);
+  });
+});
+
+describe('a batch across organizers (ADR-0015 §4)', () => {
+  beforeEach(() => {
+    // Brock's connection is held by a professor (user 2), not the owner.
+    stub.addProfessor({ ...BROCK, userId: 2 });
+  });
+
+  it("refuses the tournament someone else's connection organizes before the batch starts, and runs the owner's", async () => {
+    await wantOnEach(FIRST, THIRD);
+    database.sqlite.prepare("insert or ignore into player (player_id, display_name, first_seen_at) values ('00999', 'Staffer', 0)").run();
+    database.sqlite
+      .prepare(
+        `insert into staff_assignment (league_id, session_date, tournament_id, tournament_label, player_id, role, created_by, created_at)
+         values (?, ?, ?, 'VGC Cup', '00999', 'judge', 'brock', 0)`,
+      )
+      .run(L, DATE, SECOND);
+
+    const view = await runAll([FIRST, SECOND, THIRD]);
+
+    expect(view.rows.map((r) => [r.tournamentId, r.status, r.refusal?.code ?? null])).toEqual([
+      [FIRST, 'succeeded', null],
+      [SECOND, 'not_started', 'not_your_connection'],
+      [THIRD, 'succeeded', null],
+    ]);
+    expect(stub.state.writes.some((w) => w.as === BROCK.id)).toBe(false);
+    // Refused before the batch started: its turn never came, so nothing read it fresh.
+    expect(stub.state.calls).not.toContain(`getTournament ${SECOND}`);
+  });
+
+  it("refuses a batch with no tournament the caller may act on, starting nothing", async () => {
+    await expect(service.applyStaffAll(L, DATE, { tournamentIds: [SECOND], actor: OWNER })).rejects.toMatchObject({ code: 'not_your_connection' });
+    expect(database.sqlite.prepare('select count(*) n from staff_batch').get()).toEqual({ n: 0 });
   });
 });

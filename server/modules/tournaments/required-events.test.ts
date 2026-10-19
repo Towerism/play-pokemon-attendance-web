@@ -6,6 +6,7 @@ import type { ActingConnection } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import { type TournamentsService, createTournamentsService } from './service';
 import { BROCK, OLIVE, type StubTournament, series, stubPlayTools, templateBody, upstreamTournament } from './test-helpers';
+import { HELD_BY_OWNER, OWNER } from '../pokemon/test-connections';
 
 // Gathering required-events coverage (ADR-0010 decision 12, #95): each connected professor's listing (cached 5
 // minutes), each tournament's series from its details (cached by guid), play-tools' series windows, planned rows.
@@ -16,7 +17,7 @@ const TZ = 'America/Chicago';
 /** Wednesday 2026-10-14, noon in Chicago. */
 const NOON_WED = new Date('2026-10-14T17:00:00Z');
 const MINUTE = 60_000;
-const MISTY: ActingConnection = { id: 3, professorPlayerId: '9999993', professorName: 'Misty', status: 'needs_reconnect' };
+const MISTY: ActingConnection = { id: 3, professorPlayerId: '9999993', professorName: 'Misty', status: 'needs_reconnect', ...HELD_BY_OWNER };
 
 let database: OpenDatabase;
 let upstream: ReturnType<typeof stubPlayTools>;
@@ -299,14 +300,14 @@ describe('planned tournaments', () => {
 
   it("counts a premier row its organizer's series resolve, from the creatable window on", async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
-    const template = service.createTemplate(L, templateBody());
+    const template = service.createTemplate(L, templateBody(), OWNER);
     const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14' });
     expect(await nov()).toMatchObject({ status: 'planned', action: { kind: 'create', plannedId: row.plannedId } });
   });
 
   it('counts rows from today − 2 on, in every state a create can still be in, by the league date of their start', async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-10-01', '2026-11-30')];
-    const template = service.createTemplate(L, templateBody());
+    const template = service.createTemplate(L, templateBody(), OWNER);
     const at = (localDate: string, state: string) => {
       const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-20', startTime: `1${state.length % 10}:00` });
       database.sqlite.prepare('update planned_tournament set local_date = ?, state = ? where id = ?').run(localDate, state, row.plannedId);
@@ -325,7 +326,7 @@ describe('planned tournaments', () => {
   it("puts a row in the period of its start's date in the league time zone, not the venue's", async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-10-01', '2026-11-30')];
     const west = { ...templateBody().venue, timeZone: 'America/Los_Angeles' };
-    const template = service.createTemplate(L, templateBody({ venue: west, startTime: '23:30' }));
+    const template = service.createTemplate(L, templateBody({ venue: west, startTime: '23:30' }), OWNER);
     // 23:30 on Oct 31 in Los Angeles is 01:30 on Nov 1 in Chicago.
     const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-10-31' });
 
@@ -336,7 +337,7 @@ describe('planned tournaments', () => {
   });
 
   it("falls back to the template's match when its organizer's series can't be read", async () => {
-    const template = service.createTemplate(L, templateBody());
+    const template = service.createTemplate(L, templateBody(), OWNER);
     service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14' });
     seriesDown();
     expect((await nov()).status).toBe('planned');
@@ -344,9 +345,9 @@ describe('planned tournaments', () => {
 
   it("can't judge a row with a series pick when its organizer's series can't be read, so the period is unknown", async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
-    const template = service.createTemplate(L, templateBody());
+    const template = service.createTemplate(L, templateBody(), OWNER);
     const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14' });
-    service.updatePlanned(L, row.plannedId!, { seriesId: 'lc' });
+    service.updatePlanned(L, row.plannedId!, { seriesId: 'lc' }, OWNER);
     seriesDown();
     expect(await nov()).toMatchObject({ status: 'unknown', unjudgedPlanned: [row.plannedId] });
   });
@@ -354,7 +355,7 @@ describe('planned tournaments', () => {
   it('links an unknown row to the tournament the listing shows, so it never counts twice', async () => {
     service.requirements.update(L, service.requirements.active(L)[0]!.id, { minCount: 2 });
     upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
-    const template = service.createTemplate(L, templateBody({ name: 'League Challenge' }));
+    const template = service.createTemplate(L, templateBody({ name: 'League Challenge' }), OWNER);
     const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14' });
     database.sqlite.prepare("update planned_tournament set state = 'unknown' where id = ?").run(row.plannedId);
     // 18:00 in Chicago on Nov 14 is 00:00Z on Nov 15.
@@ -366,9 +367,9 @@ describe('planned tournaments', () => {
 
   it('never counts a custom row, a skipped one, or one already in play-tools', async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
-    const custom = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, name: 'Friday {date}' }));
+    const custom = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, name: 'Friday {date}' }), OWNER);
     service.createPlanned(L, { templateId: custom.id, localDate: '2026-11-14' });
-    const premier = service.createTemplate(L, templateBody({ name: 'LC {month}' }));
+    const premier = service.createTemplate(L, templateBody({ name: 'LC {month}' }), OWNER);
     const skipped = service.createPlanned(L, { templateId: premier.id, localDate: '2026-11-15' });
     const created = service.createPlanned(L, { templateId: premier.id, localDate: '2026-11-16' });
     database.sqlite.prepare("update planned_tournament set state = 'skipped' where id = ?").run(skipped.plannedId);
@@ -378,7 +379,7 @@ describe('planned tournaments', () => {
 
   it('follows a one-off’s own type: a premier template changed to Custom covers nothing (#162)', async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
-    const template = service.createTemplate(L, templateBody());
+    const template = service.createTemplate(L, templateBody(), OWNER);
     const custom = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14', seriesId: 'custom' });
     expect((await nov()).status).toBe('missing');
     database.sqlite.prepare('update planned_tournament set series_override = null where id = ?').run(custom.plannedId);
@@ -387,7 +388,7 @@ describe('planned tournaments', () => {
 
   it('judges a one-off’s series by its own venue’s country, as creation does (#162)', async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
-    const template = service.createTemplate(L, templateBody());
+    const template = service.createTemplate(L, templateBody(), OWNER);
     const abroad = { id: '00000000-0000-4000-8000-000000000053', label: 'Toronto Shop', timeZone: 'America/Toronto', country: 'CA' };
     service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14', overrides: { venue: abroad } });
     // The series has a US window only, so nothing resolves for a Canadian venue.
@@ -426,7 +427,7 @@ describe('failures that never show missing, and never keep play-tools busy (PR r
 
   it('leaves linking unknown rows to the next request after a details 429', async () => {
     upstream.state.series = [series('lc', 'League Challenge', '2026-11-01', '2026-11-30')];
-    const template = service.createTemplate(L, templateBody({ name: 'League Challenge' }));
+    const template = service.createTemplate(L, templateBody({ name: 'League Challenge' }), OWNER);
     const row = service.createPlanned(L, { templateId: template.id, localDate: '2026-11-14' });
     database.sqlite.prepare("update planned_tournament set state = 'unknown' where id = ?").run(row.plannedId);
     upstream.state.tournaments = [challenge('landed', '2026-11-15T00:00:00Z', { name: 'League Challenge' })];

@@ -14,6 +14,7 @@ import { type TournamentsService, createTournamentsService } from '../tournament
 import { OLIVE, VENUE, participants, stubPlayTools, templateBody, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The `tournament_cancel` job (#94, ADR-0010 decision 8) on the submission rails: the apply's fresh read and typed
 // confirmation, a fresh read again before the one PATCH, a 5xx settled by one re-read and never resent, then the planned
@@ -151,7 +152,7 @@ const details: Partial<TournamentDetails> = { venue: { id: VENUE.id, timeZone: T
 
 /** A planned row created in play-tools as Olive's tournament, listing `players`, with one pending and one applied staffer. */
 function created(counts: { players?: number; staff?: number } = {}, name = 'Tuesday Cup') {
-  const t = tournaments.createTemplate(L, templateBody({ name, type: { kind: 'custom' } }));
+  const t = tournaments.createTemplate(L, templateBody({ name, type: { kind: 'custom' } }), OWNER);
   const planned = tournaments.createPlanned(L, { templateId: t.id, localDate: '2026-10-20' });
   const id = planned.plannedId!;
   upstream.state.tournaments.push(upstreamTournament(GUID, START.toISOString(), { name, displayId: '26-10-000001', details }));
@@ -174,7 +175,7 @@ function created(counts: { players?: number; staff?: number } = {}, name = 'Tues
 }
 
 async function cancel(plannedId: number, body: CancelBody = {}) {
-  const started = await service.cancelTournament(L, { target: { kind: 'planned', id: plannedId }, body, startedBy: 'organizer' });
+  const started = await service.cancelTournament(L, { target: { kind: 'planned', id: plannedId }, body, actor: OWNER });
   await service.idle();
   return started;
 }
@@ -218,7 +219,7 @@ describe("dropping coverage's cached listings (#95)", () => {
   });
 
   it('leaves them alone for a job that is not a tournament job', async () => {
-    await service.importPlayers(L, 'organizer');
+    await service.importPlayers(L, OWNER);
     await service.idle();
     expect(drops).toEqual([]);
   });
@@ -248,7 +249,7 @@ describe('the tournament_cancel job', () => {
   it('refuses a wrong or missing confirmation when anyone is registered, and starts nothing', async () => {
     const id = created({ players: 2 });
     for (const body of [{}, { confirmation: '26-10-000002' }]) {
-      await expect(service.cancelTournament(L, { target: { kind: 'planned', id }, body, startedBy: 'organizer' })).rejects.toMatchObject({
+      await expect(service.cancelTournament(L, { target: { kind: 'planned', id }, body, actor: OWNER })).rejects.toMatchObject({
         code: 'confirmation_mismatch',
       });
     }
@@ -322,7 +323,7 @@ describe('the tournament_cancel job', () => {
     expect(staffRows()).toEqual(UNTOUCHED);
 
     onCancel = undefined;
-    const retry = await service.retry(L, submissionId!, 'organizer');
+    const retry = await service.retry(L, submissionId!, OWNER);
     await service.idle();
     expect(cancels()).toHaveLength(2);
     expect(service.get(L, retry.submissionId)).toMatchObject({ status: 'succeeded', retryOf: submissionId });
@@ -379,7 +380,7 @@ describe('the tournament_cancel job', () => {
     upstream.state.participants.set(GUID, participants(OLIVE.professorPlayerId!, { players: 1 }));
 
     onCancel = undefined;
-    const retry = await service.retry(L, submissionId!, 'organizer');
+    const retry = await service.retry(L, submissionId!, OWNER);
     await service.idle();
 
     expect(cancels()).toHaveLength(1);
@@ -392,7 +393,7 @@ describe('the tournament_cancel job', () => {
     onCancel = () => ({ fail: new PokemonUpstreamError('unavailable', 'play-tools answered 500') });
     const { submissionId } = await cancel(id, { confirmation: '26-10-000001' });
     onCancel = undefined;
-    const retry = await service.retry(L, submissionId!, 'organizer');
+    const retry = await service.retry(L, submissionId!, OWNER);
     await service.idle();
     expect(items(retry.submissionId)[0]).toMatchObject({ outcome: 'cancelled' });
   });
@@ -400,7 +401,7 @@ describe('the tournament_cancel job', () => {
   it('is nothing_to_cancel for a retry of a job that cancelled it', async () => {
     const id = created();
     const { submissionId } = await cancel(id);
-    await expect(service.retry(L, submissionId!, 'organizer')).rejects.toMatchObject({ code: 'nothing_to_cancel' });
+    await expect(service.retry(L, submissionId!, OWNER)).rejects.toMatchObject({ code: 'nothing_to_cancel' });
   });
 
   it('on boot, a cancel in flight is unknown and the row untouched; a retry re-reads and finds it cancelled', async () => {
@@ -409,7 +410,7 @@ describe('the tournament_cancel job', () => {
       await new Promise(() => {}); // the app dies mid-call, after play-tools took it
       return undefined;
     };
-    const { submissionId } = await service.cancelTournament(L, { target: { kind: 'planned', id }, body: {}, startedBy: 'organizer' });
+    const { submissionId } = await service.cancelTournament(L, { target: { kind: 'planned', id }, body: {}, actor: OWNER });
     await new Promise((r) => setImmediate(r));
     stub().applicationState = 'cancelled';
 
@@ -421,7 +422,7 @@ describe('the tournament_cancel job', () => {
     expect(staffRows()).toEqual(UNTOUCHED);
 
     onCancel = undefined;
-    const retry = await rebooted.retry(L, submissionId!, 'organizer');
+    const retry = await rebooted.retry(L, submissionId!, OWNER);
     await rebooted.idle();
     expect(rebooted.get(L, retry.submissionId).tournamentItems[0]).toMatchObject({ outcome: 'already_cancelled' });
     expect(cancels()).toHaveLength(1);
@@ -431,7 +432,7 @@ describe('the tournament_cancel job', () => {
     created();
     database.sqlite.prepare('delete from planned_tournament').run();
     onRead = (n) => (n === 2 ? new Promise(() => {}) : undefined); // the app dies during the job's own read
-    const { submissionId } = await service.cancelTournament(L, { target: { kind: 'tournament', id: GUID }, body: {}, startedBy: 'organizer' });
+    const { submissionId } = await service.cancelTournament(L, { target: { kind: 'tournament', id: GUID }, body: {}, actor: OWNER });
     await new Promise((r) => setImmediate(r));
 
     const rebooted = build();
@@ -445,7 +446,7 @@ describe('the tournament_cancel job', () => {
   it('refuses while another job holds the lease, reading and writing nothing', async () => {
     const id = created();
     database.sqlite.prepare('insert into submission_lock (league_id, submission_id, expires_at) values (?, 999, ?)').run(L, clock.getTime() + 60_000);
-    await expect(service.cancelTournament(L, { target: { kind: 'planned', id }, body: {}, startedBy: 'organizer' })).rejects.toMatchObject({
+    await expect(service.cancelTournament(L, { target: { kind: 'planned', id }, body: {}, actor: OWNER })).rejects.toMatchObject({
       code: 'submission_running',
     });
     expect(readCount).toBe(0);
@@ -466,7 +467,7 @@ describe('the tournament_cancel job', () => {
   it('reads the tournament after waiting its turn, so someone registering during the wait stops an unconfirmed cancel', async () => {
     service = build({ tournamentDelayMs: 60_000 });
     const id = created();
-    await service.editTournaments(L, { target: { kind: 'planned', id }, body: ApplyBody.parse({ changes: { details: 'New' } }), startedBy: 'organizer' });
+    await service.editTournaments(L, { target: { kind: 'planned', id }, body: ApplyBody.parse({ changes: { details: 'New' } }), actor: OWNER });
     await service.idle();
     onSleep = () => upstream.state.participants.set(GUID, participants(OLIVE.professorPlayerId!, { players: 1 }));
 
@@ -492,7 +493,7 @@ describe('the tournament_cancel job', () => {
   it('keeps a cancel at least 2 s after an edit, whatever the setting', async () => {
     service = build({ tournamentDelayMs: 0 });
     const id = created();
-    await service.editTournaments(L, { target: { kind: 'planned', id }, body: ApplyBody.parse({ changes: { details: 'New' } }), startedBy: 'organizer' });
+    await service.editTournaments(L, { target: { kind: 'planned', id }, body: ApplyBody.parse({ changes: { details: 'New' } }), actor: OWNER });
     await service.idle();
     await cancel(id);
     expect(writes.map((w) => [w.kind, w.at - writes[0]!.at])).toEqual([
@@ -501,3 +502,20 @@ describe('the tournament_cancel job', () => {
     ]);
   });
 });
+
+describe('who may cancel or retry a cancel (ADR-0015 §4)', () => {
+  it("refuses a professor cancelling the owner's tournament, and their retry of the owner's failed cancel", async () => {
+    const id = created();
+    const misty = professorActor(2, 'misty');
+    await expect(service.cancelTournament(L, { target: { kind: 'planned', id }, body: { confirmation: '26-10-000001' }, actor: misty })).rejects.toMatchObject({
+      code: 'not_your_connection',
+    });
+
+    onCancel = () => ({ fail: new PokemonUpstreamError('unavailable', 'play-tools answered 500') });
+    const { submissionId } = await cancel(id, { confirmation: '26-10-000001' });
+    onCancel = undefined;
+    await expect(service.retry(L, submissionId!, misty)).rejects.toMatchObject({ code: 'not_your_connection' });
+    expect(cancels()).toHaveLength(1);
+  });
+});
+

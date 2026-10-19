@@ -7,7 +7,7 @@ import { toAttendanceDay } from './day';
 
 export interface IntegrationDayService {
   /**
-   * The v1 day (#115): every connected professor's tournaments in the league that start on the date, read live,
+   * The v1 day (#115): every connected professor's (not outside the league) tournaments in the league that start on the date, read live,
    * with their live staff assignments and each professor's read outcome. With no professor connected, an empty
    * day and no upstream call.
    * @throws StaffingError `league_not_selected`, IntegrationError `professor_unidentified`
@@ -17,7 +17,7 @@ export interface IntegrationDayService {
 
 export interface IntegrationDayDeps {
   staffing: Pick<StaffingService, 'daySnapshot'>;
-  connections: Pick<PokemonConnectionService, 'listActingConnections'>;
+  connections: Pick<PokemonConnectionService, 'listReadableConnections'>;
   timeZone: string;
   log: Logger;
 }
@@ -25,12 +25,13 @@ export interface IntegrationDayDeps {
 export function createIntegrationDayService(deps: IntegrationDayDeps): IntegrationDayService {
   return {
     async day(leagueId, date) {
-      if (deps.connections.listActingConnections().length === 0) {
+      // A connection outside the league is never read for it (ADR-0015 §3).
+      if (deps.connections.listReadableConnections().length === 0) {
         return { date, timezone: deps.timeZone, tournaments: [], professors: [] };
       }
       const snapshot = await deps.staffing.daySnapshot(leagueId, date);
       // Read again: a professor's first successful token use fills in their player id.
-      const { day, skipped } = toAttendanceDay({ date, snapshot, connections: deps.connections.listActingConnections() });
+      const { day, skipped } = toAttendanceDay({ date, snapshot, connections: deps.connections.listReadableConnections() });
       for (const s of skipped) {
         deps.log.warn('staff assignment left out of the integrations day: its role is not a contract role', { ...s });
       }

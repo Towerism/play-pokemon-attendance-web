@@ -26,6 +26,7 @@ import {
   tournamentScheduleOverride,
   tournamentTemplate,
 } from '../../db/schema';
+import type { Actor } from '../accounts/service';
 import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { NewTournament, PlayToolsGateway, Series, Tournament, TournamentDetails, Venue } from '../pokemon/ports/play-tools-gateway';
@@ -36,6 +37,7 @@ import { type TournamentCancelling, createCancelling } from './cancelling';
 import { type EditForm, type EditPreview, type TournamentEditing, createEditing } from './editing';
 import { TournamentsError } from './errors';
 import { createLiveReads } from './live-reads';
+import { assertMayActAs } from './organizer';
 import { createListingCache } from './listing-cache';
 import { type ListedTournament, type RequiredEvents, createRequiredEvents } from './required-events';
 import { type TournamentRequirements, createRequirements } from './requirements';
@@ -177,11 +179,12 @@ export interface TournamentsService {
   /** The league's templates by name; archived ones only when asked. */
   listTemplates(leagueId: string, opts: { archived?: boolean }): Template[];
   /** @throws TournamentsError `organizer_not_connected` */
-  createTemplate(leagueId: string, body: TemplateBody): Template;
+  /** Only with one of `actor`'s own connections as organizer (ADR-0015 §4). @throws TournamentsError `organizer_not_connected`, `not_your_connection` */
+  createTemplate(leagueId: string, body: TemplateBody, actor: Actor): Template;
   /** Changes only the fields given. @throws TournamentsError `not_found`, `organizer_not_connected`, `contact_required` */
-  updateTemplate(leagueId: string, id: number, patch: TemplatePatch): Template;
+  updateTemplate(leagueId: string, id: number, patch: TemplatePatch, actor: Actor): Template;
   /** Archives; never deletes. @throws TournamentsError `not_found`, `template_in_use` */
-  archiveTemplate(leagueId: string, id: number): void;
+  archiveTemplate(leagueId: string, id: number, actor: Actor): void;
 
   listScaffolds(leagueId: string, opts: { archived?: boolean }): Scaffold[];
   /** @throws TournamentsError `unknown_template`, `template_archived` */
@@ -210,7 +213,7 @@ export interface TournamentsService {
    * Skip or unskip, move the date or time, or pick the series, while the row isn't in play-tools.
    * @throws TournamentsError `not_found`, `not_editable`, `date_too_far_past`, `date_too_far_ahead`
    */
-  updatePlanned(leagueId: string, id: number, patch: PlannedPatch): { planned: UpcomingEntry; warnings: 'another_planned_at_time'[] };
+  updatePlanned(leagueId: string, id: number, patch: PlannedPatch, actor: Actor): { planned: UpcomingEntry; warnings: 'another_planned_at_time'[] };
   /**
    * Plans every schedule up to its horizon, then lists the planned tournaments and the league's play-tools ones
    * whose local date is in the range, by start. Reads play-tools as each connected professor, through the 5-minute
@@ -238,8 +241,8 @@ export interface TournamentsService {
    * @throws TournamentsError `not_found`, `not_editable`, `organizer_not_connected`, `needs_reconnect`, `league_not_selected`
    */
   editForm(leagueId: string, target: EditTarget): Promise<EditForm>;
-  /** Every tournament an edit would touch, with before → after; changes nothing. @throws TournamentsError the edit's refusals (locked, reschedule window, dates, series, format, venue, nothing to change) */
-  editPreview(leagueId: string, target: EditTarget, body: EditBody): Promise<EditPreview>;
+  /** Every tournament an edit would touch, with before → after, leaving out those not `actor`'s to change; changes nothing. @throws TournamentsError the edit's refusals (locked, reschedule window, dates, series, format, venue, nothing to change) */
+  editPreview(leagueId: string, target: EditTarget, body: EditBody, actor: Actor): Promise<EditPreview>;
   /** What the submission module's `tournament_edit` job uses (#93). */
   editing: TournamentEditing;
   /** **Cancel…** (#94, ADR-0010 decision 8): the confirm preview, and what the `tournament_cancel` job uses. */
@@ -274,6 +277,13 @@ export interface CreateTarget {
   organizer: { playerId: string; name: string | null };
 }
 
+/** A row left out of a create because another user holds its organizer's connection (ADR-0015 §4). */
+export interface CreateRefusal {
+  plannedTournamentId: number;
+  code: 'not_your_connection';
+  professorPlayerId: string;
+}
+
 /** What adoption compares: the listing's fields, and the format from the details. */
 export type CreateMatch = AdoptionTarget & { category: string };
 
@@ -285,11 +295,18 @@ export type CreatePlan =
 
 export interface TournamentCreation {
   /**
-   * The rows a create job may take, in start order. Changes nothing.
+   * The rows a create job may take, in start order, and the rows refused because another user holds their organizer's
+   * connection (ADR-0015 §4). Changes nothing.
    * @throws TournamentsError `league_not_selected`, `not_found`, `not_creatable`, `date_too_far_past`, `date_too_far_ahead`,
-   *   `organizer_not_connected`, `needs_reconnect`, `retry_not_confirmed`, `short_notice_not_acknowledged`
+   *   `organizer_not_connected`, `needs_reconnect`, `retry_not_confirmed`, `short_notice_not_acknowledged`, and
+   *   `not_your_connection` when no row is the actor's
    */
-  prepare(leagueId: string, plannedIds: readonly number[], opts: { retryUnknown: boolean; acknowledgeShortNotice: boolean }): CreateTarget[];
+  prepare(
+    leagueId: string,
+    plannedIds: readonly number[],
+    opts: { retryUnknown: boolean; acknowledgeShortNotice: boolean },
+    actor: Actor,
+  ): { targets: CreateTarget[]; refused: CreateRefusal[] };
   /** Rows a job takes become `creating`, so no replan deletes them. Call inside the job's transaction. */
   hold(leagueId: string, plannedIds: readonly number[]): void;
   /**
@@ -331,7 +348,7 @@ export type TournamentsGateway = Pick<PlayToolsGateway, 'listTournaments' | 'get
 
 export interface TournamentsDeps {
   db: Db;
-  connections: Pick<PokemonConnectionService, 'getStatus' | 'listActingConnections'>;
+  connections: Pick<PokemonConnectionService, 'league' | 'listActingConnections' | 'listReadableConnections' | 'actingConnection'>;
   /** Play-tools as one professor's connection. */
   gateway: (connectionId: number) => TournamentsGateway;
   /** A rescheduled tournament's staff move with it, and a cancelled one's are dropped or tombstoned (ADR-0010 decision 8). */
@@ -405,15 +422,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     };
   }
 
-  /** Any connected professor of the league, whatever their status: a reconnect doesn't change who they are. */
-  function requireOrganizer(playerId: string) {
-    if (!deps.connections.listActingConnections().some((c) => c.professorPlayerId === playerId)) {
-      throw new TournamentsError(
-        'organizer_not_connected',
-        `Professor ${playerId} isn't connected. Connect their Pokémon account in Settings to create tournaments as them.`,
-      );
-    }
-  }
+  /** A template's organizer is one of `actor`'s own connections, whatever its status: a reconnect doesn't change who they are. */
+  const requireOrganizer = (actor: Actor, playerId: string) => assertMayActAs(deps.connections, actor, playerId, { local: true });
 
   function templateRow(leagueId: string, id: number): TemplateRow {
     const row = db.select().from(tournamentTemplate).where(and(eq(tournamentTemplate.leagueId, leagueId), eq(tournamentTemplate.id, id))).get();
@@ -798,8 +808,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         .where(and(eq(plannedTournament.leagueId, leagueId), gte(plannedTournament.localDate, from), lte(plannedTournament.localDate, to)))
         .all();
     let rows = rowsIn();
-    const conns = deps.connections.listActingConnections();
-    const group = conns.length === 0 ? null : (deps.connections.getStatus(leagueId).league?.id ?? null);
+    const conns = deps.connections.listReadableConnections();
+    const group = conns.length === 0 ? null : (deps.connections.league(leagueId)?.id ?? null);
     const status = conns.length === 0 ? 'not_connected' : group === null ? 'league_not_selected' : 'read';
     const listed = group === null ? { tournaments: [], unread: [] } : await listLeagueTournaments(conns, group, from, to, mode);
     if (group !== null && (await linkUnknown(leagueId, group, rows, listed.tournaments))) rows = rowsIn();
@@ -965,8 +975,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   }
 
   const creation: TournamentCreation = {
-    prepare(leagueId, plannedIds, opts) {
-      const group = deps.connections.getStatus(leagueId).league?.id;
+    prepare(leagueId, plannedIds, opts, actor) {
+      const group = deps.connections.league(leagueId)?.id;
       if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
       const rows = db
         .select()
@@ -978,6 +988,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         if (!byId.has(id)) throw new TournamentsError('not_found', `No planned tournament ${id}.`, { plannedTournamentId: id });
       }
       const ctx = contextFor(rows);
+      const refused: CreateRefusal[] = [];
       for (const id of plannedIds) {
         const row = byId.get(id)!;
         if (!(row.state === 'planned' || row.state === 'failed' || row.state === 'unknown')) {
@@ -999,26 +1010,40 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
             professorPlayerId: organizer,
           });
         }
+        if (c.userId !== actor.userId) {
+          refused.push({ plannedTournamentId: id, code: 'not_your_connection', professorPlayerId: organizer });
+          continue;
+        }
         if (c.status === 'needs_reconnect') {
           throw new TournamentsError('needs_reconnect', `Reconnect ${c.professorName ?? `Professor ${organizer}`} in Settings.`, {
             plannedTournamentId: id,
             professorPlayerId: organizer,
           });
         }
+        // The pokemon module has the last word on who may act as this organizer.
+        assertMayActAs(deps.connections, actor, organizer);
       }
-      const unknown = plannedIds.filter((id) => byId.get(id)!.state === 'unknown');
+      if (refused.length === plannedIds.length) {
+        throw new TournamentsError('not_your_connection', 'Only the professors who organize these tournaments can create them.', {
+          professorPlayerId: refused[0]!.professorPlayerId,
+          refused,
+        });
+      }
+      const taken = plannedIds.filter((id) => !refused.some((r) => r.plannedTournamentId === id));
+      const unknown = taken.filter((id) => byId.get(id)!.state === 'unknown');
       if (unknown.length > 0 && !opts.retryUnknown) {
         throw new TournamentsError('retry_not_confirmed', 'An earlier create may still appear in play-tools. Confirm to try again.', {
           plannedTournamentIds: unknown,
         });
       }
-      const short = plannedIds.filter((id) => isShortNotice(byId.get(id)!.localDate, today()));
+      const short = taken.filter((id) => isShortNotice(byId.get(id)!.localDate, today()));
       if (short.length > 0 && !opts.acknowledgeShortNotice) {
         throw new TournamentsError('short_notice_not_acknowledged', 'Some are less than 7 days away; the league is expected to sanction 7 days ahead.', {
           plannedTournamentIds: short,
         });
       }
-      return rows
+      const targets = rows
+        .filter((r) => taken.includes(r.id))
         .map((r) => entryOf(r, ctx))
         .sort((a, b) => a.localDate.localeCompare(b.localDate) || (a.startsAt ?? a.startTime).localeCompare(b.startsAt ?? b.startTime) || a.plannedId! - b.plannedId!)
         .map((e) => ({
@@ -1028,6 +1053,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
           shortNotice: isShortNotice(e.localDate, today()),
           organizer: { playerId: e.organizer!.playerId, name: e.organizer!.name },
         }));
+      return { targets, refused };
     },
 
     hold(leagueId, plannedIds) {
@@ -1050,7 +1076,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         return { kind: 'fail', code: 'start_time_invalid', message: `${row.startTime} on ${row.localDate} is skipped or repeated by a clock change.` };
       }
       const c = actingAs(template.organizerPlayerId);
-      const group = deps.connections.getStatus(leagueId).league?.id;
+      const group = deps.connections.league(leagueId)?.id;
       if (!group) return { kind: 'fail', code: 'league_not_selected', message: 'Choose the league in Settings first.' };
       const match: CreateMatch = { startsAt, product: template.product, name: settings.name, groupId: group, category: settings.category };
 
@@ -1266,8 +1292,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       return rows.map(templateView);
     },
 
-    createTemplate(leagueId, body) {
-      requireOrganizer(body.organizerPlayerId);
+    createTemplate(leagueId, body, actor) {
+      requireOrganizer(actor, body.organizerPlayerId);
       const at = now();
       const row = db
         .insert(tournamentTemplate)
@@ -1277,9 +1303,10 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       return templateView(row);
     },
 
-    updateTemplate(leagueId, id, patch) {
+    updateTemplate(leagueId, id, patch, actor) {
       const current = templateView(templateRow(leagueId, id));
-      if (patch.organizerPlayerId !== undefined) requireOrganizer(patch.organizerPlayerId);
+      assertMayActAs(deps.connections, actor, current.organizerPlayerId, { local: true, ownerCleanup: true });
+      if (patch.organizerPlayerId !== undefined) requireOrganizer(actor, patch.organizerPlayerId);
       const merged = { ...current, ...patch };
       if (merged.contactEmail === null && merged.contactPhone === null) {
         throw new TournamentsError('contact_required', 'Give a contact email or phone.');
@@ -1293,8 +1320,9 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       return templateView(row);
     },
 
-    archiveTemplate(leagueId, id) {
+    archiveTemplate(leagueId, id, actor) {
       const row = templateRow(leagueId, id);
+      assertMayActAs(deps.connections, actor, row.organizerPlayerId, { local: true, ownerCleanup: true });
       const users = db
         .selectDistinct({ id: tournamentScaffold.id })
         .from(scaffoldSlot)
@@ -1474,8 +1502,10 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       return entryOf(row, contextFor([row]));
     },
 
-    updatePlanned(leagueId, id, patch) {
+    updatePlanned(leagueId, id, patch, actor) {
       const row = plannedRow(leagueId, id);
+      const { organizerPlayerId } = templateRow(leagueId, row.templateId);
+      assertMayActAs(deps.connections, actor, organizerPlayerId, { local: true, ownerCleanup: true });
       if (row.state === 'unknown' || heldSkipped(row)) return updateUnsettled(row, patch);
       if (!REPLANNABLE.has(row.state)) {
         throw new TournamentsError('not_editable', 'This tournament has reached play-tools, or is being created. Change it there, or with Edit….', { state: row.state });
@@ -1552,7 +1582,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
           professorPlayerId: query.professor,
         });
       }
-      const group = deps.connections.getStatus(leagueId).league?.id;
+      const group = deps.connections.league(leagueId)?.id;
       if (!group) throw new TournamentsError('league_not_selected', 'Choose the league in Settings first.');
       const list = await live.series(c.id, group);
       const formats = await live.formats(c.id, query.country);

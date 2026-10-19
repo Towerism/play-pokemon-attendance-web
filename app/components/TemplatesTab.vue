@@ -13,6 +13,9 @@ const refresh = () => reread({ dedupe: 'cancel' });
 const clockPending = computed(() => !props.today && !props.clockFailed);
 const loading = computed(() => !data.value && !error.value);
 const editing = ref<Template | null | 'new'>(null);
+// A template another user's connection organizes is theirs to change (ADR-0015 §4).
+const { data: connections } = usePokemonConnection();
+const onlyFor = (t: Template) => onlyText(connections.value, t.organizerPlayerId);
 
 const typeText = (t: Template) => (t.type.kind === 'custom' ? 'Custom' : t.type.seriesMatch);
 
@@ -53,7 +56,8 @@ async function archive(t: Template) {
         <p class="text-muted break-words">
           {{ GAME[t.product] }} · {{ typeText(t) }} · {{ t.category }} · {{ t.venue.label }} · {{ t.startTime }} · organizer {{ t.organizerPlayerId }}
         </p>
-        <div v-if="!t.archived" class="flex gap-1">
+        <p v-if="!t.archived && onlyFor(t)" class="text-sm text-muted">{{ onlyFor(t) }}</p>
+        <div v-else-if="!t.archived" class="flex gap-1">
           <UButton size="xs" variant="outline" :aria-label="`Edit… ${t.name}`" :disabled="!props.today" @click="editing = t">Edit…</UButton>
           <UButton size="xs" variant="ghost" color="error" :aria-label="`Archive… ${t.name}`" @click="archive(t)">Archive…</UButton>
         </div>

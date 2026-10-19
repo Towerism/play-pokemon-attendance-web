@@ -22,3 +22,9 @@ export function authRedirect(to: RouteLike, loggedIn: boolean): AuthRedirect {
 function safeLocalPath(target: unknown): string {
   return typeof target === 'string' && /^\/(?![/\\])/.test(target) ? target : '/';
 }
+
+/** Where a professor not yet confirmed in the league goes (ADR-0015 §3): only Settings, until they are a member. */
+export function waitingRedirect(path: string, access: { member: boolean } | null | undefined): string | undefined {
+  if (!access || access.member || path === '/settings' || path === '/login') return undefined;
+  return '/settings';
+}

@@ -1,8 +1,39 @@
-import type { ActingConnection, PokemonConnectionService } from '../pokemon/connection';
+import type { Actor } from '../accounts/service';
+import { type ActingConnection, ConnectionAccessError, type PokemonConnectionService } from '../pokemon/connection';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { TournamentDetails } from '../pokemon/ports/play-tools-gateway';
 import { TournamentsError } from './errors';
 import type { TournamentsGateway } from './service';
+
+/**
+ * May `actor` act in `organizerPlayerId`'s name (ADR-0015 §4)? Only through a connection they hold, as the pokemon
+ * module's `actingConnection` decides; its refusals become this module's codes. A `local` change (a template, a
+ * planned row) reaches nothing upstream, so a login needing a reconnect doesn't stop it. With `ownerCleanup`, the
+ * owner may also make it when nobody holds that connection, so stale plans can be cleaned up.
+ * @throws TournamentsError `organizer_not_connected`, `needs_reconnect`, `not_your_connection`
+ */
+export function assertMayActAs(
+  connections: Pick<PokemonConnectionService, 'actingConnection' | 'listActingConnections'>,
+  actor: Actor,
+  organizerPlayerId: string,
+  opts: { local?: boolean; ownerCleanup?: boolean } = {},
+): void {
+  try {
+    connections.actingConnection(actor, organizerPlayerId, { kind: 'own' });
+  } catch (err) {
+    if (!(err instanceof ConnectionAccessError)) throw err;
+    if (opts.local && err.code === 'needs_reconnect') return;
+    if (opts.ownerCleanup && err.code === 'organizer_not_connected' && actor.role === 'owner') return;
+    const name = connections.listActingConnections().find((c) => c.professorPlayerId === organizerPlayerId)?.professorName ?? `Professor ${organizerPlayerId}`;
+    const message =
+      err.code === 'not_your_connection'
+        ? `Only ${name} can change this.`
+        : err.code === 'needs_reconnect'
+          ? `Reconnect ${name} in Settings.`
+          : `Professor ${organizerPlayerId} isn't connected. Connect their Pokémon account in Settings to act as them.`;
+    throw new TournamentsError(err.code, message, { professorPlayerId: organizerPlayerId });
+  }
+}
 
 /** Reads that mean "not this professor's", when looking for who organizes a guid. */
 const NOT_THEIRS: ReadonlySet<string> = new Set(['not_found', 'forbidden', 'refused']);

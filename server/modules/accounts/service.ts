@@ -15,6 +15,18 @@ export interface AppUser {
   username: string;
 }
 
+export type Role = 'owner' | 'professor';
+
+/**
+ * Who is making a request (ADR-0015 §4), read from the database on every request. Services that write to play-tools
+ * take it and get their connection from the pokemon module's `actingConnection`.
+ */
+export interface Actor {
+  userId: number;
+  username: string;
+  role: Role;
+}
+
 export class SetupClosedError extends Error {
   override name = 'SetupClosedError';
   constructor() {
@@ -34,8 +46,10 @@ export interface AccountsService {
   needsSetup(): boolean;
   /** Creates the organizer account. Inputs are already validated (`SetupBody`). */
   setup(input: { setupCode: string; username: string; password: string }): Promise<AppUser>;
-  /** The user for valid credentials, otherwise `null`. */
+  /** The user for valid credentials, otherwise `null`. A removed user gets `null`, as for a wrong password. Records the sign-in. */
   authenticate(input: { username: string; password: string }): Promise<AppUser | null>;
+  /** The actor for a session's user id; `null` when the user is gone or removed. */
+  actor(userId: number): Actor | null;
 }
 
 export function createAccountsService(deps: {
@@ -43,8 +57,10 @@ export function createAccountsService(deps: {
   hasher: PasswordHasher;
   /** The code logged on boot, or `null` once setup is no longer possible. */
   setupCode: string | null;
+  now?: () => Date;
 }): AccountsService {
   const { db, hasher } = deps;
+  const now = deps.now ?? (() => new Date());
   let dummyHash: Promise<string> | undefined;
 
   const userCount = (tx: Pick<Db, 'select'> = db) => tx.select({ n: count() }).from(appUser).get()?.n ?? 0;
@@ -63,7 +79,7 @@ export function createAccountsService(deps: {
           if (userCount(tx) > 0) throw new SetupClosedError();
           return tx
             .insert(appUser)
-            .values({ username, passwordHash })
+            .values({ username, passwordHash, role: 'owner' })
             .returning({ id: appUser.id, username: appUser.username })
             .get();
         },
@@ -73,13 +89,20 @@ export function createAccountsService(deps: {
 
     async authenticate({ username, password }) {
       const row = db.select().from(appUser).where(eq(appUser.username, username)).get();
-      if (!row) {
+      if (!row || row.removedAt) {
         // Same scrypt work as a real check, so response time doesn't reveal which usernames exist.
         dummyHash ??= hasher.hash(randomBytes(16).toString('hex'));
         await hasher.verify(await dummyHash, password);
         return null;
       }
-      return (await hasher.verify(row.passwordHash, password)) ? { id: row.id, username: row.username } : null;
+      if (!(await hasher.verify(row.passwordHash, password))) return null;
+      db.update(appUser).set({ lastSignInAt: now() }).where(eq(appUser.id, row.id)).run();
+      return { id: row.id, username: row.username };
+    },
+
+    actor(userId) {
+      const row = db.select({ username: appUser.username, role: appUser.role, removedAt: appUser.removedAt }).from(appUser).where(eq(appUser.id, userId)).get();
+      return row && !row.removedAt ? { userId, username: row.username, role: row.role } : null;
     },
   };
 }

@@ -6,11 +6,10 @@ import { ApplyAllStaffBody } from '#shared/schemas/staffing';
  * its organizer (ADR-0007 update). 202, then follow `/api/staff-batches/{id}`.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { date } = await getValidatedRouterParams(event, SessionDateParam.parse);
   const { tournamentIds } = await readValidatedBody(event, ApplyAllStaffBody.parse);
-  const started = await useSubmissions().applyStaffAll(leagueId, date, { tournamentIds, startedBy: user.username }).catch(submissionHttpError);
+  const started = await useSubmissions().applyStaffAll(leagueId, date, { tournamentIds, actor }).catch(submissionHttpError);
   setResponseStatus(event, 202);
   return started;
 });

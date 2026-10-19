@@ -39,7 +39,7 @@ Pain points that remain with the CLI:
 ### Non-goals (v1)
 
 - Replacing any other play-tools feature (running tournaments, admin actions, reporting). Staff *assignment* moved into scope as G6 (ADR-0007); creating, cancelling and rescheduling tournaments and uploading their results as G7 and G8 (ADR-0010, ADR-0011).
-- Real-time multi-user editing. One or two organizers per league is the expected load. (Several professors' Pokémon accounts can be connected at once, ADR-0008. With [ADR-0015](adr/0015-professor-logins.md) (M10, not built yet), each professor gets their own login and acts only through their own connection.)
+- Real-time multi-user editing. One or two organizers per league is the expected load. (Several professors' Pokémon accounts can be connected at once, ADR-0008. With [ADR-0015](adr/0015-professor-logins.md) (M10), each professor gets their own login and acts only through their own connection; the access core is built (#201), and invites (#202) and leases (#203) follow.)
 - Storing Pokémon Trainer Club **passwords** (see [ADR-0003](adr/0003-pokemon-auth-pkce-refresh-token.md)).
 - Storing minors' birthdates or other PII from the TDF beyond name and player ID.
 
@@ -157,7 +157,7 @@ server/                      Nitro side
                              the kit's `/nitro` adapters with attendance's configuration (§9, §10)
   tasks/pokemon/keepalive.ts Nitro task, wired by `nitro.scheduledTasks` (hourly)
   db/                        drizzle schema, migrations, client
-  utils/                     auto-imported helpers: useDb(), requireLeague(event), container
+  utils/                     auto-imported helpers: useDb(), the access guards (access.ts: requireActor, requireMember, requireOwner), container
                              (the setup code, rate limiter, client address, request ids and CSP/headers come from
                              the `@towerism/selfhost-kit` package, ADR-0014; there is no server/modules/security)
   bootstrap/rate-limits.ts   attendance's login, setup and integration limiters and trusted proxies, built at boot
@@ -230,7 +230,7 @@ sequenceDiagram
   S->>P: identity: personal group owner.player_id (core/users/{sub}/activity_groups/)
   S->>S: encrypt refresh_token (AES-GCM) → that professor's pokemon_connection row
   S->>P: league discovery (core/users/{sub}/activity_groups/)
-  S-->>W: professor added or reconnected; a league with no submitting professor binds their only league, otherwise the organizer picks
+  S-->>W: added, reconnected, or moved from the owner to this professor (claimed); league membership read; an owner's connect picks the league when their accounts are in exactly one
 ```
 
 After connecting, `TokenProvider.getAccessToken()`:
@@ -268,25 +268,36 @@ As built (#66, [ADR-0008](adr/0008-plural-pokemon-connections.md)): **one connec
   professor (S7); the organizer may give one in Settings, for display only ("Professor <player id>" otherwise). No player id fails the connect (`profile_unavailable`) and stores nothing;
   Pokémon down at that moment is `upstream_unavailable`. Either way the fresh login is revoked. Nothing has rotated yet, so
   reading the identity with the new access token before storing the chain can't revoke it.
-- **Add or reconnect:** a known player id is a reconnect (token, status and name replaced, league binding kept); a new one
-  is added, or refused `connection_limit` at the cap (checked in the same transaction as the insert). Attempts are bound to
-  the app user only, since the professor isn't known until the exchange.
+- **Add, reconnect or claim** (ADR-0015 §2): the caller's own player id is a reconnect (token and status replaced, names
+  kept); a player id the owner holds moves to the professor completing the connect (`claimed`, recorded on the row and in
+  an audit log line); any other held player id is refused `connection_held`, and a professor who holds a connection gets
+  `one_connection_only` for another account. A new one is added, or refused `connection_limit` at the cap. Every check
+  runs in the insert's transaction, and every refusal revokes the fresh login. Attempts are bound to the app user, at
+  most 2 per user and 20 in all.
 - **Per connection:** sealed refresh token (AAD `pokemon_connection:<id>`), access-token cache, refresh mutex and status.
   `TokenProvider.getAccessToken(connectionId)`. One professor's `invalid_grant` marks only them `needs_reconnect`.
-- **The league names its submitting professor** (`league_upstream`). Attendance calls (submissions of every kind and
-  the play-session resolver) go through a gateway built for that connection (`leagueGateway(leagueId)`); with none
-  chosen each call fails `not_connected`. A job keeps the connection it started with and never falls back to another
-  professor. Each submission records the professor it ran under.
+- **Attendance goes in as whoever submits** (ADR-0015 §4). `league_upstream` keeps only the activity group. A submit or
+  clear runs as one of the caller's connections that is a league member allowed to submit (the one named in "Submit
+  as", or their only one); undo and retry run as the professor the attempt recorded, and only its holder may start
+  them. Each call of a job goes through `connectionGateway(stampedConnection(row))`, so a job stops `not_connected`
+  once its connection is gone, and never falls back to another professor. Requests that only read play sessions
+  (resolve, the clear preview) read as the caller's own member connection, else any member's.
 - **Tournaments go through their organizer** ([ADR-0009](adr/0009-tournaments-as-their-organizer.md), #75). The Staff
   card lists every connected professor's tournaments, each with that professor's own connection
-  (`connectionGateway(connectionId)`, from `listActingConnections()`). Every staff action, and the staff job, uses only
-  the connection of the tournament's organizer (`organizer_not_connected` / `needs_reconnect` otherwise), and a
-  staff job records them. Import staff reads every connected professor.
-- **The league is one every professor shares** (#75). `GET /leagues/upstream` lists the leagues all connected
-  professors have, each read as that professor; one who needs a reconnect is left out and named (`excluded`), any other
-  failure fails the list. `PUT /settings` refuses any other league, and a connect binds one automatically only when
-  exactly one is shared.
-- **Keep-alive** runs the 45-minute rule for every connection, one at a time, logging one outcome per player id.
+  (`connectionGateway(connectionId)`, from `listReadableConnections()`: every connection not outside the league). Every
+  staff action, and the staff job, uses only the connection of the tournament's organizer, and only when the caller holds
+  it (`actingConnection`: `organizer_not_connected`, `needs_reconnect`, `not_your_connection`); a staff job records them.
+  Import staff reads every connection in the league.
+- **The owner picks the league from their own accounts** (ADR-0015 §3, replacing #75's shared-league rule). `GET
+  /leagues/upstream` lists the leagues of the owner's own connections, each read as that connection, deduplicated; one
+  that needs a reconnect is left out and named (`excluded`), any other failure fails the list. A professor's connection
+  is never read for it. `PUT /settings` refuses any other league, then reads every connection's membership again, one at
+  a time; an owner's connect picks the league automatically only when their accounts are in exactly one.
+- **League membership** (`league_membership`, ADR-0015 §3): `member` (with `can_submit`), `outside` or `unknown`, read at
+  connect, on a league change and by the keep-alive for a connection last read 24 hours ago or never. A failed read
+  changes nothing. A professor sees the league only while their connection is `member`.
+- **Keep-alive** runs the 45-minute rule for every connection, one at a time, logging one outcome per player id, then
+  reads stale memberships.
 - **Upgrade from v1:** migration 0009 copies the league-keyed row into an unidentified connection and its binding into
   `league_upstream`. The `pokemon` boot plugin re-seals its token under the new AAD before anything can refresh it, then
   refreshes it in the background; the first refresh fills in the professor. If that professor is already connected under
@@ -732,11 +743,9 @@ erDiagram
   }
   LEAGUE_UPSTREAM {
     text league_id PK
-    int connection_id FK "the submitting professor; dropped by ADR-0015 (M10)"
-    text activity_group_id "chosen by the owner from their own connections' leagues (ADR-0015, M10)"
+    text activity_group_id "chosen by the owner from their own connections' leagues (ADR-0015); names no connection"
     text activity_group_name
     text activity_group_display_id "e.g. L5012"
-    bool activity_group_can_submit "criteria.play_sessions.create_attendance; moves to LEAGUE_MEMBERSHIP in M10"
   }
   CURATION_SETTINGS {
     text league_id PK "no row: defaults 4 and 6"
@@ -941,7 +950,7 @@ Key modelling decisions:
 - **`player_id` is TEXT.** Player IDs are opaque strings (the CLI already does `String(p.userid)`), and storing them as text avoids losing leading zeros.
 - **Regular is a membership flag, not a separate list.** Promoting or demoting is one toggle, and the metrics are already in the same row.
 - **Sightings ≠ submissions.** Regulars are submitted **every week whether or not they came**, so "submitted" carries *no* information about presence. A **sighting** is evidence: the player appeared in a TDF, was added by hand, or was already recorded upstream by someone else. Curation metrics are computed from sightings, which is the core insight that makes G5 useful.
-- **One league in v1.** Migration 0001 seeds a `league` row with id `default`, and `requireLeague(event)` returns it for any logged-in organizer. Every module still takes a `leagueId`, so a second league needs no schema change. Its `LEAGUE_UPSTREAM` row binds the league to its submitting professor's `POKEMON_CONNECTION` and the upstream activity group (ADR-0008); `SUBMISSION.professor_player_id`/`professor_name` record who each attempt ran as.
+- **One league in v1.** Migration 0001 seeds a `league` row with id `default`, and the access guards (`requireMember`, `requireOwner`) return it. Every module still takes a `leagueId`, so a second league needs no schema change. Its `LEAGUE_UPSTREAM` row holds only the upstream activity group (ADR-0015 §3, migration 0020); `SUBMISSION.professor_player_id`/`professor_name` record who each attempt ran as.
 - **Professor logins** ([ADR-0015](adr/0015-professor-logins.md), M10). `APP_USER.role` is `owner` (the setup
   account) or `professor` (joined through an `APP_INVITE`). Each `POKEMON_CONNECTION` belongs to the user who
   completed its connect, and a write to play-tools goes only through a connection the signed-in user holds
@@ -1551,7 +1560,7 @@ from the catch-all `server/api/[...].ts`. Without it the SPA route rule would an
 | `GET /integrations/v1/days/{date}` (#115, ADR-0013) | **Bearer token only** (`Authorization: Bearer ppa_int_…`; a session cookie doesn't count). For Tournament Genie: `{ date, timezone, tournaments: [{ id, name, displayId, startsAt, game, organizer: { playerId, name }, staff: [{ playerId, name, role }] }], professors: [{ playerId, name, status: read\|unread, reason?: needs_reconnect\|read_failed }] }` (`AttendanceDayV1`, pinned by `test/server/__fixtures__/integrations-v1-day.json`). The Staff card's read as each connected professor (`StaffingService.daySnapshot`): only tournaments play-tools returned, each once, by start then id; `name` falls back to the display id, then the guid; `game` from a single product (`tcg`/`vg`/`pgo` → `tcg`/`vgc`/`go`), else null; `staff` the live assignments with local names and wanted roles (play-tools-only staff left out); every connected professor listed, `read` only when every call for them succeeded, otherwise `unread` with none of their tournaments. No professor connected → an empty day with no upstream call. Read-only (it may seed the staff list). `no-store`; one `integration day read` audit line. 400 bad date, 401 `invalid_token` (the same body and `WWW-Authenticate: Bearer realm="integrations", error="invalid_token"` for a missing, malformed, unknown or revoked token), 409 `league_not_selected`, 429 `rate_limited` with `Retry-After` (30 per 15 min per token; `NUXT_INTEGRATION_RATE_LIMIT_*`), 503 `professor_unidentified` when a connected professor has no player id yet |
 | `GET /integrations/tokens` · `POST /integrations/tokens` · `DELETE /integrations/tokens/{id}` (#115) | Organizer session. `GET` → `{ tokens: [{ id, label, hint, createdBy, createdAt, lastUsedAt }] }`, newest first, never a secret or hash. `POST { label }` (1–60 characters, trimmed) → 201 `{ token, secret }`: the only time the secret (`ppa_int_` + 43 base64url characters) is returned; 409 `token_limit` past 10. `DELETE` → 204, 404 `not_found` (unknown, already revoked or another league's), 400 for an id that isn't a positive integer. All `no-store` |
 | `GET /pokemon/connections` · `POST /pokemon/connect/start` · `POST /pokemon/connect/complete` · `POST /pokemon/token` (manual fallback) · `DELETE /pokemon/connections/:playerId` | Professors' Pokémon connections (ADR-0008). `GET` is `{ connections, league }` from the database only; nothing carries a token. `complete` answers `{ connection, outcome: added\|reconnected }`; 400 with `data.code` for a bad paste or a refused code, 409 `connection_limit`, 502 `profile_unavailable`/`upstream_unavailable`. `DELETE` is 200 `{ revoked }`, 400 for a player id that isn't 1–12 digits, 404 `connection_not_found`. `PATCH /pokemon/connections/:playerId { name?, fullName? }` sets or clears the display name (≤ 60 characters; display only, never sent to Pokémon) and the professor's full name as play-tools has it (≤ 100 characters; first offered from play-tools' organizer name by the TDF upload, then saved), used only when the app replaces a TDF's organizer name and player id (ADR-0011 decision 8, #89). At least one is required (400 for `{}`); a field left out stays as it is, and `''`/null clears it. It answers the connection, which carries `professorFullName`. `POST /pokemon/token` is not built yet |
-| `GET /leagues/upstream?professor=` · `GET /settings` · `PUT /settings` | Pick the submitting professor and their activity group, timezone, thresholds, batch delay. As built: `GET /leagues/upstream` lists the leagues every connected professor shares (#75), named as that professor sees them, with `selectedId` and `excluded` (professors left out because they need a reconnect; any other failure is 502/503); `PUT` refuses a league outside that set with 404 `league_not_found`; `GET /settings` is `{ thresholds }`; `PUT` takes `{ professorPlayerId?, activityGroupId?, thresholds? }` (the professor and league together; `{}` changes nothing; 404 `connection_not_found` or `league_not_found`) and answers with what it changed, `{ connection?, thresholds? }` |
+| `GET /leagues/upstream` · `GET /settings` · `PUT /settings` | The league and the curation thresholds (ADR-0015 §3). `GET /leagues/upstream` (owner) lists the leagues of the owner's own connections, each read as that connection, deduplicated, with `selectedId` and `excluded` (owner connections left out because they need a reconnect; any other failure is 502/503). `GET /settings` (any signed-in user) is `{ access: { username, role, member, waiting }, thresholds?, league? }`: a professor not yet in the league gets `access` only. `PUT /settings` (owner) takes `{ activityGroupId?, thresholds? }` (`{}` changes nothing; 404 `league_not_found` for a league outside the owner's), reads every connection's membership again after a league change, and answers with what it changed, `{ league?: { …, unchecked }, thresholds? }` |
 
 Pokémon errors map as follows (`server/utils/pokemon.ts`): `not_connected` / `needs_reconnect` → 409, `rate_limited` → 503, and other upstream failures → 502. `data.code` is always set.
 Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submission_running` / `player_already_staffed` → 409,
@@ -1569,7 +1578,7 @@ Submission errors (`server/utils/submission.ts`): `league_not_selected` / `submi
 | `regulars.vue`      | List with each regular's last-seen (in sessions), 8-week rate and a Stale badge; add, remove, import JSON                      |
 | `players.vue`       | Every known player with metrics; `UTabs` **Promotion candidates**, **Stale regulars**, **All**, **Staff** (M8, #50: the staff list from `GET /staff` with times staffed, last staffed, and the last role's label from `GET /staff/roles` (fetched once); the page's search box searches it; an inline rename (`PATCH /players/{id}`, one row at a time) since a seeded play-tools name can be a dead name. The Staff tab never calls `/players`, and the other tabs never call `/staff`) (`?tab=`, candidates first); one-click toggle regular, after which the list refreshes |
 | `history/`          | Submissions by date with per-player outcomes, Retry and Undo; undo, clear and staff rows are labelled ("Undo of #N", "Cleared session …", "Staff for …", "Staff import", "Player import") |
-| `settings.vue`      | Pokémon accounts (`PokemonConnectionCard`, ADR-0008): one row per professor, "Display name (player id)" or "Professor <player id>", status, last refreshed, "Submits attendance", Rename (the display name and, beside it, **Full name for TDFs**, shown on the row as "Full name in TDFs: …" once set; #89), Reconnect and Disconnect named for the professor, and Add Pokémon account; the league picker chooses the professor, then a league every connected professor shares (#75: it names who it left out until they reconnect, and offers nothing to save when they share none). The global banner names the submitting professor (display name alone) and shows only when they need a reconnect; the submit dialog says "Submitting as …"; History shows who each attempt ran as; timezone; thresholds (`CurationThresholdsCard`, M6); batch delay; **Import staff from play-tools** (`StaffImportCard`, M8: disabled with the reason until the connection is usable and a league is chosen; live progress, then the latest import's result with its new players and a link to History); **Import players from play-tools** (`PlayerImportCard`, #35: the same, with the new players behind a "Show the N new players" disclosure); **Integrations** (`IntegrationTokensCard`, #115, ADR-0013: tokens by label, hint, created by/when and "Last used …" or "Never used"; **Create token** opens a dialog showing the secret once with **Copy**, dropped from the page when it closes; **Revoke** after a confirm naming the label); app users |
+| `settings.vue`      | Pokémon accounts (`PokemonConnectionCard`, ADR-0008, ADR-0015): the owner sees one row per connection with its league membership ("In the league", "Not in the league", "Checking the league") and whether it is a professor's; a professor sees their own. Each row shows "Display name (player id)" or "Professor <player id>", status and last refreshed. Reconnect, Disconnect and **Full name for TDFs** (shown as "Full name in TDFs: …" once set; #89) are the holder's; Rename (the display name) is the holder's or the owner's. **Add Pokémon account** for the owner, **Connect Pokémon account** for a professor with none. The owner's league picker offers the leagues of the owner's own accounts (naming those it left out until they reconnect, and offering nothing to save when there are none). A professor not yet in the league sees a line saying why. After a connect that moved the owner's connection to them, a professor is told to change its Pokémon password. The global banner names one of the viewer's own connections that needs a reconnect; the submit dialog says "Submitting as …" or asks "Submit as"; History shows who each attempt ran as. The owner alone also sees: thresholds (`CurationThresholdsCard`, M6); **Import staff from play-tools** (`StaffImportCard`, M8: disabled with the reason until a connection in the league can be read and a league is chosen; live progress, then the latest import's result with its new players and a link to History); **Import players from play-tools** (`PlayerImportCard`, #35: the same, with the new players behind a "Show the N new players" disclosure); **Integrations** (`IntegrationTokensCard`, #115, ADR-0013: tokens by label, hint, created by/when and "Last used …" or "Never used"; **Create token** opens a dialog showing the secret once with **Copy**, dropped from the page when it closes; **Revoke** after a confirm naming the label) |
 | `login.vue`         | App login (outside `auth.global.ts` middleware)                                                                                |
 | `invite.vue` (ADR-0015, M10) | Public. Reads the secret from the URL fragment, shows who the invite is for and the league, and creates the professor's username and password |
 
@@ -1737,7 +1746,7 @@ Tooling is in [`spikes/`](../../spikes/README.md). Findings and the decisions th
 | M7 Hardening                  | Undo, optional Litestream, E2E test, [`docs/deploy/unraid.md`](../deploy/unraid.md) (install, backup, restore drill), `nuxt-security` (headers, login rate limit), pino logging with redaction |
 | M8 Staff                      | S6 done (fixtures in `__fixtures__/s6/`). Gateway tournament and staff methods + contract tests + fake routes (#45), the `staffing` module with its tables and staff routes (#46), the `kind = 'staff'` job with `POST /sessions/{date}/staff/apply` (#47), the Players → Staff tab (#50), the This week Staff card with `StaffSearch` (#49) and the staff import (#48) and staff batches for every tournament on a date (#76) are built ([ADR-0007](adr/0007-staff-assignment.md), #41). Accepted |
 | M9 Tournaments                | S8 part 2 (fixtures); gateway methods + fake routes; `shared/schedule` recurrence engine (built, #86; a start a DST change skips or repeats is refused, with the zone helpers moved to `shared/time`) and the parser's new fields; the `tournaments` module (built, #91: templates, scaffolds, schedules and planned tournaments, planned on read, with the live form options and Upcoming); create, edit (reschedule included) and cancel jobs; the Tournaments page; tournament cards on This week with **Results** (TDF upload; its server side built, #96: preview and fixes, Remove from staff, the `tdf_upload` job); the encrypted TDF archive (built, #88: `tdf-archive` module, `TDF_FILE`, the TDF key, download and delete, M3 import moved onto it and `tdf_upload_player` dropped). [ADR-0010](adr/0010-tournament-templates-and-lifecycle.md), [ADR-0011](adr/0011-tdf-results-upload.md), [ADR-0012](adr/0012-encrypted-tdf-archive.md) |
-| M10 Professor logins          | [ADR-0015](adr/0015-professor-logins.md) (accepted, #199). To be split into issues: roles and the access guards; connection ownership and `actingConnection` across submission, staffing and tournaments (attendance as yourself, undo and retry as the submission's professor); league membership and the waiting room; invites, the accept page and reset links; tournament leases; the Discord channel, integration scopes and Genie's routes, with Genie's companion change; the read-only and lent states in the UI |
+| M10 Professor logins          | [ADR-0015](adr/0015-professor-logins.md) (accepted, #199). Tracked in #204: the access core (roles, the access guards, connection ownership, `actingConnection`, attendance as yourself, league membership and the waiting room, the read-only UI states; #201); invites, reset links and the Discord channel (#202, with Genie's companion change); tournament leases (#203) |
 
 ## 14. Architecture Decision Records
 

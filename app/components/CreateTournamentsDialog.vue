@@ -26,6 +26,13 @@ const starting = ref(false);
 const serverShortNotice = ref<number[]>([]);
 const submissionId = ref<number | null>(null);
 const finished = ref(false);
+/** Rows another user's connection organizes: left out of the job, named (ADR-0015 §4). */
+const { data: connections } = usePokemonConnection();
+const leftOut = ref<string | null>(null);
+const labelOf = (plannedId: number) => {
+  const e = entries.value.find((x) => x.plannedId === plannedId);
+  return e ? `${e.name} · ${e.localDate}` : `planned tournament ${plannedId}`;
+};
 
 const shortNotice = computed(() => entries.value.filter((e) => isShortNotice(e.localDate, props.today) || serverShortNotice.value.includes(e.plannedId!)));
 const confirmLabel = computed(() =>
@@ -60,11 +67,12 @@ async function start() {
   starting.value = true;
   error.value = null;
   try {
-    const started = await $fetch<{ submissionId: number }>('/api/tournaments/create', {
+    const started = await $fetch<{ submissionId: number; refused?: { plannedTournamentId: number; professorPlayerId: string }[] }>('/api/tournaments/create', {
       method: 'POST',
       body: { plannedIds: entries.value.map((e) => e.plannedId!), acknowledgeShortNotice: shortNotice.value.length > 0, retryUnknown: !!props.retry },
     });
     submissionId.value = started.submissionId;
+    leftOut.value = refusedText(connections.value, started.refused ?? [], labelOf);
   } catch (err) {
     if (apiErrorCode(err) === 'short_notice_not_acknowledged') {
       const ids = (err as { data?: { data?: { plannedTournamentIds?: number[] } } }).data?.data?.plannedTournamentIds ?? [];
@@ -87,7 +95,10 @@ async function done(view: SubmissionView) {
 <template>
   <UModal v-model:open="open" title="Create in play-tools" :dismissible="!submissionId || finished">
     <template #body>
-      <TournamentJobProgress v-if="submissionId" :submission-id="submissionId" @finished="done" />
+      <template v-if="submissionId">
+        <p v-if="leftOut" class="mb-2 text-sm text-warning" data-testid="left-out">{{ leftOut }}</p>
+        <TournamentJobProgress :submission-id="submissionId" @finished="done" />
+      </template>
       <div v-else-if="loading" class="flex items-center gap-2 text-sm text-muted">
         <UIcon name="i-lucide-loader-circle" class="animate-spin" /> {{ retry ? 'Checking play-tools…' : 'Reading the tournaments…' }}
       </div>

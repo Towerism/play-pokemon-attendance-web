@@ -8,6 +8,7 @@ import { type RosterService, createRosterService } from '../roster/service';
 import { StaffingError } from './errors';
 import { type StaffingService, createStaffingService } from './service';
 import { OLIVE, playing, staffer, stubPlayTools, tournament } from './test-helpers';
+import { HELD_BY_OWNER, OWNER, professorActor } from '../pokemon/test-connections';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 
@@ -370,7 +371,7 @@ describe('sessionStaff', () => {
   });
 
   it('refuses with not_connected when no professor is connected, before calling play-tools', async () => {
-    upstream.state.connection = { ...upstream.state.connection, status: 'not_connected', league: null };
+    upstream.state.connection = { ...upstream.state.connection, league: null };
     upstream.state.professors = [];
     await expect(staffing.sessionStaff(L, WED)).rejects.toEqual(expect.objectContaining({ name: 'PokemonUpstreamError', code: 'not_connected' }));
     expect(upstream.state.calls).toEqual([]);
@@ -435,7 +436,6 @@ describe('sessionStaff with several professors (#75)', () => {
   });
 
   it("still shows everyone else's tournaments when the submitting professor needs a reconnect, naming them, without calling as them", async () => {
-    upstream.state.connection = { ...upstream.state.connection, status: 'needs_reconnect' };
     upstream.addProfessor({ ...OLIVE, status: 'needs_reconnect' });
 
     const view = await staffing.sessionStaff(L, WED);
@@ -502,14 +502,13 @@ describe('sessionStaff with several professors (#75)', () => {
   });
 
   it("shows a tournament whose organizer isn't an identified, connected professor as read-only", async () => {
-    upstream.state.professors = [{ id: 5, professorPlayerId: null, professorName: null, status: 'connected', upstreamAs: '0000222' }];
-    upstream.state.connection = { ...upstream.state.connection, status: 'connected' };
+    upstream.state.professors = [{ id: 5, professorPlayerId: null, professorName: null, status: 'connected', ...HELD_BY_OWNER, upstreamAs: '0000222' }];
     const [t] = (await staffing.sessionStaff(L, WED)).tournaments;
     expect(t).toMatchObject({ tournamentId: 'brocks', editable: false, organizer: { playerId: '0000222', name: null, connected: false, needsReconnect: false } });
   });
 
   it('matches the organizer by exact player id: 222 is not 0000222', async () => {
-    upstream.state.professors = [{ id: 6, professorPlayerId: '222', professorName: null, status: 'connected', upstreamAs: '0000222' }];
+    upstream.state.professors = [{ id: 6, professorPlayerId: '222', professorName: null, status: 'connected', ...HELD_BY_OWNER, upstreamAs: '0000222' }];
     const [t] = (await staffing.sessionStaff(L, WED)).tournaments;
     expect(t!.organizer).toMatchObject({ playerId: '0000222', connected: false });
     expect(t!.editable).toBe(false);
@@ -640,7 +639,7 @@ describe('daySnapshot', () => {
 describe('addAssignment', () => {
   const WED = '2026-10-14' as never;
   const add = (body: { tournamentId?: string; playerId: string; role?: string; name?: string }) =>
-    staffing.addAssignment(L, WED, { tournamentId: 't-1', role: 'judge', ...body, playerId: id(body.playerId) }, 'organizer');
+    staffing.addAssignment(L, WED, { tournamentId: 't-1', role: 'judge', ...body, playerId: id(body.playerId) }, OWNER);
   const rows = () => database.sqlite.prepare('select id, player_id, role, state, record_id, applied_role, removed_at from staff_assignment order by id').all();
 
   beforeEach(() => {
@@ -768,7 +767,7 @@ describe('addAssignment', () => {
 describe('changing and removing an assignment', () => {
   const WED = '2026-10-14' as never;
   const add = async (playerId: string, role = 'judge') =>
-    (await staffing.addAssignment(L, WED, { tournamentId: 't-1', playerId: id(playerId), role }, 'organizer')).assignment.id;
+    (await staffing.addAssignment(L, WED, { tournamentId: 't-1', playerId: id(playerId), role }, OWNER)).assignment.id;
   const applyAs = (assignmentId: number, recordId = 'rec-ours') =>
     database.sqlite.prepare("update staff_assignment set state = 'assigned', record_id = ? where id = ?").run(recordId, assignmentId);
   const row = (assignmentId: number) =>
@@ -780,64 +779,66 @@ describe('changing and removing an assignment', () => {
   });
 
   describe('changeRole', () => {
-    it('changes the role of an assignment that never reached play-tools, without calling it', async () => {
+    it('changes the role of an assignment that never reached play-tools, reading only who organizes it and writing nothing', async () => {
       const a = await add('00999');
       upstream.state.calls.length = 0;
-      expect(await staffing.changeRole(L, WED, a, 'scorekeeper')).toMatchObject({ role: 'scorekeeper', appliedRole: null, state: 'pending' });
-      expect(upstream.state.calls).toEqual([]);
+      expect(await staffing.changeRole(L, WED, a, 'scorekeeper', OWNER)).toMatchObject({ role: 'scorekeeper', appliedRole: null, state: 'pending' });
+      expect(upstream.state.calls.every((c) => c.startsWith('listTournaments') || c.startsWith('getTournament'))).toBe(true);
+      expect(upstream.state.writes).toEqual([]);
     });
 
     it('remembers the role play-tools holds for an applied assignment, and forgets it when changed back', async () => {
       const a = await add('00999');
       applyAs(a);
-      expect(await staffing.changeRole(L, WED, a, 'scorekeeper')).toMatchObject({ role: 'scorekeeper', appliedRole: 'judge' });
-      expect(await staffing.changeRole(L, WED, a, 'headjudge')).toMatchObject({ role: 'headjudge', appliedRole: 'judge' });
-      expect(await staffing.changeRole(L, WED, a, 'judge')).toMatchObject({ role: 'judge', appliedRole: null });
+      expect(await staffing.changeRole(L, WED, a, 'scorekeeper', OWNER)).toMatchObject({ role: 'scorekeeper', appliedRole: 'judge' });
+      expect(await staffing.changeRole(L, WED, a, 'headjudge', OWNER)).toMatchObject({ role: 'headjudge', appliedRole: 'judge' });
+      expect(await staffing.changeRole(L, WED, a, 'judge', OWNER)).toMatchObject({ role: 'judge', appliedRole: null });
       expect(upstream.state.calls.filter((c) => !c.startsWith('listTournaments') && !c.startsWith('getTournament') && !c.startsWith('listTournamentParticipants'))).toEqual([]);
     });
 
     it('answers the same role with the assignment unchanged', async () => {
       const a = await add('00999');
-      expect(await staffing.changeRole(L, WED, a, 'judge')).toMatchObject({ id: a, role: 'judge' });
+      expect(await staffing.changeRole(L, WED, a, 'judge', OWNER)).toMatchObject({ id: a, role: 'judge' });
     });
 
     it('refuses a role play-tools does not offer', async () => {
       const a = await add('00999');
-      await expect(staffing.changeRole(L, WED, a, 'organizer')).rejects.toEqual(expect.objectContaining({ code: 'unknown_role' }));
+      await expect(staffing.changeRole(L, WED, a, 'organizer', OWNER)).rejects.toEqual(expect.objectContaining({ code: 'unknown_role' }));
     });
 
     it('refuses to change an applied assignment on a locked tournament', async () => {
       const a = await add('00999');
       applyAs(a);
       lock();
-      await expect(staffing.changeRole(L, WED, a, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
+      await expect(staffing.changeRole(L, WED, a, 'scorekeeper', OWNER)).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
       expect(row(a)).toMatchObject({ role: 'judge' });
     });
 
     it('is not_found for an unknown id, another date, or a removed assignment', async () => {
       const a = await add('00999');
-      await expect(staffing.changeRole(L, WED, a + 100, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
-      await expect(staffing.changeRole(L, '2026-10-21' as never, a, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+      await expect(staffing.changeRole(L, WED, a + 100, 'scorekeeper', OWNER)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+      await expect(staffing.changeRole(L, '2026-10-21' as never, a, 'scorekeeper', OWNER)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
       applyAs(a);
-      await staffing.removeAssignment(L, WED, a);
-      await expect(staffing.changeRole(L, WED, a, 'scorekeeper')).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+      await staffing.removeAssignment(L, WED, a, OWNER);
+      await expect(staffing.changeRole(L, WED, a, 'scorekeeper', OWNER)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
     });
   });
 
   describe('removeAssignment', () => {
-    it('deletes an assignment that never reached play-tools, without calling it', async () => {
+    it('deletes an assignment that never reached play-tools, reading only who organizes it and writing nothing', async () => {
       const a = await add('00999');
       upstream.state.calls.length = 0;
-      await staffing.removeAssignment(L, WED, a);
+      await staffing.removeAssignment(L, WED, a, OWNER);
       expect(row(a)).toBeUndefined();
-      expect(upstream.state.calls).toEqual([]);
-      await expect(staffing.removeAssignment(L, WED, a)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+      expect(upstream.state.calls.every((c) => c.startsWith('listTournaments') || c.startsWith('getTournament'))).toBe(true);
+      expect(upstream.state.writes).toEqual([]);
+      await expect(staffing.removeAssignment(L, WED, a, OWNER)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
     });
 
     it('tombstones an applied assignment for the staff job to delete upstream, sending nothing itself', async () => {
       const a = await add('00999');
       applyAs(a);
-      await staffing.removeAssignment(L, WED, a);
+      await staffing.removeAssignment(L, WED, a, OWNER);
       expect(row(a)).toMatchObject({ state: 'removing', removed_at: expect.any(Number) });
       expect((await staffing.sessionStaff(L, WED)).tournaments[0]!.assignments).toEqual([expect.objectContaining({ id: a, state: 'removing' })]);
     });
@@ -846,21 +847,21 @@ describe('changing and removing an assignment', () => {
       const a = await add('00999');
       applyAs(a);
       lock();
-      await expect(staffing.removeAssignment(L, WED, a)).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
+      await expect(staffing.removeAssignment(L, WED, a, OWNER)).rejects.toEqual(expect.objectContaining({ code: 'tournament_locked' }));
       expect(row(a)).toMatchObject({ removed_at: null });
     });
 
-    it('still tombstones an applied assignment whose tournament play-tools no longer lists', async () => {
+    it('refuses to tombstone an applied assignment once nobody can read its tournament, since its organizer is unknown', async () => {
       const a = await add('00999');
       applyAs(a);
       upstream.state.tournaments = [];
-      await staffing.removeAssignment(L, WED, a);
-      expect(row(a)).toMatchObject({ state: 'removing' });
+      await expect(staffing.removeAssignment(L, WED, a, OWNER)).rejects.toMatchObject({ code: 'not_your_connection' });
+      expect(row(a)).toMatchObject({ state: 'assigned' });
     });
 
     it('is not_found for an assignment of another date', async () => {
       const a = await add('00999');
-      await expect(staffing.removeAssignment(L, '2026-10-21' as never, a)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
+      await expect(staffing.removeAssignment(L, '2026-10-21' as never, a, OWNER)).rejects.toEqual(expect.objectContaining({ code: 'not_found' }));
     });
   });
 });
@@ -878,7 +879,7 @@ describe('what a staff job reads and writes back (#47)', () => {
   const row = (sql: string) => database.sqlite.prepare(sql).get();
 
   async function want(playerId: string, role = 'judge') {
-    const { assignment } = await staffing.addAssignment(L, DATE, { tournamentId: 't-1', playerId: id(playerId), role }, 'organizer');
+    const { assignment } = await staffing.addAssignment(L, DATE, { tournamentId: 't-1', playerId: id(playerId), role }, OWNER);
     return assignment.id;
   }
 
@@ -891,7 +892,7 @@ describe('what a staff job reads and writes back (#47)', () => {
       await want('00123');
       upstream.state.calls = [];
 
-      expect(await staffing.prepareApply(L, DATE, 't-1')).toEqual({
+      expect(await staffing.prepareApply(L, DATE, 't-1', OWNER)).toEqual({
         tournamentId: 't-1',
         label: 'League Challenge · 26-10-1',
         professor: { connectionId: 1, playerId: '9999991', name: 'Olive Organizer' },
@@ -902,36 +903,36 @@ describe('what a staff job reads and writes back (#47)', () => {
     it('refuses a tournament that is not one of this league’s on the date', async () => {
       await want('00123');
       upstream.state.tournaments.push(tournament('t-other', { groupId: 'another-store' }));
-      await expect(staffing.prepareApply(L, DATE, 't-other')).rejects.toMatchObject({ code: 'unknown_tournament' });
-      await expect(staffing.prepareApply(L, DATE, 't-nope')).rejects.toMatchObject({ code: 'unknown_tournament' });
+      await expect(staffing.prepareApply(L, DATE, 't-other', OWNER)).rejects.toMatchObject({ code: 'unknown_tournament' });
+      await expect(staffing.prepareApply(L, DATE, 't-nope', OWNER)).rejects.toMatchObject({ code: 'unknown_tournament' });
     });
 
     it('refuses a tournament past its edit window', async () => {
       await want('00123');
       upstream.state.tournaments = [tournament('t-1', { editableUntil: new Date(NOW.getTime() - 1) })];
-      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'tournament_locked' });
+      await expect(staffing.prepareApply(L, DATE, 't-1', OWNER)).rejects.toMatchObject({ code: 'tournament_locked' });
     });
 
     it('refuses a tournament with no assignments at all', async () => {
-      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'nothing_to_apply' });
+      await expect(staffing.prepareApply(L, DATE, 't-1', OWNER)).rejects.toMatchObject({ code: 'nothing_to_apply' });
     });
 
     it('still applies a tournament whose only assignment is tombstoned (it has a removal to send)', async () => {
       const a = await want('00123');
       staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
-      await staffing.removeAssignment(L, DATE, a);
-      await expect(staffing.prepareApply(L, DATE, 't-1')).resolves.toMatchObject({ tournamentId: 't-1' });
+      await staffing.removeAssignment(L, DATE, a, OWNER);
+      await expect(staffing.prepareApply(L, DATE, 't-1', OWNER)).resolves.toMatchObject({ tournamentId: 't-1' });
     });
 
     it('refuses an active assignment holding a role play-tools does not offer (organizer included)', async () => {
       const a = await want('00123');
       database.sqlite.prepare("update staff_assignment set role = 'organizer' where id = ?").run(a);
-      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'unknown_role' });
+      await expect(staffing.prepareApply(L, DATE, 't-1', OWNER)).rejects.toMatchObject({ code: 'unknown_role' });
     });
 
     it('refuses before a league is chosen', async () => {
       upstream.state.connection = { ...upstream.state.connection, league: null };
-      await expect(staffing.prepareApply(L, DATE, 't-1')).rejects.toMatchObject({ code: 'league_not_selected' });
+      await expect(staffing.prepareApply(L, DATE, 't-1', OWNER)).rejects.toMatchObject({ code: 'league_not_selected' });
     });
   });
 
@@ -940,7 +941,7 @@ describe('what a staff job reads and writes back (#47)', () => {
       const a = await want('00123');
       const b = await want('00456', 'scorekeeper');
       staffing.recordApplied(L, b, { recordId: 'rec-b', role: 'scorekeeper' });
-      await staffing.removeAssignment(L, DATE, b);
+      await staffing.removeAssignment(L, DATE, b, OWNER);
 
       expect(staffing.assignmentsFor(L, 't-1')).toEqual([
         { id: a, playerId: '00123', role: 'judge', appliedRole: null, recordId: null, removed: false },
@@ -991,7 +992,7 @@ describe('what a staff job reads and writes back (#47)', () => {
 
     it('is a no-op for an assignment deleted while the job ran', async () => {
       const a = await want('00123');
-      await staffing.removeAssignment(L, DATE, a);
+      await staffing.removeAssignment(L, DATE, a, OWNER);
       expect(() => staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' })).not.toThrow();
       expect(row('select count(*) n from staff_assignment')).toEqual({ n: 0 });
     });
@@ -1004,7 +1005,7 @@ describe('what a staff job reads and writes back (#47)', () => {
       expect(row(`select state from staff_assignment where id = ${a}`)).toEqual({ state: 'failed' });
 
       staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
-      await staffing.removeAssignment(L, DATE, a);
+      await staffing.removeAssignment(L, DATE, a, OWNER);
       staffing.recordFailed(L, a);
       expect(row(`select state from staff_assignment where id = ${a}`)).toEqual({ state: 'removing' });
     });
@@ -1014,7 +1015,7 @@ describe('what a staff job reads and writes back (#47)', () => {
     it('deletes a tombstoned assignment and keeps the staff list', async () => {
       const a = await want('00123');
       staffing.recordApplied(L, a, { recordId: 'rec-1', role: 'judge' });
-      await staffing.removeAssignment(L, DATE, a);
+      await staffing.removeAssignment(L, DATE, a, OWNER);
 
       staffing.forgetRemoved(L, a);
 
@@ -1034,7 +1035,7 @@ describe('acting on a tournament as its organizer (#75)', () => {
   const WED = '2026-10-14' as SessionDate;
   const BROCK = { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison' };
   const add = (tournamentId: string, playerId = '00555') =>
-    staffing.addAssignment(L, WED, { tournamentId, playerId: id(playerId), role: 'judge' }, 'organizer');
+    staffing.addAssignment(L, WED, { tournamentId, playerId: id(playerId), role: 'judge' }, OWNER);
   const stored = () => database.sqlite.prepare('select count(*) n from staff_assignment').get();
 
   beforeEach(() => {
@@ -1052,7 +1053,7 @@ describe('acting on a tournament as its organizer (#75)', () => {
 
   it("prepares a staff job on another professor's tournament as that professor", async () => {
     await add('brocks');
-    expect(await staffing.prepareApply(L, WED, 'brocks')).toEqual({
+    expect(await staffing.prepareApply(L, WED, 'brocks', OWNER)).toEqual({
       tournamentId: 'brocks',
       label: 'Brock Cup',
       professor: { connectionId: 2, playerId: '0000222', name: 'Brock Harrison' },
@@ -1062,11 +1063,11 @@ describe('acting on a tournament as its organizer (#75)', () => {
   it('acts as whoever organizes the tournament now, read fresh', async () => {
     await add('brocks');
     upstream.state.tournaments = [tournament('brocks', { organizer: '9999991', name: 'Brock Cup', displayId: null })];
-    expect((await staffing.prepareApply(L, WED, 'brocks')).professor).toEqual({ connectionId: 1, playerId: '9999991', name: 'Olive Organizer' });
+    expect((await staffing.prepareApply(L, WED, 'brocks', OWNER)).professor).toEqual({ connectionId: 1, playerId: '9999991', name: 'Olive Organizer' });
   });
 
   it('refuses with organizer_not_connected when no connected professor organizes it, storing nothing', async () => {
-    upstream.state.professors = [{ ...OLIVE }, { id: 5, professorPlayerId: null, professorName: null, status: 'connected', upstreamAs: '0000222' }];
+    upstream.state.professors = [{ ...OLIVE }, { id: 5, professorPlayerId: null, professorName: null, status: 'connected', ...HELD_BY_OWNER, upstreamAs: '0000222' }];
     await expect(add('brocks')).rejects.toMatchObject({ name: 'StaffingError', code: 'organizer_not_connected', details: { organizerPlayerId: '0000222' } });
     expect(stored()).toEqual({ n: 0 });
   });
@@ -1082,7 +1083,7 @@ describe('acting on a tournament as its organizer (#75)', () => {
     upstream.addProfessor({ ...BROCK, status: 'needs_reconnect' });
     upstream.state.callsAs = [];
 
-    await expect(staffing.prepareApply(L, WED, 'brocks')).rejects.toMatchObject({ code: 'needs_reconnect', details: { professorPlayerId: '0000222' } });
+    await expect(staffing.prepareApply(L, WED, 'brocks', OWNER)).rejects.toMatchObject({ code: 'needs_reconnect', details: { professorPlayerId: '0000222' } });
     await expect(add('brocks', '00556')).rejects.toMatchObject({ code: 'needs_reconnect', details: { professorPlayerId: '0000222' } });
     expect(upstream.state.callsAs.filter((c) => c.call === 'listTournamentParticipants brocks')).toEqual([]);
   });
@@ -1091,13 +1092,13 @@ describe('acting on a tournament as its organizer (#75)', () => {
     await expect(add('nope')).rejects.toMatchObject({ code: 'unknown_tournament' });
   });
 
-  it("changes the role of, or deletes, a pending assignment without play-tools, even after its organizer disconnected", async () => {
+  it("lets the owner delete a pending assignment after its organizer disconnected, without play-tools, but not change its role", async () => {
     const { assignment } = await add('brocks');
     upstream.state.professors = [];
     upstream.state.calls = [];
 
-    await expect(staffing.changeRole(L, WED, assignment.id, 'scorekeeper')).resolves.toMatchObject({ role: 'scorekeeper' });
-    await staffing.removeAssignment(L, WED, assignment.id);
+    await expect(staffing.changeRole(L, WED, assignment.id, 'scorekeeper', OWNER)).rejects.toMatchObject({ code: 'not_your_connection' });
+    await staffing.removeAssignment(L, WED, assignment.id, OWNER);
     expect(stored()).toEqual({ n: 0 });
     expect(upstream.state.calls).toEqual([]);
   });
@@ -1106,7 +1107,7 @@ describe('acting on a tournament as its organizer (#75)', () => {
     const { assignment } = await add('brocks');
     staffing.recordApplied(L, assignment.id, { recordId: 'rec-1', role: 'judge' });
     upstream.state.callsAs = [];
-    await staffing.changeRole(L, WED, assignment.id, 'scorekeeper');
+    await staffing.changeRole(L, WED, assignment.id, 'scorekeeper', OWNER);
     const aboutBrocks = upstream.state.callsAs.filter((c) => c.call.endsWith(' brocks'));
     expect(aboutBrocks.length).toBeGreaterThan(0);
     expect(aboutBrocks.map((c) => c.as)).not.toContain(1);
@@ -1236,5 +1237,93 @@ describe('forgetPlayed: a staffer who played, removed from staff on request (ADR
     expect(staffing.forgetPlayed(L, 't-1', '00456' as PlayerId)).toEqual({ assignments: 0, history: 0 });
     expect(staffing.forgetPlayed('other-league', 't-1', '00123' as PlayerId)).toEqual({ assignments: 0, history: 0 });
     expect(left('staff_assignment')).toHaveLength(1);
+  });
+});
+
+describe('who may change a tournament\'s staff (ADR-0015 §4)', () => {
+  const WED = '2026-10-14' as SessionDate;
+  const MISTY = professorActor(2, 'misty');
+  const MISTYS = { id: 3, professorPlayerId: '0000333', professorName: 'Misty', userId: MISTY.userId };
+  const stored = () => database.sqlite.prepare('select count(*) n from staff_assignment').get();
+  const add = (actor = OWNER, tournamentId = 'olives', playerId = '00555') =>
+    staffing.addAssignment(L, WED, { tournamentId, playerId: id(playerId), role: 'judge' }, actor);
+
+  beforeEach(() => {
+    upstream.addProfessor(MISTYS);
+    upstream.state.tournaments = [tournament('olives'), tournament('mistys', { organizer: '0000333', name: 'Misty Cup', displayId: null })];
+    upstream.state.participants.set('mistys', [staffer('0000333', 'organizer')]);
+  });
+
+  it("refuses a professor staff changes on the owner's tournament, naming its organizer, writing nothing", async () => {
+    const { assignment } = await add();
+    upstream.state.writes = [];
+
+    await expect(add(MISTY, 'olives', '00556')).rejects.toMatchObject({ code: 'not_your_connection', details: { professorPlayerId: '9999991' } });
+    await expect(staffing.changeRole(L, WED, assignment.id, 'scorekeeper', MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
+    await expect(staffing.removeAssignment(L, WED, assignment.id, MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
+    await expect(staffing.prepareApply(L, WED, 'olives', MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
+    expect(stored()).toEqual({ n: 1 });
+  });
+
+  it("refuses the owner staff changes on a professor's tournament", async () => {
+    await expect(add(OWNER, 'mistys')).rejects.toMatchObject({ code: 'not_your_connection', details: { professorPlayerId: '0000333' } });
+    expect(stored()).toEqual({ n: 0 });
+  });
+
+  it("lets the professor staff their own tournament, reading it as their connection", async () => {
+    upstream.state.callsAs = [];
+    await add(MISTY, 'mistys');
+    expect(await staffing.prepareApply(L, WED, 'mistys', MISTY)).toMatchObject({ professor: { connectionId: 3, playerId: '0000333' } });
+    expect(upstream.state.callsAs.filter((c) => c.call === 'listTournamentParticipants mistys').map((c) => c.as)).toEqual([3]);
+  });
+
+  it('lets only the owner delete a pending assignment of a tournament nobody can read any more', async () => {
+    const { assignment } = await add(MISTY, 'mistys');
+    upstream.state.tournaments = [tournament('olives')];
+
+    await expect(staffing.removeAssignment(L, WED, assignment.id, MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
+    await staffing.removeAssignment(L, WED, assignment.id, OWNER);
+    expect(stored()).toEqual({ n: 0 });
+  });
+
+  it('never lets the owner delete a pending assignment whose organizer another user holds', async () => {
+    const { assignment } = await add(MISTY, 'mistys');
+    await expect(staffing.removeAssignment(L, WED, assignment.id, OWNER)).rejects.toMatchObject({ code: 'not_your_connection' });
+  });
+
+  it("doesn't read tournaments as a connection outside the league", async () => {
+    upstream.addProfessor({ ...MISTYS, membership: 'outside' });
+    upstream.state.callsAs = [];
+    const view = await staffing.sessionStaff(L, WED);
+    expect(view.tournaments.map((t) => t.tournamentId)).toEqual(['olives']);
+    expect(upstream.state.callsAs.some((c) => c.as === 3)).toBe(false);
+  });
+});
+
+
+describe('organizersOn (who organizes the date’s tournaments, for a batch’s first check)', () => {
+  const WED = '2026-10-14' as SessionDate;
+
+  it("maps each of the date's tournaments in the league to the professor whose listing has it, one listing per connection", async () => {
+    upstream.addProfessor({ id: 2, professorPlayerId: '0000222', professorName: 'Brock' });
+    upstream.state.tournaments = [
+      tournament('olives'),
+      tournament('brocks', { organizer: '0000222' }),
+      tournament('elsewhere', { groupId: 'other-league' }),
+    ];
+    upstream.state.calls = [];
+
+    expect(await staffing.organizersOn(L, WED)).toEqual(new Map([
+      ['olives', '9999991'],
+      ['brocks', '0000222'],
+    ]));
+    expect(upstream.state.calls.filter((c) => c.startsWith('listTournaments'))).toHaveLength(2);
+    expect(upstream.state.calls.filter((c) => !c.startsWith('listTournaments'))).toEqual([]);
+  });
+
+  it('leaves out a professor whose listing fails; the turn reads it again', async () => {
+    upstream.state.tournaments = [tournament('olives')];
+    upstream.state.failNext.set('listTournaments', new PokemonUpstreamError('unavailable', 'down'));
+    expect(await staffing.organizersOn(L, WED)).toEqual(new Map());
   });
 });

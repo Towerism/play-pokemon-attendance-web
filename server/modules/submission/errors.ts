@@ -1,8 +1,10 @@
 export type SubmissionErrorCode =
   /** No upstream league is chosen in Settings. */
   | 'league_not_selected'
-  /** The Pokémon account may not record attendance for the league. */
+  /** The Pokémon account may not record attendance for the league (or none of the caller's may). */
   | 'cannot_submit'
+  /** The caller has several connections that can submit and named none (ADR-0015 §4). */
+  | 'submit_as_required'
   /** The play session is not one of that date's sessions. */
   | 'unknown_play_session'
   /** The session's attendance edit window has closed (S3). */
@@ -22,7 +24,9 @@ export type SubmissionErrorCode =
   /** Clear session: the typed date does not match the session's date. */
   | 'confirmation_mismatch'
   /** Clear session: the play session has no player records. */
-  | 'nothing_to_clear';
+  | 'nothing_to_clear'
+  /** Only the owner may do this, retrying an import included (ADR-0015 §4). */
+  | 'owner_only';
 
 export class SubmissionError extends Error {
   override name = 'SubmissionError';

@@ -5,7 +5,7 @@ import { ResultsParams } from '#shared/schemas/results';
  * the latest upload and earlier attempts. An upload still processing is followed on this read (ADR-0011 Update #96).
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
+  const { leagueId } = await requireMember(event);
   await requireUserSession(event);
   const { date, tournamentId } = await getValidatedRouterParams(event, ResultsParams.parse);
   return useTournamentResults().section(leagueId, date, tournamentId).catch(resultsHttpError);

@@ -1,6 +1,8 @@
 import { tdfVault } from '../bootstrap/vaults';
 import { createTdfUploadReferrer } from '../modules/sessions/tdf-import';
 import { createResultUploadReferrer } from '../modules/tournaments/results';
+import type { Actor } from '../modules/accounts/service';
+import { mayAccessTdf } from '../modules/tdf-archive/access';
 import { TdfFileNotFoundError, TdfKeyMismatchError } from '../modules/tdf-archive/errors';
 import { type TdfArchiveService, createTdfArchiveService } from '../modules/tdf-archive/service';
 
@@ -25,3 +27,24 @@ export function tdfArchiveHttpError(err: unknown): unknown {
   }
   return err;
 }
+
+/**
+ * Which stored TDFs `actor` may reach (ADR-0015 §4): every file for the owner; for a professor, files they uploaded or
+ * that belong to tournaments one of their own connections organizes.
+ */
+export function tdfAccess(leagueId: string, actor: Actor): (file: { id: number; createdBy: string }) => boolean {
+  if (actor.role === 'owner') return () => true;
+  const own = usePokemon()
+    .listActingConnections()
+    .filter((c) => c.userId === actor.userId && c.professorPlayerId !== null)
+    .map((c) => c.professorPlayerId!);
+  const organized = useTournamentResults().fileIdsOrganizedBy(leagueId, own);
+  return (file) => mayAccessTdf(actor, file, organized);
+}
+
+/** 404 unless `actor` may reach stored file `fileId`: a file they may not see answers as one that doesn't exist. */
+export function assertTdfAccess(leagueId: string, actor: Actor, fileId: number): void {
+  const file = useTdfArchive().list(leagueId).find((f) => f.id === fileId);
+  if (!file || !tdfAccess(leagueId, actor)(file)) throw tdfArchiveHttpError(new TdfFileNotFoundError(fileId));
+}
+

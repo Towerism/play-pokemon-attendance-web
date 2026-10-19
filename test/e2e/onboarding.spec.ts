@@ -62,10 +62,10 @@ test('first run: create the organizer, connect Pokémon, pick the second of two 
   expect(sessionLookups.filter((p) => !p.includes('/activity_groups/group-2/')), 'lookups in another league').toEqual([]);
 });
 
-// ADR-0008: a second professor connects next to the first, and the organizer
-// chooses whose login attendance goes in under. Submitting as the wrong
-// professor would put an unintended name on an official record.
-test('a second professor: added next to the first, then chosen to submit for the league', async ({ page, fake, connected }) => {
+// ADR-0015: the owner may hold several Pokémon accounts. Each is listed with its league membership, the league picker
+// offers every league the owner's accounts are in, and Submit asks which account attendance goes in as: submitting as
+// the wrong professor would put an unintended name on an official record.
+test('a second account: added next to the first, then chosen at Submit', async ({ page, fake, connected }) => {
   void connected; // the default professor, already bound to Card Shop
   fake.playSessions = [
     {
@@ -78,7 +78,7 @@ test('a second professor: added next to the first, then chosen to submit for the
       products: ['tcg'],
     },
   ];
-  // Brock is in Card Shop too (#75: the league must be one every professor shares), and in Pewter Gym, which Olive isn't.
+  // Brock is in Card Shop too, and in Pewter Gym, which Olive isn't.
   const brock = fake.addAccount({
     playerId: '0000222',
     name: 'Brock Harrison',
@@ -96,10 +96,10 @@ test('a second professor: added next to the first, then chosen to submit for the
   await page.getByRole('button', { name: 'Finish connecting' }).click();
   await expect(page.getByText('Professor 0000222 added').first()).toBeVisible();
 
-  // Both listed, each with its own actions named for its professor; the first still submits.
+  // Both listed, each with its own actions named for its professor, both in the league.
   const professors = page.getByRole('list', { name: 'Connected professors' });
   await expect(professors.getByRole('listitem')).toHaveCount(2);
-  await expect(page.getByRole('button', { name: 'Disconnect Professor 0000222' })).toBeVisible();
+  await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 0000222' })).toContainText('In the league');
 
   // Name him: display only, so the app shows it and Pokémon never sees it.
   await page.getByRole('button', { name: 'Rename Professor 0000222' }).click();
@@ -108,50 +108,45 @@ test('a second professor: added next to the first, then chosen to submit for the
   await page.getByRole('button', { name: 'Save names' }).click();
   await expect(page.getByRole('button', { name: 'Reconnect Brock Harrison (0000222)' })).toBeVisible();
   await expect(professors.getByRole('listitem').filter({ hasText: 'Brock Harrison (0000222)' })).toContainText('Full name in TDFs: Brock T. Harrison');
-  await expect(page.getByRole('button', { name: 'Disconnect Brock Harrison (0000222)' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Disconnect Professor 9999991' })).toBeVisible();
-  await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 9999991' })).toContainText('Submits attendance');
 
-  // Choose Brock, then a league both professors share: Pewter Gym, only Brock's, isn't offered.
+  // The league picker offers every league of the owner's accounts, once each.
   await page.getByRole('button', { name: 'Change league' }).click();
-  await page.getByRole('combobox', { name: 'Professor who submits attendance' }).click();
-  await page.getByRole('option', { name: 'Brock Harrison (0000222)' }).click();
   await page.getByRole('combobox', { name: 'League' }).click();
-  await expect(page.getByRole('option')).toHaveText(['Card Shop (L5012)']);
-  await page.getByRole('option', { name: 'Card Shop (L5012)' }).click();
-  await page.getByRole('button', { name: 'Save league' }).click();
-  await expect(professors.getByRole('listitem').filter({ hasText: 'Brock Harrison (0000222)' })).toContainText('Submits attendance');
-  await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 9999991' })).not.toContainText('Submits attendance');
+  await expect(page.getByRole('option')).toHaveText(['Card Shop (L5012)', 'Pewter Gym (L7000)']);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Cancel' }).last().click();
 
-  // The submit dialog says who attendance goes in as, and looks up sessions as Brock, in his league.
+  // Submit asks which account, and the job goes in as the one chosen.
   const added = await page.request.post(`/api/sessions/${TUESDAY}/players`, { data: { playerId: '4000001', name: 'Walk In' } });
   expect(added.status()).toBe(201);
-  expect(fake.requests.filter((r) => /Brock (T\. )?Harrison/.test(JSON.stringify(r))), 'naming and choosing Brock sent his names nowhere').toEqual([]);
+  expect(fake.requests.filter((r) => /Brock (T\. )?Harrison/.test(JSON.stringify(r))), 'naming Brock sent his names nowhere').toEqual([]);
   fake.requests.length = 0;
   await page.goto(`/?date=${TUESDAY}`);
   await page.getByRole('button', { name: 'Submit attendance' }).click();
-  await expect(page.getByRole('radio', { name: /6:00/ })).toBeVisible();
-  await expect(page.getByTestId('submit-as')).toHaveText('Submitting as Brock Harrison (0000222)');
-  const lookups = fake.requests.filter((r) => r.path.endsWith('/play_sessions/'));
-  expect(lookups.length).toBeGreaterThan(0);
-  expect(lookups.every((r) => r.as === '0000222' && r.path.includes('/activity_groups/group-1/')), 'every lookup as Brock, in the shared league').toBe(true);
+  const dialog = page.getByRole('dialog', { name: 'Submit attendance' });
+  await expect(dialog.getByRole('radio', { name: /6:00/ })).toBeVisible();
+  const submit = dialog.getByRole('button', { name: 'Submit', exact: true });
+  await expect(submit).toBeDisabled();
+  await dialog.getByRole('combobox', { name: 'Submit as' }).click();
+  await page.getByRole('option', { name: 'Brock Harrison (0000222)' }).click();
+  await submit.click();
+  await expect(dialog.getByText('Done', { exact: true })).toBeVisible();
+  const bulk = fake.requests.filter((r) => r.path.endsWith('/_bulk/'));
+  expect(bulk.length).toBeGreaterThan(0);
+  expect(bulk.every((r) => r.as === '0000222' && r.path.includes('/activity_groups/group-1/')), 'sent as Brock, in the league').toBe(true);
   expect(fake.requests.filter((r) => JSON.stringify(r).includes('Brock Harrison')), 'the display name never reaches Pokémon').toEqual([]);
 });
 
-// #75: connected professors can't be from different leagues, so the picker
-// offers only leagues they all share, and says so when there is none.
-test('the league picker offers nothing to save when the professors share no league', async ({ page, fake, connected }) => {
-  void connected; // the default professor, in Card Shop
+// ADR-0015 §3: a Pokémon account outside the league is listed as such; the league stays chosen.
+test("lists an account outside the league as such, and keeps the league", async ({ page, fake, connected }) => {
   const cilan = fake.addAccount({ playerId: '0000333', name: 'Cilan', leagues: [{ guid: 'group-9', display_id: 'L9000', display_name: 'Striaton Café', canSubmit: true }] });
   const start = await connected.request('/api/pokemon/connect/start', { method: 'POST', json: {} });
   const state = new URL(((await start.json()) as { authorizeUrl: string }).authorizeUrl).searchParams.get('state')!;
   expect((await connected.request('/api/pokemon/connect/complete', { method: 'POST', json: { url: loggedInUrl(state, cilan.code) } })).status).toBe(200);
 
   await page.goto('/settings');
-  await page.getByRole('button', { name: 'Change league' }).click();
-  await page.getByRole('combobox', { name: 'Professor who submits attendance' }).click();
-  await page.getByRole('option', { name: 'Professor 0000333' }).click();
-  await expect(page.getByText("These professors share no league in play-tools. Disconnect the one who isn't in your league.")).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'League' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Save league' })).toHaveCount(0);
+  const professors = page.getByRole('list', { name: 'Connected professors' });
+  await expect(professors.getByRole('listitem').filter({ hasText: 'Professor 0000333' })).toContainText('Not in the league');
+  await expect(page.getByText('Card Shop')).toBeVisible();
 });

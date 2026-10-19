@@ -7,7 +7,8 @@ import type { StaffRole } from '~/utils/staff';
  * the latest upload, a dropzone while play-tools takes an upload, **Upload again…**, and **Download TDF** once the app
  * holds the file. Read in the browser only and never retried on its own.
  */
-const props = defineProps<{ date: string; tournamentId: string; label: string; displayId: string | null; roles?: readonly StaffRole[] }>();
+/** `readonly`: another user holds the organizer's connection (ADR-0015 §4); only Download TDF stays. */
+const props = defineProps<{ date: string; tournamentId: string; label: string; displayId: string | null; roles?: readonly StaffRole[]; readonly?: boolean }>();
 /** An upload job ended: the date's attendance may have been imported. */
 const emit = defineEmits<{ uploaded: [] }>();
 const toast = useToast();
@@ -19,7 +20,10 @@ const { data, error, status, refresh } = useFetch<ResultsSection>(url, {
   lazy: true,
   retry: false,
 });
-const view = computed(() => (data.value ? resultsView(data.value) : null));
+const view = computed(() => {
+  const v = data.value ? resultsView(data.value) : null;
+  return v && props.readonly ? { ...v, drop: false, again: false, review: false } : v;
+});
 
 const headingId = useId();
 const file = ref<File | null>(null);

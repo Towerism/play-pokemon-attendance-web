@@ -6,6 +6,7 @@ import type { ClearPreview } from '../../server/modules/submission/service';
  * Clear session (danger zone, architecture §6.3): deletes every player record
  * in one play session in play-tools, never a staff record. The organizer picks
  * the resolved play session, sees who would go, and types the date to confirm.
+ * Owner only (ADR-0015 §4): it removes records other professors added.
  */
 const props = defineProps<{ date: string; playSessionId: string | null }>();
 const emit = defineEmits<{ finished: [] }>();
@@ -24,10 +25,16 @@ const submissionId = ref<number | null>(null);
 
 const { latest, result } = useSubmissionEvents(submissionId);
 
+// Clear runs as one of the owner's connections that can submit; with several, the owner picks (ADR-0015 §4).
+const { data: connections } = await usePokemonConnection();
+const choice = computed(() => submitAsChoice(connections.value));
+const pickedAs = ref<string | undefined>();
+const clearAs = computed(() => (choice.value.kind === 'one' ? choice.value.playerId : choice.value.kind === 'several' ? pickedAs.value : undefined));
+
 const candidates = computed(() => resolution.value?.candidates ?? []);
 const selected = computed(() => candidates.value.find((c) => c.id === chosen.value));
 const confirmed = computed(() => clearConfirmed(typed.value, props.date));
-const canClear = computed(() => !!preview.value && preview.value.players.length > 0 && !!selected.value?.editable && confirmed.value);
+const canClear = computed(() => !!preview.value && preview.value.players.length > 0 && !!selected.value?.editable && confirmed.value && !!clearAs.value);
 
 async function openDialog() {
   open.value = true;
@@ -73,7 +80,7 @@ async function clearSession() {
     const url: string = `/api/sessions/${props.date}/clear`;
     const started = await $fetch<{ submissionId: number }>(url, {
       method: 'POST',
-      body: { playSessionId: selected.value.id, confirmDate: typed.value },
+      body: { playSessionId: selected.value.id, confirmDate: typed.value, ...(clearAs.value && { professorPlayerId: clearAs.value }) },
     });
     submissionId.value = started.submissionId;
   } catch (err) {
@@ -156,6 +163,10 @@ watch(result, (view) => {
                   <span v-if="!player.addedByApp" class="text-muted">· entered in play-tools</span>
                 </li>
               </ul>
+              <UFormField v-if="choice.kind === 'several'" label="Clear as">
+                <USelect v-model="pickedAs" :items="choice.options" class="w-full" placeholder="Choose one of your Pokémon accounts" aria-label="Clear as" />
+              </UFormField>
+              <UAlert v-else-if="choice.kind === 'none'" color="warning" variant="subtle" icon="i-lucide-user-x" :title="choice.text" />
               <UFormField :label="`Type ${date} to confirm`">
                 <UInput v-model="typed" :placeholder="date" autocomplete="off" class="w-full" @keydown.enter.prevent="clearSession" />
               </UFormField>

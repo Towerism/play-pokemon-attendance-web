@@ -1,12 +1,13 @@
 /** Test-only stand-ins and factories for the tournaments module. Not imported by production code. */
 import type { TemplateBody } from '../../../shared/schemas/tournaments';
-import type { ActingConnection, ConnectionView } from '../pokemon/connection';
+import type { ActingConnection } from '../pokemon/connection';
+import { HELD_BY_OWNER, stubConnections } from '../pokemon/test-connections';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { Format, Series, Tournament, TournamentChanges, TournamentDetails, TournamentParticipant, Venue } from '../pokemon/ports/play-tools-gateway';
 
 export const GROUP = 'group-1';
-export const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected' };
-export const BROCK: ActingConnection = { id: 2, professorPlayerId: '9999992', professorName: 'Brock', status: 'connected' };
+export const OLIVE: ActingConnection = { id: 1, professorPlayerId: '9999991', professorName: 'Olive Organizer', status: 'connected', ...HELD_BY_OWNER };
+export const BROCK: ActingConnection = { id: 2, professorPlayerId: '9999992', professorName: 'Brock', status: 'connected', ...HELD_BY_OWNER };
 
 export const VENUE = { id: '00000000-0000-4000-8000-000000000051', label: 'Card Shop', timeZone: 'America/Chicago', country: 'US' };
 
@@ -95,15 +96,8 @@ export function stubPlayTools() {
     calls: [] as string[],
     /** Awaited at the start of every call, after it is logged: a test holds a call open with it. */
     gate: undefined as ((name: string, as: number) => Promise<void>) | undefined,
-    connection: {
-      status: 'connected',
-      reason: null,
-      connectedAt: new Date(0),
-      lastRefreshedAt: new Date(0),
-      league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
-      connectionId: 1,
-      professor: { playerId: OLIVE.professorPlayerId, name: OLIVE.professorName },
-    } as ConnectionView,
+    /** The league's chosen activity group (ADR-0015 §3), or null. */
+    connection: { league: { id: GROUP, name: 'Card Shop', displayId: 'L5012' } as { id: string; name: string; displayId: string | null } | null },
   };
 
   async function call<T>(as: number, name: string, run: (who: string) => T): Promise<T> {
@@ -193,9 +187,6 @@ export function stubPlayTools() {
   return {
     state,
     gateway,
-    connections: {
-      getStatus: () => state.connection,
-      listActingConnections: (): ActingConnection[] => state.professors.map((p) => ({ ...p })),
-    },
+    connections: stubConnections({ professors: () => state.professors, league: () => state.connection.league }),
   };
 }

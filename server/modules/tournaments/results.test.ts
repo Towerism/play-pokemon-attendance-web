@@ -21,6 +21,7 @@ import { tournamentResultUpload } from '../../db/schema';
 import { TournamentsError } from './errors';
 import { type ResultsDeps, type TournamentResults, createResultUploadReferrer, createTournamentResults } from './results';
 import { OLIVE, stubPlayTools, upstreamTournament } from './test-helpers';
+import { HELD_BY_OWNER, OWNER, professorActor } from '../pokemon/test-connections';
 
 // The tournaments module's side of a TDF results upload (#96, ADR-0011): the preview and its fixes, the full-name
 // prompt, recheck / Upload again…, Remove-from-staff's checks, the job's fresh check, following processing, and expiry.
@@ -111,7 +112,7 @@ beforeEach(() => {
 afterEach(() => database.close());
 const deps = () => resultsDeps;
 
-const preview = (content: string, filename = 'cup.tdf') => results.preview(L, DATE, GUID, { filename, content, by: 'organizer' });
+const preview = (content: string, filename = 'cup.tdf') => results.preview(L, DATE, GUID, { filename, content }, OWNER);
 const archived = (fileId: number) => archive.read(L, fileId).content;
 type UploadRow = { id: number; state: string; tdf_file_id: number | null; sha256: string; warnings_fingerprint: string | null; attendance_upload_id: number | null };
 const uploadRow = (id: number) => database.sqlite.prepare('select * from tournament_result_upload where id = ?').get(id) as UploadRow;
@@ -158,16 +159,16 @@ describe('preview', () => {
   });
 
   it('is not found for another date, another league or a guid nobody can read', async () => {
-    expect((await refusal(results.preview(L, '2026-10-15' as SessionDate, GUID, { filename: 'a.tdf', content: file(), by: 'o' }))).code).toBe('not_found');
+    expect((await refusal(results.preview(L, '2026-10-15' as SessionDate, GUID, { filename: 'a.tdf', content: file() }, OWNER))).code).toBe('not_found');
     upstream.state.tournaments[0] = { ...upstream.state.tournaments[0]!, groupId: 'other-group' };
     expect((await refusal(preview(file()))).code).toBe('not_found');
-    expect((await refusal(results.preview(L, DATE, 'bbbbbbbb-0000-4000-8000-000000000001', { filename: 'a.tdf', content: file(), by: 'o' }))).code).toBe('not_found');
+    expect((await refusal(results.preview(L, DATE, 'bbbbbbbb-0000-4000-8000-000000000001', { filename: 'a.tdf', content: file() }, OWNER))).code).toBe('not_found');
     expect(count('tdf_file')).toBe(0);
   });
 
   it('blocks a tournament whose organizer is not connected, or must reconnect, saying which', async () => {
     upstream.state.tournaments[0] = { ...upstream.state.tournaments[0]!, organizer: '5555555' };
-    upstream.state.professors.push({ id: 7, professorPlayerId: '5555555', professorName: 'Nurse Joy', status: 'connected' });
+    upstream.state.professors.push({ id: 7, professorPlayerId: '5555555', professorName: 'Nurse Joy', status: 'connected', ...HELD_BY_OWNER });
     upstream.state.professors[1] = { ...upstream.state.professors[1]!, status: 'needs_reconnect' };
     // Olive reads it, but Joy organizes it and must reconnect.
     expect(await refusal(preview(file()))).toMatchObject({ code: 'results_not_accepted', details: { reason: 'needs_reconnect' } });
@@ -238,17 +239,17 @@ describe('preview', () => {
     const p = await preview(original);
     expect(p).toMatchObject({ needsOrganizerFullName: { playerId: ORGANIZER, playToolsName: 'Olive Q Organizer' }, warnings: [], fingerprint: null });
     expect(archived(uploadRow(p.uploadId).tdf_file_id!)).toBe(original);
-    expect((await refusal(Promise.resolve().then(() => results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY })))).code).toBe(
+    expect((await refusal(Promise.resolve().then(() => results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY }, OWNER)))).code).toBe(
       'organizer_full_name_required',
     );
 
-    const named = await results.setOrganizerName(L, DATE, GUID, p.uploadId, 'Olive Organizer', 'organizer');
+    const named = await results.setOrganizerName(L, DATE, GUID, p.uploadId, 'Olive Organizer', OWNER);
     expect(fullNames.get(ORGANIZER)).toBe('Olive Organizer');
     expect(named).toMatchObject({ uploadId: p.uploadId, needsOrganizerFullName: null, warnings: [expect.objectContaining({ code: 'tdf_organizer_replaced' })] });
     expect(archived(uploadRow(p.uploadId).tdf_file_id!)).toContain(`popid="${ORGANIZER}" name="Olive Organizer"`);
     expect(count('tdf_file')).toBe(1);
 
-    expect((await refusal(results.setOrganizerName(L, DATE, GUID, p.uploadId, 'Olive', 'organizer'))).code).toBe('organizer_name_not_needed');
+    expect((await refusal(results.setOrganizerName(L, DATE, GUID, p.uploadId, 'Olive', OWNER))).code).toBe('organizer_name_not_needed');
   });
 
   it('flags staff who played (the organizer unremovable) and players new to the app with a name hint', async () => {
@@ -294,7 +295,7 @@ describe('recheck (Upload again…)', () => {
   it('updates an open preview in place from a fresh read', async () => {
     const p = await preview(file());
     setPeople(person('1234567', 'judge'));
-    const again = await results.recheck(L, DATE, GUID, p.uploadId, 'organizer');
+    const again = await results.recheck(L, DATE, GUID, p.uploadId, OWNER);
     expect(again.uploadId).toBe(p.uploadId);
     expect(again.warnings.map((w) => w.code)).toEqual(['tdf_staff_also_playing']);
     expect(uploadRow(p.uploadId).warnings_fingerprint).toBe(again.fingerprint);
@@ -302,7 +303,7 @@ describe('recheck (Upload again…)', () => {
 
   it('keeps a corrected file’s corrections, so the fingerprint holds (ADR-0011 Update #96)', async () => {
     const p = await preview(file({ organizerElement: WRONG_ORGANIZER, idElement: '<id/>' }));
-    const again = await results.recheck(L, DATE, GUID, p.uploadId, 'organizer');
+    const again = await results.recheck(L, DATE, GUID, p.uploadId, OWNER);
     expect(again.fingerprint).toBe(p.fingerprint);
     expect(again.warnings.map((w) => w.code)).toEqual(['tdf_organizer_replaced', 'tdf_tournament_id_filled']);
   });
@@ -310,22 +311,22 @@ describe('recheck (Upload again…)', () => {
   it('opens a new attempt for a finished upload, once, from the archived file', async () => {
     const p = await preview(file());
     database.sqlite.prepare("update tournament_result_upload set state = 'not_accepted' where id = ?").run(p.uploadId);
-    const again = await results.recheck(L, DATE, GUID, p.uploadId, 'organizer');
+    const again = await results.recheck(L, DATE, GUID, p.uploadId, OWNER);
     expect(again.uploadId).not.toBe(p.uploadId);
     expect(uploadRow(again.uploadId)).toMatchObject({ state: 'previewed', tdf_file_id: uploadRow(p.uploadId).tdf_file_id, sha256: uploadRow(p.uploadId).sha256 });
-    expect((await results.recheck(L, DATE, GUID, p.uploadId, 'organizer')).uploadId).toBe(again.uploadId);
+    expect((await results.recheck(L, DATE, GUID, p.uploadId, OWNER)).uploadId).toBe(again.uploadId);
   });
 
   it('asks for the file again once it was deleted', async () => {
     const p = await preview(file());
     archive.delete(L, uploadRow(p.uploadId).tdf_file_id!);
-    expect((await refusal(results.recheck(L, DATE, GUID, p.uploadId, 'organizer'))).code).toBe('tdf_file_deleted');
+    expect((await refusal(results.recheck(L, DATE, GUID, p.uploadId, OWNER))).code).toBe('tdf_file_deleted');
   });
 
   it('is not found for an upload of another tournament or date', async () => {
     const p = await preview(file());
-    expect((await refusal(results.recheck(L, '2026-10-21' as SessionDate, GUID, p.uploadId, 'o'))).code).toBe('not_found');
-    expect((await refusal(results.recheck(L, DATE, 'bbbbbbbb-0000-4000-8000-000000000001', p.uploadId, 'o'))).code).toBe('not_found');
+    expect((await refusal(results.recheck(L, '2026-10-21' as SessionDate, GUID, p.uploadId, OWNER))).code).toBe('not_found');
+    expect((await refusal(results.recheck(L, DATE, 'bbbbbbbb-0000-4000-8000-000000000001', p.uploadId, OWNER))).code).toBe('not_found');
   });
 });
 
@@ -333,7 +334,7 @@ describe('Remove from staff: checked before any job', () => {
   it('refuses ids not in the file, not on staff, or the organizer, naming each', async () => {
     setPeople(person('1234567', 'judge'));
     const p = await preview(file({ players: [...PLAYERS, { userid: ORGANIZER, first: 'Olive' }] }));
-    const err = await refusal(results.checkRemovable(L, DATE, GUID, p.uploadId, ['5555', '2345678', ORGANIZER, '1234567'] as PlayerId[]));
+    const err = await refusal(results.checkRemovable(L, DATE, GUID, p.uploadId, ['5555', '2345678', ORGANIZER, '1234567'] as PlayerId[], OWNER));
     expect(err).toMatchObject({
       code: 'not_removable',
       details: {
@@ -349,7 +350,7 @@ describe('Remove from staff: checked before any job', () => {
   it('answers the organizer to act as for staff who played', async () => {
     setPeople(person('1234567', 'scorekeeper'));
     const p = await preview(file());
-    expect(await results.checkRemovable(L, DATE, GUID, p.uploadId, ['1234567'] as PlayerId[])).toMatchObject({
+    expect(await results.checkRemovable(L, DATE, GUID, p.uploadId, ['1234567'] as PlayerId[], OWNER)).toMatchObject({
       tournamentId: GUID,
       professorPlayerId: ORGANIZER,
       uploadId: p.uploadId,
@@ -361,17 +362,17 @@ describe('confirm: what the server checks', () => {
   it('refuses a fingerprint that is not the preview’s, with the current warnings', async () => {
     setPeople(person('1234567', 'judge'));
     const p = await preview(file());
-    const err = await refusal(Promise.resolve().then(() => results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY })));
+    const err = await refusal(Promise.resolve().then(() => results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY }, OWNER)));
     expect(err).toMatchObject({ code: 'warnings_not_acknowledged', details: { fingerprint: p.fingerprint, warnings: p.warnings } });
   });
 
   it('takes the preview’s fingerprint, and only once', async () => {
     const p = await preview(file());
-    const plan = results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY });
+    const plan = results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY }, OWNER);
     expect(plan).toMatchObject({ uploadId: p.uploadId, professorPlayerId: ORGANIZER, label: expect.stringContaining(DATE) });
     expect(results.markSending(p.uploadId, { by: 'organizer', fingerprint: EMPTY, submissionId: 9 })).toBe(true);
     expect(results.markSending(p.uploadId, { by: 'organizer', fingerprint: EMPTY, submissionId: 10 })).toBe(false);
-    expect(await refusal(Promise.resolve().then(() => results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY })))).toMatchObject({
+    expect(await refusal(Promise.resolve().then(() => results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY }, OWNER)))).toMatchObject({
       code: 'upload_not_open',
       details: { state: 'sending' },
     });
@@ -622,3 +623,30 @@ describe('Download TDF: the archived file of the latest confirmed upload', () =>
     expect((await results.section(L, DATE, GUID)).tdfAvailable).toBe(false);
   });
 });
+
+describe('who may upload results (ADR-0015 §4)', () => {
+  const MISTY = professorActor(2, 'misty');
+
+  it("refuses a professor's drop for the owner's tournament, storing nothing", async () => {
+    const err = await refusal(results.preview(L, DATE, GUID, { filename: 'cup.tdf', content: file() }, MISTY));
+    expect(err).toMatchObject({ code: 'not_your_connection', details: { professorPlayerId: OLIVE.professorPlayerId } });
+    expect(count('tournament_result_upload')).toBe(0);
+  });
+
+  it("refuses a professor's confirm of the owner's upload", async () => {
+    const p = await preview(file());
+    const err = await refusal(Promise.resolve().then(() => results.prepareConfirm(L, DATE, GUID, p.uploadId, { importAttendance: true, acknowledgedWarnings: EMPTY }, MISTY)));
+    expect(err.code).toBe('not_your_connection');
+  });
+});
+
+describe("the stored files of the tournaments a professor organizes (ADR-0015 §4)", () => {
+  it('lists the files of results uploads whose organizer is one of the given professors', async () => {
+    const p = await preview(file());
+    const fileId = uploadRow(p.uploadId).tdf_file_id!;
+    expect(results.fileIdsOrganizedBy(L, [OLIVE.professorPlayerId!])).toEqual(new Set([fileId]));
+    expect(results.fileIdsOrganizedBy(L, ['0000222'])).toEqual(new Set());
+    expect(results.fileIdsOrganizedBy(L, [])).toEqual(new Set());
+  });
+});
+

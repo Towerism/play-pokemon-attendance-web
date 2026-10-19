@@ -29,6 +29,8 @@ export type TournamentsErrorCode =
   | 'connection_not_found'
   /** That professor's connection needs a reconnect (`details.professorPlayerId`). */
   | 'needs_reconnect'
+  /** Another user holds the organizer's connection (ADR-0015 §4; `details.professorPlayerId`). */
+  | 'not_your_connection'
   /** A create job takes only `planned`, `failed` or (confirmed) `unknown` rows (`details.plannedTournamentId`, `state`; #92). */
   | 'not_creatable'
   /** An `unknown` row, a create that may have landed, sent without `retryUnknown` (`details.plannedTournamentIds`; #100). */

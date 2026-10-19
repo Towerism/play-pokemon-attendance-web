@@ -89,8 +89,9 @@ describe('league clock', () => {
     const after = leagueDay(0, TZ);
 
     expect(res.status).toBe(200);
-    const settings = await body<{ league: { timeZone: string; today: string } }>(res);
-    expect(Object.keys(settings).sort()).toEqual(['league', 'thresholds']);
+    const settings = await body<{ league: { timeZone: string; today: string }; access: unknown }>(res);
+    expect(Object.keys(settings).sort()).toEqual(['access', 'league', 'thresholds']);
+    expect(settings.access).toEqual({ username: 'organizer', role: 'owner', member: true, waiting: null });
     expect(settings.league.timeZone).toBe(TZ);
     expect([before, after]).toContain(settings.league.today);
     expect(fake.requests).toEqual([]);

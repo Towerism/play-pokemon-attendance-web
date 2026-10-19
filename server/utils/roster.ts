@@ -1,5 +1,3 @@
-import type { H3Event } from 'h3';
-import { DEFAULT_LEAGUE_ID } from '../modules/leagues';
 import { type MetricsService, createMetricsService } from '../modules/metrics/metrics';
 import { type SightingsService, createSightingsService } from '../modules/metrics/sightings';
 import { type RosterService, createRosterService } from '../modules/roster/service';
@@ -35,10 +33,4 @@ export function useSightings(): SightingsService {
 export function useMetrics(): MetricsService {
   metrics ??= createMetricsService({ db: useDb(), roster: useRoster(), submissions: useSubmissions() });
   return metrics;
-}
-
-/** Requires a logged-in organizer and returns their league (v1: the single seeded league). */
-export async function requireLeague(event: H3Event): Promise<string> {
-  await requireUserSession(event);
-  return DEFAULT_LEAGUE_ID;
 }

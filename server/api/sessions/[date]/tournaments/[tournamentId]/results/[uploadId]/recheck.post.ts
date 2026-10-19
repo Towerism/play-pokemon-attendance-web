@@ -5,8 +5,7 @@ import { ResultsUploadParams } from '#shared/schemas/results';
  * preview is updated in place; a finished attempt opens a new one. Nothing is sent.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
+  const { leagueId, actor } = await requireMember(event);
   const { date, tournamentId, uploadId } = await getValidatedRouterParams(event, ResultsUploadParams.parse);
-  return useTournamentResults().recheck(leagueId, date, tournamentId, uploadId, user.username).catch(resultsHttpError);
+  return useTournamentResults().recheck(leagueId, date, tournamentId, uploadId, actor).catch(resultsHttpError);
 });

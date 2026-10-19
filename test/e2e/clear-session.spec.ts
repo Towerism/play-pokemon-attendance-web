@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { fakeRecord } from '../server/fake-pokemon';
+import { FAKE_PLAYER_ID, fakeRecord } from '../server/fake-pokemon';
 import { type Api, STAFF_ID, TUESDAY, addSessionPlayer, expect, finishedStatus, fixtureFile, playSession, startSubmission, test } from './fixtures';
 
 // Clear session deletes every player record in one play session in
@@ -89,7 +89,7 @@ test('clear session deletes exactly the previewed session’s players, after typ
   });
   const playerRecords = fake.records.get(EVENING)!.filter((r) => r.player).map((r) => r.guid);
 
-  const clearRequests: { playSessionId: string; confirmDate: string }[] = [];
+  const clearRequests: { playSessionId: string; confirmDate: string; professorPlayerId?: string }[] = [];
   page.on('request', (req) => {
     if (req.method() === 'POST' && new URL(req.url()).pathname.endsWith('/clear')) clearRequests.push(req.postDataJSON());
   });
@@ -149,7 +149,8 @@ test('clear session deletes exactly the previewed session’s players, after typ
     await clearButton.click();
     clearId = ((await (await started).json()) as { submissionId: number }).submissionId;
     await expect(dialog.getByText('Done', { exact: true })).toBeVisible();
-    expect(clearRequests).toEqual([{ playSessionId: EVENING, confirmDate: TUESDAY }]);
+    // The owner's one connection that can submit clears it (ADR-0015 §4).
+    expect(clearRequests).toEqual([{ playSessionId: EVENING, confirmDate: TUESDAY, professorPlayerId: FAKE_PLAYER_ID }]);
   });
 
   await test.step('play-tools: only the evening session’s player records were deleted', async () => {

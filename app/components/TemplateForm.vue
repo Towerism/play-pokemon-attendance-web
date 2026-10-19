@@ -41,11 +41,8 @@ const saving = ref(false);
 const error = ref<string | null>(null);
 
 const { data: connections } = await usePokemonConnection();
-const organizers = computed(() =>
-  (connections.value?.connections ?? [])
-    .filter((c) => c.professorPlayerId)
-    .map((c) => ({ value: c.professorPlayerId!, label: professorLabel(c), disabled: c.status !== 'connected', description: c.status !== 'connected' ? 'Reconnect in Settings' : undefined })),
-);
+// Only the viewer's own connections can be a template's organizer (ADR-0015 §4).
+const organizers = computed(() => organizerOptions(connections.value, t?.organizerPlayerId ?? null));
 
 watch(open, (o) => {
   if (!o) emit('close');

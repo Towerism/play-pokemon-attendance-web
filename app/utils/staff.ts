@@ -187,17 +187,24 @@ export function organizerText(organizer: OrganizerView | null): string | null {
   return organizer ? `Organized by ${organizerName(organizer)}` : null;
 }
 
-/** Why a card offers no staff actions, if it doesn't; `settings` when connecting a professor would fix it. */
-export function readOnlyNote(card: {
-  editable: boolean;
-  missing?: true;
-  unavailable?: true;
-  organizer: OrganizerView | null;
-}): { text: string; settings: boolean; warning: boolean } | null {
+/**
+ * Why a card offers no staff actions, if it doesn't; `settings` when connecting a professor would fix it. `only` is
+ * "Only <professor> can change this" when another user holds the organizer's connection (ADR-0015 §4).
+ */
+export function readOnlyNote(
+  card: {
+    editable: boolean;
+    missing?: true;
+    unavailable?: true;
+    organizer: OrganizerView | null;
+  },
+  only: string | null = null,
+): { text: string; settings: boolean; warning: boolean } | null {
   if (card.missing) return { text: 'No longer listed in play-tools, for example cancelled. Shown so nothing here is lost.', settings: false, warning: true };
   if (card.unavailable) {
     return { text: "Couldn't check play-tools for this tournament, so it can't change now. Shown so nothing here is lost.", settings: false, warning: true };
   }
+  if (only) return { text: only, settings: false, warning: false };
   const o = card.organizer;
   if (o?.needsReconnect) return { text: `Reconnect ${organizerName(o)} in Settings to log staff here.`, settings: true, warning: true };
   if (o && !o.connected) {

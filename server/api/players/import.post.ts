@@ -4,9 +4,8 @@
  * `player_import` job. No body. 202, then follow `/api/submissions/{id}/events`.
  */
 export default defineEventHandler(async (event) => {
-  const leagueId = await requireLeague(event);
-  const { user } = await requireUserSession(event);
-  const started = await useSubmissions().importPlayers(leagueId, user.username).catch(submissionHttpError);
+  const { leagueId, actor } = await requireOwner(event);
+  const started = await useSubmissions().importPlayers(leagueId, actor).catch(submissionHttpError);
   setResponseStatus(event, 202);
   return started;
 });

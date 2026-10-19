@@ -1,4 +1,3 @@
-import type { ConnectionView } from '../../server/modules/pokemon/connection';
 import type {
   ClearPreview,
   PlayerImportResult,
@@ -150,14 +149,6 @@ export function playerImportSummary(r: PlayerImportResult): string {
   ]
     .filter(Boolean)
     .join(' · ');
-}
-
-/** Why Import staff (or players) from play-tools can't start; null when it can. */
-export function staffImportBlocked(c: Pick<ConnectionView, 'status' | 'league'> | null | undefined): string | null {
-  if (!c || c.status === 'not_connected') return 'Connect a Pokémon account first.';
-  if (c.status === 'needs_reconnect') return 'Reconnect the Pokémon account first.';
-  if (!c.league) return 'Choose the league first.';
-  return null;
 }
 
 const STAFF_IMPORT_ERRORS: Record<string, string> = {

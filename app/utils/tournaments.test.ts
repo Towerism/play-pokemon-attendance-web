@@ -315,6 +315,11 @@ describe('entryStatus', () => {
 });
 
 describe('rowActions', () => {
+  it("keeps only Download TDF, saying who alone may change it, when another user holds its organizer's connection (ADR-0015 §4)", () => {
+    const e = entry({ state: 'created', tournamentId: 'g1', actions: ['skip'], upstreamStatus: 'complete', tdfAvailable: true });
+    expect(rowActions(e, 'Only Misty (0000333) can change this')).toEqual({ actions: ['download'], organizerNote: 'Only Misty (0000333) can change this', settings: false });
+  });
+
   it.each([
     ['planned', entry(), ['create', 'skip', 'edit']],
     ['skipped', entry({ state: 'skipped', actions: ['unskip'] }), ['unskip', 'edit']],

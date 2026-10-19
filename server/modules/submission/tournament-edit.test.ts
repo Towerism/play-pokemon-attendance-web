@@ -13,6 +13,7 @@ import { type TournamentsService, createTournamentsService } from '../tournament
 import { BROCK, VENUE, stubPlayTools, templateBody, upstreamTournament } from '../tournaments/test-helpers';
 import type { PlaySessionResolver } from './resolve';
 import { type SubmissionService, createSubmissionService } from './service';
+import { OWNER, professorActor } from '../pokemon/test-connections';
 
 // The `tournament_edit` job (#93, ADR-0010 decisions 8 and 11) on the submission rails: a fresh read before each
 // item, only the differing fields sent, one PATCH at a time and paced, a 5xx settled by one re-read and never resent.
@@ -128,7 +129,7 @@ const stubOf = (n: number) => upstream.state.tournaments.find((t) => t.id === gu
 
 /** A weekly Tuesday schedule planned on read; `created` of its rows from 10-20 on are in play-tools. */
 async function weekly(created: number) {
-  const t = tournaments.createTemplate(L, templateBody({ name: 'Tuesday Cup', type: { kind: 'custom' }, details: 'Bring a deck.' }));
+  const t = tournaments.createTemplate(L, templateBody({ name: 'Tuesday Cup', type: { kind: 'custom' }, details: 'Bring a deck.' }), OWNER);
   const scaffold = tournaments.createScaffold(L, { name: 'Tuesdays', slots: [{ templateId: t.id, dayOffset: 0, startTime: null }] });
   const schedule = tournaments.createSchedule(L, { scaffoldId: scaffold.id, rule: TUESDAYS, startsOn: '2026-09-01', endsOn: null, horizonWeeks: 6 });
   await tournaments.upcoming(L, {});
@@ -151,7 +152,7 @@ async function weekly(created: number) {
 }
 
 async function edit(plannedId: number, raw: Record<string, unknown>) {
-  const started = await service.editTournaments(L, { target: { kind: 'planned', id: plannedId }, body: ApplyBody.parse(raw), startedBy: 'organizer' });
+  const started = await service.editTournaments(L, { target: { kind: 'planned', id: plannedId }, body: ApplyBody.parse(raw), actor: OWNER });
   await service.idle();
   return started;
 }
@@ -202,7 +203,7 @@ describe('the tournament_edit job', () => {
     expect(service.get(L, submissionId!).status).toBe('failed');
 
     onPatch = undefined;
-    const retry = await service.retry(L, submissionId!, 'organizer');
+    const retry = await service.retry(L, submissionId!, OWNER);
     await service.idle();
     expect(patches).toHaveLength(2);
     expect(service.get(L, retry.submissionId)).toMatchObject({ status: 'succeeded', retryOf: submissionId });
@@ -250,7 +251,7 @@ describe('the tournament_edit job', () => {
     const { submissionId } = await service.editTournaments(L, {
       target: { kind: 'tournament', id: guid(50) },
       body: ApplyBody.parse({ changes: { localDate: '2026-10-20' } }),
-      startedBy: 'organizer',
+      actor: OWNER,
     });
     await service.idle();
     expect(patches).toEqual([]);
@@ -278,7 +279,7 @@ describe('the tournament_edit job', () => {
 
   it('answers 200 with no job for an edit of planned tournaments only', async () => {
     const rows = await weekly(0);
-    const started = await service.editTournaments(L, { target: { kind: 'planned', id: rows[0]!.id }, body: ApplyBody.parse({ changes: { details: 'New' }, scope: 'later' }), startedBy: 'organizer' });
+    const started = await service.editTournaments(L, { target: { kind: 'planned', id: rows[0]!.id }, body: ApplyBody.parse({ changes: { details: 'New' }, scope: 'later' }), actor: OWNER });
     expect(started).toEqual({ submissionId: null, updatedLocally: rows.length });
     expect(patches).toEqual([]);
   });
@@ -287,9 +288,9 @@ describe('the tournament_edit job', () => {
     const [first, second] = await weekly(2);
     let release!: () => void;
     onPatch = () => new Promise((r) => (release = () => r(undefined)));
-    await service.editTournaments(L, { target: { kind: 'planned', id: first!.id }, body: ApplyBody.parse({ changes: { details: 'A' } }), startedBy: 'organizer' });
+    await service.editTournaments(L, { target: { kind: 'planned', id: first!.id }, body: ApplyBody.parse({ changes: { details: 'A' } }), actor: OWNER });
     await expect(
-      service.editTournaments(L, { target: { kind: 'planned', id: second!.id }, body: ApplyBody.parse({ changes: { details: 'B' }, scope: 'later' }), startedBy: 'organizer' }),
+      service.editTournaments(L, { target: { kind: 'planned', id: second!.id }, body: ApplyBody.parse({ changes: { details: 'B' }, scope: 'later' }), actor: OWNER }),
     ).rejects.toMatchObject({ code: 'submission_running' });
     expect(JSON.parse(rowOf(second!.id).overrides)).toEqual({});
     expect(database.sqlite.prepare('select count(*) as n from tournament_schedule_override').get()).toEqual({ n: 0 });
@@ -300,7 +301,7 @@ describe('the tournament_edit job', () => {
   it('on boot, a PATCH in flight is unknown and the rest skipped; a retry takes both', async () => {
     const [first] = await weekly(2);
     onPatch = () => new Promise(() => {}); // the app dies mid-call
-    const { submissionId } = await service.editTournaments(L, { target: { kind: 'planned', id: first!.id }, body: ApplyBody.parse({ changes: { details: 'New' }, scope: 'later' }), startedBy: 'organizer' });
+    const { submissionId } = await service.editTournaments(L, { target: { kind: 'planned', id: first!.id }, body: ApplyBody.parse({ changes: { details: 'New' }, scope: 'later' }), actor: OWNER });
     await new Promise((r) => setImmediate(r));
 
     const rebooted = build();
@@ -309,8 +310,21 @@ describe('the tournament_edit job', () => {
     expect(items(submissionId!).map((i) => i.outcome)).toEqual(['unknown', 'skipped']);
 
     onPatch = undefined;
-    const retry = await rebooted.retry(L, submissionId!, 'organizer');
+    const retry = await rebooted.retry(L, submissionId!, OWNER);
     await rebooted.idle();
     expect(rebooted.get(L, retry.submissionId).tournamentItems.map((i) => i.outcome)).toEqual(['edited', 'edited']);
   });
 });
+
+describe('who may edit or retry an edit (ADR-0015 §4)', () => {
+  it("refuses a professor's retry of the owner's failed edit, sending nothing", async () => {
+    const [row] = await weekly(1);
+    onPatch = () => ({ fail: new PokemonUpstreamError('unavailable', 'play-tools answered 500') });
+    const { submissionId } = await edit(row!.id, { changes: { details: 'New' } });
+    onPatch = undefined;
+
+    await expect(service.retry(L, submissionId!, professorActor(2, 'misty'))).rejects.toMatchObject({ code: 'not_your_connection' });
+    expect(patches).toHaveLength(1);
+  });
+});
+

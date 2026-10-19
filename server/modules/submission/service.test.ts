@@ -5,7 +5,8 @@ import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/clien
 import { silentLogger } from '@towerism/selfhost-kit';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type SightingsService, createSightingsService } from '../metrics/sightings';
-import type { ConnectionView } from '../pokemon/connection';
+import type { ActingConnection, UpstreamLeague } from '../pokemon/connection';
+import { HELD_BY_OWNER, OWNER, professorActor, stubConnections } from '../pokemon/test-connections';
 import { PokemonUpstreamError } from '../pokemon/ports/errors';
 import type { AttendanceRecord, BulkResult, PlaySession } from '../pokemon/ports/play-tools-gateway';
 import { type RosterService, createRosterService } from '../roster/service';
@@ -21,6 +22,7 @@ const GROUP = 'group-1';
 const DELAY = 15_000;
 const UNDO_DELAY = 1_000;
 const id = (s: string) => s as PlayerId;
+const ASH: ActingConnection = { id: 1, professorPlayerId: '0012345', professorName: 'Ash Ketchum', status: 'connected', ...HELD_BY_OWNER };
 
 /**
  * play-tools as a fake, with the semantics spike S4 recorded: `_bulk` is
@@ -113,7 +115,11 @@ let roster: RosterService;
 let sightings: SightingsService;
 let sessions: SessionsService;
 let upstream: FakePlayTools;
-let connection: ConnectionView;
+/** The stub's connections; Ash's is the owner's, a member that may submit. */
+let professors: ActingConnection[];
+let league: UpstreamLeague | null;
+/** The connection each attendance call was made as, in order. */
+let callsAs: number[];
 let clock: Date;
 let sleeps: number[];
 /** Runs inside every pacing sleep (e.g. to shut down mid-wait). */
@@ -130,9 +136,14 @@ function build(
     sightings?: SightingsService;
   } = {},
 ): SubmissionService {
+  const connections = stubConnections({ professors: () => professors, league: () => league });
+  const gateway = (connectionId: number) => {
+    callsAs.push(connectionId);
+    return upstream;
+  };
   const resolver = createPlaySessionResolver({
-    connections: { getStatus: () => connection },
-    gateway: () => upstream,
+    connections,
+    gateway,
     timeZone: 'America/Chicago',
     now: () => clock,
   });
@@ -141,13 +152,8 @@ function build(
     sessions: over.sessions ?? sessions,
     roster,
     sightings: over.sightings ?? sightings,
-    connections: {
-      getStatus: () => connection,
-      listActingConnections: () => {
-        throw new Error('attendance never lists the professors');
-      },
-    },
-    gateway: () => upstream,
+    connections,
+    gateway,
     staffGateway: () => {
       throw new Error('attendance tests run no staff jobs');
     },
@@ -173,15 +179,9 @@ function setUp(): void {
   sessions = createSessionsService({ db: database.db, roster, sightings });
   upstream = new FakePlayTools();
   clock = new Date('2026-10-14T02:00:00Z');
-  connection = {
-    status: 'connected',
-    reason: null,
-    connectedAt: clock,
-    lastRefreshedAt: clock,
-    league: { id: GROUP, name: 'Card Shop', displayId: 'L5012', canSubmit: true },
-    connectionId: 1,
-    professor: { playerId: '0012345', name: 'Ash Ketchum' },
-  };
+  professors = [{ ...ASH }];
+  league = { id: GROUP, name: 'Card Shop', displayId: 'L5012' };
+  callsAs = [];
   sleeps = [];
   onSleep = undefined;
   service = build();
@@ -194,7 +194,7 @@ const sessionPlayers = (...ids: string[]) => ids.forEach((p) => sessions.addPlay
 
 /** Starts a submission and waits for the job to finish. */
 async function submit(): Promise<SubmissionView> {
-  const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'organizer' });
+  const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
   await service.idle();
   return service.get(L, submissionId);
 }
@@ -558,18 +558,18 @@ describe('starting a submission', () => {
   it('is refused once the attendance edit window has closed, before anything is created (design change 2)', async () => {
     sessionPlayers('1');
     clock = new Date('2026-10-21T00:00:00Z');
-    expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' }))).code).toBe('edit_window_closed');
+    expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER }))).code).toBe('edit_window_closed');
     expect(countSubmissions()).toBe(0);
   });
 
   it('is refused with nobody to submit', async () => {
-    expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' }))).code).toBe('nothing_to_submit');
+    expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER }))).code).toBe('nothing_to_submit');
     expect(countSubmissions()).toBe(0);
   });
 
   it("is refused for a play session that is not that date's", async () => {
     sessionPlayers('1');
-    expect((await refusal(service.start(L, TUESDAY, { playSessionId: 'elsewhere', startedBy: 'o' }))).code).toBe('unknown_play_session');
+    expect((await refusal(service.start(L, TUESDAY, { playSessionId: 'elsewhere', actor: OWNER }))).code).toBe('unknown_play_session');
   });
 
   describe('the per-league lock', () => {
@@ -580,12 +580,12 @@ describe('starting a submission', () => {
     });
 
     it('refuses a second submission while one runs, and frees up when it finishes', async () => {
-      await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
-      expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' }))).code).toBe('submission_running');
+      await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
+      expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER }))).code).toBe('submission_running');
 
       release();
       await service.idle();
-      expect(await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' })).toEqual({ submissionId: expect.any(Number) });
+      expect(await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER })).toEqual({ submissionId: expect.any(Number) });
       await service.idle();
     });
 
@@ -632,7 +632,7 @@ describe('progress events', () => {
     sessionPlayers('1');
     upstream.gate = Promise.resolve();
     const seen: string[] = [];
-    const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
     const unsubscribe = service.subscribe(submissionId, (e) => seen.push(e.type));
     await service.idle();
     unsubscribe();
@@ -711,7 +711,7 @@ describe('retry and resume', () => {
     upstream.onBulk = undefined;
     upstream.bulkCalls = [];
 
-    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    const { submissionId } = await service.retry(L, first.id, OWNER);
     await service.idle();
 
     const retried = service.get(L, submissionId);
@@ -725,21 +725,21 @@ describe('retry and resume', () => {
     sessionPlayers('1');
     let release!: () => void;
     upstream.gate = new Promise((r) => (release = r));
-    const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
 
-    expect((await refusal(service.retry(L, submissionId, 'o'))).code).toBe('submission_running');
+    expect((await refusal(service.retry(L, submissionId, OWNER))).code).toBe('submission_running');
     release();
     await service.idle();
   });
 
   it('is not_found for an unknown submission', async () => {
-    expect((await refusal(service.retry(L, 42, 'o'))).code).toBe('not_found');
+    expect((await refusal(service.retry(L, 42, OWNER))).code).toBe('not_found');
   });
 
   it("marks a job a crash left running as interrupted on boot, frees the lock, and resumes from upstream's state", async () => {
     sessionPlayers('1', '2');
     upstream.gate = new Promise(() => undefined); // the old process's job never gets further
-    const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    const { submissionId } = await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
     // The process dies here; a new one boots on the same database.
     service = build();
     upstream.has('1');
@@ -749,7 +749,7 @@ describe('retry and resume', () => {
     expect(service.get(L, submissionId)).toMatchObject({ status: 'interrupted', finishedAt: clock });
     expect(sessions.getSession(L, TUESDAY).status).toBe('failed');
     upstream.gate = undefined;
-    const resumed = await service.retry(L, submissionId, 'o');
+    const resumed = await service.retry(L, submissionId, OWNER);
     await service.idle();
     expect(service.get(L, resumed.submissionId).status).toBe('succeeded');
     expect(upstream.bulkCalls).toEqual([['2']]);
@@ -777,13 +777,13 @@ describe('shutdown', () => {
   it('refuses new submissions once shutting down', async () => {
     sessionPlayers('1');
     await service.shutdown();
-    expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' }))).code).toBe('shutting_down');
+    expect((await refusal(service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER }))).code).toBe('shutting_down');
   });
 });
 
 /** Undoes a submission and waits for the undo to finish. */
 async function undo(submissionId: number): Promise<SubmissionView> {
-  const started = await service.undo(L, submissionId, 'organizer');
+  const started = await service.undo(L, submissionId, OWNER);
   await service.idle();
   return service.get(L, started.submissionId);
 }
@@ -913,10 +913,10 @@ describe('starting an undo', () => {
     const submitted = await submit();
     let release!: () => void;
     upstream.gate = new Promise((r) => (release = r));
-    await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
     const before = countSubmissions();
 
-    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('submission_running');
+    expect((await refusal(service.undo(L, submitted.id, OWNER))).code).toBe('submission_running');
     expect(countSubmissions()).toBe(before);
     expect(upstream.removeCalls).toEqual([]);
     release();
@@ -927,13 +927,13 @@ describe('starting an undo', () => {
     sessionPlayers('1');
     const submitted = await submit();
     const undone = await undo(submitted.id);
-    expect((await refusal(service.undo(L, undone.id, 'o'))).code).toBe('not_undoable');
+    expect((await refusal(service.undo(L, undone.id, OWNER))).code).toBe('not_undoable');
 
     sessionPlayers('2'); // the undo took 1 off the date
     let release!: () => void;
     upstream.gate = new Promise((r) => (release = r));
-    const { submissionId: running } = await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
-    expect((await refusal(service.undo(L, running, 'o'))).code).toBe('not_undoable');
+    const { submissionId: running } = await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
+    expect((await refusal(service.undo(L, running, OWNER))).code).toBe('not_undoable');
     release();
     await service.idle();
   });
@@ -942,12 +942,12 @@ describe('starting an undo', () => {
     sessionPlayers('1');
     upstream.has('1');
     const nobodyAdded = await submit();
-    expect((await refusal(service.undo(L, nobodyAdded.id, 'o'))).code).toBe('nothing_to_undo');
+    expect((await refusal(service.undo(L, nobodyAdded.id, OWNER))).code).toBe('nothing_to_undo');
 
     sessionPlayers('2');
     const added = await submit();
     await undo(added.id);
-    expect((await refusal(service.undo(L, added.id, 'o'))).code).toBe('nothing_to_undo');
+    expect((await refusal(service.undo(L, added.id, OWNER))).code).toBe('nothing_to_undo');
   });
 
   it('a second undo, or a retry of a partial one, targets only what the first left behind', async () => {
@@ -962,7 +962,7 @@ describe('starting an undo', () => {
     upstream.onRemove = undefined;
     upstream.removeCalls = [];
 
-    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    const { submissionId } = await service.retry(L, first.id, OWNER);
     await service.idle();
 
     const retried = service.get(L, submissionId);
@@ -978,7 +978,7 @@ describe('starting an undo', () => {
     clock = new Date('2026-10-21T00:00:00Z');
     const before = countSubmissions();
 
-    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('edit_window_closed');
+    expect((await refusal(service.undo(L, submitted.id, OWNER))).code).toBe('edit_window_closed');
     expect(countSubmissions()).toBe(before);
   });
 
@@ -988,17 +988,17 @@ describe('starting an undo', () => {
     upstream.session = { ...upstream.session, id: 'another' };
     clock = new Date(clock.getTime() + 10 * 60_000); // past the resolver's cache
 
-    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('unknown_play_session');
+    expect((await refusal(service.undo(L, submitted.id, OWNER))).code).toBe('unknown_play_session');
   });
 
   it('is not_found for an unknown submission or another league, and refused once shutting down', async () => {
     sessionPlayers('1');
     const submitted = await submit();
-    expect((await refusal(service.undo(L, 999, 'o'))).code).toBe('not_found');
-    expect((await refusal(service.undo('other', submitted.id, 'o'))).code).toBe('not_found');
+    expect((await refusal(service.undo(L, 999, OWNER))).code).toBe('not_found');
+    expect((await refusal(service.undo('other', submitted.id, OWNER))).code).toBe('not_found');
 
     await service.shutdown();
-    expect((await refusal(service.undo(L, submitted.id, 'o'))).code).toBe('shutting_down');
+    expect((await refusal(service.undo(L, submitted.id, OWNER))).code).toBe('shutting_down');
   });
 
   it('targets only added players with a known record id', async () => {
@@ -1109,7 +1109,7 @@ describe('an undo across a crash or a shutdown', () => {
     upstream.onRemove = (_r, call) => {
       if (call === 2) return new Promise(() => undefined) as never; // the process dies during the second delete
     };
-    const started = await service.undo(L, submitted.id, 'o');
+    const started = await service.undo(L, submitted.id, OWNER);
     for (let i = 0; i < 20 && upstream.removeCalls.length < 2; i += 1) await Promise.resolve().then(() => new Promise((r) => setTimeout(r, 0)));
     expect(upstream.removeCalls).toHaveLength(2);
     const r1 = upstream.removeCalls[0]!.recordId;
@@ -1404,7 +1404,7 @@ describe('undo never deletes what it did not add', () => {
 
 /** Clears the play session and waits for the job to finish. */
 async function clear(playSessionId = PS): Promise<SubmissionView> {
-  const started = await service.clear(L, TUESDAY, playSessionId, 'organizer');
+  const started = await service.clear(L, TUESDAY, playSessionId, OWNER);
   await service.idle();
   return service.get(L, started.submissionId);
 }
@@ -1535,10 +1535,10 @@ describe('starting a clear', () => {
     upstream.has('5');
     let release!: () => void;
     upstream.gate = new Promise((r) => (release = r));
-    await service.start(L, TUESDAY, { playSessionId: PS, startedBy: 'o' });
+    await service.start(L, TUESDAY, { playSessionId: PS, actor: OWNER });
     const before = countSubmissions();
 
-    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('submission_running');
+    expect((await refusal(service.clear(L, TUESDAY, PS, OWNER))).code).toBe('submission_running');
     expect(countSubmissions()).toBe(before);
     release();
     await service.idle();
@@ -1547,11 +1547,11 @@ describe('starting a clear', () => {
 
   it('is refused once the edit window has closed, for an unknown play session, and when there is nobody to clear', async () => {
     upstream.has('7', { asStaff: true });
-    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('nothing_to_clear');
-    expect((await refusal(service.clear(L, TUESDAY, 'ps-nope', 'o'))).code).toBe('unknown_play_session');
+    expect((await refusal(service.clear(L, TUESDAY, PS, OWNER))).code).toBe('nothing_to_clear');
+    expect((await refusal(service.clear(L, TUESDAY, 'ps-nope', OWNER))).code).toBe('unknown_play_session');
     upstream.has('1');
     clock = new Date('2026-10-21T00:00:00Z');
-    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('edit_window_closed');
+    expect((await refusal(service.clear(L, TUESDAY, PS, OWNER))).code).toBe('edit_window_closed');
     expect(countSubmissions()).toBe(0);
     expect(upstream.removeCalls).toEqual([]);
   });
@@ -1559,7 +1559,7 @@ describe('starting a clear', () => {
   it('is refused while the app shuts down', async () => {
     upstream.has('1');
     await service.shutdown();
-    expect((await refusal(service.clear(L, TUESDAY, PS, 'o'))).code).toBe('shutting_down');
+    expect((await refusal(service.clear(L, TUESDAY, PS, OWNER))).code).toBe('shutting_down');
   });
 });
 
@@ -1711,7 +1711,7 @@ describe('a clear when play-tools misbehaves, crashes and retries', () => {
     upstream.onRemove = (_r, call) => {
       if (call === 2) return new Promise(() => undefined) as never; // the process dies during the second delete
     };
-    const started = await service.clear(L, TUESDAY, PS, 'o');
+    const started = await service.clear(L, TUESDAY, PS, OWNER);
     for (let i = 0; i < 20 && upstream.removeCalls.length < 2; i += 1) await new Promise((r) => setTimeout(r, 0));
     expect(upstream.removeCalls).toHaveLength(2);
 
@@ -1725,7 +1725,7 @@ describe('a clear when play-tools misbehaves, crashes and retries', () => {
     upstream.records = upstream.records.filter((r) => r.recordId !== 'pre-2'); // the second delete landed
     upstream.removeCalls = [];
 
-    const retried = await service.retry(L, started.submissionId, 'o');
+    const retried = await service.retry(L, started.submissionId, OWNER);
     await service.idle();
     const again = service.get(L, retried.submissionId);
 
@@ -1770,7 +1770,7 @@ describe('previewing a clear', () => {
     eveningSubmission([{ playerId: '3', outcome: 'added' }]);
     const before = countSubmissions();
 
-    const preview = await service.previewClear(L, TUESDAY, PS);
+    const preview = await service.previewClear(L, TUESDAY, PS, OWNER);
 
     expect(preview).toEqual({
       playSessionId: PS,
@@ -1790,18 +1790,18 @@ describe('previewing a clear', () => {
   it('says no other play session has our records when none does', async () => {
     upstream.has('1');
     eveningSubmission([{ playerId: '3', outcome: 'already_present' }]);
-    expect((await service.previewClear(L, TUESDAY, PS)).otherSessionHasAppRecords).toBe(false);
+    expect((await service.previewClear(L, TUESDAY, PS, OWNER)).otherSessionHasAppRecords).toBe(false);
   });
 
   it('refuses an unknown play session', async () => {
-    expect((await refusal(service.previewClear(L, TUESDAY, 'ps-nope'))).code).toBe('unknown_play_session');
+    expect((await refusal(service.previewClear(L, TUESDAY, 'ps-nope', OWNER))).code).toBe('unknown_play_session');
   });
 
   it('passes on a play-tools outage as the upstream error, so the dialog can show it', async () => {
     upstream.onList = () => {
       throw new PokemonUpstreamError('unavailable', 'Pokémon answered 502.', { status: 502 });
     };
-    await expect(service.previewClear(L, TUESDAY, PS)).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(service.previewClear(L, TUESDAY, PS, OWNER)).rejects.toMatchObject({ code: 'unavailable' });
   });
 });
 
@@ -1847,41 +1847,144 @@ describe('a clear never deletes a staff record or a record added after it starte
   }, 60_000);
 });
 
-describe('the submitting professor (ADR-0008)', () => {
-  const BROCK = { playerId: '0000222', name: 'Brock Harrison' };
+describe('attendance as yourself (ADR-0015 §4)', () => {
+  const BROCK: ActingConnection = { id: 2, professorPlayerId: '0000222', professorName: 'Brock Harrison', status: 'connected', ...HELD_BY_OWNER };
+  const MISTY = professorActor(3, 'misty');
+  const MISTYS: ActingConnection = { id: 3, professorPlayerId: '0000333', professorName: 'Misty', status: 'connected', ...HELD_BY_OWNER, userId: MISTY.userId };
   const professorOf = (submissionId: number) =>
     database.sqlite.prepare('select professor_player_id, professor_name from submission where id = ?').get(submissionId);
+  const start = (over: { actor?: typeof OWNER; professorPlayerId?: string } = {}) =>
+    service.start(L, TUESDAY, { playSessionId: PS, actor: over.actor ?? OWNER, ...(over.professorPlayerId && { professorPlayerId: over.professorPlayerId }) });
 
-  it("records who the league's submitting professor was on the attempt and in its history entry", async () => {
+  it('runs as the caller’s one connection that can submit, records it, and makes every call as it', async () => {
     sessionPlayers('1');
+    professors = [{ ...ASH }, { ...BROCK, canSubmit: false }, MISTYS];
+
     const view = await submit();
+
     expect(view.professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
     expect(professorOf(view.id)).toEqual({ professor_player_id: '0012345', professor_name: 'Ash Ketchum' });
-    expect(service.list(L)[0]!.professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
+    expect(new Set(callsAs)).toEqual(new Set([ASH.id]));
   });
 
-  it('records the professor submitting now on a retry, not the one who made the first attempt', async () => {
+  it('asks which connection when the caller has several that can submit, and runs as the one named', async () => {
+    sessionPlayers('1');
+    professors = [{ ...ASH }, { ...BROCK }];
+
+    expect((await refusal(start())).code).toBe('submit_as_required');
+    expect(countSubmissions()).toBe(0);
+
+    const { submissionId } = await start({ professorPlayerId: BROCK.professorPlayerId! });
+    await service.idle();
+    expect(service.get(L, submissionId).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
+    expect(new Set(callsAs)).toEqual(new Set([BROCK.id]));
+  });
+
+  it("refuses another user's connection, the owner included, naming it", async () => {
+    sessionPlayers('1');
+    professors = [{ ...ASH }, MISTYS];
+    await expect(start({ professorPlayerId: MISTYS.professorPlayerId! })).rejects.toMatchObject({ code: 'not_your_connection', professorPlayerId: '0000333' });
+    await expect(start({ actor: MISTY, professorPlayerId: ASH.professorPlayerId! })).rejects.toMatchObject({ code: 'not_your_connection' });
+    expect(callsAs).toEqual([]);
+  });
+
+  it('is cannot_submit for a named connection that may not record attendance, and when none of the caller’s may', async () => {
+    sessionPlayers('1');
+    professors = [{ ...ASH, canSubmit: false }, { ...BROCK, membership: 'unknown', canSubmit: false }];
+    expect((await refusal(start({ professorPlayerId: ASH.professorPlayerId! }))).code).toBe('cannot_submit');
+    expect((await refusal(start())).code).toBe('cannot_submit');
+  });
+
+  it('is not_connected for a caller who holds no connection', async () => {
+    sessionPlayers('1');
+    professors = [{ ...ASH }];
+    await expect(start({ actor: professorActor(9) })).rejects.toMatchObject({ code: 'not_connected' });
+  });
+
+  it('is league_not_selected before anything else when no league is chosen', async () => {
+    sessionPlayers('1');
+    league = null;
+    professors = [{ ...ASH }, { ...BROCK }];
+    expect((await refusal(start())).code).toBe('league_not_selected');
+  });
+
+  it("runs a professor's submission as their own connection", async () => {
+    sessionPlayers('1');
+    professors = [{ ...ASH }, MISTYS];
+    const { submissionId } = await start({ actor: MISTY });
+    await service.idle();
+    expect(service.get(L, submissionId)).toMatchObject({ startedBy: 'misty', professor: { playerId: '0000333' } });
+    expect(new Set(callsAs)).toEqual(new Set([MISTYS.id]));
+  });
+
+  it('retries and undoes as the professor the submission ran as, never as whoever is bound now', async () => {
     sessionPlayers('1', '2');
+    professors = [{ ...ASH }, { ...BROCK }];
     upstream.onBulk = (ids) =>
       ids.includes(id('2')) ? { status: 'rejected', alreadyPresent: [], failed: [{ playerId: id('2'), error: 'op.x' }] } : undefined;
-    const first = await submit();
-    upstream.onBulk = undefined;
-    connection = { ...connection, connectionId: 2, professor: BROCK };
-
-    const { submissionId } = await service.retry(L, first.id, 'organizer');
+    const { submissionId: first } = await start({ professorPlayerId: BROCK.professorPlayerId! });
     await service.idle();
+    upstream.onBulk = undefined;
+    callsAs = [];
 
-    expect(service.get(L, submissionId).professor).toEqual(BROCK);
-    expect(service.get(L, first.id).professor).toEqual({ playerId: '0012345', name: 'Ash Ketchum' });
+    const { submissionId: retried } = await service.retry(L, first, OWNER);
+    await service.idle();
+    expect(service.get(L, retried).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
+    const undone = await undo(first);
+    expect(undone.professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
+    expect(new Set(callsAs)).toEqual(new Set([BROCK.id]));
   });
 
-  it('records the professor on an undo and a clear too', async () => {
+  it("refuses another user's retry or undo, and anyone's of a submission with no recorded professor", async () => {
     sessionPlayers('1');
-    const submitted = await submit();
-    connection = { ...connection, connectionId: 2, professor: BROCK };
-    expect((await undo(submitted.id)).professor).toEqual(BROCK);
+    professors = [{ ...ASH }, MISTYS];
+    const view = await submit();
+
+    await expect(service.undo(L, view.id, MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
+    await expect(service.retry(L, view.id, MISTY)).rejects.toMatchObject({ code: 'not_your_connection' });
+    database.sqlite.prepare('update submission set professor_player_id = null, professor_name = null where id = ?').run(view.id);
+    expect(service.get(L, view.id).professor).toBeNull();
+    await expect(service.undo(L, view.id, OWNER)).rejects.toMatchObject({ code: 'not_your_connection' });
+  });
+
+  it('clears as the connection the owner names, or their only one that can submit', async () => {
+    sessionPlayers('1');
+    professors = [{ ...ASH }, { ...BROCK }];
     upstream.has('3');
-    expect((await clear()).professor).toEqual(BROCK);
+    await expect(service.clear(L, TUESDAY, PS, OWNER)).rejects.toMatchObject({ code: 'submit_as_required' });
+    const started = await service.clear(L, TUESDAY, PS, OWNER, BROCK.professorPlayerId!);
+    await service.idle();
+    expect(service.get(L, started.submissionId).professor).toEqual({ playerId: '0000222', name: 'Brock Harrison' });
+  });
+
+  it("resolves a date as the caller's own member connection, else anyone's, after the league check", async () => {
+    professors = [{ ...ASH, status: 'needs_reconnect' }, MISTYS];
+    expect((await service.resolve(L, TUESDAY, OWNER)).candidates.map((c) => c.id)).toEqual([PS]);
+    expect(new Set(callsAs)).toEqual(new Set([MISTYS.id]));
+    callsAs = [];
+    await service.resolve(L, TUESDAY, MISTY);
+    expect(callsAs).toEqual([]); // cached: play sessions belong to the league
+    league = null;
+    expect((await refusal(service.resolve(L, TUESDAY, OWNER))).code).toBe('league_not_selected');
+  });
+
+  it("previews a clear as the owner's own member connection, else anyone's", async () => {
+    professors = [{ ...ASH, status: 'needs_reconnect' }, MISTYS];
+    upstream.has('3');
+    await service.previewClear(L, TUESDAY, PS, OWNER);
+    expect(new Set(callsAs)).toEqual(new Set([MISTYS.id]));
+  });
+
+  it('stops a running job with not_connected when the connection it runs as goes away', async () => {
+    regulars(...Array.from({ length: 60 }, (_, i) => String(100 + i)));
+    service = build({ batchSize: 20 });
+    onSleep = () => {
+      professors = [];
+    };
+    const { submissionId } = await start();
+    await service.idle();
+    expect(upstream.bulkCalls).toHaveLength(1);
+    expect(service.get(L, submissionId)).toMatchObject({ status: 'failed', error: expect.stringMatching(/no longer connected/) });
   });
 
   it('shows no professor on attempts from before professors were recorded', async () => {
