@@ -1,6 +1,6 @@
 # ADR-0015: Professor logins: each professor acts only through their own Pokémon connection
 
-- Status: Proposed (2026-10-19, #199)
+- Status: Accepted (2026-10-19, #199)
 - Date: 2026-10-19
 - Issue: [#199](https://github.com/Towerism/play-pokemon-attendance-web/issues/199)
 - Amends:
