@@ -12,8 +12,11 @@ import type { AccessToken, TokenProvider } from './ports/token-provider';
 /** Whether a connection's Pokémon account is in the league's activity group (ADR-0015 §3). */
 export type MembershipStatus = 'member' | 'outside' | 'unknown';
 
-/** Why a professor sees only their own account (ADR-0015 §3); null for a league member. */
-export type WaitingReason = null | 'no_connection' | 'outside' | 'unknown';
+/**
+ * Why a professor sees only their own account (ADR-0015 §3, §8); null for a league member. `reverify_required`: they
+ * accepted a password reset link and haven't completed a Pokémon connect since.
+ */
+export type WaitingReason = null | 'no_connection' | 'outside' | 'unknown' | 'reverify_required';
 
 /** The league's upstream activity group (ADR-0015 §3): chosen by the owner, naming no connection. */
 export interface UpstreamLeague {
@@ -83,7 +86,9 @@ export type ConnectErrorCode =
   /** Another user holds a connection for that Pokémon account, and it isn't the owner's going to a professor (ADR-0015 §2). */
   | 'connection_held'
   /** A professor who holds a connection logged in as a different Pokémon account (ADR-0015 §2). */
-  | 'one_connection_only';
+  | 'one_connection_only'
+  /** A professor whose invite was bound to a player ID logged in as another Pokémon account (ADR-0015 §6). */
+  | 'invite_player_mismatch';
 
 export class ConnectError extends Error {
   override name = 'ConnectError';
@@ -95,8 +100,11 @@ export class ConnectError extends Error {
   }
 }
 
-/** Why `actingConnection` (or a holder-only change) refused: 409 for the first two, 403 for `not_your_connection`. */
-export type ConnectionAccessCode = 'organizer_not_connected' | 'needs_reconnect' | 'not_your_connection';
+/**
+ * Why `actingConnection` (or a holder-only change) refused: 409 for the first two, 403 for `not_your_connection` and
+ * `reverify_required` (a professor who must prove their Pokémon login after a password reset, ADR-0015 §8).
+ */
+export type ConnectionAccessCode = 'organizer_not_connected' | 'needs_reconnect' | 'not_your_connection' | 'reverify_required';
 
 export class ConnectionAccessError extends Error {
   override name = 'ConnectionAccessError';
@@ -121,6 +129,16 @@ export class ConnectionNotFoundError extends Error {
   constructor(professorPlayerId: string) {
     super(`No Pokémon account is connected for professor ${professorPlayerId}.`);
   }
+}
+
+/** A professor's connection, as Settings → Professors shows it to the owner. Never carries a token. */
+export interface HeldConnection {
+  playerId: string | null;
+  name: string | null;
+  status: 'connected' | 'needs_reconnect';
+  membership: MembershipStatus;
+  /** When it moved from the owner to this professor (ADR-0015 §2); null otherwise. */
+  claimedAt: Date | null;
 }
 
 export interface PokemonConnectionService extends TokenProvider {
@@ -177,6 +195,19 @@ export interface PokemonConnectionService extends TokenProvider {
   resealCarriedOver(leagueId: string): number;
   /** Boot: refreshes connected, unidentified connections so they learn their professor. Never throws. */
   identifyCarriedOver(): Promise<void>;
+  /** How many connections the owner holds: their part of the seat budget (ADR-0015 §6). */
+  ownerConnectionCount(): number;
+  /** The connection `userId` holds, or null. */
+  connectionOf(userId: number): HeldConnection | null;
+  /** The player ID a message to `userId` goes to: their connection's, once known. */
+  recipientOf(userId: number): string | null;
+  /**
+   * Removing a professor (ADR-0015 §8), step 1: reads their connections' refresh tokens while the rows exist. Call
+   * `revoke` once the removal has committed; it revokes them at Pokémon, best effort, and never throws.
+   */
+  prepareRemoval(userId: number): { revoke(): Promise<void> };
+  /** Step 2, inside the caller's transaction: deletes `userId`'s connections (their membership rows go with them). */
+  deleteConnectionsOf(userId: number): void;
 }
 
 export interface PokemonConnectionDeps {
@@ -185,8 +216,11 @@ export interface PokemonConnectionDeps {
   oauth: PtcOAuthClient;
   /** League discovery and identity through the play-tools adapter, authorised as the given connection. */
   gateway: (tokens: TokenProvider, connectionId: number) => Pick<PlayToolsGateway, 'listLeagues' | 'getProfessorProfile'>;
-  /** Who holds a connection: a connection moves only from the owner to a professor (ADR-0015 §2). */
-  accounts: Pick<AccountsService, 'actor'>;
+  /**
+   * The accounts module: who holds a connection (a connection moves only from the owner to a professor, ADR-0015 §2),
+   * the seat budget and the player ID an invite binds (§6), and the proof after a password reset (§8).
+   */
+  accounts: Pick<AccountsService, 'actor' | 'clearReverify'> & { seatsUsed(): number; boundPlayerId(userId: number): string | null };
   now?: () => Date;
   log?: Pick<Logger, 'warn' | 'info'>;
 }
@@ -198,7 +232,7 @@ const ATTEMPT_TTL_MS = 10 * 60_000;
 const MAX_ATTEMPTS = 20;
 /** ADR-0015 §6: one account can't push out other users' attempts by starting connects over and over. */
 const MAX_ATTEMPTS_PER_USER = 2;
-/** ADR-0008: at most this many professors per install. */
+/** ADR-0008, ADR-0015 §6: at most this many connections per install; the seat budget keeps the same number. */
 export const MAX_CONNECTIONS = 10;
 /** ADR-0003: a cached access token is used while it has at least this long left. */
 const MIN_VALIDITY_MS = 2 * 60_000;
@@ -448,6 +482,13 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
 
       const rowsNow = tx.select().from(pokemonConnection).orderBy(asc(pokemonConnection.id)).all();
       const own = rowsNow.find((r) => r.professorPlayerId === profile.playerId);
+      const bound = actor.role === 'professor' ? deps.accounts.boundPlayerId(actor.userId) : null;
+      if (bound !== null && bound !== profile.playerId) {
+        throw new ConnectError(
+          'invite_player_mismatch',
+          `Your invite is for Pokémon account ${bound}, so only that account can be connected here. Log in to Pokémon as that account.`,
+        );
+      }
       if (actor.role === 'professor') {
         const held = rowsNow.find((r) => r.userId === actor.userId);
         if (held && held.professorPlayerId !== profile.playerId) {
@@ -487,6 +528,13 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
 
       if (tx.select({ n: count() }).from(pokemonConnection).get()!.n >= MAX_CONNECTIONS) {
         throw new ConnectError('connection_limit', `Already ${MAX_CONNECTIONS} Pokémon accounts are connected. Disconnect one first.`);
+      }
+      // A professor's own seat already covers their connection; an owner's new one takes a seat (ADR-0015 §6).
+      if (actor.role === 'owner' && deps.accounts.seatsUsed() >= MAX_CONNECTIONS) {
+        throw new ConnectError(
+          'connection_limit',
+          `All ${MAX_CONNECTIONS} places are taken by your Pokémon accounts, professors and open invites. Revoke an invite or remove a professor first.`,
+        );
       }
       const { id } = tx
         .insert(pokemonConnection)
@@ -620,6 +668,13 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         );
       }
       if (r.userId !== actor.userId) throw notYours(r, 'act as them in play-tools');
+      if (actor.reverifyRequired) {
+        throw new ConnectionAccessError(
+          'reverify_required',
+          `Log in to Pokémon as ${labelOf(r)} in Settings to confirm it's you after your password reset.`,
+          professorPlayerId,
+        );
+      }
       if (r.status === 'needs_reconnect') {
         throw new ConnectionAccessError('needs_reconnect', `Reconnect ${labelOf(r)} in Settings.`, professorPlayerId);
       }
@@ -635,6 +690,7 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
 
     access(actor) {
       if (actor.role === 'owner') return { member: true, waiting: null };
+      if (actor.reverifyRequired) return { member: false, waiting: 'reverify_required' };
       const held = all().find((r) => r.userId === actor.userId);
       if (!held) return { member: false, waiting: 'no_connection' };
       const status = memberships().get(held.id)?.status ?? 'unknown';
@@ -715,6 +771,8 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
           toUser: actor.username,
         });
       }
+
+      if (actor.reverifyRequired) deps.accounts.clearReverify(actor.userId);
 
       const chosen = actor.role === 'owner' && (await autoSelectLeague(leagueId, actor));
       if (chosen) await recheckAll(leagueId);
@@ -814,6 +872,49 @@ export function createPokemonConnectionService(deps: PokemonConnectionDeps): Pok
         }).catch((err: unknown) => {
           log.warn(`Could not refresh a carried-over Pokémon connection at boot (${(err as Error).message}).`, { err });
         });
+      }
+    },
+
+    ownerConnectionCount() {
+      return all().filter((r) => deps.accounts.actor(r.userId)?.role === 'owner').length;
+    },
+
+    connectionOf(userId) {
+      const r = all().find((x) => x.userId === userId);
+      if (!r) return null;
+      return {
+        playerId: r.professorPlayerId,
+        name: r.professorName,
+        status: r.status,
+        membership: memberships().get(r.id)?.status ?? 'unknown',
+        claimedAt: r.claimedAt,
+      };
+    },
+
+    recipientOf(userId) {
+      return all().find((r) => r.userId === userId)?.professorPlayerId ?? null;
+    },
+
+    prepareRemoval(userId) {
+      const tokens: string[] = [];
+      for (const r of all().filter((x) => x.userId === userId)) {
+        try {
+          tokens.push(vault.decrypt(r.refreshTokenCiphertext, connectionAad(r.id)));
+        } catch (err) {
+          if (!(err instanceof VaultError)) throw err;
+        }
+      }
+      return {
+        async revoke() {
+          for (const t of tokens) await revokeQuietly(t);
+        },
+      };
+    },
+
+    deleteConnectionsOf(userId) {
+      for (const r of all().filter((x) => x.userId === userId)) {
+        accessTokens.delete(r.id);
+        db.delete(pokemonConnection).where(eq(pokemonConnection.id, r.id)).run();
       }
     },
   };
