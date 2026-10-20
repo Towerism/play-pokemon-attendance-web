@@ -1,6 +1,6 @@
 # ADR-0016: Calendar feeds: subscribable iCalendar URLs for the league's tournaments and play sessions
 
-- Status: Accepted (2026-10-20, #205)
+- Status: Proposed (2026-10-20, #205): approved once, back to draft after the PR-diff review changed it
 - Date: 2026-10-20
 - Issue: [#205](https://github.com/Towerism/play-pokemon-attendance-web/issues/205)
 - Amends:
@@ -109,7 +109,7 @@ The `calendar` module (`server/modules/calendar`, new) owns `calendar_feed`:
   the same row, so the old link stops working on its next fetch. **Turn off** deletes the row.
 - Only the owner rotates or turns off the public feed. Each user does the same for their own feed only, and the
   owner can't see or mint a professor's.
-- Removing a professor (ADR-0015 §6) deletes their feed.
+- Removing a professor (ADR-0015 §8) deletes their feed.
 - **Feed links** start with the first of these that is set:
   1. `NUXT_CALENDAR_BASE_URL` (optional, *Advanced* in the Unraid template): the internet-facing HTTPS address the
      proxy recipe in section 7 serves the feed on. It changes nothing but feed links.
@@ -138,7 +138,8 @@ range (`GET /tournaments/upcoming`) widened backwards, so last month's events st
 - **"Staff on"** means the user's player ID is in the tournament's live staff assignments made in the app
   (`staff_assignment`, the same desired state the Staff card and Genie read, ADR-0013 decision 5). This is narrower
   than the organizer's "are staff on": a professor added as staff only in play-tools is left out. Including them
-  costs one or two participant reads per tournament on every refresh, so it is question Q5.
+  costs one or two participant reads per tournament on every refresh, so it was question Q5,
+  settled as no.
 - **A tournament play-tools hasn't sanctioned** (its sanctioning state is anything but `sanctioned`, such as
   `approval-pending` or `sanctioning-error`) is `STATUS:TENTATIVE` in both feeds.
 - **The user feed marks the user's part** in each event: "You organize", "Staff: Judge" or "Lent to you until
@@ -173,20 +174,28 @@ range (`GET /tournaments/upcoming`) widened backwards, so last month's events st
   with `STATUS:CANCELLED` and "Cancelled: " before its name, until 7 days after its start. The app knows when:
   - a planned row's state becomes `cancelled` (ADR-0010 Cancel), or a row in the user feed becomes `skipped`;
   - a tournament in the last snapshot, whose last known start lies inside the range just read, is missing from a
-    **successful** listing of its organizer;
+    **successful** listing of its organizer, and one details read of it as that organizer (`getTournament`) answers
+    `not_found` or a cancelled sanctioning state. If the details read shows it still exists with a start outside the
+    range (it was rescheduled out of the window), it leaves the feed without a cancellation. If the details read
+    fails, the event is kept unchanged until the next refresh. These reads happen only for tournaments that dropped
+    out, so they are rare;
   - a play session in the last snapshot, whose last known start lies inside the range just read, is missing from a
-    successful listing of every status (section 5).
+    successful listing of every status (section 5). The gateway has no single-session read, so a session moved in
+    play-tools to beyond the window shows as cancelled until its date comes into range; it then returns under the
+    same `UID`.
 - **In the public feed, a tournament leaves only by cancellation or by its date passing.** If its organizer's source
   disappears (they disconnected, were removed, or their connection reads as `outside` while a listing lags,
-  ADR-0015 §3 and §6), its events are kept unchanged and marked "(not confirmed since <date>)". They stay until 7 days after
+  ADR-0015 §3, §6 and §8), its events are kept unchanged and marked "(not confirmed since <date>)". They stay until 7 days after
   their start, or until a successful read of that organizer lists or cancels them.
 - **In a user feed, an event drops out when it stops being the user's**: a lease ended, a staff assignment was
   removed, or their connection was disconnected. The tournament isn't off; it's no longer theirs to see.
 
 ### 4. The feed route
 
-`GET /api/calendar/v1/feed.ics?token=<secret>`, in `server/api/calendar/v1/feed.ics.ts`, which accepts `GET` and
-`HEAD` only. `HEAD` answers like `GET` without the body. Any other method is the catch-all's JSON 404 (§7).
+`GET /api/calendar/v1/feed.ics?token=<secret>`, in `server/api/calendar/v1/feed.ics.get.ts`, named like every
+other route. `HEAD` answers like `GET` without the body; a server test pins that, and if Nitro doesn't route `HEAD` to
+the `.get` handler, a `feed.ics.head.ts` beside it shares the handler. Any other method is the catch-all's JSON 404
+(§7).
 
 - It takes **only** the secret in `token`, through one guard, `requireCalendarFeed(event)` in
   `server/utils/calendar.ts`, which `test/unit/route-guards.test.ts` holds the route to. A session cookie, an
@@ -198,6 +207,8 @@ range (`GET /tournaments/upcoming`) widened backwards, so last month's events st
 - **A temporary refusal is `503` with `Retry-After: 3600` and an empty body**, so the client keeps the subscription
   and its events. It answers a user feed whose connection's membership is `unknown` (it resets on every reconnect,
   ADR-0015 §3) and a league with no activity group selected.
+- **A professor with no connection left** (they disconnected) gets `200` with a feed that has no events: every
+  event in it was theirs only through that connection (section 3).
 - `200` with `Content-Type: text/calendar; charset=utf-8`, `Cache-Control: private, max-age=300`, a strong `ETag`
   of the body and `X-Robots-Tag: noindex`. `If-None-Match` with the current `ETag` gets `304`.
 - **Two limiters**, built at boot by `server/bootstrap/rate-limits.ts`, each with its own variables:
@@ -237,7 +248,8 @@ A feed request never calls play-tools. It reads the league's snapshot, filters i
     the `tournaments` module calls an injected `onTournamentsChanged` callback (wired in `server/plugins`), and the
     `calendar` module rebuilds the snapshot's local part (planned rows and their states) at once, with no play-tools
     call;
-  - when a feed is turned on or rotated, before the link is answered, so a new feed is never empty.
+  - when a feed is turned on or rotated, before the link is answered, so a new feed is never empty. A snapshot
+    less than 5 minutes old is reused instead, so repeated clicks cause no more play-tools reads.
 
   At most one refresh runs per league.
 - **What a refresh reads:**
@@ -263,8 +275,9 @@ Settings gains a **Calendar** panel.
 - **The owner** sees the public feed: off, or on with its hint, and **Turn on**, **Rotate link** and **Turn off**.
 - **Every user** sees their own feed, with the same three actions.
 - A new link is shown once, with a copy button and a `webcal://` link, and says where it works:
-  - with an internet-facing link (`NUXT_CALENDAR_BASE_URL` or an `https://` *Site URL*): Google Calendar
-    (**From URL**), iCloud, Outlook.com and devices;
+  - with `NUXT_CALENDAR_BASE_URL` set: Google Calendar (**From URL**), iCloud, Outlook.com and devices;
+  - with only an `https://` *Site URL*: the same, if that address is reachable from the internet, which the app
+    can't tell (a Tailscale or LAN-only HTTPS address isn't);
   - otherwise: only device-local subscriptions (macOS "On My Mac", classic Outlook desktop) on a network that
     reaches the app.
 - The panel shows the snapshot's age and any stale source.
@@ -318,6 +331,8 @@ small enough that a tested writer is less to keep up to date than a dependency.
 - (−) Sharing through Google, iCloud or Outlook.com needs a reverse proxy open to the internet, the first route of
   this app that faces the internet by design. The recipe exposes only the feed route, which is read-only and
   rate-limited.
+- (−) A play session moved in play-tools to beyond the 26-week window shows as cancelled until its date comes into
+  range, because play-tools offers no read of one session.
 - (−) Event lengths are a guess (Q2), because play-tools has no end time for tournaments.
 - (−) A tournament the app didn't plan has no location or registration details in the feed, because those come only
   from play-tools' per-tournament details read, which the refresh skips.
@@ -343,7 +358,7 @@ small enough that a tested writer is less to keep up to date than a dependency.
     tournaments, the user's part;
   - `UID` stability across create, reschedule and adoption after first publication;
   - the cancellation rules: a failed source, a source that disappears and a professor with no player ID never
-    cancel; an event moved outside the range is not cancelled; a play-session listing with an active session
+    cancel; a tournament rescheduled out of the window leaves without a cancellation, and a failed details read keeps it; a play-session listing with an active session
     alongside pending ones.
 - **Module (real SQLite):** mint, rotate, turn off, one feed per kind, lookup by digest, a removed professor's feed
   deleted; snapshot carry-forward per source, the unconfirmed mark and the 14-day stale mark; single-flight refresh;
