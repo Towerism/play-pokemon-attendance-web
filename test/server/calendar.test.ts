@@ -175,6 +175,16 @@ describe('calendar feeds', () => {
       expect((await fetch(minted.url)).status).toBe(404);
     });
 
+    it("builds a link from the request's own origin, ignoring forwarded host and protocol headers", async () => {
+      const res = await owner.request('/api/calendar-feeds/me', {
+        method: 'POST',
+        headers: { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' },
+      });
+      const { url, reach } = await json<Minted>(res);
+      expect(url.startsWith(`${server.url}${FEED}?token=`)).toBe(true);
+      expect(reach).toBe('local_only');
+    });
+
     it('ignores a body sent with a request that takes none', async () => {
       const res = await owner.request('/api/calendar-feeds/me', { method: 'POST', json: { kind: 'public', userId: misty.userId } });
       expect((await json<Minted>(res)).kind).toBe('user');
@@ -339,6 +349,28 @@ describe('calendar feeds', () => {
       expect((await fetch(minted.url)).status).toBe(404);
       expect(db.prepare('select count(*) as n from calendar_feed where user_id = ?').get(brock.userId)).toEqual({ n: 0 });
     });
+  });
+});
+
+describe('where a feed link points', () => {
+  it.each([
+    [{ NUXT_CALENDAR_BASE_URL: 'https://cal.example.test/' }, 'https://cal.example.test', 'internet'],
+    [{ NUXT_CALENDAR_BASE_URL: 'http://cal.lan' }, 'http://cal.lan', 'local_only'],
+    [{ NUXT_PUBLIC_SITE_URL: 'https://ppa.example.test' }, 'https://ppa.example.test', 'site_url'],
+    [{ NUXT_PUBLIC_SITE_URL: 'http://tower.local:3000' }, 'http://tower.local:3000', 'local_only'],
+  ])('with %j starts with %s and works %s', async (env, base, reach) => {
+    seedPlayTools();
+    const { server, owner, db } = await league(env);
+    try {
+      const { minted } = await mint(owner, 'public');
+      expect(minted.url.startsWith(`${base}${FEED}?token=ppa_cal_`)).toBe(true);
+      expect(minted.webcalUrl).toBe(minted.url.replace(/^https?:\/\//, 'webcal://'));
+      expect(minted.reach).toBe(reach);
+      expect((await json(await owner.request('/api/calendar-feeds'))).reach).toBe(reach);
+    } finally {
+      db.close();
+      await server.dispose();
+    }
   });
 });
 
