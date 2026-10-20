@@ -952,6 +952,24 @@ describe('what a staff job reads and writes back (#47)', () => {
     });
   });
 
+  describe('liveAssignmentsFor (the calendar feed of a professor who staffs)', () => {
+    it("lists the live assignments of the given player IDs across tournaments, with each role's label, and no tombstones", async () => {
+      upstream.state.tournaments = [tournament('t-1'), tournament('t-2')];
+      await want('00123');
+      await staffing.addAssignment(L, DATE, { tournamentId: 't-2', playerId: id('00123'), role: 'headjudge' }, OWNER);
+      const gone = await want('00456', 'scorekeeper');
+      await staffing.removeAssignment(L, DATE, gone, OWNER);
+      await want('00789');
+
+      expect(staffing.liveAssignmentsFor(L, ['00123', '00456'])).toEqual([
+        { tournamentId: 't-1', playerId: '00123', role: 'judge', roleLabel: 'Judge', createdAt: NOW },
+        { tournamentId: 't-2', playerId: '00123', role: 'headjudge', roleLabel: 'Head Judge', createdAt: NOW },
+      ]);
+      expect(staffing.liveAssignmentsFor(L, [])).toEqual([]);
+      expect(staffing.liveAssignmentsFor('other-league', ['00123'])).toEqual([]);
+    });
+  });
+
   describe('recordApplied', () => {
     it('marks the assignment assigned with its record, and puts the staffer on the staff list as the app’s', async () => {
       const a = await want('00123');

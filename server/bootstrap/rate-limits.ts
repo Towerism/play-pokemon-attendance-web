@@ -11,6 +11,9 @@ export interface RateLimitConfig {
   /** Per integration token: Genie's message polls, and its results, counted apart (ADR-0015 §7). */
   messagePollRateLimit: Limit;
   messageResultRateLimit: Limit;
+  /** Calendar feed fetches per client and secret together, and refused fetches per client (ADR-0016 §4). */
+  calendarFetchRateLimit: Limit;
+  calendarRefusalRateLimit: Limit;
   trustedProxies?: unknown;
 }
 
@@ -20,6 +23,7 @@ export interface RateLimits {
   invite: Record<'check' | 'accept', FixedWindowLimiter>;
   messagePoll: FixedWindowLimiter;
   messageResult: FixedWindowLimiter;
+  calendar: Record<'fetch' | 'refusal', FixedWindowLimiter>;
   trusted: TrustedProxies;
 }
 
@@ -47,6 +51,10 @@ export function buildRateLimits(config: RateLimitConfig): RateLimits {
     },
     messagePoll: limiter('NUXT_MESSAGE_POLL_RATE_LIMIT', coerced(config.messagePollRateLimit)),
     messageResult: limiter('NUXT_MESSAGE_RESULT_RATE_LIMIT', coerced(config.messageResultRateLimit)),
+    calendar: {
+      fetch: limiter('NUXT_CALENDAR_FETCH_RATE_LIMIT', coerced(config.calendarFetchRateLimit)),
+      refusal: limiter('NUXT_CALENDAR_REFUSAL_RATE_LIMIT', coerced(config.calendarRefusalRateLimit)),
+    },
     // Its own error already starts with NUXT_TRUSTED_PROXIES and the bad entry.
     trusted: parseTrustedProxies(String(config.trustedProxies ?? '')),
   };

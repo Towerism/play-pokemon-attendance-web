@@ -80,6 +80,14 @@ export default defineNuxtConfig({
     // uses up the polls (ADR-0015 §7). NUXT_MESSAGE_POLL_RATE_LIMIT_*, NUXT_MESSAGE_RESULT_RATE_LIMIT_*.
     messagePollRateLimit: { max: 120, windowMs: 900_000 },
     messageResultRateLimit: { max: 600, windowMs: 900_000 },
+    // Calendar feed fetches (ADR-0016 §4): per client and secret together, so one subscriber can't use up a shared
+    // public link, and refused fetches per client, counted only for a secret that matches no feed.
+    // NUXT_CALENDAR_FETCH_RATE_LIMIT_*, NUXT_CALENDAR_REFUSAL_RATE_LIMIT_*: optional, not in the template.
+    calendarFetchRateLimit: { max: 30, windowMs: 900_000 },
+    calendarRefusalRateLimit: { max: 60, windowMs: 900_000 },
+    // The internet-facing HTTPS address calendar feed links start with (ADR-0016 §1). NUXT_CALENDAR_BASE_URL:
+    // optional, Advanced in the template; it changes nothing but feed links.
+    calendarBaseUrl: '',
     // How long Send by Discord waits for Genie's result before answering "Sending…". NUXT_MESSAGING_SEND_WAIT_MS:
     // tests only, not in the template.
     messaging: { sendWaitMs: 10_000 },
@@ -104,7 +112,7 @@ export default defineNuxtConfig({
     // asyncContext: the request id reaches every log record a request causes,
     // module and job logs included (architecture §10).
     experimental: { tasks: true, asyncContext: true },
-    scheduledTasks: { '0 * * * *': ['pokemon:keepalive', 'tdf:expire', 'messaging:expire', 'leases:expire'] },
+    scheduledTasks: { '0 * * * *': ['pokemon:keepalive', 'tdf:expire', 'messaging:expire', 'leases:expire', 'calendar:refresh'] },
   },
 
   typescript: {

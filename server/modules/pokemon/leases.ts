@@ -180,6 +180,15 @@ export function createLeaseStore(deps: { db: Db; now?: () => Date }) {
           .map((r) => r.id),
       );
     },
+    /** The live leases `userId` holds, oldest first, for their calendar feed (ADR-0016 §5). */
+    liveLeasesFor(userId: number): LiveLease[] {
+      return db
+        .select({ tournamentId: tournamentLease.tournamentId, endsAt: tournamentLease.endsAt, grantedAt: tournamentLease.grantedAt })
+        .from(tournamentLease)
+        .where(and(live(), eq(tournamentLease.lesseeUserId, userId)))
+        .orderBy(asc(tournamentLease.id))
+        .all();
+    },
     endOnConnection: (connectionId: number, reason: LeaseEndReason) => endWhere(eq(tournamentLease.connectionId, connectionId), reason),
     endHeldBy: (userId: number, reason: LeaseEndReason) => endWhere(eq(tournamentLease.lesseeUserId, userId), reason),
     endForTournament: (tournamentId: string, reason: LeaseEndReason) => endWhere(eq(tournamentLease.tournamentId, tournamentId), reason),
@@ -232,6 +241,15 @@ export interface LeaseService {
   notifyEnded(ended: readonly EndedLease[]): void;
   isLive(leaseId: number): boolean;
   leasedTournamentIdsOf(userId: number): Set<string>;
+  /** The live leases a user holds, for their calendar feed. Local rows only. */
+  liveLeasesFor(userId: number): LiveLease[];
+}
+
+/** A live lease as a calendar feed shows it ("Lent to you until …"). */
+export interface LiveLease {
+  tournamentId: string;
+  endsAt: Date;
+  grantedAt: Date;
 }
 
 export interface LeaseDeps {
@@ -588,5 +606,6 @@ export function createLeaseService(deps: LeaseDeps): LeaseService {
 
     isLive: (leaseId) => store.isLive(leaseId),
     leasedTournamentIdsOf: (userId) => store.leasedTournamentIdsOf(userId),
+    liveLeasesFor: (userId) => store.liveLeasesFor(userId),
   };
 }

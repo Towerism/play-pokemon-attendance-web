@@ -53,7 +53,14 @@ export function useInvites(): InviteService {
 
 /** Settings → Professors (ADR-0015 §8). */
 export function useProfessors(): ProfessorsService {
-  professors ??= createProfessorsService({ db: useDb(), invites: useInvites(), connections: usePokemon(), channel: useMessaging(), log: useLogger('accounts') });
+  professors ??= createProfessorsService({
+    db: useDb(),
+    invites: useInvites(),
+    connections: usePokemon(),
+    channel: useMessaging(),
+    calendar: useCalendar(),
+    log: useLogger('accounts'),
+  });
   return professors;
 }
 

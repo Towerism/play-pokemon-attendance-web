@@ -162,6 +162,13 @@
       "when": 1792438743270,
       "tag": "0022_tournament_leases",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1792532351431,
+      "tag": "0023_calendar_feeds",
+      "breakpoints": true
     }
   ]
 }

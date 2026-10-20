@@ -389,6 +389,8 @@ export interface SubmissionDeps {
     cancelling?: TournamentCancelling;
     /** Required-events coverage: its cached listings are dropped when a tournament job ends (#95). */
     requiredEvents?: Pick<TournamentsService['requiredEvents'], 'listingsChanged'>;
+    /** The calendar feeds rebuild when a tournament job begins (its local writes) and when it ends (ADR-0016 §5). */
+    changed?: TournamentsService['changed'];
     /** TDF results uploads (#96): `tdf_upload` jobs and Remove-from-staff jobs reach uploads only through it. */
     results?: TournamentResults;
   };
@@ -541,6 +543,21 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
   const tournamentDelayMs = Math.max(2_000, deps.tournamentDelayMs ?? 5_000);
   const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const log = deps.log ?? silentLogger;
+
+  /** Tells the calendar feeds the league's tournaments changed; never fails the job (ADR-0016 §5). */
+  function tournamentsChanged(leagueId: string): void {
+    try {
+      deps.tournaments?.changed?.(leagueId);
+    } catch (err) {
+      log.warn(`Could not tell the calendar feeds the tournaments changed: ${(err as Error).message}`);
+    }
+  }
+
+  /** After a tournament job began: its local writes (a hold, an edit, a cancel) are committed. */
+  function begun<T>(leagueId: string, started: T): T {
+    tournamentsChanged(leagueId);
+    return started;
+  }
 
   const running = new Set<Promise<void>>();
   /** Per league, when its last staff write went out: the spacing holds across one batch's jobs too (#76). */
@@ -3121,6 +3138,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         } catch (err) {
           log.warn(`${what(row)} #${submissionId} could not drop coverage's cached listings: ${(err as Error).message}`, { submissionId });
         }
+        tournamentsChanged(row.leagueId);
       });
   }
 
@@ -3560,8 +3578,8 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         if (actor.role !== 'owner') throw new SubmissionError('owner_only', 'Only the owner of this app can run an import.');
         return beginImport(row.kind, leagueId, actor.username, row.id);
       }
-      if (row.kind === 'tournament_edit') return retryTournamentEdit(row, actor);
-      if (row.kind === 'tournament_cancel') return retryTournamentCancel(row, actor);
+      if (row.kind === 'tournament_edit') return begun(leagueId, retryTournamentEdit(row, actor));
+      if (row.kind === 'tournament_cancel') return begun(leagueId, retryTournamentCancel(row, actor));
       if (row.kind === 'tournament_create') {
         const items = tournamentItems(row.id);
         const plannedIds = creation().retryable(
@@ -3569,7 +3587,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           items.flatMap((i) => (i.plannedTournamentId === null ? [] : [i.plannedTournamentId])),
         );
         if (plannedIds.length === 0) throw new TournamentsError('nothing_to_create', 'Every tournament of this job is in play-tools, unknown or skipped.');
-        return beginTournamentCreate(
+        const started = await beginTournamentCreate(
           leagueId,
           {
             plannedIds,
@@ -3582,6 +3600,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           },
           row.id,
         );
+        return begun(leagueId, started);
       }
       return begin(leagueId, row.sessionDate as SessionDate, row.playSessionId, actor.username, () => originalConnection(actor, row), row.id);
     },
@@ -3625,7 +3644,7 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
 
     applyStaffAll: async (leagueId, date, input) => beginStaffBatch(leagueId, date, input.tournamentIds, input.actor),
 
-    createTournaments: async (leagueId, input) => beginTournamentCreate(leagueId, input, null),
+    createTournaments: async (leagueId, input) => begun(leagueId, await beginTournamentCreate(leagueId, input, null)),
 
     async createThrough(leagueId, input) {
       if (!deps.tournaments) throw new Error('This app was built without the tournaments module.');
@@ -3637,7 +3656,9 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
         });
       }
       if (preview.count === 0) throw new TournamentsError('nothing_to_create', `Nothing to create through ${input.date}.`);
-      return beginTournamentCreate(
+      return begun(
+        leagueId,
+        await beginTournamentCreate(
         leagueId,
         {
           plannedIds: preview.tournaments.map((e) => e.plannedId!),
@@ -3647,13 +3668,14 @@ export function createSubmissionService(deps: SubmissionDeps): SubmissionService
           label: `Create ${preview.scaffoldName} through ${input.date}`,
           through: { scheduleId: input.scheduleId, date: input.date },
         },
-        null,
+          null,
+        ),
       );
     },
 
-    editTournaments: async (leagueId, input) => beginTournamentEdit(leagueId, input),
+    editTournaments: async (leagueId, input) => begun(leagueId, await beginTournamentEdit(leagueId, input)),
 
-    cancelTournament: async (leagueId, input) => beginTournamentCancel(leagueId, input),
+    cancelTournament: async (leagueId, input) => begun(leagueId, await beginTournamentCancel(leagueId, input)),
 
     uploadResults: async (leagueId, input) => beginTdfUpload(leagueId, input),
 

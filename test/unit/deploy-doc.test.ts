@@ -135,6 +135,37 @@ describe('Unraid deployment guide', () => {
     expect(guide).toMatch(/session password[^.]*\blog(?:s|ged)? (?:everyone )?out/i);
   });
 
+  describe('calendar feeds (ADR-0016 §7)', () => {
+    const calendar = section(guide, 'Calendar feeds');
+
+    it('comes right after Remote access', () => {
+      const h2 = headings(guide, 2);
+      expect(h2.indexOf('Calendar feeds')).toBe(h2.indexOf('Remote access') + 1);
+    });
+
+    it('exposes only the feed path, for GET and HEAD, with a recipe for each proxy the guide names', () => {
+      expect(calendar).toContain('= /api/calendar/v1/feed.ics');
+      expect(calendar).toMatch(/GET/);
+      expect(calendar).toMatch(/HEAD/);
+      for (const proxy of ['SWAG', 'Nginx Proxy Manager', 'Caddy']) expect(calendar, proxy).toContain(proxy);
+    });
+
+    it('sets NUXT_CALENDAR_BASE_URL and NUXT_TRUSTED_PROXIES, and says Site URL stays as it was', () => {
+      expect(calendar).toContain('NUXT_CALENDAR_BASE_URL');
+      expect(calendar).toContain('NUXT_TRUSTED_PROXIES');
+      expect(calendar).toMatch(/\*Site URL\*/);
+    });
+
+    it('checks through the proxy that everything else answers 404', () => {
+      for (const path of ['/api/setup', '/api/auth/session', '%2e%2e']) expect(calendar, path).toContain(path);
+    });
+
+    it("warns that a proxy's access log may record the secret, and shows how to leave the query string out", () => {
+      expect(calendar).toMatch(/access log/i);
+      expect(calendar).toMatch(/query string/i);
+    });
+  });
+
   describe('trusted proxies (login rate limit behind a reverse proxy)', () => {
     const remote = section(guide, 'Remote access');
     const examples = [...remote.matchAll(/NUXT_TRUSTED_PROXIES=([^\s`]+)/g)].map((m) => m[1]!);

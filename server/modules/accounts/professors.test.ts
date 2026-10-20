@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type OpenDatabase, migrateDatabase, openDatabase } from '../../db/client';
 import { messageVault } from '../../bootstrap/vaults';
+import { createFeedStore } from '../calendar/feeds';
 import { DEFAULT_LEAGUE_ID as L } from '../leagues';
 import { type MessagingService, createMessagingService } from '../messaging/channel';
 import type { HeldConnection } from '../pokemon/connection';
@@ -143,6 +144,33 @@ describe('remove', () => {
 
     await expect(broken.remove(misty)).rejects.toThrow('disk full');
     expect(user(misty).removed_at).toBeNull();
+  });
+
+  it("deletes the professor's calendar feed in the removal, and keeps it when the removal rolls back", async () => {
+    const feeds = createFeedStore({ db: database.db });
+    const misty = addUser('misty');
+    const brock = addUser('brock');
+    const mistys = feeds.mint(L, { kind: 'user', userId: misty }).secret;
+    const brocks = feeds.mint(L, { kind: 'user', userId: brock }).secret;
+    const withCalendar = (deleteConnectionsOf: () => void) =>
+      createProfessorsService({
+        db: database.db,
+        invites,
+        connections: { connectionOf: () => null, prepareRemoval: () => ({ revoke: async () => undefined }), deleteConnectionsOf },
+        channel: messaging,
+        calendar: feeds,
+      });
+
+    await expect(
+      withCalendar(() => {
+        throw new Error('disk full');
+      }).remove(brock),
+    ).rejects.toThrow('disk full');
+    expect(feeds.find(brocks)).not.toBeNull();
+
+    await withCalendar(() => undefined).remove(misty);
+    expect(feeds.find(mistys)).toBeNull();
+    expect(feeds.find(brocks)).not.toBeNull();
   });
 
   it('changes nothing for a professor already removed', async () => {

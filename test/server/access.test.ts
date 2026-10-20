@@ -57,6 +57,8 @@ const OWNER_ONLY = new Set([
   'integrations/tokens/[id].delete.ts',
   'sessions/[date]/clear.get.ts',
   'sessions/[date]/clear.post.ts',
+  'calendar-feeds/public.post.ts',
+  'calendar-feeds/public.delete.ts',
 ]);
 const PARAMS: Record<string, string> = {
   date: TUESDAY,
@@ -82,7 +84,7 @@ function routes(dir = API): Route[] {
     if (statSync(full).isDirectory()) return routes(full);
     const file = relative(API, full).split(sep).join('/');
     const m = /^(.*?)(?:\.(get|post|put|patch|delete))?\.ts$/.exec(file);
-    if (!m || file.endsWith('.test.ts') || file.startsWith('auth/') || file.startsWith('invites/') || file.startsWith('integrations/v1/') || file.includes('[...]') || file === 'index.ts') return [];
+    if (!m || file.endsWith('.test.ts') || file.startsWith('auth/') || file.startsWith('invites/') || file.startsWith('integrations/v1/') || file.startsWith('calendar/v1/') || file.includes('[...]') || file === 'index.ts') return [];
     const path = `/api/${m[1]!.replace(/\/index$/, '').replace(/^index$/, '')}`.replace(/\[(\w+)\]/g, (_s, p: string) => {
       if (p === 'id' && file.startsWith('tournaments/[id]')) return PARAMS.tournamentId!;
       return PARAMS[p] ?? '1';

@@ -152,6 +152,11 @@ range (`GET /tournaments/upcoming`) widened backwards, so last month's events st
   - `LOCATION`: the venue label of the tournament's template or planned row. A tournament no row holds has none.
   - `DESCRIPTION`: game and format and the play-tools display id. For a tournament a row holds, also its
     registration details and event website from the template and the row's overrides.
+
+    Amended 2026-10-20 (#212), by the organizer's decision: the description leaves out the format and the display id.
+    The tournament's name nearly always gives the format away, and the tournament id doesn't belong in a calendar
+    event. A tournament with no name gets the title "<game> tournament", never its display id. The GUID in each `UID`
+    (section 3) stays, since calendar apps don't show it.
   - `URL`: that event website, when there is one.
 - A planned tournament whose start a DST change skips or repeats (Upcoming's `timeProblem`) is left out until it is
   fixed.

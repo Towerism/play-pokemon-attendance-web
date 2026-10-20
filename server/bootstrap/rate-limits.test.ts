@@ -10,6 +10,8 @@ function config(overrides: Partial<RateLimitConfig> = {}): RateLimitConfig {
     inviteRateLimit: { max: 5, windowMs: 900_000 },
     messagePollRateLimit: { max: 120, windowMs: 900_000 },
     messageResultRateLimit: { max: 600, windowMs: 900_000 },
+    calendarFetchRateLimit: { max: 30, windowMs: 900_000 },
+    calendarRefusalRateLimit: { max: 60, windowMs: 900_000 },
     trustedProxies: DEFAULT_TRUSTED_PROXIES,
     ...overrides,
   };
@@ -27,6 +29,8 @@ const INTEGRATION = 'NUXT_INTEGRATION_RATE_LIMIT_MAX / NUXT_INTEGRATION_RATE_LIM
 const INVITE = 'NUXT_INVITE_RATE_LIMIT_MAX / NUXT_INVITE_RATE_LIMIT_WINDOW_MS';
 const POLL = 'NUXT_MESSAGE_POLL_RATE_LIMIT_MAX / NUXT_MESSAGE_POLL_RATE_LIMIT_WINDOW_MS';
 const RESULT = 'NUXT_MESSAGE_RESULT_RATE_LIMIT_MAX / NUXT_MESSAGE_RESULT_RATE_LIMIT_WINDOW_MS';
+const FETCH = 'NUXT_CALENDAR_FETCH_RATE_LIMIT_MAX / NUXT_CALENDAR_FETCH_RATE_LIMIT_WINDOW_MS';
+const REFUSAL = 'NUXT_CALENDAR_REFUSAL_RATE_LIMIT_MAX / NUXT_CALENDAR_REFUSAL_RATE_LIMIT_WINDOW_MS';
 
 function thrown(fn: () => unknown): Error {
   try {
@@ -60,6 +64,17 @@ describe('buildRateLimits with valid settings', () => {
     expect(allowed(limits.invite.check)).toBe(2);
     expect(allowed(limits.messagePoll)).toBe(3);
     expect(allowed(limits.messageResult)).toBe(4);
+  });
+
+  it('builds the calendar feed fetch and refusal limiters, and coerces their numeric strings', () => {
+    expect(allowed(buildRateLimits(config()).calendar.fetch)).toBe(30);
+    expect(allowed(buildRateLimits(config()).calendar.refusal)).toBe(60);
+
+    const limits = buildRateLimits(
+      config({ calendarFetchRateLimit: { max: '2', windowMs: '1000' }, calendarRefusalRateLimit: { max: '3', windowMs: '1000' } }),
+    );
+    expect(allowed(limits.calendar.fetch)).toBe(2);
+    expect(allowed(limits.calendar.refusal)).toBe(3);
   });
 
   it('coerces numeric strings for the integration limit, as before', () => {
@@ -116,6 +131,8 @@ describe('buildRateLimits with a setting the limiter refuses', () => {
     ['invite', INVITE, 'inviteRateLimit'],
     ['message poll', POLL, 'messagePollRateLimit'],
     ['message result', RESULT, 'messageResultRateLimit'],
+    ['calendar fetch', FETCH, 'calendarFetchRateLimit'],
+    ['calendar refusal', REFUSAL, 'calendarRefusalRateLimit'],
   ] as const)('names the %s variables', (_name, vars, key) => {
     const err = thrown(() => buildRateLimits(config({ [key]: { max: 0, windowMs: 900_000 } })));
     expect(err.message).toMatch(new RegExp(`^Invalid rate limit \\(${vars}, or their NITRO_ or JSON-object override\\): `));

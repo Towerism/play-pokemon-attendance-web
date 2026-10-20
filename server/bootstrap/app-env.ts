@@ -21,7 +21,8 @@ export const SECRETS: readonly [SecretSpec, SecretSpec, SecretSpec, SecretSpec] 
 
 /**
  * Optional tuning for the rate limits (`authRateLimit`, `integrationRateLimit`, `inviteRateLimit`,
- * `messagePollRateLimit`, `messageResultRateLimit`) and how long Send by Discord waits (`messaging.sendWaitMs`).
+ * `messagePollRateLimit`, `messageResultRateLimit`, `calendarFetchRateLimit`, `calendarRefusalRateLimit`) and how
+ * long Send by Discord waits (`messaging.sendWaitMs`).
  * Tests change them; never in the template.
  */
 export const POSITIVE_INTEGER_VARS: readonly string[] = [
@@ -37,6 +38,10 @@ export const POSITIVE_INTEGER_VARS: readonly string[] = [
   'NUXT_MESSAGE_POLL_RATE_LIMIT_WINDOW_MS',
   'NUXT_MESSAGE_RESULT_RATE_LIMIT_MAX',
   'NUXT_MESSAGE_RESULT_RATE_LIMIT_WINDOW_MS',
+  'NUXT_CALENDAR_FETCH_RATE_LIMIT_MAX',
+  'NUXT_CALENDAR_FETCH_RATE_LIMIT_WINDOW_MS',
+  'NUXT_CALENDAR_REFUSAL_RATE_LIMIT_MAX',
+  'NUXT_CALENDAR_REFUSAL_RATE_LIMIT_WINDOW_MS',
   'NUXT_MESSAGING_SEND_WAIT_MS',
 ];
 

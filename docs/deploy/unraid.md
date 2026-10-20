@@ -66,6 +66,7 @@ settings* when you edit the container.
 | Litestream replica URL (*Advanced*) | `LITESTREAM_REPLICA_URL` | empty: off | You want off-box backups (see [Litestream](#optional-litestream-off-box-backup)) |
 | Litestream access key ID (*Advanced*) | `LITESTREAM_ACCESS_KEY_ID` | empty | With the replica URL |
 | Litestream secret access key (*Advanced*) | `LITESTREAM_SECRET_ACCESS_KEY` | empty | With the replica URL |
+| Calendar address (*Advanced*) | `NUXT_CALENDAR_BASE_URL` | empty: feed links use *Site URL*, else the address you opened Settings at | Google Calendar, iCloud or Outlook.com should subscribe to the calendar feeds (see [Calendar feeds](#calendar-feeds)) |
 | Trusted proxies (*Advanced*) | `NUXT_TRUSTED_PROXIES` | empty: loopback and Docker networks | Your reverse proxy runs on `br0` or another machine (see [Remote access](#remote-access)) |
 
 Unraid sets `TZ` for every container. The app uses it for "today's" session
@@ -121,6 +122,126 @@ the same Unraid box. Set it to the proxy's exact address when:
 Use `none` when there is no proxy at all. Separate several entries with commas;
 ranges such as `10.0.0.0/24` work too. A value the app can't read stops the
 container at startup, and the log names the bad entry.
+
+## Calendar feeds
+
+Settings → **Calendar** gives each professor a link to their own tournaments.
+It also gives you a public link with the league's tournaments and play sessions,
+for players. People subscribe to these links in a calendar app. You need none of
+this section until you turn a feed on.
+
+Where a link works depends on who fetches it:
+
+- **Google Calendar, iCloud and Outlook.com** fetch it from their own servers on
+  the internet. They can't reach your home network or your tailnet, so they need
+  the HTTPS address set up below.
+- **Calendar apps that fetch from your device** (macOS "On My Mac" calendars,
+  classic Outlook desktop) work with the plain LAN address while the device is
+  on your network. No setup needed.
+
+### Serve only the feed on an HTTPS address
+
+This sets up a second address, for example `https://calendar.example.com`,
+that forwards only `= /api/calendar/v1/feed.ics` (for `GET` and `HEAD`) to the
+app and answers everything else with 404. The rest of the app stays off the
+internet. The snippets below weren't run as part of this guide, so finish with
+the checks at the end of this section.
+
+1. Point a DNS name at your router and forward port 443 to your proxy, as you
+   would for any proxied site.
+2. Add the site to your proxy:
+
+   - **SWAG:** save this as `/config/nginx/proxy-confs/calendar.subdomain.conf`
+     and restart SWAG.
+
+     ```nginx
+     server {
+         listen 443 ssl;
+         listen [::]:443 ssl;
+         server_name calendar.*;
+         include /config/nginx/ssl.conf;
+         # The feed's secret is in its query string: keep it out of the access log.
+         access_log off;
+
+         location = /api/calendar/v1/feed.ics {
+             limit_except GET { deny all; }   # GET also allows HEAD
+             include /config/nginx/proxy.conf;
+             include /config/nginx/resolver.conf;
+             set $upstream_app play-pokemon-attendance;
+             set $upstream_port 3000;
+             set $upstream_proto http;
+             proxy_pass $upstream_proto://$upstream_app:$upstream_port;
+         }
+         location / { return 404; }
+     }
+     ```
+
+   - **Nginx Proxy Manager:** add a proxy host for `calendar.example.com`
+     forwarding to the server's address and port 3000, with an SSL certificate.
+     On its *Advanced* tab, paste the following. With a `location /` here, Nginx
+     Proxy Manager leaves out its own catch-all, so only the feed is forwarded.
+
+     ```nginx
+     access_log off;
+     location = /api/calendar/v1/feed.ics {
+         limit_except GET { deny all; }
+         proxy_pass http://192.168.1.10:3000;
+     }
+     location / { return 404; }
+     ```
+
+   - **Caddy:** add this site block. Caddy writes no access log for a site
+     without a `log` directive; if yours has one, see the last step.
+
+     ```caddy
+     calendar.example.com {
+         @feed {
+             path /api/calendar/v1/feed.ics
+             method GET HEAD
+         }
+         handle @feed {
+             reverse_proxy play-pokemon-attendance:3000
+         }
+         handle {
+             respond 404
+         }
+     }
+     ```
+
+3. In the container's template, set *Calendar address*
+   (`NUXT_CALENDAR_BASE_URL`) to `https://calendar.example.com`. Leave *Site URL*
+   as it was: it decides login cookies, and the calendar address changes nothing
+   but feed links.
+4. Check *Trusted proxies* (`NUXT_TRUSTED_PROXIES`) as [Remote access](#remote-access)
+   explains. This matters more here than for logins: each feed allows 30
+   fetches per 15 minutes per visitor, and if the app can't tell visitors apart
+   behind the proxy, every subscriber to the public link shares those 30, and
+   most of their calendars are refused.
+5. Keep the secret out of logs. Anyone holding a feed link can read the feed, and
+   a proxy's access log records full URLs, query string included. The snippets
+   above turn the log off for this site. To keep a log, log the path without the
+   query string: in nginx a `log_format` using `$uri` instead of `$request`; in
+   Caddy `format filter { request>uri query { delete token } }` inside `log`.
+6. Check it from a computer outside your network, or from your phone on mobile
+   data. Each of these should print `404`:
+
+   ```sh
+   for path in / /api/setup /api/auth/session /api/calendar/v1/%2e%2e/auth/session; do
+     curl -s -o /dev/null -w "%{http_code} $path\n" "https://calendar.example.com$path"
+   done
+   ```
+
+   Then turn a feed on in Settings and fetch its link: it should print `200`.
+
+   ```sh
+   curl -s -o /dev/null -w "%{http_code}\n" "https://calendar.example.com/api/calendar/v1/feed.ics?token=ppa_cal_…"
+   ```
+
+If the app already sits behind HTTPS at *Site URL*, you can open this one path
+on that host instead. Leave *Calendar address* empty; feed links then use *Site URL*.
+
+A link that reached the wrong people stops working when you rotate it in
+Settings; everyone else subscribes again with the new one.
 
 ## Updates
 

@@ -53,7 +53,12 @@ const OWNER = new Set([
   'integrations/tokens/[id].delete.ts',
   'sessions/[date]/clear.get.ts',
   'sessions/[date]/clear.post.ts',
+  'calendar-feeds/public.post.ts',
+  'calendar-feeds/public.delete.ts',
 ]);
+
+/** The calendar feed (ADR-0016 §4): only a feed secret, through one guard; a session or bearer token counts for nothing. */
+const CALENDAR = new Set(['calendar/v1/feed.ics.get.ts', 'calendar/v1/feed.ics.head.ts']);
 
 function routes(dir = API): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -63,7 +68,7 @@ function routes(dir = API): string[] {
   });
 }
 
-const GUARDS = ['requireActor', 'requireMember', 'requireOwner'] as const;
+const GUARDS = ['requireActor', 'requireMember', 'requireOwner', 'requireCalendarFeed'] as const;
 const guardsIn = (route: string) => {
   const code = readFileSync(join(API, route), 'utf8');
   return GUARDS.filter((g) => new RegExp(`\\b${g}\\(`).test(code));
@@ -71,6 +76,7 @@ const guardsIn = (route: string) => {
 
 function expected(route: string): (typeof GUARDS)[number] | null {
   if (UNGUARDED.has(route) || route.startsWith('integrations/v1/')) return null;
+  if (route.startsWith('calendar/v1/')) return 'requireCalendarFeed';
   if (ACTOR.has(route)) return 'requireActor';
   if (OWNER.has(route)) return 'requireOwner';
   return 'requireMember';
@@ -81,7 +87,8 @@ describe('access guards on API routes', () => {
 
   it('finds the routes', () => {
     expect(all.length).toBeGreaterThan(80);
-    for (const listed of [...ACTOR, ...OWNER]) expect(all).toContain(listed);
+    for (const listed of [...ACTOR, ...OWNER, ...CALENDAR]) expect(all).toContain(listed);
+    expect(all.filter((r) => r.startsWith('calendar/v1/'))).toEqual([...CALENDAR].sort());
   });
 
   it.each(all)('%s calls the one guard the route table gives it', (route) => {
