@@ -87,8 +87,13 @@ function text(value: string): string {
  * space is left out, so a stored value can never add a line to the feed.
  */
 function safeUri(value: string | null): string | null {
-  if (!value || !/^https?:\/\//i.test(value) || /[\u0000-\u0020\u007f]/.test(value)) return null;
+  if (!value || !/^https?:\/\//i.test(value) || [...value].some(isControlOrSpace)) return null;
   return value;
+}
+
+function isControlOrSpace(ch: string): boolean {
+  const code = ch.codePointAt(0)!;
+  return code <= 0x20 || code === 0x7f;
 }
 
 /** Folds a content line at 75 octets, never inside a UTF-8 character; continuation lines start with one space. */
