@@ -230,6 +230,40 @@ describe("dropping coverage's cached listings (#95)", () => {
   });
 });
 
+describe('telling the calendar feeds the tournaments changed (ADR-0016 §5)', () => {
+  /** The status of every job each time the calendar is told. */
+  let told: string[][];
+  beforeEach(() => {
+    told = [];
+    tournaments.changed = (leagueId) => {
+      expect(leagueId).toBe(L);
+      told.push((database.sqlite.prepare('select status from submission order by id').all() as { status: string }[]).map((r) => r.status));
+    };
+  });
+
+  it('tells it once the cancel has been written locally, and again when the job has ended', async () => {
+    const id = created();
+    await cancel(id);
+    expect(told).toHaveLength(2);
+    expect(told.at(-1)).toEqual(['succeeded']);
+  });
+
+  it('still ends the job cleanly if telling it throws', async () => {
+    tournaments.changed = () => {
+      throw new Error('calendar is down');
+    };
+    const id = created();
+    const { submissionId } = await cancel(id);
+    expect(service.get(L, submissionId!).status).toBe('succeeded');
+  });
+
+  it('says nothing for a job that is not a tournament job', async () => {
+    await service.importPlayers(L, OWNER);
+    await service.idle();
+    expect(told).toEqual([]);
+  });
+});
+
 describe('the tournament_cancel job', () => {
   beforeEach(() => {
     leaseEndings = [];
