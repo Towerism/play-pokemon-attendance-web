@@ -41,6 +41,8 @@ export interface ProfessorsDeps {
   invites: Pick<InviteService, 'openInvites' | 'seatsUsed' | 'revokeResetLinksOf'>;
   connections: Pick<PokemonConnectionService, 'connectionOf' | 'prepareRemoval' | 'deleteConnectionsOf'>;
   channel: Pick<DiscordChannel, 'available'>;
+  /** A removed professor's calendar feed is deleted with them (ADR-0016 §1). */
+  calendar?: { deleteUserFeeds(userId: number): void };
   now?: () => Date;
   log?: Pick<Logger, 'info'>;
 }
@@ -87,6 +89,7 @@ export function createProfessorsService(deps: ProfessorsDeps): ProfessorsService
         () => {
           db.update(appUser).set({ removedAt: now() }).where(eq(appUser.id, userId)).run();
           deps.invites.revokeResetLinksOf(userId);
+          deps.calendar?.deleteUserFeeds(userId);
           deps.connections.deleteConnectionsOf(userId);
         },
         { behavior: 'immediate' },
