@@ -213,7 +213,10 @@ the checks at the end of this section.
    as it was: it decides login cookies, and the calendar address changes nothing
    but feed links.
 4. Check *Trusted proxies* (`NUXT_TRUSTED_PROXIES`) as [Remote access](#remote-access)
-   explains, so each internet client gets its own fetch limit.
+   explains. This matters more here than for logins: each feed allows 30
+   fetches per 15 minutes per visitor, and if the app can't tell visitors apart
+   behind the proxy, every subscriber to the public link shares those 30, and
+   most of their calendars are refused.
 5. Keep the secret out of logs. Anyone holding a feed link can read the feed, and
    a proxy's access log records full URLs, query string included. The snippets
    above turn the log off for this site. To keep a log, log the path without the

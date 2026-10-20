@@ -1023,7 +1023,8 @@ Key modelling decisions:
   `calendar` module owns `CALENDAR_FEED` and `CALENDAR_SNAPSHOT`, and reaches everything else through exported
   services. Where the build settles what the ADR leaves open:
   - The refresh reads tournaments through `TournamentsService.calendarEvents(…, 'refresh')`. It makes the listings an
-    Upcoming refresh makes, and adds what an event needs and `UpcomingEntry` lacks: the venue, registration and website
+    Upcoming refresh makes, but not Upcoming's live series reads, which no event needs. It adds what an event needs and
+    `UpcomingEntry` lacks: the venue, registration and website
     of a planned row, the listing's sanctioning state, and which professor's listing held each tournament. Its `local`
     mode reads planned rows only and calls nobody. `TournamentsService.checkTournament` makes the one details read of a
     tournament that dropped out of its listing. Upcoming itself is unchanged.
@@ -1036,6 +1037,10 @@ Key modelling decisions:
     begins and when it ends.
   - Whether a professor is gone (disconnected, removed or outside) is decided when a feed is served, so their events
     are marked "not confirmed" at once, without a refresh.
+  - A refresh that meets a connection with no player ID cancels no tournament, but it still cancels a play session
+    missing from a successful listing of every status: sessions belong to the league, not to a professor.
+  - A row that holds a play-tools GUID counts as created whatever its state. A row skipped while its create was
+    `unknown`, then linked, still names a live tournament, so its event stays in the public feed.
 
 ### Metrics (SQL views, computed on read — the data is small)
 
