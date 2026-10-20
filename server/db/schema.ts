@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { blob, index, integer, primaryKey, sqliteTable, text, unique, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { blob, check, index, integer, primaryKey, sqliteTable, text, unique, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /**
  * Accounts for the app itself (not Pokémon accounts), owned by the accounts module (ADR-0015 §1): the owner, who set
@@ -1001,3 +1001,49 @@ export const tournamentResultUpload = sqliteTable(
   },
   (t) => [index('tournament_result_upload_tournament_idx').on(t.leagueId, t.tournamentId)],
 );
+
+/**
+ * Subscribed calendar feeds (ADR-0016 §1): the league's public feed, which the owner turns on, and one feed per user.
+ * Only the SHA-256 of the secret in the feed's URL is stored; the secret is shown once. Owned by the calendar module.
+ */
+export const calendarFeed = sqliteTable(
+  'calendar_feed',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    leagueId: text('league_id')
+      .notNull()
+      .references(() => league.id),
+    kind: text('kind', { enum: ['public', 'user'] }).notNull(),
+    /** Whose `user` feed it is; null for the public feed. */
+    userId: integer('user_id').references(() => appUser.id),
+    /** Lowercase hex SHA-256 of the secret. */
+    tokenSha256: text('token_sha256').notNull().unique(),
+    /** `ppa_cal_…` plus the secret's last 4 characters, to tell links apart. */
+    hint: text('hint').notNull(),
+    /** When this secret was minted; a rotation resets it. */
+    createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+    /** The last fetch it answered, written at most once a minute; null until then and after a rotation. */
+    lastReadAt: integer('last_read_at', { mode: 'timestamp' }),
+  },
+  (t) => [
+    uniqueIndex('calendar_feed_one_public').on(t.leagueId).where(sql`${t.kind} = 'public'`),
+    uniqueIndex('calendar_feed_one_per_user').on(t.leagueId, t.userId).where(sql`${t.kind} = 'user'`),
+    check(
+      'calendar_feed_user_matches_kind',
+      sql`(${t.kind} = 'public' and ${t.userId} is null) or (${t.kind} = 'user' and ${t.userId} is not null)`,
+    ),
+  ],
+);
+
+/**
+ * The events every feed of a league is served from (ADR-0016 §5): one row per league, replaced whole by each refresh
+ * or local rebuild. `events` and `sources` hold the calendar module's `SnapshotEvent[]` and `SnapshotSource[]`.
+ */
+export const calendarSnapshot = sqliteTable('calendar_snapshot', {
+  leagueId: text('league_id')
+    .primaryKey()
+    .references(() => league.id),
+  builtAt: integer('built_at', { mode: 'timestamp' }).notNull(),
+  events: text('events', { mode: 'json' }).notNull(),
+  sources: text('sources', { mode: 'json' }).notNull(),
+});
