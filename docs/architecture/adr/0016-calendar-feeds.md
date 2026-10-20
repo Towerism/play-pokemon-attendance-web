@@ -1,6 +1,6 @@
 # ADR-0016: Calendar feeds: subscribable iCalendar URLs for the league's tournaments and play sessions
 
-- Status: Proposed (2026-10-20, #205): approved once, back to draft after the PR-diff review changed it
+- Status: Accepted (2026-10-20, #205)
 - Date: 2026-10-20
 - Issue: [#205](https://github.com/Towerism/play-pokemon-attendance-web/issues/205)
 - Amends:
