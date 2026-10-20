@@ -894,7 +894,7 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
 
     liveAssignmentsFor(leagueId, playerIds) {
       if (playerIds.length === 0) return [];
-      const label = new Map(roles().map((r) => [r.code, r.label]));
+      const label = new Map<string, string>(roles().map((r) => [r.code, r.label]));
       return db
         .select()
         .from(staffAssignment)

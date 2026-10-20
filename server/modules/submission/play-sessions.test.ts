@@ -28,7 +28,7 @@ const lister = () =>
     gateway: (connectionId) => ({
       async listPlaySessions(groupId, range, statuses) {
         calls.push(`${connectionId} ${groupId} ${statuses?.join(',')} ${range.from.toISOString()}..${range.to.toISOString()}`);
-        if (statuses?.includes(failing!)) throw new PokemonUpstreamError('upstream_unavailable', 'play-tools is down');
+        if (statuses?.includes(failing!)) throw new PokemonUpstreamError('unavailable', 'play-tools is down');
         return sessions.filter((s) => statuses?.includes(s.status));
       },
     }),
@@ -71,7 +71,7 @@ describe('listPlaySessionsInRange', () => {
     sessions = [session('a', 'active', '2026-10-22T23:00:00Z')];
     failing = 'pending';
 
-    await expect(lister().listPlaySessionsInRange('default', RANGE)).rejects.toMatchObject({ code: 'upstream_unavailable' });
+    await expect(lister().listPlaySessionsInRange('default', RANGE)).rejects.toMatchObject({ code: 'unavailable' });
   });
 
   it('fails before any call when no league is chosen or no connection can read', async () => {

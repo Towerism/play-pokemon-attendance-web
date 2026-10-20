@@ -38,13 +38,14 @@ const open = computed({
 });
 
 const formatDate = (iso: string) => new Date(iso).toLocaleString();
-const path = (kind: Kind) => `/api/calendar-feeds/${kind === 'public' ? 'public' : 'me'}` as const;
+// A plain string: Nuxt's typed routes can't compare a union of two literal routes.
+const path = (kind: Kind): string => (kind === 'public' ? '/api/calendar-feeds/public' : '/api/calendar-feeds/me');
 
 async function mint(kind: Kind, rotating: boolean) {
   if (rotating && !window.confirm(confirmText(kind, 'rotate'))) return;
   busy.value = kind;
   try {
-    minted.value = (await $fetch(path(kind), { method: 'POST' })) as Minted;
+    minted.value = await $fetch<Minted>(path(kind), { method: 'POST' });
     await refresh();
   } catch (err) {
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not make the calendar link.') });
@@ -57,7 +58,7 @@ async function turnOff(kind: Kind) {
   if (!window.confirm(confirmText(kind, 'off'))) return;
   busy.value = kind;
   try {
-    await $fetch(path(kind), { method: 'DELETE' });
+    await $fetch<null>(path(kind), { method: 'DELETE' });
     toast.add({ color: 'success', title: kind === 'public' ? 'Public feed turned off' : 'Your feed turned off' });
   } catch (err) {
     toast.add({ color: 'error', title: apiErrorMessage(err, 'Could not turn the feed off.') });
