@@ -404,6 +404,19 @@ describe('listing', () => {
     ]);
     expect(reads).toEqual([]);
   });
+
+  it("gives the tournaments lent to a user, with each lease's end and grant time, for their calendar feed", async () => {
+    await leases.grant(L, OWNER, { tournamentIds: ['t1'], lesseeUserId: MISTY.userId });
+    const grantedAt = clock;
+    reads = [];
+
+    expect(leases.liveLeasesFor(MISTY.userId)).toEqual([{ tournamentId: 't1', endsAt: new Date('2026-11-15T06:00:00Z'), grantedAt }]);
+    expect(leases.liveLeasesFor(OWNER.userId)).toEqual([]);
+    expect(reads).toEqual([]);
+
+    clock = new Date('2026-11-15T06:01:00Z');
+    expect(leases.liveLeasesFor(MISTY.userId)).toEqual([]);
+  });
 });
 
 describe('ending', () => {
