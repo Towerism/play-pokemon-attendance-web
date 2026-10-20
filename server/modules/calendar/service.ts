@@ -50,6 +50,8 @@ export interface CalendarService {
   turnOff(leagueId: string, actor: Actor, kind: FeedKind): void;
   /** A removed professor's feeds; inside the removal's transaction. */
   deleteUserFeeds(userId: number): void;
+  /** The id of the feed a secret belongs to, or null; for the route's rate limits. Records nothing. */
+  matchFeed(secret: string | null | undefined): number | null;
   /** Answers a fetch from the snapshot. Never calls play-tools. */
   serve(secret: string | null | undefined): Promise<ServeAnswer>;
   /** A full refresh; one per league at a time, and a request while one runs gets that one. */
@@ -226,6 +228,8 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
     deleteUserFeeds(userId) {
       store.deleteUserFeeds(userId);
     },
+
+    matchFeed: (secret) => store.find(secret)?.id ?? null,
 
     async serve(secret) {
       const feed = store.find(secret);

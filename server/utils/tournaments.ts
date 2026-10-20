@@ -46,6 +46,8 @@ export function useTournaments(): TournamentsService {
     gateway: connectionGateway,
     staffing: useStaffing(),
     timeZone: leagueTimeZone(),
+    // The calendar feeds rebuild their planned tournaments when the app changes one (ADR-0016 §5), after the write.
+    onTournamentsChanged: (leagueId) => useCalendar().rebuildLocal(leagueId),
   });
   return tournaments;
 }

@@ -48,6 +48,8 @@ describe('server/modules stay plain TS (no h3 / Nuxt)', () => {
     'useTournaments()',
     'useRateLimits()',
     "authRateLimit('login')",
+    'useCalendar()',
+    'requireCalendarFeed(e)',
   ])(
     'rejects the auto-imported call %s',
     async (call) => {

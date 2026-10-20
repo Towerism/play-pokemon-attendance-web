@@ -119,7 +119,8 @@ beforeEach(() => {
 });
 afterEach(() => database.close());
 
-const uidsIn = (body: string) => [...body.matchAll(/^UID:(.+)\r$/gm)].map((m) => m[1]).sort();
+/** The UIDs in a feed, its folded lines joined first (RFC 5545). */
+const uidsIn = (body: string) => [...body.replace(/\r\n /g, '').matchAll(/^UID:(.+)\r$/gm)].map((m) => m[1]).sort();
 
 async function served(secret: string) {
   const answer = await calendar.serve(secret);
@@ -340,6 +341,17 @@ describe('the refresh queue', () => {
 
     expect(reads).toContain(`checkTournament:g2@${MISTY}`);
     expect((await served(secret)).body).toContain('SUMMARY:Cancelled: Cup g2');
+  });
+});
+
+describe('matchFeed', () => {
+  it("gives the feed a secret belongs to, for the route's limits, without counting it as a read", async () => {
+    const { secret } = await calendar.mint(L, OWNER, 'public');
+
+    expect(calendar.matchFeed(secret)).toEqual(expect.any(Number));
+    expect(calendar.matchFeed(`ppa_cal_${'A'.repeat(43)}`)).toBeNull();
+    expect(calendar.matchFeed(null)).toBeNull();
+    expect(calendar.feeds(L, OWNER).public!.lastReadAt).toBeNull();
   });
 });
 
