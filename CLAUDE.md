@@ -51,9 +51,11 @@ Module rules (enforce, don't erode):
   for owner-only routes; `requireActor` only for the waiting-room routes), validate with shared Zod schemas, call a
   module service with the actor, map errors. `test/unit/route-guards.test.ts` holds every route to its guard. The
   exceptions are the public auth routes, the public invite routes (`server/api/invites/*`, rate-limited per client
-  before the body is read, ADR-0015 §6), and `server/api/integrations/v1/*`, which takes only an integration bearer
-  token with the route's scope (`requireIntegrationToken(event, scope)`, ADR-0013, ADR-0015 §7); no other route may
-  accept one.
+  before the body is read, ADR-0015 §6), `server/api/integrations/v1/*`, which takes only an integration bearer
+  token with the route's scope (`requireIntegrationToken(event, scope)`, ADR-0013, ADR-0015 §7), and
+  `server/api/calendar/v1/*`, which takes only a calendar feed secret in `?token=` (`requireCalendarFeed(event)`,
+  `server/utils/calendar.ts`, ADR-0016 §4) and catches every error itself so the URL never reaches a log. No other
+  route may accept either credential.
 - No code but the pokemon module's `actingConnection` turns a professor into a connection for a write to play-tools.
 - `server/modules/*` are plain TS — no h3 or Nuxt imports.
 - From `@towerism/selfhost-kit` (ADR-0014), modules take only the plain helpers on the ESLint allowlist, never
