@@ -5,6 +5,7 @@
 - Amends: architecture §7 ("every handler calls `requireUserSession`") and the CLAUDE.md module rule saying the same,
   for one route family: `/api/integrations/v1/*`
 - Amended by: [ADR-0015](0015-professor-logins.md) (#199): tokens carry scopes checked per route, and a low-level Discord message channel (scope `messages:deliver`), which Genie long-polls, sends professors direct messages addressed by player ID
+- Amended by: [ADR-0016](0016-calendar-feeds.md) (#205): a calendar feed route outside the session cookie, which takes its own feed secret and no integration token
 - Companion: [Tournament Genie ADR-0008](https://github.com/Towerism/discord-pokemon-tournament-genie/blob/main/docs/architecture/adr/0008-attendance-integration.md)
   (accepted), which fixes the contract and pulls on the organizer's click
 - Builds on: [ADR-0007](0007-staff-assignment.md) (staff assignments are desired state),
