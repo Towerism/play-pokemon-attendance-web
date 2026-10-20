@@ -175,6 +175,45 @@ export interface Upcoming {
   unread: UnreadProfessor[];
 }
 
+/**
+ * A tournament as a calendar event is built from it (ADR-0016 §2): a planned row, or a play-tools tournament no row
+ * holds. It never carries the contact email or phone, the details, or the display id.
+ */
+export interface CalendarTournament {
+  plannedId: number | null;
+  tournamentId: string | null;
+  state: PlannedRowState | 'upstream';
+  /** The template's organizer for a planned row; the listing's for a play-tools one. */
+  organizerPlayerId: string | null;
+  /** Tokens filled; null when play-tools has none. Never a display id or GUID. */
+  name: string | null;
+  /** ISO; null for a row whose start a DST change skips or repeats. */
+  startsAt: string | null;
+  timeProblem?: LocalTimeError['reason'];
+  product: string | null;
+  /** The sanctioning state a listing just reported; null without one (a local read, or a tournament no listing held). */
+  applicationState: string | null;
+  venueLabel: string | null;
+  registration: RegistrationSettings | null;
+  eventWebsite: string | null;
+  /** The player ID of the connection whose successful listing held the tournament; null in a local read. */
+  listedBy: string | null;
+}
+
+/** What the calendar refresh read (ADR-0016 §5): the tournaments, and which professors' listings it got. */
+export interface CalendarRead {
+  tournaments: CalendarTournament[];
+  upstream: Upcoming['upstream'] | 'local';
+  /** Player IDs whose listing succeeded. */
+  read: string[];
+  failed: { playerId: string | null; code: string }[];
+  /** A connection with no player ID was read or failed, so its tournaments can't be matched to a source. */
+  unmatched: boolean;
+}
+
+/** The one details read that decides whether a tournament that dropped out of its organizer's listing is off. */
+export type CalendarCheck = { kind: 'cancelled' } | { kind: 'exists'; startsAt: string | null } | { kind: 'unreadable' };
+
 export interface TournamentsService {
   /** The league's templates by name; archived ones only when asked. */
   listTemplates(leagueId: string, opts: { archived?: boolean }): Template[];
@@ -221,6 +260,19 @@ export interface TournamentsService {
    * @throws TournamentsError `invalid_range`
    */
   upcoming(leagueId: string, range: { from?: LocalDate; to?: LocalDate; refresh?: boolean }): Promise<Upcoming>;
+  /**
+   * The tournaments whose local date is in the range, for the calendar feeds (ADR-0016 §5). `refresh` plans every
+   * schedule and reads each readable professor's listing fresh, as Upcoming's refresh does. `local` reads only the
+   * planned rows and calls nobody.
+   */
+  calendarEvents(leagueId: string, range: { from: LocalDate; to: LocalDate }, mode: 'refresh' | 'local'): Promise<CalendarRead>;
+  /**
+   * One details read of a tournament as its organizer's connection: `cancelled` when play-tools no longer has it or
+   * reports it cancelled, deleted or invalidated; `unreadable` when the read fails or nobody connected has that player ID.
+   */
+  checkTournament(leagueId: string, organizerPlayerId: string, tournamentId: string): Promise<CalendarCheck>;
+  /** Tells the calendar the league's tournaments changed: a tournament job began or ended (ADR-0016 §5). */
+  changed(leagueId: string): void;
   /**
    * A form's live choices as one professor: Custom and the premier series play-tools offers for the date (or
    * the coming 12 months), formats and venues. Each read is kept for 10 minutes.
@@ -356,7 +408,29 @@ export interface TournamentsDeps {
   /** The league time zone (ADR-0006): the creatable window and Upcoming's dates are in it. */
   timeZone: string;
   now?: () => Date;
+  /**
+   * Called after a write that changes the league's planned rows or their templates commits, so the calendar rebuilds
+   * its local part (ADR-0016 §5). Not awaited; a failure never fails the write.
+   */
+  onTournamentsChanged?: (leagueId: string) => Promise<void> | void;
 }
+
+/** Statuses play-tools' listing drops: a tournament with one of them is off. */
+const GONE_STATUSES = new Set(['cancelled', 'deleted', 'invalidated']);
+
+/** The writes after which the calendar rebuilds (ADR-0016 §5). Creating a template or a scaffold changes no row. */
+const CHANGING_METHODS = [
+  'updateTemplate',
+  'archiveTemplate',
+  'updateScaffold',
+  'archiveScaffold',
+  'createSchedule',
+  'updateSchedule',
+  'archiveSchedule',
+  'createPlanned',
+  'updatePlanned',
+  'createThrough',
+] as const satisfies readonly (keyof TournamentsService)[];
 
 type TemplateRow = typeof tournamentTemplate.$inferSelect;
 type ScheduleRow = typeof tournamentSchedule.$inferSelect;
@@ -1276,7 +1350,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     now,
   });
 
-  return {
+  const service: TournamentsService = {
     ...edits,
     cancelling,
     requirements,
@@ -1606,5 +1680,149 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         venues: venues.map((v) => ({ id: v.id, label: v.name ?? v.formattedAddress ?? v.id, country: v.country, timeZone: v.timeZone })),
       };
     },
+
+    async calendarEvents(leagueId, range, mode) {
+      if (mode === 'local') {
+        const rows = plannedIn(leagueId, range.from, range.to);
+        const ctx = contextFor(rows);
+        return { tournaments: sortCalendar(rows.map((r) => calendarOfRow(r, ctx, undefined))), upstream: 'local', read: [], failed: [], unmatched: false };
+      }
+      materialise(leagueId);
+      let rows = plannedIn(leagueId, range.from, range.to);
+      const conns = deps.connections.listReadableConnections();
+      const group = conns.length === 0 ? null : (deps.connections.league(leagueId)?.id ?? null);
+      const status = conns.length === 0 ? 'not_connected' : group === null ? 'league_not_selected' : 'read';
+      if (group === null) {
+        const ctx = contextFor(rows);
+        return { tournaments: sortCalendar(rows.map((r) => calendarOfRow(r, ctx, undefined))), upstream: status, read: [], failed: [], unmatched: false };
+      }
+      const listed = await listLeagueTournaments(conns, group, range.from, range.to, 'refresh');
+      if (await linkUnknown(leagueId, group, rows, listed.tournaments)) rows = plannedIn(leagueId, range.from, range.to);
+      const ctx = contextFor(rows);
+      const byId = new Map(listed.tournaments.map((l) => [l.tournament.id, l]));
+      const linked = linkedGuids(leagueId);
+      const planned = rows.map((r) => calendarOfRow(r, ctx, r.tournamentId === null ? undefined : byId.get(r.tournamentId)));
+      const others = listed.tournaments
+        .filter((l) => !linked.has(l.tournament.id))
+        .filter((l) => {
+          const localDate = dateIn(l.tournament.startsAt!, deps.timeZone);
+          return localDate >= range.from && localDate <= range.to;
+        })
+        .map(calendarOfListed);
+      const failedIds = new Set(listed.unread.map((u) => u.professor.playerId));
+      const read = [
+        ...new Set(conns.flatMap((c) => (c.professorPlayerId !== null && c.status === 'connected' && !failedIds.has(c.professorPlayerId) ? [c.professorPlayerId] : []))),
+      ];
+      return {
+        tournaments: sortCalendar([...planned, ...others]),
+        upstream: status,
+        read,
+        failed: listed.unread.map((u) => ({ playerId: u.professor.playerId, code: u.code })),
+        unmatched: conns.some((c) => c.professorPlayerId === null),
+      };
+    },
+
+    async checkTournament(_leagueId, organizerPlayerId, tournamentId) {
+      const c = deps.connections.listReadableConnections().find((x) => x.professorPlayerId === organizerPlayerId && x.status === 'connected');
+      if (!c) return { kind: 'unreadable' };
+      try {
+        const t = await deps.gateway(c.id).getTournament(tournamentId);
+        if (t.applicationState === 'cancelled' || GONE_STATUSES.has(t.status)) return { kind: 'cancelled' };
+        return { kind: 'exists', startsAt: t.startsAt?.toISOString() ?? null };
+      } catch (err) {
+        if (!(err instanceof PokemonUpstreamError)) throw err;
+        return err.code === 'not_found' ? { kind: 'cancelled' } : { kind: 'unreadable' };
+      }
+    },
+
+    changed: (leagueId) => notifyChanged(leagueId),
   };
+  return withChangeNotices(service);
+
+  /** Planned rows whose local date is in the range, without planning anything. */
+  function plannedIn(leagueId: string, from: LocalDate, to: LocalDate) {
+    return db
+      .select()
+      .from(plannedTournament)
+      .where(and(eq(plannedTournament.leagueId, leagueId), gte(plannedTournament.localDate, from), lte(plannedTournament.localDate, to)))
+      .all();
+  }
+
+  function calendarOfRow(row: PlannedRow, ctx: EntryContext, listed: ListedTournament | undefined): CalendarTournament {
+    const template = ctx.templates.get(row.templateId)!;
+    const settings = settingsOf(row, ctx);
+    let startsAt: string | null = null;
+    let timeProblem: LocalTimeError['reason'] | undefined;
+    try {
+      startsAt = localInstant(row.localDate, row.startTime, settings.venue.timeZone).toISOString();
+    } catch (err) {
+      if (!(err instanceof LocalTimeError)) throw err;
+      timeProblem = err.reason;
+    }
+    return {
+      plannedId: row.id,
+      tournamentId: row.tournamentId,
+      state: row.state,
+      organizerPlayerId: template.organizerPlayerId,
+      name: settings.name,
+      startsAt,
+      ...(timeProblem && { timeProblem }),
+      product: template.product,
+      applicationState: listed?.tournament.applicationState ?? null,
+      venueLabel: settings.venue.label,
+      registration: settings.registration,
+      eventWebsite: settings.eventWebsite,
+      listedBy: listed?.organizer.professorPlayerId ?? null,
+    };
+  }
+
+  function calendarOfListed({ tournament: t, organizer }: ListedTournament): CalendarTournament {
+    return {
+      plannedId: null,
+      tournamentId: t.id,
+      state: 'upstream',
+      organizerPlayerId: organizer.professorPlayerId,
+      name: t.name,
+      startsAt: t.startsAt!.toISOString(),
+      product: t.products.length === 1 ? t.products[0]! : null,
+      applicationState: t.applicationState ?? null,
+      venueLabel: null,
+      registration: null,
+      eventWebsite: null,
+      listedBy: organizer.professorPlayerId,
+    };
+  }
+
+  function sortCalendar(list: CalendarTournament[]): CalendarTournament[] {
+    return list.sort(
+      (a, b) =>
+        (a.startsAt ?? '￿').localeCompare(b.startsAt ?? '￿') ||
+        (a.plannedId ?? Number.MAX_SAFE_INTEGER) - (b.plannedId ?? Number.MAX_SAFE_INTEGER) ||
+        (a.tournamentId ?? '').localeCompare(b.tournamentId ?? ''),
+    );
+  }
+
+  /** Never throws into the write that changed something: the calendar logs its own failures. */
+  function notifyChanged(leagueId: string): void {
+    try {
+      void Promise.resolve(deps.onTournamentsChanged?.(leagueId)).catch(() => undefined);
+    } catch {
+      // A synchronous throw from the callback is the calendar's to log, never the write's.
+    }
+  }
+
+  /** Each write in `CHANGING_METHODS` tells the calendar once it has committed (ADR-0016 §5). */
+  function withChangeNotices(s: TournamentsService): TournamentsService {
+    for (const name of CHANGING_METHODS) {
+      const write = s[name] as (leagueId: string, ...rest: unknown[]) => unknown;
+      const wrapped = (leagueId: string, ...rest: unknown[]) => {
+        const result = write(leagueId, ...rest);
+        if (result instanceof Promise) return result.then((v: unknown) => (notifyChanged(leagueId), v));
+        notifyChanged(leagueId);
+        return result;
+      };
+      Object.assign(s, { [name]: wrapped });
+    }
+    return s;
+  }
 }
