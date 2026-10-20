@@ -116,6 +116,12 @@ describe('writeCalendar', () => {
     expect(property(body, 'STATUS').sort()).toEqual(['STATUS:CANCELLED', 'STATUS:TENTATIVE']);
   });
 
+  it('drops control characters other than tab from text values, which RFC 5545 forbids in TEXT', () => {
+    const body = writeCalendar(calendar([event({ summary: 'Bell\u0007 Cup\u0000\u001b[31m\tfinal\u007f' })]));
+
+    expect(property(body, 'SUMMARY')).toEqual(['SUMMARY:Bell Cup[31m\tfinal']);
+  });
+
   it('leaves out a URL that is not http or https, or that holds a control character', () => {
     for (const url of ['javascript:alert(1)', 'https://example.test/a\r\nX-INJECTED:1', 'ftp://example.test', 'https://exa mple.test\tz']) {
       const body = writeCalendar(calendar([event({ url })]));

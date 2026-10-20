@@ -36,6 +36,10 @@ let league: { id: string; name: string; displayId: string | null } | null;
 let actors: Map<number, Actor>;
 let reads: string[];
 let gate: Promise<void> | null;
+/** Leases by lessee user id. */
+let leases: Map<number, { tournamentId: string; endsAt: Date; grantedAt: Date }[]>;
+/** When set, the tournaments read throws it. */
+let brokenRead: Error | null;
 
 const conn = (id: number, userId: number, playerId: string | null, membership: ActingConnection['membership'] = 'member'): ActingConnection => ({
   id,
@@ -53,6 +57,7 @@ function service() {
     tournaments: {
       async calendarEvents(_leagueId, _range, mode) {
         reads.push(`calendarEvents:${mode}`);
+        if (brokenRead) throw brokenRead;
         // What play-tools and the rows hold when the read starts; a local read has only planned rows and no listing.
         const list =
           mode === 'local'
@@ -79,7 +84,7 @@ function service() {
       liveAssignmentsFor: (_leagueId, playerIds) =>
         playerIds.includes('0022222') ? [{ tournamentId: 'g1', playerId: '0022222', role: 'judge', roleLabel: 'Judge', createdAt: new Date('2026-10-01T00:00:00Z') }] : [],
     },
-    leases: { liveLeasesFor: () => [] },
+    leases: { liveLeasesFor: (userId) => leases.get(userId) ?? [] },
     connections: {
       league: () => league,
       listActingConnections: () => connections,
@@ -89,6 +94,7 @@ function service() {
     timeZone: TZ,
     now: () => now,
     randomBytes: (size) => Buffer.alloc(size, ++serial),
+    refreshWaitMs: 200,
     log: {
       info: (message, fields) => void logs.push({ level: 'info', message, fields: fields ?? {} }),
       warn: (message, fields) => void logs.push({ level: 'warn', message, fields: fields ?? {} }),
@@ -115,6 +121,8 @@ beforeEach(() => {
   ]);
   reads = [];
   gate = null;
+  leases = new Map();
+  brokenRead = null;
   calendar = service();
 });
 afterEach(() => database.close());
@@ -152,6 +160,21 @@ describe('turning a feed on', () => {
     now = new Date(now.getTime() + 4 * MINUTE);
     await calendar.mint(L, MISTY_USER, 'user');
     expect(reads).toEqual(['calendarEvents:refresh', 'listPlaySessionsInRange']);
+  });
+
+  it('keeps the old link working until play-tools answers, and answers with the new link once the wait is over', async () => {
+    const old = (await calendar.mint(L, OWNER, 'public')).secret;
+    now = new Date(now.getTime() + 10 * MINUTE);
+    gate = new Promise(() => undefined); // play-tools never answers
+
+    const rotating = calendar.mint(L, OWNER, 'public');
+    // The refresh is waiting on play-tools, and the old link still works.
+    await vi.waitFor(() => expect(reads.at(-1)).toBe('calendarEvents:refresh'), { interval: 1 });
+    expect(await calendar.serve(old)).toMatchObject({ kind: 'ok' });
+
+    const { secret } = await rotating;
+    expect(await calendar.serve(old)).toMatchObject({ kind: 'refused', reason: 'permanent' });
+    expect((await calendar.serve(secret)).kind).toBe('ok');
   });
 
   it('still answers with the link when the refresh fails, and serves no events', async () => {
@@ -261,8 +284,11 @@ describe('what a fetch answers', () => {
     expect((await calendar.serve(secret)).kind).toBe('ok');
   });
 
-  it('serves a professor who disconnected an empty calendar', async () => {
+  it('serves a professor who disconnected an empty calendar, even with a tournament still lent to them', async () => {
     const { secret } = await calendar.mint(L, MISTY_USER, 'user');
+    leases.set(MISTY_USER.userId, [{ tournamentId: 'g1', endsAt: new Date('2026-11-15T06:00:00Z'), grantedAt: now }]);
+    expect(uidsIn((await served(secret)).body)).toContain('planned-1@default.play-pokemon-attendance');
+
     connections = [conn(1, 1, OAK)];
 
     expect(uidsIn((await served(secret)).body)).toEqual([]);
@@ -284,6 +310,8 @@ describe('the refresh queue', () => {
     gate = new Promise((resolve) => (open = resolve));
 
     const first = calendar.refresh(L);
+    // The first refresh is running, held at the gate, before anything else is asked for.
+    await vi.waitFor(() => expect(reads).toEqual(['calendarEvents:refresh']));
     const second = calendar.refresh(L);
     const rebuild1 = calendar.rebuildLocal(L);
     const rebuild2 = calendar.rebuildLocal(L);
@@ -291,6 +319,20 @@ describe('the refresh queue', () => {
     await Promise.all([first, second, rebuild1, rebuild2]);
 
     expect(reads).toEqual(['calendarEvents:refresh', 'listPlaySessionsInRange', 'calendarEvents:local']);
+  });
+
+  it('says how a refresh went: ok with the sources it could not read, or failed when nothing was written', async () => {
+    await calendar.mint(L, OWNER, 'public');
+
+    failed = [{ playerId: MISTY, code: 'needs_reconnect' }];
+    expect(await calendar.refresh(L)).toEqual({ ok: true, failedSources: 1 });
+
+    failed = [];
+    sessions = new PokemonUpstreamError('unavailable', 'down');
+    expect(await calendar.refresh(L)).toEqual({ ok: true, failedSources: 1 });
+
+    brokenRead = new Error('database is locked');
+    expect(await calendar.refresh(L)).toEqual({ ok: false, failedSources: 0 });
   });
 
   it('keeps every writer’s change: a rebuild queued behind a refresh sees what the refresh wrote', async () => {

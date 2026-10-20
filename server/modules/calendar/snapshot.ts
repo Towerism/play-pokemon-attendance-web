@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { PlaySession } from '../pokemon/ports/play-tools-gateway';
 import { sessionTitle } from '../submission/local-time';
+import { safeUri } from './ical';
 import type { CalendarTournament } from '../tournaments/service';
 
 /**
@@ -53,6 +54,8 @@ export interface SnapshotSource {
   lastAttemptAt: string | null;
   /** The last attempt's error code; null when it succeeded. */
   lastError: string | null;
+  /** The first failed attempt since the last successful read; null while reads succeed. */
+  failingSince: string | null;
 }
 
 export interface Snapshot {
@@ -79,11 +82,12 @@ export function uidOf(leagueId: string, kind: 'planned' | 'tournament' | 'sessio
 }
 
 /**
- * A created tournament: in play-tools, so in the public feed. A row still `creating` or `unknown` has no GUID yet and
- * counts as planned.
+ * A created tournament: in play-tools, so in the public feed. Any row holding a GUID is one, whatever its state: a row
+ * skipped while its create was unknown and then linked still names a live tournament. A row still `creating` or
+ * `unknown` has no GUID yet and counts as planned.
  */
-export function isCreated(t: Pick<CalendarTournament, 'tournamentId' | 'state'>): boolean {
-  return t.tournamentId !== null && (t.state === 'created' || t.state === 'upstream' || t.state === 'cancelled');
+export function isCreated(t: Pick<CalendarTournament, 'tournamentId'>): boolean {
+  return t.tournamentId !== null;
 }
 
 /** The parts of an event that come from a tournament; identity, source and dates of change are the caller's. */
@@ -91,14 +95,15 @@ export function tournamentContent(t: CalendarTournament, applicationState: strin
   const start = new Date(t.startsAt!);
   const game = t.product ? (GAME[t.product] ?? t.product.toUpperCase()) : null;
   const created = isCreated(t);
-  const details = [game, registrationLine(t.registration), t.eventWebsite && `Event website: ${t.eventWebsite}`].filter((x): x is string => !!x);
+  const website = safeUri(t.eventWebsite);
+  const details = [game, registrationLine(t.registration), website && `Event website: ${website}`].filter((x): x is string => !!x);
   return {
     name: t.name ?? (game ? `${game} tournament` : 'Tournament'),
     startsAt: start.toISOString(),
     endsAt: new Date(start.getTime() + TOURNAMENT_HOURS * HOUR).toISOString(),
     location: t.venueLabel,
     details,
-    url: t.eventWebsite,
+    url: website,
     created,
     tentative: !created || applicationState !== 'sanctioned',
   };
@@ -119,7 +124,10 @@ export function sessionContent(s: PlaySession) {
 
 function registrationLine(r: CalendarTournament['registration']): string | null {
   if (!r) return null;
-  if (r.kind === 'third_party') return `Registration: ${r.url}`;
+  if (r.kind === 'third_party') {
+    const url = safeUri(r.url);
+    return url && `Registration: ${url}`;
+  }
   const admission = r.admission ? ` Admission: ${r.admission}` : '';
   return `Registration on site opens ${r.opensBeforeMin} min before the start and closes ${r.closesAfterMin} min after.${admission}`;
 }

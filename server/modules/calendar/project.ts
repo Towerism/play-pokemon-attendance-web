@@ -68,12 +68,22 @@ export function projectFeed(snapshot: Snapshot, audience: FeedAudience, ctx: Fee
   };
 }
 
-/** Sources Settings lists as stale, by name: gone, or failing with no successful read for over 14 days. */
-export function staleSources(snapshot: Snapshot, ctx: Pick<FeedContext, 'now' | 'goneSources'>): { key: string; name: string | null; lastReadAt: string | null }[] {
+/**
+ * Sources Settings lists as stale, by name: gone, or failing with no successful read for over 14 days. `since` is when
+ * their events were last confirmed.
+ */
+export function staleSources(snapshot: Snapshot, ctx: Pick<FeedContext, 'now' | 'goneSources'>): StaleSource[] {
   return snapshot.sources
     .filter((s) => ctx.goneSources.has(s.key) || failingTooLong(s, ctx.now))
-    .map((s) => ({ key: s.key, name: s.name, lastReadAt: s.lastReadAt }))
+    .map((s) => ({ key: s.key, name: s.name, since: confirmedAt(s) }))
     .sort((a, b) => (a.name ?? a.key).localeCompare(b.name ?? b.key));
+}
+
+export interface StaleSource {
+  /** `professor:<player id>` or `sessions`. */
+  key: string;
+  name: string | null;
+  since: string | null;
 }
 
 interface Part {
@@ -113,10 +123,16 @@ function userPart(e: SnapshotEvent, audience: Extract<FeedAudience, { kind: 'use
 function unconfirmedSince(e: SnapshotEvent, source: SnapshotSource | undefined, ctx: FeedContext): string | null {
   const gone = ctx.goneSources.has(e.source);
   if (!gone && !(source && failingTooLong(source, ctx.now))) return null;
-  return dateIn(new Date(source?.lastReadAt ?? e.lastModified), ctx.timeZone);
+  return dateIn(new Date(source ? (confirmedAt(source) ?? e.lastModified) : e.lastModified), ctx.timeZone);
+}
+
+/** When the source's events were last confirmed: its last read, or, never read, when it started failing. */
+function confirmedAt(s: SnapshotSource): string | null {
+  return s.lastReadAt ?? s.failingSince;
 }
 
 function failingTooLong(s: SnapshotSource, now: Date): boolean {
-  if (s.lastError === null) return false;
-  return s.lastReadAt === null || now.getTime() - new Date(s.lastReadAt).getTime() > STALE_MS;
+  const since = confirmedAt(s);
+  if (s.lastError === null || since === null) return false;
+  return now.getTime() - new Date(since).getTime() > STALE_MS;
 }

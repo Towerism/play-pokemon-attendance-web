@@ -81,8 +81,8 @@ describe('a first refresh', () => {
     });
     expect(snapshot.sources).toEqual(
       expect.arrayContaining([
-        { key: `professor:${OAK}`, name: 'Prof Oak', lastReadAt: NOW.toISOString(), lastAttemptAt: NOW.toISOString(), lastError: null },
-        { key: 'sessions', name: null, lastReadAt: NOW.toISOString(), lastAttemptAt: NOW.toISOString(), lastError: null },
+        { key: `professor:${OAK}`, name: 'Prof Oak', lastReadAt: NOW.toISOString(), lastAttemptAt: NOW.toISOString(), lastError: null, failingSince: null },
+        { key: 'sessions', name: null, lastReadAt: NOW.toISOString(), lastAttemptAt: NOW.toISOString(), lastError: null, failingSince: null },
       ]),
     );
   });
@@ -94,6 +94,12 @@ describe('a first refresh', () => {
 
     expect(event(snapshot, 'session-s2')!.endsAt).toBe('2026-10-30T02:00:00.000Z');
     expect(event(snapshot, 'tournament-g3')).toMatchObject({ name: 'Tournament', details: [] });
+  });
+
+  it('leaves out of the description a registration or website address that is not a plain http(s) URL', () => {
+    const t = calendarTournament({ registration: { kind: 'third_party', url: 'javascript:alert(1)' }, eventWebsite: 'https://x.test/a\nX-EVIL:1' });
+
+    expect(event(run(null, refreshRead([t])).snapshot, 'planned-1')!.details).toEqual(['TCG']);
   });
 
   it('describes on-site and third-party registration', () => {
@@ -272,6 +278,15 @@ describe('planned rows', () => {
     expect(event(unskipped, 'planned-7')).toMatchObject({ cancelled: false });
   });
 
+  it('keeps a published tournament live and public when a row skipped while its create was unknown links to it', () => {
+    const first = run(null, refreshRead([calendarTournament({ tournamentId: null, state: 'unknown', listedBy: null }), upstreamOnly('g1', OAK)])).snapshot;
+    expect(event(first, 'tournament-g1')).toMatchObject({ created: true, cancelled: false });
+
+    const linked = run(first, localRead([calendarTournament({ state: 'skipped' })])).snapshot;
+
+    expect(event(linked, 'tournament-g1')).toMatchObject({ created: true, cancelled: false });
+  });
+
   it('never shows a row skipped or cancelled before any snapshot held it', () => {
     expect(run(null, localRead([p1({ state: 'skipped' }), p1({ plannedId: 8, state: 'cancelled' })])).snapshot.events).toEqual([]);
   });
@@ -334,6 +349,7 @@ describe('play sessions', () => {
       lastReadAt: NOW.toISOString(),
       lastAttemptAt: later(60).toISOString(),
       lastError: 'unavailable',
+      failingSince: later(60).toISOString(),
     });
   });
 });
@@ -365,7 +381,19 @@ describe('sources', () => {
       lastReadAt: NOW.toISOString(),
       lastAttemptAt: later(60).toISOString(),
       lastError: 'needs_reconnect',
+      failingSince: later(60).toISOString(),
     });
+  });
+
+  it('records when a source started failing, keeps that time while it keeps failing, and clears it on a read', () => {
+    const first = run(null, refreshRead([], { read: [], failed: [{ playerId: MISTY, code: 'needs_reconnect' }] })).snapshot;
+    const still = run(first, refreshRead([], { read: [], failed: [{ playerId: MISTY, code: 'needs_reconnect' }] }), { now: later(60) }).snapshot;
+    const back = run(still, refreshRead([upstreamOnly('g2', MISTY)]), { now: later(120) }).snapshot;
+
+    const misty = (s: Snapshot) => s.sources.find((x) => x.key === `professor:${MISTY}`);
+    expect(misty(first)).toMatchObject({ lastReadAt: null, failingSince: NOW.toISOString() });
+    expect(misty(still)).toMatchObject({ lastReadAt: null, failingSince: NOW.toISOString(), lastAttemptAt: later(60).toISOString() });
+    expect(misty(back)).toMatchObject({ lastReadAt: later(120).toISOString(), failingSince: null, lastError: null });
   });
 
   it('leaves every source as it was on a local rebuild', () => {

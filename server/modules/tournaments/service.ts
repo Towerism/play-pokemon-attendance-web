@@ -418,18 +418,22 @@ export interface TournamentsDeps {
 /** Statuses play-tools' listing drops: a tournament with one of them is off. */
 const GONE_STATUSES = new Set(['cancelled', 'deleted', 'invalidated']);
 
-/** The writes after which the calendar rebuilds (ADR-0016 §5). Creating a template or a scaffold changes no row. */
+/**
+ * The writes after which the calendar rebuilds (ADR-0016 §5). A new write method that changes planned rows, or what
+ * they show, belongs here. Creating a template or a scaffold changes no row; tournament jobs are reported by the
+ * submission module through `changed`.
+ */
 const CHANGING_METHODS = [
-  'updateTemplate',
+  'updateTemplate', // a row shows its template's name, venue, registration and website
   'archiveTemplate',
-  'updateScaffold',
+  'updateScaffold', // replans its schedules' rows
   'archiveScaffold',
-  'createSchedule',
-  'updateSchedule',
-  'archiveSchedule',
+  'createSchedule', // plans rows
+  'updateSchedule', // replans rows
+  'archiveSchedule', // deletes rows not in play-tools
   'createPlanned',
-  'updatePlanned',
-  'createThrough',
+  'updatePlanned', // skip, unskip, move
+  'createThrough', // plans rows up to the date before it previews them
 ] as const satisfies readonly (keyof TournamentsService)[];
 
 type TemplateRow = typeof tournamentTemplate.$inferSelect;

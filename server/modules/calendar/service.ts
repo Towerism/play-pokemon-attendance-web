@@ -16,7 +16,7 @@ import type { CalendarCheck, TournamentsService } from '../tournaments/service';
 import { type FeedRef, type FeedStore, type FeedView, createFeedStore } from './feeds';
 import { writeCalendar } from './ical';
 import { type SessionsRead, dropOuts, merge } from './merge';
-import { type FeedAudience, projectFeed, staleSources } from './project';
+import { type FeedAudience, type StaleSource, projectFeed, staleSources } from './project';
 import { type Snapshot, sourcePlayerId } from './snapshot';
 
 /**
@@ -31,13 +31,22 @@ export interface CalendarFeedsView {
   me: FeedView | null;
   /** The owner's only. */
   public?: FeedView | null;
-  snapshot: { builtAt: string | null; staleSources: { name: string | null; lastReadAt: string | null }[] };
+  snapshot: { builtAt: string | null; staleSources: StaleSource[] };
 }
 
 /** What a fetch answers. A permanent refusal is a 404, a temporary one a 503 (ADR-0016 §4). */
 export type ServeAnswer =
   | { kind: 'refused'; reason: 'permanent' | 'temporary'; matched: boolean }
   | { kind: 'ok'; feedId: number; feedKind: FeedKind; body: string; etag: string; events: number; snapshotAgeSeconds: number };
+
+/**
+ * How a refresh or rebuild went: `ok` when a new snapshot was written, with the sources it couldn't read (whose events
+ * were kept as they were); not `ok` when it failed and the snapshot is unchanged.
+ */
+export interface RefreshOutcome {
+  ok: boolean;
+  failedSources: number;
+}
 
 export interface CalendarService {
   /** The caller's own feed, the public feed for the owner, and the snapshot's age and stale sources. */
@@ -54,10 +63,10 @@ export interface CalendarService {
   matchFeed(secret: string | null | undefined): number | null;
   /** Answers a fetch from the snapshot. Never calls play-tools. */
   serve(secret: string | null | undefined): Promise<ServeAnswer>;
-  /** A full refresh; one per league at a time, and a request while one runs gets that one. */
-  refresh(leagueId: string): Promise<void>;
+  /** A full refresh; one per league at a time, and a request while one runs gets that one. Never rejects. */
+  refresh(leagueId: string): Promise<RefreshOutcome>;
   /** Rebuilds the local part (planned rows) with no play-tools call; does nothing before the first refresh. */
-  rebuildLocal(leagueId: string): Promise<void>;
+  rebuildLocal(leagueId: string): Promise<RefreshOutcome>;
   /** Leagues the hourly task refreshes: a feed read, created or rotated in the last 48 hours. */
   refreshDue(): string[];
 }
@@ -75,6 +84,11 @@ export interface CalendarDeps {
   timeZone: string;
   now?: () => Date;
   randomBytes?: (size: number) => Buffer;
+  /**
+   * How long turning a feed on or rotating it waits for the refresh before answering (default 20 s): the refresh runs
+   * first, while the old link still works, and carries on in the queue if play-tools is slow.
+   */
+  refreshWaitMs?: number;
   log?: Pick<Logger, 'info' | 'warn'>;
 }
 
@@ -91,6 +105,7 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? silentLogger;
+  const refreshWaitMs = deps.refreshWaitMs ?? 20_000;
   const store: FeedStore = createFeedStore({ db, now, ...(deps.randomBytes && { randomBytes: deps.randomBytes }) });
 
   const refOf = (actor: Actor, kind: FeedKind): FeedRef => (kind === 'public' ? { kind: 'public' } : { kind: 'user', userId: actor.userId });
@@ -131,7 +146,7 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
     return attempts.length === 0 ? null : Math.max(...attempts);
   }
 
-  async function runRefresh(leagueId: string): Promise<void> {
+  async function runRefresh(leagueId: string): Promise<RefreshOutcome> {
     const at = now();
     const range = rangeAt(at);
     const read = await deps.tournaments.calendarEvents(leagueId, range.dates, 'refresh');
@@ -159,10 +174,11 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
       const latest = load(leagueId);
       save(leagueId, merge(latest, { leagueId, now: at, range: range.instants, read, sessions, checks, names }));
     });
+    return { ok: true, failedSources: read.failed.length + (sessions.ok ? 0 : 1) };
   }
 
-  async function runLocal(leagueId: string): Promise<void> {
-    if (!load(leagueId)) return;
+  async function runLocal(leagueId: string): Promise<RefreshOutcome> {
+    if (!load(leagueId)) return { ok: true, failedSources: 0 };
     const at = now();
     const range = rangeAt(at);
     const read = await deps.tournaments.calendarEvents(leagueId, range.dates, 'local');
@@ -170,13 +186,14 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
       const latest = load(leagueId);
       if (latest) save(leagueId, merge(latest, { leagueId, now: at, range: range.instants, read, sessions: null, checks: new Map(), names: new Map() }));
     });
+    return { ok: true, failedSources: 0 };
   }
 
   /** One writer at a time per league; a request that a queued or running job already covers gets that job. */
-  type Job = { kind: 'refresh' | 'local'; promise: Promise<void> };
-  const lanes = new Map<string, { tail: Promise<void>; running: Job | null; queued: Job[] }>();
+  type Job = { kind: 'refresh' | 'local'; promise: Promise<RefreshOutcome> };
+  const lanes = new Map<string, { tail: Promise<unknown>; running: Job | null; queued: Job[] }>();
 
-  function enqueue(leagueId: string, kind: Job['kind']): Promise<void> {
+  function enqueue(leagueId: string, kind: Job['kind']): Promise<RefreshOutcome> {
     let lane = lanes.get(leagueId);
     if (!lane) lanes.set(leagueId, (lane = { tail: Promise.resolve(), running: null, queued: [] }));
     const l = lane;
@@ -188,9 +205,10 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
         l.queued = l.queued.filter((j) => j !== job);
         l.running = job;
         try {
-          await (kind === 'refresh' ? runRefresh(leagueId) : runLocal(leagueId));
+          return await (kind === 'refresh' ? runRefresh(leagueId) : runLocal(leagueId));
         } catch (err) {
           log.warn(`calendar ${kind === 'refresh' ? 'refresh' : 'rebuild'} failed: ${(err as Error).message}`, { leagueId });
+          return { ok: false, failedSources: 0 };
         }
       })
       .finally(() => {
@@ -209,16 +227,25 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
         ...(actor.role === 'owner' && { public: store.view(leagueId, { kind: 'public' }) }),
         snapshot: {
           builtAt: snapshot?.builtAt ?? null,
-          staleSources: snapshot ? staleSources(snapshot, { now: now(), goneSources: goneSources(snapshot) }).map(({ name, lastReadAt }) => ({ name, lastReadAt })) : [],
+          staleSources: snapshot ? staleSources(snapshot, { now: now(), goneSources: goneSources(snapshot) }) : [],
         },
       };
     },
 
     async mint(leagueId, actor, kind) {
-      const minted = store.mint(leagueId, refOf(actor, kind));
+      // Refresh before the new secret replaces the old one, so a slow play-tools never leaves both links dead: the old
+      // link works until the new one is answered, and a refresh still running after the wait carries on in the queue.
       const last = lastRefreshAt(load(leagueId));
-      if (last === null || now().getTime() - last >= FRESH_MS) await enqueue(leagueId, 'refresh');
-      return minted;
+      if (last === null || now().getTime() - last >= FRESH_MS) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const waited = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, refreshWaitMs);
+          timer.unref?.();
+        });
+        await Promise.race([enqueue(leagueId, 'refresh'), waited]);
+        clearTimeout(timer);
+      }
+      return store.mint(leagueId, refOf(actor, kind));
     },
 
     turnOff(leagueId, actor, kind) {
@@ -248,11 +275,13 @@ export function createCalendarService(deps: CalendarDeps): CalendarService {
           if (!member && held.length > 0) return refused('permanent');
         }
         const playerIds = new Set(held.flatMap((c) => (c.professorPlayerId ? [c.professorPlayerId] : [])));
+        // A professor with no connection left isn't a member: every event was theirs only through it, leases included.
+        const connected = actor.role === 'owner' || held.length > 0;
         audience = {
           kind: 'user',
           playerIds,
-          assignments: deps.staffing.liveAssignmentsFor(feed.leagueId, [...playerIds]),
-          leases: deps.leases.liveLeasesFor(actor.userId),
+          assignments: connected ? deps.staffing.liveAssignmentsFor(feed.leagueId, [...playerIds]) : [],
+          leases: connected ? deps.leases.liveLeasesFor(actor.userId) : [],
         };
       }
       if (!league) return refused('temporary');

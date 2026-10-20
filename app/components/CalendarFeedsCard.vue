@@ -130,7 +130,7 @@ async function copy() {
         <template #description>
           <p>Calendars keep these events, marked as not confirmed, until the professor reconnects or the events pass.</p>
           <ul class="mt-1 list-disc pl-5">
-            <li v-for="s in stale" :key="`${s.name}-${s.lastReadAt}`">{{ staleText(s, timeZone) }}</li>
+            <li v-for="s in stale" :key="s.key">{{ staleText(s, timeZone) }}</li>
           </ul>
         </template>
       </UAlert>

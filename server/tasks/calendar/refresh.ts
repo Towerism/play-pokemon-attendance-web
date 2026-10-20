@@ -9,8 +9,10 @@ export default defineTask({
     const calendar = useCalendar();
     const leagues = calendar.refreshDue();
     for (const leagueId of leagues) {
-      await calendar.refresh(leagueId);
-      useLogger('calendar', { leagueId }).info('calendar snapshot refreshed');
+      const { ok, failedSources } = await calendar.refresh(leagueId);
+      const log = useLogger('calendar', { leagueId, failedSources });
+      if (ok) log.info('calendar snapshot refreshed');
+      else log.warn('calendar snapshot not refreshed: the last snapshot is kept');
     }
     return { result: { leagues: leagues.length } };
   },

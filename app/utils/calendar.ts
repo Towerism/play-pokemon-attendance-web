@@ -13,10 +13,10 @@ export function reachText(reach: CalendarReach): string {
   return 'Works only in calendar apps that fetch it from your device (macOS "On My Mac" calendars, classic Outlook desktop) on a network that reaches this app. Google Calendar, iCloud and Outlook.com can\'t reach it.';
 }
 
-/** A source whose events the feeds can't confirm: a professor by name, or the play sessions. */
-export function staleText(source: { name: string | null; lastReadAt: string | null }, timeZone: string): string {
-  const who = source.name ?? 'Play sessions';
-  return source.lastReadAt ? `${who}: not confirmed since ${dateIn(new Date(source.lastReadAt), timeZone)}` : `${who}: never read`;
+/** A source whose events the feeds can't confirm: a professor by name (else player ID), or the play sessions. */
+export function staleText(source: { key: string; name: string | null; since: string | null }, timeZone: string): string {
+  const who = source.key === 'sessions' ? 'Play sessions' : (source.name ?? `Professor ${source.key.replace(/^professor:/, '')}`);
+  return source.since ? `${who}: not confirmed since ${dateIn(new Date(source.since), timeZone)}` : `${who}: never read`;
 }
 
 /** The confirmation before a change that cuts subscribers off. */

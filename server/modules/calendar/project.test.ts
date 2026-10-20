@@ -50,6 +50,7 @@ const source = (key: string, overrides: Partial<SnapshotSource> = {}): SnapshotS
   lastReadAt: BUILT,
   lastAttemptAt: BUILT,
   lastError: null,
+  failingSince: null,
   ...overrides,
 });
 
@@ -127,6 +128,16 @@ describe('unconfirmed events', () => {
 
     expect(projectFeed(failing(new Date(NOW.getTime() - 14 * DAY + 60_000).toISOString()), { kind: 'public' }, CTX).events[0]!.summary).toBe('Cup t2');
     expect(projectFeed(failing('2026-10-05T12:00:00.000Z'), { kind: 'public' }, CTX).events[0]!.summary).toBe(
+      'Cup t2 (not confirmed since 2026-10-05)',
+    );
+  });
+
+  it('marks the events of a source that has never read only 14 days after its first failure, dated from it', () => {
+    const neverRead = (failingSince: string) =>
+      snapshot([T2], [source(`professor:${MISTY}`, { lastReadAt: null, lastError: 'needs_reconnect', failingSince })]);
+
+    expect(projectFeed(neverRead('2026-10-17T12:00:00.000Z'), { kind: 'public' }, CTX).events[0]!.summary).toBe('Cup t2');
+    expect(projectFeed(neverRead('2026-10-05T12:00:00.000Z'), { kind: 'public' }, CTX).events[0]!.summary).toBe(
       'Cup t2 (not confirmed since 2026-10-05)',
     );
   });
@@ -228,8 +239,8 @@ describe('staleSources', () => {
     );
 
     expect(staleSources(snap, { now: NOW, goneSources: new Set([`professor:${MISTY}`]) })).toEqual([
-      { key: `professor:${BROCK}`, name: 'Brock', lastReadAt: '2026-10-01T00:00:00.000Z' },
-      { key: `professor:${MISTY}`, name: 'Misty', lastReadAt: '2026-10-19T00:00:00.000Z' },
+      { key: `professor:${BROCK}`, name: 'Brock', since: '2026-10-01T00:00:00.000Z' },
+      { key: `professor:${MISTY}`, name: 'Misty', since: '2026-10-19T00:00:00.000Z' },
     ]);
   });
 });

@@ -192,6 +192,7 @@ function sources(previous: readonly SnapshotSource[], input: MergeInput): Snapsh
       lastReadAt: error === null ? at : (prior?.lastReadAt ?? null),
       lastAttemptAt: at,
       lastError: error,
+      failingSince: error === null ? null : prior?.lastError ? (prior.failingSince ?? at) : at,
     });
   };
   if (input.read.upstream === 'read') {

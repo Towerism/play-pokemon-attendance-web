@@ -77,23 +77,31 @@ function utc(d: Date): string {
   return d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 }
 
-/** TEXT escaping (RFC 5545 §3.3.11); a CRLF, CR or LF becomes one `\n`. */
+/**
+ * TEXT escaping (RFC 5545 §3.3.11); a CRLF, CR or LF becomes one `\n`, and any other control character but tab is
+ * dropped, since TEXT may not hold one.
+ */
 function text(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n');
+  const escaped = value.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n');
+  return [...escaped].filter((ch) => ch === '\t' || !isControl(ch)).join('');
 }
 
 /**
  * A URI value isn't TEXT, so it can't be escaped: anything but a plain http(s) URL with no control character or
- * space is left out, so a stored value can never add a line to the feed.
+ * space is left out, so a stored value can never add a line to the feed. Exported for URLs written into a description.
  */
-function safeUri(value: string | null): string | null {
+export function safeUri(value: string | null): string | null {
   if (!value || !/^https?:\/\//i.test(value) || [...value].some(isControlOrSpace)) return null;
   return value;
 }
 
 function isControlOrSpace(ch: string): boolean {
+  return ch === ' ' || isControl(ch);
+}
+
+function isControl(ch: string): boolean {
   const code = ch.codePointAt(0)!;
-  return code <= 0x20 || code === 0x7f;
+  return code < 0x20 || code === 0x7f;
 }
 
 /** Folds a content line at 75 octets, never inside a UTF-8 character; continuation lines start with one space. */

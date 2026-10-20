@@ -47,7 +47,13 @@ export function useTournaments(): TournamentsService {
     staffing: useStaffing(),
     timeZone: leagueTimeZone(),
     // The calendar feeds rebuild their planned tournaments when the app changes one (ADR-0016 §5), after the write.
-    onTournamentsChanged: (leagueId) => useCalendar().rebuildLocal(leagueId),
+    onTournamentsChanged: async (leagueId) => {
+      try {
+        await useCalendar().rebuildLocal(leagueId);
+      } catch (err) {
+        useLogger('calendar').warn(`Could not rebuild the calendar feeds' planned tournaments: ${(err as Error).message}`, { leagueId });
+      }
+    },
   });
   return tournaments;
 }

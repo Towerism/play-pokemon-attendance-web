@@ -14,10 +14,14 @@ describe('reachText', () => {
 });
 
 describe('staleText', () => {
-  it("names the source and the date of its last read in the league's time zone", () => {
-    expect(staleText({ name: 'Misty', lastReadAt: '2026-10-01T18:00:00.000Z' }, 'America/Chicago')).toBe('Misty: not confirmed since 2026-10-01');
-    expect(staleText({ name: null, lastReadAt: '2026-10-02T03:00:00.000Z' }, 'America/Chicago')).toBe('Play sessions: not confirmed since 2026-10-01');
-    expect(staleText({ name: 'Brock', lastReadAt: null }, 'America/Chicago')).toBe('Brock: never read');
+  it("names the source and the date its events were last confirmed, in the league's time zone", () => {
+    const tz = 'America/Chicago';
+    expect(staleText({ key: 'professor:0011111', name: 'Misty', since: '2026-10-01T18:00:00.000Z' }, tz)).toBe('Misty: not confirmed since 2026-10-01');
+    expect(staleText({ key: 'sessions', name: null, since: '2026-10-02T03:00:00.000Z' }, tz)).toBe('Play sessions: not confirmed since 2026-10-01');
+    expect(staleText({ key: 'professor:0022222', name: null, since: '2026-10-02T03:00:00.000Z' }, tz)).toBe(
+      'Professor 0022222: not confirmed since 2026-10-01',
+    );
+    expect(staleText({ key: 'professor:0022222', name: 'Brock', since: null }, tz)).toBe('Brock: never read');
   });
 });
 
