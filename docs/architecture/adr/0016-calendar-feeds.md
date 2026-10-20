@@ -1,6 +1,6 @@
 # ADR-0016: Calendar feeds: subscribable iCalendar URLs for the league's tournaments and play sessions
 
-- Status: Proposed (2026-10-20, #205)
+- Status: Accepted (2026-10-20, #205)
 - Date: 2026-10-20
 - Issue: [#205](https://github.com/Towerism/play-pokemon-attendance-web/issues/205)
 - Amends:
@@ -130,15 +130,15 @@ range (`GET /tournaments/upcoming`) widened backwards, so last month's events st
 | --- | --- | --- |
 | Name (`X-WR-CALNAME`) | "<league name>" | "<league name>: my tournaments" |
 | Tournaments created in play-tools, in the league | every one | those the user organizes (any of their connections), is staff on, or holds a lease on |
-| Planned tournaments not created yet | none (open question Q1) | those whose template's organizer is one of the user's connections, as `STATUS:TENTATIVE` |
+| Planned tournaments not created yet | none (Q1) | those whose template's organizer is one of the user's connections, as `STATUS:TENTATIVE` |
 | Skipped planned tournaments | none | none |
-| Play sessions | every one in the league | none (open question Q3) |
+| Play sessions | every one in the league | none (Q3) |
 | Staff, player IDs, contact email and phone | never | never |
 
 - **"Staff on"** means the user's player ID is in the tournament's live staff assignments made in the app
   (`staff_assignment`, the same desired state the Staff card and Genie read, ADR-0013 decision 5). This is narrower
   than the organizer's "are staff on": a professor added as staff only in play-tools is left out. Including them
-  costs one or two participant reads per tournament on every refresh, so it is open question Q5.
+  costs one or two participant reads per tournament on every refresh, so it is question Q5.
 - **A tournament play-tools hasn't sanctioned** (its sanctioning state is anything but `sanctioned`, such as
   `approval-pending` or `sanctioning-error`) is `STATUS:TENTATIVE` in both feeds.
 - **The user feed marks the user's part** in each event: "You organize", "Staff: Judge" or "Lent to you until
@@ -146,8 +146,8 @@ range (`GET /tournaments/upcoming`) widened backwards, so last month's events st
 - **An event is built only from fields a refresh already reads**, with no per-tournament details call:
   - `SUMMARY`: the tournament's name with tokens filled, or the play session's label ("Open play · TCG, VG", §4.4).
   - `DTSTART`: the start as a UTC instant.
-  - `DTEND`: the session's end; for a tournament or a session with no end, the start plus a default length (open
-    question Q2: how long an event lasts).
+  - `DTEND`: the session's end; for a tournament or a session with no end, the start plus a default length (Q2:
+    4 hours for a tournament, 3 for a session).
   - `LOCATION`: the venue label of the tournament's template or planned row. A tournament no row holds has none.
   - `DESCRIPTION`: game and format and the play-tools display id. For a tournament a row holds, also its
     registration details and event website from the template and the row's overrides.
@@ -318,21 +318,21 @@ small enough that a tested writer is less to keep up to date than a dependency.
 - (−) Sharing through Google, iCloud or Outlook.com needs a reverse proxy open to the internet, the first route of
   this app that faces the internet by design. The recipe exposes only the feed route, which is read-only and
   rate-limited.
-- (−) Event lengths are a guess (open question Q2), because play-tools has no end time for tournaments.
+- (−) Event lengths are a guess (Q2), because play-tools has no end time for tournaments.
 - (−) A tournament the app didn't plan has no location or registration details in the feed, because those come only
   from play-tools' per-tournament details read, which the refresh skips.
 - (−) A third route family outside the session cookie. It is one route behind one guard, held to it by the
   route-guard test and by an auth matrix in its server tests.
 
-## Open questions
+## Questions settled at approval
 
-| | Question | Designed as |
+| | Question | Answer (2026-10-20) |
 | --- | --- | --- |
-| Q1 | Should the public feed show planned tournaments that aren't created in play-tools yet? A planned tournament may never be sanctioned. | **Open: organizer.** No: only created tournaments. Planned ones are in user feeds, as tentative |
-| Q2 | How long is an event when play-tools gives no end? | **Open: organizer.** 4 hours for a tournament; a play session's own end, else 3 hours |
-| Q3 | Should a user feed include the league's play sessions too? | **Open: organizer.** No: a professor who wants them also subscribes to the public feed |
-| Q4 | Is 30 days back and 26 weeks ahead the right range? | **Open: organizer.** Yes |
-| Q5 | Should "staff on" include staff added only in play-tools, not in the app? It costs one or two participant reads per tournament on every hourly refresh. | **Open: organizer.** No: only staff assigned in the app, as Genie reads them |
+| Q1 | Should the public feed show planned tournaments that aren't created in play-tools yet? A planned tournament may never be sanctioned. | No: only created tournaments. Planned ones are in user feeds, as tentative. Approved as designed |
+| Q2 | How long is an event when play-tools gives no end? | 4 hours for a tournament; a play session's own end, else 3 hours. Approved as designed |
+| Q3 | Should a user feed include the league's play sessions too? | No: a professor who wants them also subscribes to the public feed. Approved as designed |
+| Q4 | Is 30 days back and 26 weeks ahead the right range? | Yes. Approved as designed |
+| Q5 | Should "staff on" include staff added only in play-tools, not in the app? It costs one or two participant reads per tournament on every hourly refresh. | No: only staff assigned in the app, as Genie reads them. The organizer: "Q5: No." |
 
 ## Tests these decisions need
 
