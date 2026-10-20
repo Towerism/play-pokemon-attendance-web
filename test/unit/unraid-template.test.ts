@@ -86,6 +86,12 @@ describe('Unraid template', () => {
     expect(config('NUXT_TRUSTED_PROXIES').Description).toMatch(/docs\/deploy\/unraid\.md/);
   });
 
+  it('offers NUXT_CALENDAR_BASE_URL as an optional, unmasked, advanced field that is blank by default (ADR-0016 §7)', () => {
+    expect(config('NUXT_CALENDAR_BASE_URL')).toMatchObject({ Type: 'Variable', Display: 'advanced', Required: 'false', Mask: 'false', Default: '' });
+    expect(config('NUXT_CALENDAR_BASE_URL').value ?? '').toBe('');
+    expect(config('NUXT_CALENDAR_BASE_URL').Description).toMatch(/docs\/deploy\/unraid\.md/);
+  });
+
   it('never asks for Pokémon or organizer credentials (set up in the browser)', () => {
     const targets = container.Config.map((c) => c.Target);
     expect(targets.filter((t) => /password|user|token/i.test(t))).toEqual(['NUXT_SESSION_PASSWORD', 'NUXT_TOKEN_VAULT_KEY']);
