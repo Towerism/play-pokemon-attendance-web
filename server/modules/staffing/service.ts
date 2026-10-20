@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { PlayerId, SessionDate } from '../../../shared/types/ids';
 import type { Db } from '../../db/client';
 import { staffAssignment, staffHistory } from '../../db/schema';
@@ -145,6 +145,16 @@ export interface StaffAssignmentRecord {
   removed: boolean;
 }
 
+/** One live assignment of a player, as a calendar feed shows it ("Staff: Judge"). */
+export interface LiveAssignment {
+  tournamentId: string;
+  playerId: string;
+  role: string;
+  /** play-tools' label for the role, or the code when it isn't one play-tools lists. */
+  roleLabel: string;
+  createdAt: Date;
+}
+
 export interface StaffingService {
   /** The roles play-tools offers staff, judge first; never `organizer`. No upstream call. */
   listRoles(leagueId: string): readonly { code: string; label: string }[];
@@ -212,6 +222,11 @@ export interface StaffingService {
   organizersOn(leagueId: string, date: SessionDate): Promise<Map<string, PlayerId>>;
   /** The tournament's assignments, live and tombstoned, oldest first. */
   assignmentsFor(leagueId: string, tournamentId: string): StaffAssignmentRecord[];
+  /**
+   * The live assignments made in the app for any of `playerIds`, across tournaments, oldest first: what a professor's
+   * calendar feed counts as "staff on" (ADR-0016 §2). Tombstones are left out. No upstream call.
+   */
+  liveAssignmentsFor(leagueId: string, playerIds: readonly string[]): LiveAssignment[];
   /**
    * Play-tools holds `recordId` for the assignment in `role`: it is `assigned`,
    * and the staffer joins the staff list as the app's. A no-op for an
@@ -875,6 +890,26 @@ function recordUpstreamStaff(leagueId: string, tournament: SeedTournament, parti
         recordId: r.recordId,
         removed: r.removedAt !== null,
       }));
+    },
+
+    liveAssignmentsFor(leagueId, playerIds) {
+      if (playerIds.length === 0) return [];
+      const label = new Map(roles().map((r) => [r.code, r.label]));
+      return db
+        .select()
+        .from(staffAssignment)
+        .where(
+          and(eq(staffAssignment.leagueId, leagueId), inArray(staffAssignment.playerId, [...playerIds]), isNull(staffAssignment.removedAt)),
+        )
+        .orderBy(asc(staffAssignment.id))
+        .all()
+        .map((r) => ({
+          tournamentId: r.tournamentId,
+          playerId: r.playerId,
+          role: r.role,
+          roleLabel: label.get(r.role) ?? r.role,
+          createdAt: r.createdAt,
+        }));
     },
 
     recordApplied(leagueId, assignmentId, applied) {
