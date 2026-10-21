@@ -98,7 +98,7 @@ describe('calendarEvents, refresh', () => {
         product: 'tcg',
         applicationState: 'approval-pending',
         venueLabel: 'Card Shop',
-        registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+        registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
         eventWebsite: 'https://example.test/t1',
         listedBy: OLIVE.professorPlayerId,
       },

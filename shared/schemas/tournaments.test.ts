@@ -36,7 +36,7 @@ const VALID_TEMPLATE = {
   type: { kind: 'premier', seriesMatch: 'League Challenge' },
   venue: { id: '00000000-0000-4000-8000-000000000051', label: 'Card Shop', timeZone: 'America/Chicago', country: 'US' },
   startTime: '18:00',
-  registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+  registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
   contactEmail: 'league@example.com',
   contactPhone: null,
   details: null,
@@ -78,6 +78,13 @@ describe('TemplateBody', () => {
     ['a third-party registration', { registration: { kind: 'third_party', url: 'https://tickets.example.com' } }, true],
     ['a third-party http registration', { registration: { kind: 'third_party', url: 'http://tickets.example.com' } }, false],
     ['registration opening 1,441 minutes before', { registration: { ...VALID_TEMPLATE.registration, opensBeforeMin: 1441 } }, false],
+    ['free admission', { registration: { ...VALID_TEMPLATE.registration, admissionCents: 0 } }, true],
+    ['admission of $999.99', { registration: { ...VALID_TEMPLATE.registration, admissionCents: 99999 } }, true],
+    ['admission of $1,000', { registration: { ...VALID_TEMPLATE.registration, admissionCents: 100000 } }, false],
+    ['a negative admission', { registration: { ...VALID_TEMPLATE.registration, admissionCents: -1 } }, false],
+    ['admission in fractions of a cent', { registration: { ...VALID_TEMPLATE.registration, admissionCents: 7.5 } }, false],
+    ['admission as text', { registration: { ...VALID_TEMPLATE.registration, admissionCents: '10' } }, false],
+    ['admission under its old name', { registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: 'Free' } }, false],
     ['an organizer id with letters', { organizerPlayerId: '99a' }, false],
   ])('%s → %s', (_, patch, valid) => {
     expect(ok(TemplateBody, { ...VALID_TEMPLATE, ...patch })).toBe(valid);

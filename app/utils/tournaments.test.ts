@@ -7,6 +7,10 @@ import type { EditValues } from '../../server/modules/tournaments/edit';
 import type { CreateThroughPreview, Template, TournamentOptions, UpcomingEntry } from '../../server/modules/tournaments/service';
 import {
   type TemplateFormState,
+  admissionInput,
+  admissionInputText,
+  registrationProblem,
+  startLine,
   FIELD_LABEL,
   blankToNull,
   valueText,
@@ -88,12 +92,13 @@ function template(overrides: Partial<Template> = {}): Template {
     type: { kind: 'custom' },
     venue: { id: 'v1', label: 'Card Shop', timeZone: 'America/Chicago', country: 'US' },
     startTime: '18:00',
-    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
     contactEmail: 'league@example.com',
     contactPhone: null,
     details: null,
     eventWebsite: null,
     archived: false,
+    legacyAdmission: null,
     ...overrides,
   };
 }
@@ -286,6 +291,7 @@ function entry(overrides: Partial<UpcomingEntry> = {}): UpcomingEntry {
     lastAttemptAt: null,
     skippedWhileUnknown: false,
     tdfAvailable: false,
+    admissionCents: null,
     actions: ['create', 'skip'],
     ...overrides,
   };
@@ -562,7 +568,7 @@ describe('the edit form', () => {
     venue: { id: 'v1', label: 'Card Shop', timeZone: 'America/Chicago', country: 'US' },
     localDate: '2026-10-30',
     startTime: '18:00',
-    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
     contactEmail: 'league@example.com',
     contactPhone: null,
     details: null,
@@ -574,7 +580,7 @@ describe('the edit form', () => {
       ...values,
       name: 'Friday Cup November',
       venue: { id: 'v1', label: 'Card Shop (renamed)', timeZone: 'America/Chicago', country: 'US' },
-      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
       contactPhone: '  ',
       details: 'Bring a deck box',
     };
@@ -590,8 +596,11 @@ describe('the edit form', () => {
   it('shows a field’s before and after in words', () => {
     expect(valueText('venue', values.venue)).toBe('Card Shop');
     expect(valueText('registration', values.registration)).toBe('On site: opens 60 min before, closes 15 min after');
-    expect(valueText('registration', { kind: 'on_site', opensBeforeMin: 30, closesAfterMin: 0, admission: '$5' })).toBe(
+    expect(valueText('registration', { kind: 'on_site', opensBeforeMin: 30, closesAfterMin: 0, admissionCents: 500 })).toBe(
       'On site: opens 30 min before, closes 0 min after, admission $5',
+    );
+    expect(valueText('registration', { kind: 'on_site', opensBeforeMin: 30, closesAfterMin: 0, admissionCents: 0 })).toBe(
+      'On site: opens 30 min before, closes 0 min after, admission Free',
     );
     expect(valueText('registration', { kind: 'third_party', url: 'https://example.com/r' })).toBe('Third party: https://example.com/r');
     expect(valueText('details', null)).toBe('—');
@@ -864,7 +873,7 @@ describe('New tournament with details changed from the template (#162)', () => {
       const form = {
         ...structuredClone(base),
         venue: { ...base.venue, label: 'Card Shop (renamed)', timeZone: 'America/New_York' },
-        registration: { kind: 'on_site' as const, closesAfterMin: 15, opensBeforeMin: 60, admission: '' },
+        registration: { kind: 'on_site' as const, closesAfterMin: 15, opensBeforeMin: 60, admissionCents: null },
         name: ' League Challenge {month} ',
         eventWebsite: '   ',
       };
@@ -955,5 +964,46 @@ describe('New tournament with details changed from the template (#162)', () => {
     ['something_else', null],
   ])('explains %s', (code, text) => {
     expect(plannedErrorText(code, 'Friday Cup')).toBe(text);
+  });
+});
+
+describe('the Admission input', () => {
+  it.each([
+    ['10', 1000],
+    ['$7.5', 750],
+    ['Free', 0],
+    ['', null],
+    ['  ', null],
+  ])('reads %j as %j', (text, cents) => {
+    expect(admissionInput(text)).toBe(cents);
+  });
+
+  it("marks text that isn't an amount so the form can refuse it", () => {
+    expect(admissionInput('abc')).toBeNaN();
+    expect(admissionInput('1000.00')).toBeNaN();
+  });
+
+  it('shows a stored amount as text that reads back the same', () => {
+    expect(admissionInputText(null)).toBe('');
+    expect(admissionInputText(0)).toBe('Free');
+    expect(admissionInputText(750)).toBe('7.50');
+    expect(admissionInput(admissionInputText(750))).toBe(750);
+  });
+
+  it('refuses to save a registration whose admission is not an amount', () => {
+    const window = { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15 } as const;
+    expect(registrationProblem({ ...window, admissionCents: Number.NaN })).toBe('Enter an amount such as 10 or 7.50');
+    expect(registrationProblem({ ...window, admissionCents: 750 })).toBeNull();
+    expect(registrationProblem({ ...window, admissionCents: null })).toBeNull();
+    expect(registrationProblem({ kind: 'third_party', url: 'https://tickets.example.com' })).toBeNull();
+    expect(registrationProblem(null)).toBeNull();
+  });
+});
+
+describe('a tournament row’s start line', () => {
+  it('puts the admission after the start time, and nothing when there is none', () => {
+    expect(startLine('10:00', 1000)).toBe('10:00 · $10');
+    expect(startLine('10:00', 0)).toBe('10:00 · Free');
+    expect(startLine('10:00', null)).toBe('10:00');
   });
 });

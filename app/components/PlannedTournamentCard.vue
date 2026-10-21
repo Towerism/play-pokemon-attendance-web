@@ -25,7 +25,7 @@ const menu = computed(() =>
     <div class="flex items-start gap-2">
       <div class="min-w-0 flex-1 space-y-1">
         <h3 :id="headingId" class="font-medium break-words">{{ label }}</h3>
-        <p class="text-sm text-muted break-words">{{ entry.startTime }} · Organized by {{ professorName(entry.organizer) }}</p>
+        <p class="text-sm text-muted break-words">{{ startLine(entry.startTime, entry.admissionCents) }} · Organized by {{ professorName(entry.organizer) }}</p>
         <p class="flex flex-wrap items-center gap-2 text-sm">
           <UBadge variant="subtle" :color="status.color">{{ status.label }}</UBadge>
           <UBadge v-if="tag" variant="outline" :color="tag.startsWith('Create by') ? 'neutral' : 'warning'">{{ tag }}</UBadge>

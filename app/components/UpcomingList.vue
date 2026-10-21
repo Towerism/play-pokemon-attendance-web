@@ -147,7 +147,7 @@ async function download(e: UpcomingEntry) {
                   <UBadge v-if="e.timeProblem" variant="outline" color="warning">A clock change {{ e.timeProblem === 'nonexistent' ? 'skips' : 'repeats' }} this start time</UBadge>
                 </div>
                 <p class="text-muted break-words">
-                  {{ e.startTime }} · {{ professorName(e.organizer) }}<template v-if="e.product"> · {{ GAME[e.product as 'tcg'] ?? e.product }}</template
+                  {{ startLine(e.startTime, e.admissionCents) }} · {{ professorName(e.organizer) }}<template v-if="e.product"> · {{ GAME[e.product as 'tcg'] ?? e.product }}</template
                   ><template v-if="e.category"> · {{ e.category }}</template><template v-if="e.displayId"> · {{ e.displayId }}</template>
                 </p>
                 <template v-if="e.type?.kind === 'premier' && e.type.status !== 'resolved'">

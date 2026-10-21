@@ -21,7 +21,7 @@ export function templateBody(overrides: Partial<TemplateBody> = {}): TemplateBod
     type: { kind: 'premier', seriesMatch: 'League Challenge' },
     venue: VENUE,
     startTime: '18:00',
-    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
     contactEmail: 'league@example.com',
     contactPhone: null,
     details: null,

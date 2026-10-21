@@ -53,6 +53,7 @@ function entry(overrides: Partial<UpcomingEntry> = {}): UpcomingEntry {
     lastAttemptAt: null,
     skippedWhileUnknown: false,
     tdfAvailable: false,
+    admissionCents: null,
     actions: ['create', 'skip'],
     ...overrides,
   };

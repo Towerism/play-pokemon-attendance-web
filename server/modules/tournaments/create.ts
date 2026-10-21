@@ -1,3 +1,4 @@
+import { admissionText } from '../../../shared/money/admission';
 import type { NewTournament, Product, Tournament } from '../pokemon/ports/play-tools-gateway';
 import { addDays, type LocalDate } from './dates';
 import type { PlannedRowState } from './plan';
@@ -27,7 +28,7 @@ export function newTournament(
     ...(registration.kind === 'on_site'
       ? {
           registration: { startsAt: new Date(start - registration.opensBeforeMin * MINUTE_MS), endsAt: new Date(start + registration.closesAfterMin * MINUTE_MS) },
-          onSiteAdmission: registration.admission,
+          onSiteAdmission: admissionText(registration.admissionCents),
         }
       : { registration: null, thirdPartyRegistrationUrl: registration.url }),
     details: settings.details,

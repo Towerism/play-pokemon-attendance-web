@@ -105,7 +105,7 @@ describe('the edit form', () => {
         venue: { id: VENUE.id, label: 'Card Shop', timeZone: TZ, country: 'US' },
         localDate: '2026-10-20',
         startTime: '18:00',
-        registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+        registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
         contactEmail: 'league@example.com',
         details: 'Bring a deck.',
       },

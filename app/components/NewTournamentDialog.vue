@@ -148,7 +148,7 @@ const problem = computed(() => {
   if (!form.value.name.trim()) return 'Name the tournament.';
   if (!form.value.category) return 'Choose a format.';
   if (!blankToNull(form.value.contactEmail) && !blankToNull(form.value.contactPhone)) return 'Give a contact email or phone.';
-  return null;
+  return registrationProblem(form.value.registration);
 });
 
 async function save() {

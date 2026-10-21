@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { formatAdmission } from '../../../shared/money/admission';
 import type { PlaySession } from '../pokemon/ports/play-tools-gateway';
 import { sessionTitle } from '../submission/local-time';
 import { safeUri } from './ical';
@@ -128,7 +129,8 @@ function registrationLine(r: CalendarTournament['registration']): string | null 
     const url = safeUri(r.url);
     return url && `Registration: ${url}`;
   }
-  const admission = r.admission ? ` Admission: ${r.admission}` : '';
+  const amount = formatAdmission(r.admissionCents);
+  const admission = amount ? ` Admission: ${amount}` : '';
   return `Registration on site opens ${r.opensBeforeMin} min before the start and closes ${r.closesAfterMin} min after.${admission}`;
 }
 

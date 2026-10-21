@@ -43,7 +43,7 @@ import { type ListedTournament, type RequiredEvents, createRequiredEvents } from
 import { type TournamentRequirements, createRequirements } from './requirements';
 import { tdfAvailableIn } from './results';
 import { REPLANNABLE, defaultHorizonWeeks, eventKey, fitsSchedule, heldSkipped, planSchedule, type PlannedRowState } from './plan';
-import { type RegistrationSettings, type SettingsOverrides, type TemplateVenue, resolveSettings } from './settings';
+import { type RegistrationSettings, type SettingsOverrides, type TemplateVenue, readOverrides, readRegistration, resolveSettings } from './settings';
 import { type TemplateType, type TypeResolution, offeredOn, resolveSeries } from './series';
 import { type WindowProblem, checkCreatable, creatableWindow, sanctionBy } from './window';
 
@@ -57,6 +57,8 @@ export interface Template {
   venue: TemplateVenue;
   startTime: string;
   registration: RegistrationSettings;
+  /** Admission text stored before #194 that isn't an amount; shown on the form until the template is saved. */
+  legacyAdmission: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
   details: string | null;
@@ -155,6 +157,8 @@ export interface UpcomingEntry {
   skippedWhileUnknown: boolean;
   /** **Download TDF** would serve a file (ADR-0012 decision 7); set on Upcoming reads, from local rows only. */
   tdfAvailable: boolean;
+  /** US cents, from the row's resolved on-site registration (#194); null without one, and for play-tools' own tournaments. */
+  admissionCents: number | null;
   actions: UpcomingAction[];
 }
 
@@ -473,7 +477,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       type: r.eventType === 'premier' ? { kind: 'premier', seriesMatch: r.seriesMatch ?? '' } : { kind: 'custom' },
       venue: { id: r.venueId, label: r.venueLabel, timeZone: r.venueTimeZone, country: r.venueCountry },
       startTime: r.startTime,
-      registration: r.registration as RegistrationSettings,
+      ...readRegistration(r.registration),
       contactEmail: r.contactEmail,
       contactPhone: r.contactPhone,
       details: r.details,
@@ -598,7 +602,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         localDate: r.localDate,
         startTime: r.startTime,
         state: r.state,
-        overrides: r.overrides as RowOverrides,
+        overrides: readOverrides(r.overrides) as RowOverrides,
         skippedWhileUnknown: r.skippedWhileUnknown,
       })),
       today: today(),
@@ -711,8 +715,8 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
   function settingsOf(row: PlannedRow, ctx: EntryContext) {
     const scheduleOverrides = ctx.overrides
       .filter((o) => o.scheduleId === row.scheduleId && o.slotPosition === row.slotPosition)
-      .map((o) => ({ effectiveFrom: o.effectiveFrom, fields: o.fields as SettingsOverrides }));
-    return resolveSettings(templateView(ctx.templates.get(row.templateId)!), scheduleOverrides, row.overrides as SettingsOverrides, {
+      .map((o) => ({ effectiveFrom: o.effectiveFrom, fields: readOverrides(o.fields) }));
+    return resolveSettings(templateView(ctx.templates.get(row.templateId)!), scheduleOverrides, readOverrides(row.overrides), {
       occurrenceDate: row.occurrenceDate ?? row.localDate,
       localDate: row.localDate,
     });
@@ -760,6 +764,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null,
       skippedWhileUnknown: heldSkipped(row),
       tdfAvailable: false,
+      admissionCents: settings.registration.kind === 'on_site' ? settings.registration.admissionCents : null,
       actions: [
         ...(creatable ? (['create'] as const) : []),
         ...(toCreate || row.state === 'unknown' ? (['skip'] as const) : []),
@@ -856,6 +861,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       lastAttemptAt: null,
       skippedWhileUnknown: false,
       tdfAvailable: false,
+      admissionCents: null,
       actions: [],
     };
   }
@@ -1589,7 +1595,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
         throw new TournamentsError('not_editable', 'This tournament has reached play-tools, or is being created. Change it there, or with Edit….', { state: row.state });
       }
       const warnings: 'another_planned_at_time'[] = [];
-      const overrides = { ...(row.overrides as RowOverrides) };
+      const overrides = { ...(readOverrides(row.overrides) as RowOverrides) };
       const localDate = patch.localDate ?? row.localDate;
       const startTime = patch.startTime ?? row.startTime;
       if (patch.localDate !== undefined) {

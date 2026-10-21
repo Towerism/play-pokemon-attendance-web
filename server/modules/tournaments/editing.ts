@@ -31,7 +31,7 @@ import { TournamentsError } from './errors';
 import { assertMayActAs, organizerReads } from './organizer';
 import type { LiveReads } from './live-reads';
 import { heldSkipped, replannable } from './plan';
-import type { TemplateSettings } from './settings';
+import { type TemplateSettings, readOverrides } from './settings';
 import { type WindowProblem, checkCreatable, creatableWindow } from './window';
 
 type PlannedRow = typeof plannedTournament.$inferSelect;
@@ -586,7 +586,7 @@ export function createEditing(ctx: EditingContext): {
   function overrideRow(leagueId: string, plannedId: number, changes: EditChanges) {
     const row = ctx.plannedRow(leagueId, plannedId);
     setPlanned(leagueId, plannedId, {
-      overrides: { ...(row.overrides as Record<string, unknown>), ...changes },
+      overrides: { ...readOverrides(row.overrides), ...changes },
       ...(changes.localDate !== undefined && { localDate: changes.localDate }),
       ...(changes.startTime !== undefined && { startTime: changes.startTime }),
     });

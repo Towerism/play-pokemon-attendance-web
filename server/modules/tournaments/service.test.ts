@@ -49,7 +49,7 @@ describe('templates', () => {
   it('creates a template, keeping every setting', () => {
     const body = templateBody({ contactPhone: '555-0100', details: 'Bring a deck.' });
     const template = service.createTemplate(L, body, OWNER);
-    expect(template).toEqual({ id: expect.any(Number), archived: false, ...body });
+    expect(template).toEqual({ id: expect.any(Number), archived: false, legacyAdmission: null, ...body });
     expect(service.listTemplates(L, {})).toEqual([template]);
   });
 
@@ -93,6 +93,28 @@ describe('templates', () => {
     service.createTemplate(L, templateBody({ name: 'VGC Cup' }), OWNER);
     service.createTemplate(L, templateBody({ name: 'League Challenge' }), OWNER);
     expect(service.listTemplates(L, {}).map((t) => t.name)).toEqual(['League Challenge', 'VGC Cup']);
+  });
+});
+
+describe('templates stored before admission was an amount', () => {
+  const window = { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15 };
+  function storeAdmission(id: number, admission: string) {
+    database.sqlite.prepare('update tournament_template set registration = ? where id = ?').run(JSON.stringify({ ...window, admission }), id);
+  }
+
+  it('reads admission text that is an amount as cents', () => {
+    const { id } = service.createTemplate(L, templateBody(), OWNER);
+    storeAdmission(id, '$12');
+    expect(service.listTemplates(L, {})[0]).toMatchObject({ registration: { ...window, admissionCents: 1200 }, legacyAdmission: null });
+  });
+
+  it('shows other text beside no admission until the template is saved with an amount', () => {
+    const { id } = service.createTemplate(L, templateBody(), OWNER);
+    storeAdmission(id, 'Bring a snack');
+    expect(service.listTemplates(L, {})[0]).toMatchObject({ registration: { ...window, admissionCents: null }, legacyAdmission: 'Bring a snack' });
+
+    service.updateTemplate(L, id, { registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: 500 } }, OWNER);
+    expect(service.listTemplates(L, {})[0]).toMatchObject({ registration: { ...window, admissionCents: 500 }, legacyAdmission: null });
   });
 });
 

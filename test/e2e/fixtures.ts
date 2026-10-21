@@ -50,7 +50,7 @@ export async function tournamentTemplate(api: Api, overrides: Record<string, unk
       type: { kind: 'custom' },
       venue: { id: '00000000-0000-4000-8000-000000000051', label: 'Card Shop', timeZone: LEAGUE_TZ, country: 'US' },
       startTime: '18:00',
-      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
       contactEmail: 'league@example.com',
       ...overrides,
     },
