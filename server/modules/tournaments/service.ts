@@ -265,6 +265,11 @@ export interface TournamentsService {
    */
   upcoming(leagueId: string, range: { from?: LocalDate; to?: LocalDate; refresh?: boolean }): Promise<Upcoming>;
   /**
+   * The admission (US cents) of each play-tools tournament a planned row of the league holds, resolved as Upcoming
+   * shows it (#194); a tournament no row holds is left out. Local rows only: no play-tools call.
+   */
+  admissionsFor(leagueId: string, tournamentIds: readonly string[]): Map<string, number | null>;
+  /**
    * The tournaments whose local date is in the range, for the calendar feeds (ADR-0016 §5). `refresh` plans every
    * schedule and reads each readable professor's listing fresh, as Upcoming's refresh does. `local` reads only the
    * planned rows and calls nobody.
@@ -672,6 +677,10 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     series: Map<string, readonly Series[] | null>;
   }
 
+  function admissionOf(registration: RegistrationSettings): number | null {
+    return registration.kind === 'on_site' ? registration.admissionCents : null;
+  }
+
   function contextFor(rows: readonly PlannedRow[]): EntryContext {
     const templateIds = [...new Set(rows.map((r) => r.templateId))];
     const scheduleIds = [...new Set(rows.flatMap((r) => (r.scheduleId === null ? [] : [r.scheduleId])))];
@@ -764,7 +773,7 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
       lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null,
       skippedWhileUnknown: heldSkipped(row),
       tdfAvailable: false,
-      admissionCents: settings.registration.kind === 'on_site' ? settings.registration.admissionCents : null,
+      admissionCents: admissionOf(settings.registration),
       actions: [
         ...(creatable ? (['create'] as const) : []),
         ...(toCreate || row.state === 'unknown' ? (['skip'] as const) : []),
@@ -1365,6 +1374,17 @@ export function createTournamentsService(deps: TournamentsDeps): TournamentsServ
     cancelling,
     requirements,
     requiredEvents,
+
+    admissionsFor(leagueId, tournamentIds) {
+      if (tournamentIds.length === 0) return new Map();
+      const rows = db
+        .select()
+        .from(plannedTournament)
+        .where(and(eq(plannedTournament.leagueId, leagueId), inArray(plannedTournament.tournamentId, [...tournamentIds])))
+        .all();
+      const ctx = contextFor(rows);
+      return new Map(rows.map((r) => [r.tournamentId!, admissionOf(settingsOf(r, ctx).registration)]));
+    },
 
     listTemplates(leagueId, opts) {
       const rows = db

@@ -26,11 +26,17 @@ const gameOf = (products: readonly string[]) => (products.length === 1 ? (GAMES[
  * read them in full. A connection the snapshot never read (connected meanwhile) is `unread`, never `read`.
  * @throws IntegrationError `professor_unidentified` when a connected professor still has no player id
  */
-export function toAttendanceDay(input: { date: SessionDate; snapshot: DaySnapshot; connections: readonly ActingConnection[] }): {
+export function toAttendanceDay(input: {
+  date: SessionDate;
+  snapshot: DaySnapshot;
+  connections: readonly ActingConnection[];
+  /** Admission in US cents by tournament id, from the planned rows (#194); a tournament not in it has none. */
+  admissions?: ReadonlyMap<string, number | null>;
+}): {
   day: AttendanceDayV1;
   skipped: SkippedStaff[];
 } {
-  const { date, snapshot, connections } = input;
+  const { date, snapshot, connections, admissions = new Map<string, number | null>() } = input;
   if (connections.some((c) => c.professorPlayerId === null)) {
     throw new IntegrationError('professor_unidentified', 'A connected professor has no player id yet. Reconnect them in Settings, then try again.');
   }
@@ -57,6 +63,7 @@ export function toAttendanceDay(input: { date: SessionDate; snapshot: DaySnapsho
         skipped.push({ tournamentId: t.id, playerId: s.playerId, role: s.role });
         return [];
       }),
+      admissionCents: admissions.get(t.id) ?? null,
     });
   }
   tournaments.sort((a, b) => a.startsAt.localeCompare(b.startsAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

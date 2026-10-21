@@ -157,6 +157,20 @@ describe('admission on Upcoming', () => {
       ['2026-10-24', null],
     ]);
   });
+
+  it('gives the admission of each play-tools tournament a planned row holds, read from local rows alone', () => {
+    const ten = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, registration: onSite(1000) }), OWNER);
+    const free = service.createPlanned(L, { templateId: ten.id, localDate: '2026-10-20', overrides: { registration: onSite(0) } });
+    const paid = service.createPlanned(L, { templateId: ten.id, localDate: '2026-10-21' });
+    link(free.plannedId!, 'g1');
+    link(paid.plannedId!, 'g2');
+
+    const admissions = service.admissionsFor(L, ['g1', 'g2', 'not-planned']);
+
+    expect(admissions).toEqual(new Map([['g1', 0], ['g2', 1000]]));
+    expect(service.admissionsFor('other', ['g1'])).toEqual(new Map());
+    expect(upstream.state.calls).toEqual([]);
+  });
 });
 
 describe('the listing cache on Upcoming (#98)', () => {

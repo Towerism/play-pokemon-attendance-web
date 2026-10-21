@@ -1,3 +1,4 @@
+import { MAX_ADMISSION_CENTS } from '../money/admission';
 import { z } from '../zod';
 
 /** The staff roles the v1 contract carries (play-tools' assignable roles; never `organizer`). */
@@ -20,6 +21,8 @@ export const AttendanceDayV1 = z.strictObject({
       game: z.enum(['tcg', 'vgc', 'go']).nullable(),
       organizer: z.strictObject({ playerId: z.string().min(1), name: z.string().min(1) }),
       staff: z.array(z.strictObject({ playerId: z.string().min(1), name: z.string(), role: z.enum(INTEGRATION_STAFF_ROLES) })),
+      /** US cents from the app's planned tournament (#194): 0 is free; null when the app holds none. */
+      admissionCents: z.int().min(0).max(MAX_ADMISSION_CENTS).nullable(),
     }),
   ),
   professors: z.array(
