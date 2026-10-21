@@ -31,12 +31,12 @@ export function toAttendanceDay(input: {
   snapshot: DaySnapshot;
   connections: readonly ActingConnection[];
   /** Admission in US cents by tournament id, from the planned rows (#194); a tournament not in it has none. */
-  admissions?: ReadonlyMap<string, number | null>;
+  admissions: ReadonlyMap<string, number | null>;
 }): {
   day: AttendanceDayV1;
   skipped: SkippedStaff[];
 } {
-  const { date, snapshot, connections, admissions = new Map<string, number | null>() } = input;
+  const { date, snapshot, connections, admissions } = input;
   if (connections.some((c) => c.professorPlayerId === null)) {
     throw new IntegrationError('professor_unidentified', 'A connected professor has no player id yet. Reconnect them in Settings, then try again.');
   }

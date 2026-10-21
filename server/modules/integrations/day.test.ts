@@ -37,7 +37,7 @@ function snapshot(tournaments: Entry[], professors: DaySnapshot['professors'] = 
   return { timeZone: 'America/Chicago', tournaments, professors };
 }
 
-const project = (s: DaySnapshot, connections: ActingConnection[] = [OLIVE]) => toAttendanceDay({ date: DATE, snapshot: s, connections });
+const project = (s: DaySnapshot, connections: ActingConnection[] = [OLIVE]) => toAttendanceDay({ date: DATE, snapshot: s, connections, admissions: new Map() });
 
 describe('toAttendanceDay', () => {
   it('answers the date, the league timezone, each tournament as the contract has it, and every professor', () => {
