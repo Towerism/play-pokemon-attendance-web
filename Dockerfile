@@ -11,8 +11,8 @@
 # kit version's bytes. The ADR-0004/ADR-0005 references inside those files are
 # the kit's ADRs, not this project's.
 
-ARG NODE_IMAGE=node:24.21.0-alpine3.23
-ARG NODE_SLIM_IMAGE=node:24.21.0-slim
+ARG NODE_IMAGE=node:24.22.1-alpine3.23
+ARG NODE_SLIM_IMAGE=node:24.22.1-slim
 ARG PNPM_VERSION=10.18.2
 
 # ---------------------------------------------------------------- spikes ----
