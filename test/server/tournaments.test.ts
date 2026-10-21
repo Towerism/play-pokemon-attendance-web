@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FAKE_PLAYER_ID, FAKE_VENUE, type FakePokemon, fakeTournament, startFakePokemon } from './fake-pokemon';
 import { type TestServer, client, startServer } from './harness';
@@ -133,6 +135,53 @@ describe('templates', () => {
     expect((await patch('/tournament-templates/1', {})).status).toBe(400);
     expect((await patch('/tournament-templates/999999', { details: 'x' })).status).toBe(404);
     expect((await patch('/tournament-templates/abc', { details: 'x' })).status).toBe(400);
+  });
+});
+
+describe('admission on a template (#194)', () => {
+  const onSite = (admissionCents: unknown) => ({ kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents });
+
+  it.each([
+    ['free', 0],
+    ['$999.99', 99999],
+  ])('keeps an admission of %s', async (label, cents) => {
+    const created = await post('/tournament-templates', { ...TEMPLATE, name: `Admission ${label}`, registration: onSite(cents) });
+    expect(created.status).toBe(201);
+    expect((await body<{ template: { registration: unknown } }>(created)).template.registration).toEqual(onSite(cents));
+  });
+
+  it.each([
+    ['$1,000', onSite(100000)],
+    ['a negative amount', onSite(-1)],
+    ['fractions of a cent', onSite(7.5)],
+    ['text', onSite('10')],
+    ['the old admission field', { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: '$10' }],
+  ])('is 400 for %s, saving nothing', async (_, registration) => {
+    expect((await post('/tournament-templates', { ...TEMPLATE, name: 'Refused admission', registration })).status).toBe(400);
+    const after = await body<{ templates: { name: string }[] }>(await api('/tournament-templates'));
+    expect(after.templates.some((t) => t.name === 'Refused admission')).toBe(false);
+  });
+
+  it('reads admission stored as text: an amount as cents, other text beside no admission until saved', async () => {
+    const { template } = await body<{ template: { id: number } }>(await post('/tournament-templates', { ...TEMPLATE, name: 'Stored before #194' }));
+    const db = new Database(join(server.dataDir, 'app.db'));
+    db.pragma('busy_timeout = 5000');
+    const store = (admission: string) =>
+      db.prepare('update tournament_template set registration = ? where id = ?').run(JSON.stringify({ kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission }), template.id);
+    const listed = async () =>
+      (await body<{ templates: { id: number; registration: unknown; legacyAdmission: string | null }[] }>(await api('/tournament-templates'))).templates.find((t) => t.id === template.id)!;
+    try {
+      store('$12');
+      expect(await listed()).toMatchObject({ registration: onSite(1200), legacyAdmission: null });
+
+      store('Bring a snack');
+      expect(await listed()).toMatchObject({ registration: onSite(null), legacyAdmission: 'Bring a snack' });
+
+      expect((await patch(`/tournament-templates/${template.id}`, { registration: onSite(500) })).status).toBe(200);
+      expect(await listed()).toMatchObject({ registration: onSite(500), legacyAdmission: null });
+    } finally {
+      db.close();
+    }
   });
 });
 
