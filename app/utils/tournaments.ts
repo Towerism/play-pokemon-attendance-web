@@ -1,3 +1,4 @@
+import { admissionText, formatAdmission, parseAdmission } from '#shared/money/admission';
 import type { CoverageStatus, PeriodCoverage, UnreadProfessor, Urgency } from '../../shared/requirements/coverage';
 import type { RequiredEventsCoverage } from '../../server/modules/tournaments/required-events';
 import type { Requirement } from '../../server/modules/tournaments/requirements';
@@ -399,7 +400,8 @@ export function valueText(field: keyof EditValues, value: unknown): string {
   if (field === 'registration') {
     const r = value as NonNullable<EditValues['registration']>;
     if (r.kind === 'third_party') return `Third party: ${r.url}`;
-    return `On site: opens ${r.opensBeforeMin} min before, closes ${r.closesAfterMin} min after${r.admission ? `, admission ${r.admission}` : ''}`;
+    const admission = formatAdmission(r.admissionCents);
+    return `On site: opens ${r.opensBeforeMin} min before, closes ${r.closesAfterMin} min after${admission ? `, admission ${admission}` : ''}`;
   }
   return String(value);
 }
@@ -628,10 +630,10 @@ export function detailsFromTemplate(t: Template): NewTournamentDetails {
   };
 }
 
-/** A registration by what it means: a blank admission is none, and the field order doesn't matter. */
+/** A registration by what it means: the field order doesn't matter. */
 function registrationKey(r: RegistrationSettings): string {
   return r.kind === 'on_site'
-    ? JSON.stringify([r.kind, r.opensBeforeMin, r.closesAfterMin, blankToNull(r.admission)])
+    ? JSON.stringify([r.kind, r.opensBeforeMin, r.closesAfterMin, r.admissionCents])
     : JSON.stringify([r.kind, r.url.trim()]);
 }
 
@@ -708,4 +710,29 @@ const PLANNED_ERROR: Record<string, (template: string) => string> = {
 /** What the New tournament dialog says for a refusal it knows; null for play-tools' or the server's own message. */
 export function plannedErrorText(code: string | undefined, templateName = 'That template'): string | null {
   return (code && PLANNED_ERROR[code]?.(templateName)) ?? null;
+}
+
+/**
+ * What the Admission input holds, as US cents: blank is no admission, and text that isn't an amount is `NaN`, so
+ * `registrationProblem` can stop the form from saving it while the text stays as typed.
+ */
+export function admissionInput(text: string): number | null {
+  if (!text.trim()) return null;
+  return parseAdmission(text) ?? Number.NaN;
+}
+
+/** A stored admission as the Admission input shows it: `Free`, `10` or `7.50`, blank for none. */
+export function admissionInputText(cents: number | null): string {
+  return admissionText(cents) ?? '';
+}
+
+/** Why a registration can't be saved yet; null when it can. */
+export function registrationProblem(r: RegistrationSettings | null): string | null {
+  return r?.kind === 'on_site' && Number.isNaN(r.admissionCents) ? 'Enter an amount such as 10 or 7.50' : null;
+}
+
+/** A tournament row's start time, then its admission when it has one: `10:00 · $10`. */
+export function startLine(startTime: string, admissionCents: number | null): string {
+  const admission = formatAdmission(admissionCents);
+  return admission ? `${startTime} · ${admission}` : startTime;
 }

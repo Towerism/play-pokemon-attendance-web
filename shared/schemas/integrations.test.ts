@@ -13,6 +13,7 @@ const day = {
       game: null,
       organizer: { playerId: '9999991', name: 'Olive Organizer' },
       staff: [{ playerId: '00456', name: 'Misty', role: 'headjudge' }],
+      admissionCents: 750,
     },
   ],
   professors: [
@@ -31,6 +32,9 @@ describe('AttendanceDayV1', () => {
     ['an unknown game', { ...day, tournaments: [{ ...day.tournaments[0], game: 'pokken' }] }],
     ['an unknown staff role', { ...day, tournaments: [{ ...day.tournaments[0], staff: [{ playerId: '1', name: 'x', role: 'organizer' }] }] }],
     ['an unknown reason', { ...day, professors: [{ playerId: '1', name: 'x', status: 'unread', reason: 'gone' }] }],
+    ['a negative admission', { ...day, tournaments: [{ ...day.tournaments[0], admissionCents: -1 }] }],
+    ['an admission in fractions of a cent', { ...day, tournaments: [{ ...day.tournaments[0], admissionCents: 7.5 }] }],
+    ['a tournament without its admission', { ...day, tournaments: [{ ...day.tournaments[0], admissionCents: undefined }] }],
     ['a start that is not UTC ISO', { ...day, tournaments: [{ ...day.tournaments[0], startsAt: '2026-10-14 17:00' }] }],
   ])('rejects %s, so any drift from the contract fails loudly', (_label, value) => {
     expect(AttendanceDayV1.safeParse(value).success).toBe(false);

@@ -56,7 +56,7 @@ async function template(): Promise<number> {
     type: { kind: 'custom' },
     venue: { id: FAKE_VENUE.guid, label: 'Card Shop', timeZone: TZ, country: 'US' },
     startTime: '18:00',
-    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
     contactEmail: 'league@example.com',
     details: 'Bring a deck.',
   });

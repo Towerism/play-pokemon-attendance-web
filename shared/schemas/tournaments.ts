@@ -1,3 +1,4 @@
+import { MAX_ADMISSION_CENTS } from '../money/admission';
 import { scheduleRuleSchema } from '../schedule/rule';
 import { z } from '../zod';
 import { playerId } from './roster';
@@ -49,7 +50,13 @@ const venue = z.strictObject({
 
 const minutes = z.int().min(0).max(1440);
 const registration = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('on_site'), opensBeforeMin: minutes, closesAfterMin: minutes, admission: optionalText(500) }),
+  z.strictObject({
+    kind: z.literal('on_site'),
+    opensBeforeMin: minutes,
+    closesAfterMin: minutes,
+    /** US cents; 0 is free, null is none set (#194). */
+    admissionCents: z.int().min(0).max(MAX_ADMISSION_CENTS).nullable(),
+  }),
   z.strictObject({ kind: z.literal('third_party'), url: https }),
 ]);
 

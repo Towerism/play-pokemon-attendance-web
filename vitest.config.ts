@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
@@ -5,6 +6,9 @@ export default defineConfig({
     projects: [
       {
         // Plain TS: shared/, server modules, bootstrap, adapters, config guards.
+        // `#shared` as Nuxt resolves it: app/ code must import shared/ through it, since the SSR build externalizes a
+        // relative import from app/ into shared/ with a broken path.
+        resolve: { alias: { '#shared': fileURLToPath(new URL('./shared', import.meta.url)) } },
         test: {
           name: 'unit',
           environment: 'node',

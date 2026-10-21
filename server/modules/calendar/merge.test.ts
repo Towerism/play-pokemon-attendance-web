@@ -103,7 +103,7 @@ describe('a first refresh', () => {
   });
 
   it('describes on-site and third-party registration', () => {
-    const onSite = calendarTournament({ registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: '$5' }, eventWebsite: null });
+    const onSite = calendarTournament({ registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: 750 }, eventWebsite: null });
     const thirdParty = calendarTournament({
       plannedId: 2,
       tournamentId: 'g9',
@@ -113,8 +113,19 @@ describe('a first refresh', () => {
 
     const { snapshot } = run(null, refreshRead([onSite, thirdParty]));
 
-    expect(event(snapshot, 'planned-1')!.details).toEqual(['TCG', 'Registration on site opens 60 min before the start and closes 15 min after. Admission: $5']);
+    expect(event(snapshot, 'planned-1')!.details).toEqual(['TCG', 'Registration on site opens 60 min before the start and closes 15 min after. Admission: $7.50']);
     expect(event(snapshot, 'planned-2')!.details).toEqual(['TCG', 'Registration: https://reg.example.test']);
+  });
+
+  it('shows a free admission as Free and no admission as nothing', () => {
+    const window = { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15 } as const;
+    const free = calendarTournament({ registration: { ...window, admissionCents: 0 }, eventWebsite: null });
+    const none = calendarTournament({ plannedId: 2, tournamentId: 'g9', registration: { ...window, admissionCents: null }, eventWebsite: null });
+
+    const { snapshot } = run(null, refreshRead([free, none]));
+
+    expect(event(snapshot, 'planned-1')!.details).toEqual(['TCG', 'Registration on site opens 60 min before the start and closes 15 min after. Admission: Free']);
+    expect(event(snapshot, 'planned-2')!.details).toEqual(['TCG', 'Registration on site opens 60 min before the start and closes 15 min after.']);
   });
 });
 

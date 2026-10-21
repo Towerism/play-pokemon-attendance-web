@@ -129,8 +129,8 @@ un-cancel, approve), and roster-only uploads.
     "League Challenge"), so the series itself is resolved per date (decision 6);
   - venue (an address-book entry of the organizer: id, label and timezone are kept);
   - the usual start time (local to the venue);
-  - registration: `on_site` (opens N minutes before the start, closes M minutes after, admission text) or
-    `third_party` (a URL);
+  - registration: `on_site` (opens N minutes before the start, closes M minutes after, admission: an amount in US
+    cents since #194, see [Update (#194)](#update-194-admission-is-a-dollar-amount)) or `third_party` (a URL);
   - contact email and/or phone, details, event website.
 
   A template carries **no staff** (decision 9).
@@ -844,6 +844,28 @@ settled what it left open:
    change meanwhile. The write checks the row again with no await in between: `unknown` becomes `created`, a held
    row stays `skipped`, anything else (a job took it, or it was linked) is left alone, and a tournament another row
    took meanwhile isn't linked to a second one, so the read doesn't fail on the unique index.
+
+## Update (#194): admission is a dollar amount
+
+*2026-10-21.* A tournament's price is its on-site admission. It was free text, seen only in the edit preview and
+calendar feeds. It is now a number, so the app can show it wherever tournaments are listed:
+
+1. **`admissionCents`**: whole US cents from 0 to 99,999 ($999.99), or null for none. 0 is free. It replaces
+   `admission` in `registration` (templates, row overrides and schedule overrides), and the Zod schema refuses the
+   old field. US dollars only. Third-party registration still has no admission.
+2. **play-tools still gets text.** `on_site_admission` is free text there; the app writes `Free`, `10` or `7.50`,
+   matching values play-tools already held (`"FREE"`, `"10"`). An edit compares amounts: the read's text is parsed,
+   so text that isn't an amount stays in play-tools until the user sets a new amount, and a change elsewhere never
+   wipes it.
+3. **Shown from local rows only.** Upcoming entries carry `admissionCents` from the row's resolved settings; a
+   play-tools tournament no row holds shows none, because the listing has no admission and reading each
+   tournament would add calls. The integrations day takes it the same way (additive to v1, ADR-0013), and calendar
+   feeds print `Admission: $7.50`.
+4. **No migration.** Stored JSON with the old text is read through one reader in the tournaments module
+   (`readRegistration` / `readOverrides`): text that parses becomes cents, other text becomes none, and a
+   template's unreadable text comes back as `legacyAdmission` for its form to show until the template is saved.
+5. **Per-division prices are out of scope** (decided on #194). `activity_division_info` is still sent as one empty
+   entry per division.
 
 ## Consequences
 

@@ -28,7 +28,7 @@ const typeKey = ref(t?.type.kind === 'premier' ? `premier:${t.type.seriesMatch}`
 const category = ref(t?.category ?? '');
 const venue = ref<Template['venue'] | null>(t?.venue ?? null);
 const startTime = ref(t?.startTime ?? '18:00');
-const registration = ref<RegistrationSettings | null>(t ? structuredClone(toRaw(t.registration)) : { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null });
+const registration = ref<RegistrationSettings | null>(t ? structuredClone(toRaw(t.registration)) : { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null });
 const contactEmail = ref(t?.contactEmail ?? '');
 const contactPhone = ref(t?.contactPhone ?? '');
 const details = ref(t?.details ?? '');
@@ -90,17 +90,19 @@ const venueId = computed({
   },
 });
 
-const problem = computed(() =>
-  templateFormProblem({
-    name: name.value,
-    organizerPlayerId: organizer.value,
-    category: category.value,
-    venue: venue.value,
-    contactEmail: contactEmail.value,
-    contactPhone: contactPhone.value,
-    optionsLoaded: !!options.value,
-    editing: editing.value,
-  }),
+const problem = computed(
+  () =>
+    registrationProblem(registration.value) ??
+    templateFormProblem({
+      name: name.value,
+      organizerPlayerId: organizer.value,
+      category: category.value,
+      venue: venue.value,
+      contactEmail: contactEmail.value,
+      contactPhone: contactPhone.value,
+      optionsLoaded: !!options.value,
+      editing: editing.value,
+    }),
 );
 
 function body() {
@@ -180,7 +182,7 @@ async function save() {
             <USelect v-model="venueId" :items="venues.map((v) => ({ value: v.id, label: v.label }))" placeholder="Choose a venue" aria-label="Venue" class="w-full" />
           </UFormField>
           <UFormField label="Start time"><UInput v-model="startTime" type="time" class="w-full" /></UFormField>
-          <RegistrationFields v-model="registration" class="sm:col-span-2" />
+          <RegistrationFields v-model="registration" :legacy-admission="t?.legacyAdmission" class="sm:col-span-2" />
           <UFormField label="Contact email"><UInput v-model="contactEmail" type="email" class="w-full" /></UFormField>
           <UFormField label="Contact phone"><UInput v-model="contactPhone" type="tel" class="w-full" /></UFormField>
           <UFormField label="Event website" class="sm:col-span-2"><UInput v-model="eventWebsite" type="url" class="w-full" /></UFormField>

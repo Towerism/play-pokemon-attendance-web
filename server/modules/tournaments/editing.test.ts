@@ -105,7 +105,7 @@ describe('the edit form', () => {
         venue: { id: VENUE.id, label: 'Card Shop', timeZone: TZ, country: 'US' },
         localDate: '2026-10-20',
         startTime: '18:00',
-        registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+        registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: null },
         contactEmail: 'league@example.com',
         details: 'Bring a deck.',
       },
@@ -490,6 +490,18 @@ describe("a job item's turn", () => {
     expect(rowOf(row.id)).toMatchObject({ state: 'created', local_date: '2026-10-22' });
     expect(JSON.parse(rowOf(row.id).overrides)).toEqual({ localDate: '2026-10-22', details: 'Thursday now' });
     expect(moved).toEqual([{ tournamentId: guid(1), to: '2026-10-22' }]);
+  });
+
+  it('records a new admission on the row, so Upcoming shows it without reading play-tools (#194)', async () => {
+    const registration = { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: 800 };
+    const { row, item: it_ } = await item({ registration });
+    const read = await service.editing.readItem(L, it_);
+    expect(read).toMatchObject({ kind: 'send', delta: { onSiteAdmission: '8' } });
+
+    service.editing.recordEdited(L, it_, read as never);
+
+    expect(JSON.parse(rowOf(row.id).overrides)).toEqual({ registration });
+    expect(service.admissionsFor(L, [guid(1)])).toEqual(new Map([[guid(1), 800]]));
   });
 });
 

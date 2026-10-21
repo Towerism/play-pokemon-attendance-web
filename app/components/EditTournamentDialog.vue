@@ -293,7 +293,13 @@ async function done(view: SubmissionView) {
         <UButton v-if="preview && !submissionId" variant="ghost" color="neutral" @click="preview = null">Back</UButton>
         <UButton variant="ghost" color="neutral" @click="open = false">{{ submissionId ? 'Close' : 'Cancel' }}</UButton>
         <template v-if="!submissionId && form?.editable">
-          <UButton v-if="!preview" :disabled="changedFields.length === 0" :loading="busy" :title="changedFields.length === 0 ? 'Nothing changed' : undefined" @click="showPreview">
+          <UButton
+            v-if="!preview"
+            :disabled="changedFields.length === 0 || !!registrationProblem(values?.registration ?? null)"
+            :loading="busy"
+            :title="changedFields.length === 0 ? 'Nothing changed' : undefined"
+            @click="showPreview"
+          >
             Preview
           </UButton>
           <UButton v-else :color="preview.shortNotice ? 'warning' : 'primary'" :disabled="kept.size === 0" :loading="busy" @click="save">

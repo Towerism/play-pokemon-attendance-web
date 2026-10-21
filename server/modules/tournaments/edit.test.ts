@@ -42,7 +42,7 @@ function read(overrides: Partial<TournamentDetails> = {}): TournamentDetails {
     venue: { id: VENUE_ID, timeZone: ZONE },
     contact: { email: 'league@example.com', phone: null },
     registration: { startsAt: new Date(START.getTime() - 60 * MIN), endsAt: new Date(START.getTime() + 15 * MIN) },
-    onSiteAdmission: '$5',
+    onSiteAdmission: '5',
     thirdPartyRegistrationUrl: null,
     details: 'Bring a deck.',
     eventWebsite: null,
@@ -81,7 +81,7 @@ describe('editDelta: only what differs from the fresh read is sent', () => {
   });
 
   it('builds an on-site registration around the new start', () => {
-    const d = delta({ startTime: '19:00', registration: { kind: 'on_site', opensBeforeMin: 30, closesAfterMin: 0, admission: '$5' } });
+    const d = delta({ startTime: '19:00', registration: { kind: 'on_site', opensBeforeMin: 30, closesAfterMin: 0, admissionCents: 500 } });
     const start = new Date(START.getTime() + HOUR);
     expect(d.changes).toEqual({ startsAt: start, registration: { startsAt: new Date(start.getTime() - 30 * MIN), endsAt: start } });
   });
@@ -95,11 +95,29 @@ describe('editDelta: only what differs from the fresh read is sent', () => {
 
   it('switches third-party to on-site: the window and admission, the link cleared', () => {
     const r = read({ registration: null, onSiteAdmission: null, thirdPartyRegistrationUrl: 'https://reg.example.com' });
-    expect(delta({ registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: 'Free' } }, r).changes).toEqual({
+    expect(delta({ registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: 0 } }, r).changes).toEqual({
       registration: { startsAt: new Date(START.getTime() - 60 * MIN), endsAt: new Date(START.getTime() + 15 * MIN) },
       onSiteAdmission: 'Free',
       thirdPartyRegistrationUrl: null,
     });
+  });
+
+  it('sends a changed admission as play-tools text', () => {
+    expect(delta({ registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: 750 } }).changes).toEqual({ onSiteAdmission: '7.50' });
+  });
+
+  it('sends no admission when play-tools already holds the same amount', () => {
+    const r = read({ onSiteAdmission: '$10' });
+    expect(delta({ name: 'Friday Cup Halloween', registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: 1000 } }, r).changes).toEqual({
+      name: 'Friday Cup Halloween',
+    });
+  });
+
+  it("leaves admission text that isn't an amount alone unless a new amount is set", () => {
+    const r = read({ onSiteAdmission: 'Bring a snack' });
+    const window = { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15 } as const;
+    expect(delta({ name: 'Friday Cup Halloween', registration: { ...window, admissionCents: null } }, r).changes).toEqual({ name: 'Friday Cup Halloween' });
+    expect(delta({ registration: { ...window, admissionCents: 500 } }, r).changes).toEqual({ onSiteAdmission: '5' });
   });
 
   it('sends both contacts when one changes', () => {
@@ -245,6 +263,14 @@ describe('selectScope: which rows of the schedule an edit reaches (ADR-0010 deci
 describe('formValues: a fresh read as the edit form shows it', () => {
   const fallback = { timeZone: ZONE, country: 'US', venueLabel: 'Card Shop' };
 
+  it("reads play-tools' admission text as an amount, and other text as none", () => {
+    const admission = (text: string | null) => (formValues(read({ onSiteAdmission: text }), fallback).registration as { admissionCents: number | null }).admissionCents;
+    expect(admission('FREE')).toBe(0);
+    expect(admission('35')).toBe(3500);
+    expect(admission('Bring a snack')).toBeNull();
+    expect(admission(null)).toBeNull();
+  });
+
   it('maps every field, the registration as minutes around the start', () => {
     expect(formValues(read(), fallback)).toEqual({
       name: 'Friday Cup October',
@@ -252,7 +278,7 @@ describe('formValues: a fresh read as the edit form shows it', () => {
       venue: { id: VENUE_ID, label: 'Card Shop', timeZone: ZONE, country: 'US' },
       localDate: '2026-10-20',
       startTime: '18:00',
-      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: '$5' },
+      registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents: 500 },
       contactEmail: 'league@example.com',
       contactPhone: null,
       details: 'Bring a deck.',

@@ -1,3 +1,4 @@
+import { admissionText, parseAdmission } from '../../../shared/money/admission';
 import { LocalTimeError, dateIn, localInstant } from '../../../shared/time/local-time';
 import type { Registration, TournamentChanges, TournamentDetails } from '../pokemon/ports/play-tools-gateway';
 import { type LocalDate, addDays, timeIn } from './dates';
@@ -93,7 +94,7 @@ export function formValues(read: TournamentDetails, fallback: { timeZone: string
       kind: 'on_site',
       opensBeforeMin: Math.round((start.getTime() - read.registration.startsAt.getTime()) / MINUTE_MS),
       closesAfterMin: Math.round((read.registration.endsAt.getTime() - start.getTime()) / MINUTE_MS),
-      admission: read.onSiteAdmission,
+      admissionCents: parseAdmission(read.onSiteAdmission),
     };
   }
   return {
@@ -262,7 +263,8 @@ export function editDelta(read: TournamentDetails, changes: EditChanges, opts: {
   if (reg?.kind === 'on_site' && startsAt) {
     const window = { startsAt: new Date(startsAt.getTime() - reg.opensBeforeMin * MINUTE_MS), endsAt: new Date(startsAt.getTime() + reg.closesAfterMin * MINUTE_MS) };
     if (!sameRegistration(window, read.registration)) out.registration = window;
-    if (reg.admission !== read.onSiteAdmission) out.onSiteAdmission = reg.admission;
+    // Compared as amounts, so text play-tools holds that isn't one stays until an amount replaces it (#194).
+    if (reg.admissionCents !== parseAdmission(read.onSiteAdmission)) out.onSiteAdmission = admissionText(reg.admissionCents);
     if (read.thirdPartyRegistrationUrl !== null) out.thirdPartyRegistrationUrl = null;
   } else if (reg?.kind === 'third_party') {
     if (read.registration !== null) out.registration = null;

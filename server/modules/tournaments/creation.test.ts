@@ -199,6 +199,17 @@ describe('what each row is created as (planItem)', () => {
     expect(upstream.state.calls).toEqual(['listTournaments@1', 'listVenues@1']);
   });
 
+  it.each([
+    [0, 'Free'],
+    [1000, '10'],
+    [750, '7.50'],
+  ])('sends an admission of %i cents to play-tools as %j', async (admissionCents, text) => {
+    const t = customTemplate({ registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents } });
+    const id = plan(t.id, '2026-11-06');
+    const item = await service.creation.planItem(L, id);
+    expect(item).toMatchObject({ kind: 'send', tournament: { onSiteAdmission: text } });
+  });
+
   it('sends a third-party registration as its URL, with no window', async () => {
     const t = customTemplate({ registration: { kind: 'third_party', url: 'https://tickets.example.com' } });
     const id = plan(t.id, '2026-11-06');

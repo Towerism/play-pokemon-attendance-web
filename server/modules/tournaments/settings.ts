@@ -1,3 +1,4 @@
+import { parseAdmission } from '../../../shared/money/admission';
 import { parseLocalDate } from '../../../shared/time/local-time';
 import type { LocalDate } from './dates';
 
@@ -12,7 +13,7 @@ export interface TemplateVenue {
 }
 
 export type RegistrationSettings =
-  | { kind: 'on_site'; opensBeforeMin: number; closesAfterMin: number; admission: string | null }
+  | { kind: 'on_site'; opensBeforeMin: number; closesAfterMin: number; admissionCents: number | null }
   | { kind: 'third_party'; url: string };
 
 /** The settings a template holds that a schedule or a row may override (ADR-0010 decision 11). */
@@ -36,6 +37,29 @@ export interface ScheduleOverride {
   /** Applies to the schedule's scaffold dates from this one on. */
   effectiveFrom: LocalDate;
   fields: SettingsOverrides;
+}
+
+/** As stored before #194, when admission was text. */
+type StoredRegistration = RegistrationSettings | { kind: 'on_site'; opensBeforeMin: number; closesAfterMin: number; admission: string | null };
+
+/**
+ * A registration as the database holds it, in the current shape. Admission stored as text before #194 is read as
+ * an amount; text that isn't one becomes no admission and comes back as `legacyAdmission`, for the template form
+ * to show until the template is saved. Every read of a template's registration or of overrides goes through here
+ * or `readOverrides`, so nothing else meets the old shape.
+ */
+export function readRegistration(stored: unknown): { registration: RegistrationSettings; legacyAdmission: string | null } {
+  const r = stored as StoredRegistration;
+  if (r.kind !== 'on_site' || !('admission' in r)) return { registration: r, legacyAdmission: null };
+  const { admission, ...window } = r;
+  const admissionCents = parseAdmission(admission);
+  return { registration: { ...window, admissionCents }, legacyAdmission: admissionCents === null ? admission : null };
+}
+
+/** A row's or a schedule override's fields as the database holds them, any registration read as `readRegistration` does. */
+export function readOverrides(stored: unknown): SettingsOverrides {
+  const o = stored as SettingsOverrides;
+  return o.registration === undefined ? o : { ...o, registration: readRegistration(o.registration).registration };
 }
 
 const FIELDS: readonly (keyof TemplateSettings)[] = [

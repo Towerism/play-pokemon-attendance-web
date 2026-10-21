@@ -3,6 +3,7 @@ import type { SessionDate } from '../../../shared/types/ids';
 import type { Logger } from '@towerism/selfhost-kit';
 import type { PokemonConnectionService } from '../pokemon/connection';
 import type { StaffingService } from '../staffing/service';
+import type { TournamentsService } from '../tournaments/service';
 import { toAttendanceDay } from './day';
 
 export interface IntegrationDayService {
@@ -18,6 +19,8 @@ export interface IntegrationDayService {
 export interface IntegrationDayDeps {
   staffing: Pick<StaffingService, 'daySnapshot'>;
   connections: Pick<PokemonConnectionService, 'listReadableConnections'>;
+  /** Each tournament's admission from the app's planned rows (#194). */
+  tournaments: Pick<TournamentsService, 'admissionsFor'>;
   timeZone: string;
   log: Logger;
 }
@@ -31,7 +34,11 @@ export function createIntegrationDayService(deps: IntegrationDayDeps): Integrati
       }
       const snapshot = await deps.staffing.daySnapshot(leagueId, date);
       // Read again: a professor's first successful token use fills in their player id.
-      const { day, skipped } = toAttendanceDay({ date, snapshot, connections: deps.connections.listReadableConnections() });
+      const admissions = deps.tournaments.admissionsFor(
+        leagueId,
+        snapshot.tournaments.map((t) => t.tournament.id),
+      );
+      const { day, skipped } = toAttendanceDay({ date, snapshot, connections: deps.connections.listReadableConnections(), admissions });
       for (const s of skipped) {
         deps.log.warn('staff assignment left out of the integrations day: its role is not a contract role', { ...s });
       }

@@ -37,7 +37,7 @@ function snapshot(tournaments: Entry[], professors: DaySnapshot['professors'] = 
   return { timeZone: 'America/Chicago', tournaments, professors };
 }
 
-const project = (s: DaySnapshot, connections: ActingConnection[] = [OLIVE]) => toAttendanceDay({ date: DATE, snapshot: s, connections });
+const project = (s: DaySnapshot, connections: ActingConnection[] = [OLIVE]) => toAttendanceDay({ date: DATE, snapshot: s, connections, admissions: new Map() });
 
 describe('toAttendanceDay', () => {
   it('answers the date, the league timezone, each tournament as the contract has it, and every professor', () => {
@@ -60,10 +60,29 @@ describe('toAttendanceDay', () => {
           game: 'tcg',
           organizer: { playerId: '9999991', name: 'Olive Organizer' },
           staff: [{ playerId: '00456', name: 'Misty', role: 'judge' }],
+          admissionCents: null,
         },
       ],
       professors: [{ playerId: '9999991', name: 'Olive Organizer', status: 'read' }],
     });
+    expect(AttendanceDayV1.parse(day)).toEqual(day);
+  });
+
+  it("gives each tournament its admission from the planned rows, none for a tournament no row holds", () => {
+    const { day } = toAttendanceDay({
+      date: DATE,
+      snapshot: snapshot([entry(tournament('t-1')), entry(tournament('t-2', { startsAt: new Date('2026-10-14T23:45:00Z') })), entry(tournament('t-3', { startsAt: new Date('2026-10-15T00:00:00Z') }))]),
+      connections: [OLIVE],
+      admissions: new Map([
+        ['t-1', 1000],
+        ['t-2', null],
+      ]),
+    });
+    expect(day.tournaments.map((t) => [t.id, t.admissionCents])).toEqual([
+      ['t-1', 1000],
+      ['t-2', null],
+      ['t-3', null],
+    ]);
     expect(AttendanceDayV1.parse(day)).toEqual(day);
   });
 

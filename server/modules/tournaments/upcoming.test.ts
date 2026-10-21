@@ -78,6 +78,7 @@ describe('Upcoming with play-tools’ tournaments', () => {
       lastAttemptAt: null,
       skippedWhileUnknown: false,
       tdfAvailable: false,
+      admissionCents: null,
       actions: [],
     });
     expect(tournaments[1]).toMatchObject({ plannedId: planned.plannedId, displayId: '26-10-g1', upstreamStatus: 'sanctioned', actions: [] });
@@ -127,6 +128,48 @@ describe('Upcoming with play-tools’ tournaments', () => {
       expect(err).toBeInstanceOf(TournamentsError);
       expect((err as TournamentsError).code).toBe('invalid_range');
     }
+  });
+});
+
+describe('admission on Upcoming', () => {
+  const onSite = (admissionCents: number | null) => ({ kind: 'on_site' as const, opensBeforeMin: 60, closesAfterMin: 15, admissionCents });
+
+  it("shows each planned row's resolved admission, and none for third-party registration or play-tools' own tournaments", async () => {
+    const ten = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, registration: onSite(1000) }), OWNER);
+    const online = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, name: 'Online Cup', registration: { kind: 'third_party', url: 'https://tickets.example.com' } }), OWNER);
+    service.createPlanned(L, { templateId: ten.id, localDate: '2026-10-20' });
+    service.createPlanned(L, { templateId: ten.id, localDate: '2026-10-21', overrides: { registration: onSite(0) } });
+    const created = service.createPlanned(L, { templateId: ten.id, localDate: '2026-10-22' });
+    link(created.plannedId!, 'g1');
+    service.createPlanned(L, { templateId: online.id, localDate: '2026-10-23' });
+    upstream.state.tournaments = [
+      upstreamTournament('g1', '2026-10-22T23:00:00Z'),
+      upstreamTournament('g2', '2026-10-24T16:00:00Z', { name: 'Saturday Cup' }),
+    ];
+
+    const { tournaments } = await service.upcoming(L, {});
+
+    expect(tournaments.map((t) => [t.localDate, t.admissionCents])).toEqual([
+      ['2026-10-20', 1000],
+      ['2026-10-21', 0],
+      ['2026-10-22', 1000],
+      ['2026-10-23', null],
+      ['2026-10-24', null],
+    ]);
+  });
+
+  it('gives the admission of each play-tools tournament a planned row holds, read from local rows alone', () => {
+    const ten = service.createTemplate(L, templateBody({ type: { kind: 'custom' }, registration: onSite(1000) }), OWNER);
+    const free = service.createPlanned(L, { templateId: ten.id, localDate: '2026-10-20', overrides: { registration: onSite(0) } });
+    const paid = service.createPlanned(L, { templateId: ten.id, localDate: '2026-10-21' });
+    link(free.plannedId!, 'g1');
+    link(paid.plannedId!, 'g2');
+
+    const admissions = service.admissionsFor(L, ['g1', 'g2', 'not-planned']);
+
+    expect(admissions).toEqual(new Map([['g1', 0], ['g2', 1000]]));
+    expect(service.admissionsFor('other', ['g1'])).toEqual(new Map());
+    expect(upstream.state.calls).toEqual([]);
   });
 });
 

@@ -18,6 +18,7 @@ export function useIntegrationDays(): IntegrationDayService {
   days ??= createIntegrationDayService({
     staffing: useStaffing(),
     connections: usePokemon(),
+    tournaments: useTournaments(),
     timeZone: leagueTimeZone(),
     log: useLogger('integrations'),
   });

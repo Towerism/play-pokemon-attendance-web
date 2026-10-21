@@ -45,7 +45,7 @@ interface Job {
 }
 
 let templateSerial = 0;
-async function template(): Promise<number> {
+async function template(admissionCents: number | null = null): Promise<number> {
   const res = await post('/tournament-templates', {
     name: `Cup ${++templateSerial} {date}`,
     organizerPlayerId: FAKE_PLAYER_ID,
@@ -54,7 +54,7 @@ async function template(): Promise<number> {
     type: { kind: 'custom' },
     venue: { id: FAKE_VENUE.guid, label: 'Card Shop', timeZone: TZ, country: 'US' },
     startTime: '18:00',
-    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admission: null },
+    registration: { kind: 'on_site', opensBeforeMin: 60, closesAfterMin: 15, admissionCents },
     contactEmail: 'league@example.com',
   });
   expect(res.status).toBe(201);
@@ -139,6 +139,17 @@ describe('POST /tournaments/create', () => {
     expect(creates()).toHaveLength(1);
     expect(creates()[0]!.body).toMatchObject({ start_date_v2: expect.any(String), activity_division_info: expect.anything() });
     expect(await entry(id)).toMatchObject({ state: 'created', tournamentId: job.tournamentItems[0]!.tournamentId, displayId: expect.stringMatching(/^26-10-/) });
+  });
+
+  it('sends the admission to play-tools as text it already holds, and shows it on Upcoming (#194)', async () => {
+    const id = await planned(await template(750), day(22));
+    expect(await entry(id)).toMatchObject({ admissionCents: 750 });
+
+    const job = await finished(await post('/tournaments/create', { plannedIds: [id] }));
+
+    expect(job).toMatchObject({ status: 'succeeded' });
+    expect(creates().at(-1)!.body).toMatchObject({ on_site_admission: '7.50' });
+    expect(await entry(id)).toMatchObject({ state: 'created', admissionCents: 750 });
   });
 
   it('adopts the organizer’s tournament made by hand in play-tools instead of creating a second one', async () => {
