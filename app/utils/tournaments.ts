@@ -1,4 +1,4 @@
-import { admissionText, formatAdmission, parseAdmission } from '../../shared/money/admission';
+import { admissionText, formatAdmission, parseAdmission } from '#shared/money/admission';
 import type { CoverageStatus, PeriodCoverage, UnreadProfessor, Urgency } from '../../shared/requirements/coverage';
 import type { RequiredEventsCoverage } from '../../server/modules/tournaments/required-events';
 import type { Requirement } from '../../server/modules/tournaments/requirements';
